@@ -3,10 +3,13 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 
-int main() {
+int main(int argc, char **argv) {
     try {
-        const VulkanPlatform platform;
+        const bool enable_validation =
+            argc == 2 && std::string(argv[1]) == "--validation";
+        const VulkanPlatform platform(enable_validation);
         const VulkanDeviceInfo &device = platform.device_info();
         const VulkanBuffer buffer(platform, 4096);
         const std::array<float, 4> input{1.0F, 2.0F, 3.0F, 4.0F};
@@ -31,6 +34,8 @@ int main() {
         }
         std::cout << "Vulkan API: " << VK_VERSION_MAJOR(platform.api_version()) << "."
                   << VK_VERSION_MINOR(platform.api_version()) << "\n";
+        std::cout << "Validation: "
+                  << (platform.validation_enabled() ? "enabled" : "disabled") << "\n";
         std::cout << "Vulkan device: " << device.name << "\n";
         std::cout << "Compute queue family: " << device.compute_queue_family << "\n";
         std::cout << "Logical device: "

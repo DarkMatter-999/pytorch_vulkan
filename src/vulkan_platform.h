@@ -12,7 +12,7 @@ struct VulkanDeviceInfo {
 
 class VulkanPlatform {
   public:
-    VulkanPlatform();
+    explicit VulkanPlatform(bool enable_validation = false);
     ~VulkanPlatform();
 
     VulkanPlatform(const VulkanPlatform &) = delete;
@@ -25,6 +25,7 @@ class VulkanPlatform {
     VkQueue compute_queue() const;
     VkCommandPool command_pool() const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
+    bool validation_enabled() const;
 
   private:
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -32,6 +33,8 @@ class VulkanPlatform {
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue compute_queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
+    bool validation_enabled_ = false;
     VulkanDeviceInfo device_info_;
     uint32_t api_version_ = VK_API_VERSION_1_1;
 };

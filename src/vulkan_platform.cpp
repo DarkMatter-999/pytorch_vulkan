@@ -1,9 +1,12 @@
 #include "vulkan_platform.h"
 
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
 namespace {
+
+constexpr const char *kValidationLayer = "VK_LAYER_KHRONOS_validation";
 
 void check_result(VkResult result, const char *operation) {
     if (result != VK_SUCCESS) {
@@ -11,9 +14,50 @@ void check_result(VkResult result, const char *operation) {
     }
 }
 
+VKAPI_ATTR VkBool32 VKAPI_CALL
+debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT,
+               const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *) {
+    if (callback_data != nullptr && callback_data->pMessage != nullptr) {
+        std::cerr << "Vulkan validation: " << callback_data->pMessage << "\n";
+    }
+    return VK_FALSE;
+}
+
+bool has_validation_layer() {
+    uint32_t count = 0;
+    if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS) {
+        return false;
+    }
+    std::vector<VkLayerProperties> layers(count);
+    vkEnumerateInstanceLayerProperties(&count, layers.data());
+    for (const VkLayerProperties &layer : layers) {
+        if (std::string(layer.layerName) == kValidationLayer) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool has_debug_utils_extension() {
+    uint32_t count = 0;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) !=
+        VK_SUCCESS) {
+        return false;
+    }
+    std::vector<VkExtensionProperties> extensions(count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data());
+    for (const VkExtensionProperties &extension : extensions) {
+        if (std::string(extension.extensionName) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
-VulkanPlatform::VulkanPlatform() {
+VulkanPlatform::VulkanPlatform(bool enable_validation)
+    : validation_enabled_(enable_validation) {
     uint32_t loader_version = VK_API_VERSION_1_0;
     const auto enumerate_instance_version =
         reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
@@ -35,8 +79,44 @@ VulkanPlatform::VulkanPlatform() {
     VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pApplicationInfo = &application_info;
+    const char *validation_layer = kValidationLayer;
+    const char *debug_utils_extension = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    if (validation_enabled_) {
+        if (!has_validation_layer()) {
+            throw std::runtime_error("Vulkan validation layer is unavailable");
+        }
+        if (!has_debug_utils_extension()) {
+            throw std::runtime_error("Vulkan debug utils extension is unavailable");
+        }
+        instance_info.enabledLayerCount = 1;
+        instance_info.ppEnabledLayerNames = &validation_layer;
+        instance_info.enabledExtensionCount = 1;
+        instance_info.ppEnabledExtensionNames = &debug_utils_extension;
+    }
     check_result(vkCreateInstance(&instance_info, nullptr, &instance_),
                  "Could not create Vulkan instance");
+
+    if (validation_enabled_) {
+        VkDebugUtilsMessengerCreateInfoEXT messenger_info{};
+        messenger_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        messenger_info.messageSeverity =
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        messenger_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        messenger_info.pfnUserCallback = debug_callback;
+        const auto create_messenger =
+            reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT"));
+        if (create_messenger == nullptr ||
+            create_messenger(instance_, &messenger_info, nullptr, &debug_messenger_) !=
+                VK_SUCCESS) {
+            vkDestroyInstance(instance_, nullptr);
+            instance_ = VK_NULL_HANDLE;
+            throw std::runtime_error("Could not create Vulkan debug messenger");
+        }
+    }
 
     uint32_t device_count = 0;
     check_result(vkEnumeratePhysicalDevices(instance_, &device_count, nullptr),
@@ -110,6 +190,14 @@ VulkanPlatform::~VulkanPlatform() {
     if (device_ != VK_NULL_HANDLE) {
         vkDestroyDevice(device_, nullptr);
     }
+    if (debug_messenger_ != VK_NULL_HANDLE) {
+        const auto destroy_messenger =
+            reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
+        if (destroy_messenger != nullptr) {
+            destroy_messenger(instance_, debug_messenger_, nullptr);
+        }
+    }
     if (instance_ != VK_NULL_HANDLE) {
         vkDestroyInstance(instance_, nullptr);
     }
@@ -126,6 +214,8 @@ VkDevice VulkanPlatform::device() const { return device_; }
 VkQueue VulkanPlatform::compute_queue() const { return compute_queue_; }
 
 VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
+
+bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
 
 void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
                                  VkDeviceSize size) const {
