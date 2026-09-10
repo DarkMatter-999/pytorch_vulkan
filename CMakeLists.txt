@@ -10,7 +10,12 @@ option(BUILD_VULKAN_PROBE "Build the Vulkan device discovery probe" OFF)
 if(BUILD_VULKAN_PROBE)
     find_package(Vulkan 1.1 REQUIRED)
 
+    add_library(vulkan_platform STATIC src/vulkan_platform.cpp)
+    target_compile_features(vulkan_platform PUBLIC cxx_std_17)
+    target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(vulkan_platform PUBLIC Vulkan::Vulkan)
+
     add_executable(vulkan_device_probe src/vulkan_device_probe.cpp)
     target_compile_features(vulkan_device_probe PRIVATE cxx_std_17)
-    target_link_libraries(vulkan_device_probe PRIVATE Vulkan::Vulkan)
+    target_link_libraries(vulkan_device_probe PRIVATE vulkan_platform)
 endif()

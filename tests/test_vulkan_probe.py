@@ -43,5 +43,6 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
         pytest.skip(probe.stderr.strip() or "no suitable Vulkan device")
 
     assert probe.returncode == 0, probe.stdout + probe.stderr
+    assert "Vulkan API: 1.1" in probe.stdout
     assert "Vulkan device:" in probe.stdout
     assert "Compute queue family:" in probe.stdout
