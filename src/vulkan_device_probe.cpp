@@ -6,7 +6,7 @@
 
 namespace {
 
-const char* result_name(VkResult result) {
+const char *result_name(VkResult result) {
     return result == VK_SUCCESS ? "success" : "failure";
 }
 
@@ -19,8 +19,7 @@ int main() {
             vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
     if (enumerate_instance_version == nullptr ||
         enumerate_instance_version(&loader_version) != VK_SUCCESS ||
-        VK_VERSION_MAJOR(loader_version) != 1 ||
-        VK_VERSION_MINOR(loader_version) < 1) {
+        VK_VERSION_MAJOR(loader_version) != 1 || VK_VERSION_MINOR(loader_version) < 1) {
         std::cerr << "Vulkan 1.1 loader support is required\n";
         return EXIT_FAILURE;
     }
@@ -67,11 +66,10 @@ int main() {
         vkGetPhysicalDeviceProperties(device, &properties);
 
         uint32_t queue_family_count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(
-            device, &queue_family_count, nullptr);
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, nullptr);
         std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
-        vkGetPhysicalDeviceQueueFamilyProperties(
-            device, &queue_family_count, queue_families.data());
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
+                                                 queue_families.data());
 
         for (uint32_t family = 0; family < queue_family_count; ++family) {
             if ((queue_families[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
