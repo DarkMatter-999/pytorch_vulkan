@@ -30,9 +30,9 @@ The default build does not discover Vulkan or OpenCL and produces the CPU-only
 project shell:
 
 ```bash
-cmake -S . -B /tmp/pytorch-vulkan-cpu-build \
+cmake -S . -B build/cpu \
   -DBUILD_VULKAN_PROBE=OFF
-cmake --build /tmp/pytorch-vulkan-cpu-build
+cmake --build build/cpu
 ```
 
 ## Vulkan Probe
@@ -41,12 +41,12 @@ Build the optional probe when Vulkan development files and a suitable device
 are available:
 
 ```bash
-cmake -S . -B /tmp/pytorch-vulkan-build \
+cmake -S . -B build/vulkan \
   -DBUILD_VULKAN_PROBE=ON \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build /tmp/pytorch-vulkan-build --target vulkan_device_probe
-/tmp/pytorch-vulkan-build/vulkan_device_probe
-/tmp/pytorch-vulkan-build/vulkan_device_probe --validation
+cmake --build build/vulkan --target vulkan_device_probe
+build/vulkan/vulkan_device_probe
+build/vulkan/vulkan_device_probe --validation
 ```
 
 The probe validates Vulkan instance creation, physical-device and compute queue
@@ -67,7 +67,7 @@ pytest -q tests/test_cpu_only_build.py \
 Run the CTest probe after configuring with `BUILD_VULKAN_PROBE=ON`:
 
 ```bash
-ctest --test-dir /tmp/pytorch-vulkan-build --output-on-failure
+ctest --test-dir build/vulkan --output-on-failure
 ```
 
 The Vulkan hardware tests skip when no suitable device is available. The
@@ -78,12 +78,13 @@ unavailable-device test uses `VK_ICD_FILENAMES` to verify a clear failure path.
 The minimal Python status extension is opt-in and is not yet a tensor backend:
 
 ```bash
-cmake -S . -B /tmp/pytorch-vulkan-python-build \
+cmake -S . -B build/vulkan \
+  -DBUILD_VULKAN_PROBE=ON \
   -DBUILD_PYTHON_EXTENSION=ON \
   -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
   -Dpybind11_DIR="$($PWD/.venv/bin/python -m pybind11 --cmakedir)"
-cmake --build /tmp/pytorch-vulkan-python-build --target pytorch_vulkan_python
-PYTHONPATH=/tmp/pytorch-vulkan-python-build \
+cmake --build build/vulkan --target pytorch_vulkan_python
+PYTHONPATH=build/vulkan \
   .venv/bin/python -c 'import pytorch_vulkan; print(pytorch_vulkan.is_available())'
 ```
 
