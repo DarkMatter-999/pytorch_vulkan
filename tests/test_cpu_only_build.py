@@ -15,6 +15,7 @@ def test_cpu_only_configuration_does_not_build_opencl_backend(tmp_path):
             str(Path(__file__).resolve().parents[1]),
             "-B",
             str(build_dir),
+            "-DBUILD_VULKAN_PROBE=OFF",
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
         ],
         env=environment,
