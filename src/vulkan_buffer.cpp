@@ -1,5 +1,6 @@
 #include "vulkan_buffer.h"
 
+#include <cstring>
 #include <stdexcept>
 
 namespace {
@@ -22,8 +23,9 @@ uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type_filter
 
 } // namespace
 
-VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size)
-    : device_(platform.device()), size_(size) {
+VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
+                           VkMemoryPropertyFlags memory_properties)
+    : device_(platform.device()), size_(size), memory_properties_(memory_properties) {
     if (size == 0) {
         throw std::invalid_argument("Vulkan buffer size must be greater than zero");
     }
@@ -44,9 +46,8 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size)
     VkMemoryAllocateInfo allocation_info{};
     allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocation_info.allocationSize = requirements.size;
-    allocation_info.memoryTypeIndex =
-        find_memory_type(platform.physical_device(), requirements.memoryTypeBits,
-                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocation_info.memoryTypeIndex = find_memory_type(
+        platform.physical_device(), requirements.memoryTypeBits, memory_properties_);
     if (vkAllocateMemory(device_, &allocation_info, nullptr, &memory_) != VK_SUCCESS) {
         vkDestroyBuffer(device_, buffer_, nullptr);
         buffer_ = VK_NULL_HANDLE;
@@ -75,3 +76,35 @@ VkBuffer VulkanBuffer::buffer() const { return buffer_; }
 VkDeviceMemory VulkanBuffer::memory() const { return memory_; }
 
 VkDeviceSize VulkanBuffer::size() const { return size_; }
+
+void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offset) {
+    if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+        throw std::runtime_error("Vulkan buffer memory is not host visible");
+    }
+    if (data == nullptr || offset > size_ || size > size_ - offset) {
+        throw std::out_of_range("Vulkan buffer write is outside the buffer");
+    }
+
+    void *mapped = nullptr;
+    if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
+        throw std::runtime_error("Could not map Vulkan buffer memory for writing");
+    }
+    std::memcpy(mapped, data, static_cast<size_t>(size));
+    vkUnmapMemory(device_, memory_);
+}
+
+void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) const {
+    if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+        throw std::runtime_error("Vulkan buffer memory is not host visible");
+    }
+    if (data == nullptr || offset > size_ || size > size_ - offset) {
+        throw std::out_of_range("Vulkan buffer read is outside the buffer");
+    }
+
+    void *mapped = nullptr;
+    if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
+        throw std::runtime_error("Could not map Vulkan buffer memory for reading");
+    }
+    std::memcpy(data, mapped, static_cast<size_t>(size));
+    vkUnmapMemory(device_, memory_);
+}

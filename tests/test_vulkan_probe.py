@@ -48,3 +48,4 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
     assert "Compute queue family:" in probe.stdout
     assert "Logical device: ready" in probe.stdout
     assert "Buffer: ready" in probe.stdout
+    assert "Transfer: passed" in probe.stdout
