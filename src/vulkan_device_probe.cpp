@@ -29,6 +29,9 @@ int main() {
         std::cout << "Buffer: "
                   << (buffer.buffer() != VK_NULL_HANDLE ? "ready" : "missing") << "\n";
         std::cout << "Transfer: passed\n";
+        std::cout << "Command pool: "
+                  << (platform.command_pool() != VK_NULL_HANDLE ? "ready" : "missing")
+                  << "\n";
         return EXIT_SUCCESS;
     } catch (const std::exception &error) {
         std::cerr << error.what() << "\n";

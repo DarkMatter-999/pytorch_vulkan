@@ -80,6 +80,19 @@ VulkanPlatform::VulkanPlatform() {
                              "Could not create Vulkan logical device");
                 physical_device_ = device;
                 vkGetDeviceQueue(device_, family, 0, &compute_queue_);
+                VkCommandPoolCreateInfo command_pool_info{};
+                command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+                command_pool_info.flags =
+                    VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+                command_pool_info.queueFamilyIndex = family;
+                if (vkCreateCommandPool(device_, &command_pool_info, nullptr,
+                                        &command_pool_) != VK_SUCCESS) {
+                    vkDestroyDevice(device_, nullptr);
+                    device_ = VK_NULL_HANDLE;
+                    vkDestroyInstance(instance_, nullptr);
+                    instance_ = VK_NULL_HANDLE;
+                    throw std::runtime_error("Could not create Vulkan command pool");
+                }
                 return;
             }
         }
@@ -91,6 +104,9 @@ VulkanPlatform::VulkanPlatform() {
 }
 
 VulkanPlatform::~VulkanPlatform() {
+    if (command_pool_ != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(device_, command_pool_, nullptr);
+    }
     if (device_ != VK_NULL_HANDLE) {
         vkDestroyDevice(device_, nullptr);
     }
@@ -108,3 +124,5 @@ VkPhysicalDevice VulkanPlatform::physical_device() const { return physical_devic
 VkDevice VulkanPlatform::device() const { return device_; }
 
 VkQueue VulkanPlatform::compute_queue() const { return compute_queue_; }
+
+VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }

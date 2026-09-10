@@ -49,3 +49,4 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
     assert "Logical device: ready" in probe.stdout
     assert "Buffer: ready" in probe.stdout
     assert "Transfer: passed" in probe.stdout
+    assert "Command pool: ready" in probe.stdout

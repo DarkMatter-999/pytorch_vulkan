@@ -23,12 +23,14 @@ class VulkanPlatform {
     VkPhysicalDevice physical_device() const;
     VkDevice device() const;
     VkQueue compute_queue() const;
+    VkCommandPool command_pool() const;
 
   private:
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue compute_queue_ = VK_NULL_HANDLE;
+    VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VulkanDeviceInfo device_info_;
     uint32_t api_version_ = VK_API_VERSION_1_1;
 };
