@@ -39,7 +39,7 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
         capture_output=True,
         text=True,
     )
-    if probe.returncode != 0:
+    if probe.returncode == 77:
         pytest.skip(probe.stderr.strip() or "no suitable Vulkan device")
 
     assert probe.returncode == 0, probe.stdout + probe.stderr
@@ -59,8 +59,11 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
         capture_output=True,
         text=True,
     )
-    if validation_probe.returncode != 0:
+    if validation_probe.returncode == 77:
         pytest.skip(
             validation_probe.stderr.strip() or "Vulkan validation is unavailable"
         )
+    assert validation_probe.returncode == 0, (
+        validation_probe.stdout + validation_probe.stderr
+    )
     assert "Validation: enabled" in validation_probe.stdout

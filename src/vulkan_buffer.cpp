@@ -41,24 +41,32 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
         throw std::runtime_error("Could not create Vulkan buffer");
     }
 
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device_, buffer_, &requirements);
-    VkMemoryAllocateInfo allocation_info{};
-    allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocation_info.allocationSize = requirements.size;
-    allocation_info.memoryTypeIndex = find_memory_type(
-        platform.physical_device(), requirements.memoryTypeBits, memory_properties_);
-    if (vkAllocateMemory(device_, &allocation_info, nullptr, &memory_) != VK_SUCCESS) {
-        vkDestroyBuffer(device_, buffer_, nullptr);
-        buffer_ = VK_NULL_HANDLE;
-        throw std::runtime_error("Could not allocate Vulkan buffer memory");
-    }
-    if (vkBindBufferMemory(device_, buffer_, memory_, 0) != VK_SUCCESS) {
-        vkDestroyBuffer(device_, buffer_, nullptr);
-        vkFreeMemory(device_, memory_, nullptr);
-        memory_ = VK_NULL_HANDLE;
-        buffer_ = VK_NULL_HANDLE;
-        throw std::runtime_error("Could not bind Vulkan buffer memory");
+    try {
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, buffer_, &requirements);
+        VkMemoryAllocateInfo allocation_info{};
+        allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation_info.allocationSize = requirements.size;
+        allocation_info.memoryTypeIndex =
+            find_memory_type(platform.physical_device(), requirements.memoryTypeBits,
+                             memory_properties_);
+        if (vkAllocateMemory(device_, &allocation_info, nullptr, &memory_) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("Could not allocate Vulkan buffer memory");
+        }
+        if (vkBindBufferMemory(device_, buffer_, memory_, 0) != VK_SUCCESS) {
+            throw std::runtime_error("Could not bind Vulkan buffer memory");
+        }
+    } catch (...) {
+        if (buffer_ != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device_, buffer_, nullptr);
+            buffer_ = VK_NULL_HANDLE;
+        }
+        if (memory_ != VK_NULL_HANDLE) {
+            vkFreeMemory(device_, memory_, nullptr);
+            memory_ = VK_NULL_HANDLE;
+        }
+        throw;
     }
 }
 
@@ -90,6 +98,17 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
         throw std::runtime_error("Could not map Vulkan buffer memory for writing");
     }
     std::memcpy(mapped, data, static_cast<size_t>(size));
+    if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        VkMappedMemoryRange range{};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = memory_;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        if (vkFlushMappedMemoryRanges(device_, 1, &range) != VK_SUCCESS) {
+            vkUnmapMemory(device_, memory_);
+            throw std::runtime_error("Could not flush Vulkan buffer memory");
+        }
+    }
     vkUnmapMemory(device_, memory_);
 }
 
@@ -104,6 +123,17 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
     void *mapped = nullptr;
     if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
         throw std::runtime_error("Could not map Vulkan buffer memory for reading");
+    }
+    if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        VkMappedMemoryRange range{};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = memory_;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        if (vkInvalidateMappedMemoryRanges(device_, 1, &range) != VK_SUCCESS) {
+            vkUnmapMemory(device_, memory_);
+            throw std::runtime_error("Could not invalidate Vulkan buffer memory");
+        }
     }
     std::memcpy(data, mapped, static_cast<size_t>(size));
     vkUnmapMemory(device_, memory_);

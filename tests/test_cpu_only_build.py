@@ -26,6 +26,9 @@ def test_cpu_only_configuration_does_not_build_opencl_backend(tmp_path):
     assert configure.returncode == 0, configure.stdout + configure.stderr
     assert "OpenCL" not in configure.stdout
     assert "OpenCL" not in configure.stderr
+    cache = (build_dir / "CMakeCache.txt").read_text()
+    assert "OpenCL" not in cache
+    assert "OCL_" not in cache
 
     build = subprocess.run(
         ["cmake", "--build", str(build_dir)],
@@ -36,3 +39,12 @@ def test_cpu_only_configuration_does_not_build_opencl_backend(tmp_path):
     assert build.returncode == 0, build.stdout + build.stderr
     assert "pt_ocl" not in build.stdout
     assert "CLTensor.cpp" not in build.stdout
+
+    targets = subprocess.run(
+        ["cmake", "--build", str(build_dir), "--target", "help"],
+        capture_output=True,
+        text=True,
+    )
+    assert targets.returncode == 0, targets.stdout + targets.stderr
+    assert "pt_ocl" not in targets.stdout
+    assert "dlprim_core" not in targets.stdout

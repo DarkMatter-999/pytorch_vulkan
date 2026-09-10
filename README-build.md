@@ -1,100 +1,91 @@
-## In the nutshell
+# Development Build
 
-- Setup pip virtual enviromnet with _CPU_ version of pytorch. Supported pytorch version are 2.4 and above. Also pytorch 1.13 is supprted.
-- Build dlprim\_backend and install at location you want
-- import `pytorch_ocl` and use `ocl` device instead of `cuda`
+Phase 1 targets Linux with a CPU-only project configuration and an optional
+standalone Vulkan device probe. The legacy OpenCL sources and `dlprimitives`
+submodule remain in the checkout as reference material, but are not entered by
+the active root build.
 
-## Now in details
+## Environment
 
-1.  Setup pip virtual environment and install CPU version of pytorch - 2.4 is recommended. Pytorch 1.13 is still supported.
+Install `uv`, Python 3.12, a C++17 compiler, CMake, Vulkan headers and loader,
+and the Vulkan validation layer. Create the project environment with:
 
-    Install CPU variant since you don't need CUDA support for OpenCL backend to work.
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python \
+  --index-url https://download.pytorch.org/whl/cpu \
+  torch==2.4.0
+uv pip install --python .venv/bin/python numpy pytest pybind11==2.13.6
+```
 
-2.  Make sure you have OpenCL headers and library. It should include `opencl.hpp` or`cl2.hpp` - not the old one `cl.hpp`
+Activate it before running Python tests:
 
-3.  It is strongly recommended to have SQLite3 library and headers avalible as well, it would improve startup times by caching OpenCL kernels on disk.
+```bash
+source .venv/bin/activate
+```
 
-4. Clone The repository
+## CPU-Only Build
 
-        git clone --recurse-submodules https://github.com/artyom-beilis/pytorch_dlprim.git
+The default build does not discover Vulkan or OpenCL and produces the CPU-only
+project shell:
 
-5.  Build the backend.
+```bash
+cmake -S . -B /tmp/pytorch-vulkan-cpu-build \
+  -DBUILD_VULKAN_PROBE=OFF
+cmake --build /tmp/pytorch-vulkan-cpu-build
+```
 
-## Building the on Linux
+## Vulkan Probe
 
-Make sure you are in the virtual environment
+Build the optional probe when Vulkan development files and a suitable device
+are available:
 
-	mkdir build
-	cd build
-	cmake -DCMAKE_PREFIX_PATH=$VIRTUAL_ENV/lib/python3.10/site-packages/torch/share/cmake/Torch -DCMAKE_INSTALL_PREFIX=/path/to/install/location ..
-	make
-    make install
+```bash
+cmake -S . -B /tmp/pytorch-vulkan-build \
+  -DBUILD_VULKAN_PROBE=ON \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build /tmp/pytorch-vulkan-build --target vulkan_device_probe
+/tmp/pytorch-vulkan-build/vulkan_device_probe
+/tmp/pytorch-vulkan-build/vulkan_device_probe --validation
+```
 
-Note: if you use python version that is different from 3.10 just fix the path above
+The probe validates Vulkan instance creation, physical-device and compute queue
+selection, logical-device creation, command-pool creation, buffer allocation,
+host/device transfers, repeated buffer lifetimes, and optional validation.
 
-Test it runs:
+## Tests
 
-    export PYTHONPATH=/path/to/install/location/python
-	python mnist.py --device ocl:0
+Run the active test suite with:
 
-If you want to test it in build environment use `export PYTHONPATH=build`
+```bash
+pytest -q tests/test_cpu_only_build.py \
+  tests/test_vulkan_probe.py \
+  tests/test_vulkan_unavailable.py \
+  tests/test_python_extension.py
+```
 
-Note: for pytorch 1.13 use privateuseone device instead of ocl
+Run the CTest probe after configuring with `BUILD_VULKAN_PROBE=ON`:
 
-## Building on Windows
+```bash
+ctest --test-dir /tmp/pytorch-vulkan-build --output-on-failure
+```
 
-It was tested using MSVC 2022, pytorch 2.4, python 3.12 with ninja build tool. 
+The Vulkan hardware tests skip when no suitable device is available. The
+unavailable-device test uses `VK_ICD_FILENAMES` to verify a clear failure path.
 
-### Dependencies
+## Python Extension
 
-Organize your dependencies directory:
+The minimal Python status extension is opt-in and is not yet a tensor backend:
 
+```bash
+cmake -S . -B /tmp/pytorch-vulkan-python-build \
+  -DBUILD_PYTHON_EXTENSION=ON \
+  -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
+  -Dpybind11_DIR="$($PWD/.venv/bin/python -m pybind11 --cmakedir)"
+cmake --build /tmp/pytorch-vulkan-python-build --target pytorch_vulkan_python
+PYTHONPATH=/tmp/pytorch-vulkan-python-build \
+  .venv/bin/python -c 'import pytorch_vulkan; print(pytorch_vulkan.is_available())'
+```
 
--   Download ninja from https://ninja-build.org/ it would make the life much easier. All instructions here refer to use of Ninja build tool
--   You will nead OpenCL headers and `64` import library. You can get them here: https://github.com/KhronosGroup/OpenCL-SDK/releases
--   SQLite3 is strongly recommended. I recommend to a simple static build and use it:
-
-    Download sqlite-amalgamation-XXXXX.zip file from https://www.sqlite.org/download.html, open "x64 native tool command prompt" shell and 
-    complile the library:
-
-        cl /c /EHsc sqlite3.c
-        lib sqlite3.obj
-    
-    Now you have sqlite3.lib and sqlite3.h/sqlite3ext.h you need for build
-
-Put all the dependencies in a layout you can use with ease, something like:
-
-    c:\deps
-	c:\deps\include\
-	c:\deps\include\CL\opencl.hpp
-	c:\deps\include\sqlite3.h
-	...
-	c:\deps\lib\
-	c:\deps\lib\OpenCL.lib
-	c:\deps\lib\sqlite3.lib
-
-Addtionally find the location of your python installation, for example `c:\Python\Python312`, you'll need to point to its location in CMake to make sure it find
-Make sure you put there 64 release versions only.
-
-Setup virtual pip environment with pytorch. Lets assume you put it into `c:\venv\torch`
-
-Open "x64 Native Tools Command Prompt for VS 2022" and activate virtual environment by running `c:\venv\torch\Scripts\activate` 
-Change current directory to location of the `pytorch_dlprim` project
-
-And run:
-
-    mkdir build
-	cd build
-	cmake -DCMAKE_PREFIX_PATH=%VIRTUAL_ENV%\Lib\site-packages\torch\share\cmake\Torch -DCMAKE_BUILD_TYPE=RelWithDebInfo  -DCMAKE_C_COMPILER="cl.exe" -DCMAKE_CXX_COMPILER="cl.exe" -G Ninja -DCMAKE_INCLUDE_PATH="c:\deps\include\include;C:\Python\Python312\include" -DCMAKE_LIBRARY_PATH="c:\deps\lib;C:\Python\Python312\Libs"  -DCMAKE_INSTALL_PREFIX=c:\path\to\install ..
-	ninja
-    ninja install
-	
-Please note: `-DCMAKE_LIBRARY_PATH` and `-DCMAKE_INCLUDE_PATH` point to both dependencies directory and python directory! 
-
-Once build is complete go back to previous directory and run mnist example to test
-
-    cd ..
-    set PYTHONPATH=build
-	python mnist.py --device=ocl:0
-	
-For your daily use `set PYTHONPATH=c:\path\to\install\python` and include `import pytorch_ocl`
+`PrivateUse1` tensor storage, factories, dispatch, and operators are deferred
+until the low-level Vulkan lifecycle is complete.

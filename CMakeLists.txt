@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 project(dlprim_backend LANGUAGES CXX)
+include(CTest)
 
 # The legacy OpenCL implementation is retained as reference material only.
 # Vulkan and CPU integration will add active targets in later phases.
@@ -32,6 +33,10 @@ if(BUILD_VULKAN_PROBE)
     add_executable(vulkan_device_probe src/vulkan_device_probe.cpp)
     target_compile_features(vulkan_device_probe PRIVATE cxx_std_17)
     target_link_libraries(vulkan_device_probe PRIVATE vulkan_buffer)
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_device_probe COMMAND vulkan_device_probe)
+        set_tests_properties(vulkan_device_probe PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 if(BUILD_PYTHON_EXTENSION)

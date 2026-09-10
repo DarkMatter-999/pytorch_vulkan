@@ -58,6 +58,9 @@ int main(int argc, char **argv) {
         std::cout << "Device transfer: passed\n";
         std::cout << "Lifecycle: passed\n";
         return EXIT_SUCCESS;
+    } catch (const VulkanUnavailable &error) {
+        std::cerr << error.what() << "\n";
+        return 77;
     } catch (const std::exception &error) {
         std::cerr << error.what() << "\n";
         return EXIT_FAILURE;

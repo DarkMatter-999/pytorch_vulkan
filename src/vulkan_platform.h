@@ -3,7 +3,13 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
+
+class VulkanUnavailable : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
 
 struct VulkanDeviceInfo {
     std::string name;
@@ -30,6 +36,8 @@ class VulkanPlatform {
     bool validation_enabled() const;
 
   private:
+    void cleanup();
+
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
