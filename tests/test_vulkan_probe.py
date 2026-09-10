@@ -51,6 +51,7 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
     assert "Transfer: passed" in probe.stdout
     assert "Command pool: ready" in probe.stdout
     assert "Device transfer: passed" in probe.stdout
+    assert "Lifecycle: passed" in probe.stdout
 
     validation_probe = subprocess.run(
         [str(executables[0]), "--validation"],

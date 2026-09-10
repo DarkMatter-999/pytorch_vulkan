@@ -32,6 +32,12 @@ int main(int argc, char **argv) {
         if (output != input) {
             throw std::runtime_error("Vulkan device transfer round trip failed");
         }
+        for (int iteration = 0; iteration < 32; ++iteration) {
+            const VulkanBuffer temporary(platform, 4096);
+            if (temporary.buffer() == VK_NULL_HANDLE) {
+                throw std::runtime_error("Vulkan buffer lifecycle failed");
+            }
+        }
         std::cout << "Vulkan API: " << VK_VERSION_MAJOR(platform.api_version()) << "."
                   << VK_VERSION_MINOR(platform.api_version()) << "\n";
         std::cout << "Validation: "
@@ -48,6 +54,7 @@ int main(int argc, char **argv) {
                   << (platform.command_pool() != VK_NULL_HANDLE ? "ready" : "missing")
                   << "\n";
         std::cout << "Device transfer: passed\n";
+        std::cout << "Lifecycle: passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception &error) {
         std::cerr << error.what() << "\n";
