@@ -40,8 +40,11 @@ def test_python_extension_imports_and_reports_vulkan(tmp_path):
         [
             str(PYTHON),
             "-c",
-            "import pytorch_vulkan; assert isinstance(pytorch_vulkan.is_available(), bool); "
-            "assert pytorch_vulkan.device_count() >= 0",
+            "import torch, pytorch_vulkan; "
+            "assert torch.device('vulkan:0').type == 'vulkan'; "
+            "assert isinstance(pytorch_vulkan.is_available(), bool); "
+            "assert pytorch_vulkan.device_count() >= 0; "
+            "assert torch.vulkan.is_available() == pytorch_vulkan.is_available()",
         ],
         env=environment,
         capture_output=True,
