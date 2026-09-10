@@ -15,7 +15,12 @@ if(BUILD_VULKAN_PROBE)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(vulkan_platform PUBLIC Vulkan::Vulkan)
 
+    add_library(vulkan_buffer STATIC src/vulkan_buffer.cpp)
+    target_compile_features(vulkan_buffer PUBLIC cxx_std_17)
+    target_include_directories(vulkan_buffer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(vulkan_buffer PUBLIC vulkan_platform)
+
     add_executable(vulkan_device_probe src/vulkan_device_probe.cpp)
     target_compile_features(vulkan_device_probe PRIVATE cxx_std_17)
-    target_link_libraries(vulkan_device_probe PRIVATE vulkan_platform)
+    target_link_libraries(vulkan_device_probe PRIVATE vulkan_buffer)
 endif()
