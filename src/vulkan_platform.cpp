@@ -126,3 +126,47 @@ VkDevice VulkanPlatform::device() const { return device_; }
 VkQueue VulkanPlatform::compute_queue() const { return compute_queue_; }
 
 VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
+
+void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
+                                 VkDeviceSize size) const {
+    if (source == VK_NULL_HANDLE || destination == VK_NULL_HANDLE || size == 0) {
+        throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
+    }
+
+    VkCommandBufferAllocateInfo allocation_info{};
+    allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocation_info.commandPool = command_pool_;
+    allocation_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocation_info.commandBufferCount = 1;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
+                 "Could not allocate Vulkan command buffer");
+
+    try {
+        VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_result(vkBeginCommandBuffer(command_buffer, &begin_info),
+                     "Could not begin Vulkan command buffer");
+
+        VkBufferCopy copy_region{};
+        copy_region.size = size;
+        vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
+        check_result(vkEndCommandBuffer(command_buffer),
+                     "Could not end Vulkan command buffer");
+
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &command_buffer;
+        check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, VK_NULL_HANDLE),
+                     "Could not submit Vulkan command buffer");
+        check_result(vkQueueWaitIdle(compute_queue_),
+                     "Could not synchronize Vulkan compute queue");
+    } catch (...) {
+        vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+        throw;
+    }
+
+    vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+}

@@ -19,6 +19,16 @@ int main() {
         if (output != input) {
             throw std::runtime_error("Vulkan host transfer round trip failed");
         }
+        VulkanBuffer download(platform, sizeof(output),
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        platform.copy_buffer(staging.buffer(), buffer.buffer(), sizeof(input));
+        platform.copy_buffer(buffer.buffer(), download.buffer(), sizeof(output));
+        output.fill(0.0F);
+        download.read(output.data(), sizeof(output));
+        if (output != input) {
+            throw std::runtime_error("Vulkan device transfer round trip failed");
+        }
         std::cout << "Vulkan API: " << VK_VERSION_MAJOR(platform.api_version()) << "."
                   << VK_VERSION_MINOR(platform.api_version()) << "\n";
         std::cout << "Vulkan device: " << device.name << "\n";
@@ -32,6 +42,7 @@ int main() {
         std::cout << "Command pool: "
                   << (platform.command_pool() != VK_NULL_HANDLE ? "ready" : "missing")
                   << "\n";
+        std::cout << "Device transfer: passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception &error) {
         std::cerr << error.what() << "\n";

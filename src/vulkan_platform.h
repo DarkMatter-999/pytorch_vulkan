@@ -24,6 +24,7 @@ class VulkanPlatform {
     VkDevice device() const;
     VkQueue compute_queue() const;
     VkCommandPool command_pool() const;
+    void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
 
   private:
     VkInstance instance_ = VK_NULL_HANDLE;
