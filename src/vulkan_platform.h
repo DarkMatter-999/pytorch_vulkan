@@ -15,6 +15,8 @@ class VulkanPlatform {
     explicit VulkanPlatform(bool enable_validation = false);
     ~VulkanPlatform();
 
+    static bool is_available() noexcept;
+
     VulkanPlatform(const VulkanPlatform &) = delete;
     VulkanPlatform &operator=(const VulkanPlatform &) = delete;
 

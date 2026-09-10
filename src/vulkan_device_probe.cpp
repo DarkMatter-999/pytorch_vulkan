@@ -40,6 +40,8 @@ int main(int argc, char **argv) {
         }
         std::cout << "Vulkan API: " << VK_VERSION_MAJOR(platform.api_version()) << "."
                   << VK_VERSION_MINOR(platform.api_version()) << "\n";
+        std::cout << "Availability: " << (VulkanPlatform::is_available() ? "yes" : "no")
+                  << "\n";
         std::cout << "Validation: "
                   << (platform.validation_enabled() ? "enabled" : "disabled") << "\n";
         std::cout << "Vulkan device: " << device.name << "\n";

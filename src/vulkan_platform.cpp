@@ -203,6 +203,15 @@ VulkanPlatform::~VulkanPlatform() {
     }
 }
 
+bool VulkanPlatform::is_available() noexcept {
+    try {
+        const VulkanPlatform platform;
+        return platform.device() != VK_NULL_HANDLE;
+    } catch (...) {
+        return false;
+    }
+}
+
 const VulkanDeviceInfo &VulkanPlatform::device_info() const { return device_info_; }
 
 uint32_t VulkanPlatform::api_version() const { return api_version_; }
