@@ -65,6 +65,21 @@ VulkanPlatform::VulkanPlatform() {
             if ((queue_families[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
                 device_info_.name = properties.deviceName;
                 device_info_.compute_queue_family = family;
+                float queue_priority = 1.0F;
+                VkDeviceQueueCreateInfo queue_info{};
+                queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+                queue_info.queueFamilyIndex = family;
+                queue_info.queueCount = 1;
+                queue_info.pQueuePriorities = &queue_priority;
+
+                VkDeviceCreateInfo device_info{};
+                device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+                device_info.queueCreateInfoCount = 1;
+                device_info.pQueueCreateInfos = &queue_info;
+                check_result(vkCreateDevice(device, &device_info, nullptr, &device_),
+                             "Could not create Vulkan logical device");
+                physical_device_ = device;
+                vkGetDeviceQueue(device_, family, 0, &compute_queue_);
                 return;
             }
         }
@@ -76,6 +91,9 @@ VulkanPlatform::VulkanPlatform() {
 }
 
 VulkanPlatform::~VulkanPlatform() {
+    if (device_ != VK_NULL_HANDLE) {
+        vkDestroyDevice(device_, nullptr);
+    }
     if (instance_ != VK_NULL_HANDLE) {
         vkDestroyInstance(instance_, nullptr);
     }
@@ -84,3 +102,9 @@ VulkanPlatform::~VulkanPlatform() {
 const VulkanDeviceInfo &VulkanPlatform::device_info() const { return device_info_; }
 
 uint32_t VulkanPlatform::api_version() const { return api_version_; }
+
+VkPhysicalDevice VulkanPlatform::physical_device() const { return physical_device_; }
+
+VkDevice VulkanPlatform::device() const { return device_; }
+
+VkQueue VulkanPlatform::compute_queue() const { return compute_queue_; }

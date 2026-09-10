@@ -46,3 +46,4 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
     assert "Vulkan API: 1.1" in probe.stdout
     assert "Vulkan device:" in probe.stdout
     assert "Compute queue family:" in probe.stdout
+    assert "Logical device: ready" in probe.stdout
