@@ -54,8 +54,8 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
         throw std::runtime_error("Could not allocate Vulkan buffer memory");
     }
     if (vkBindBufferMemory(device_, buffer_, memory_, 0) != VK_SUCCESS) {
-        vkFreeMemory(device_, memory_, nullptr);
         vkDestroyBuffer(device_, buffer_, nullptr);
+        vkFreeMemory(device_, memory_, nullptr);
         memory_ = VK_NULL_HANDLE;
         buffer_ = VK_NULL_HANDLE;
         throw std::runtime_error("Could not bind Vulkan buffer memory");
@@ -63,11 +63,11 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
 }
 
 VulkanBuffer::~VulkanBuffer() {
-    if (memory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(device_, memory_, nullptr);
-    }
     if (buffer_ != VK_NULL_HANDLE) {
         vkDestroyBuffer(device_, buffer_, nullptr);
+    }
+    if (memory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, memory_, nullptr);
     }
 }
 
