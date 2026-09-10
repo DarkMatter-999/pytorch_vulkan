@@ -1,77 +1,57 @@
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
-project(dlprim_backend)
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-find_package(Torch 1.13 REQUIRED)
-find_package(pybind11 REQUIRED)
+cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
+project(dlprim_backend LANGUAGES CXX)
+include(CTest)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
-option(BUILD_CORE_ONLY "Core Build" ON)
-option(DLPRIM_STATIC_BUILD "Build static version only" ON)
-option(BUILD_CPLUS_EXAMPLE "Build C++ examples" OFF)
+# The legacy OpenCL implementation is retained as reference material only.
+# Vulkan and CPU integration will add active targets in later phases.
+message(STATUS "GPU backend disabled; configuring CPU-only project shell")
 
-add_subdirectory(dlprimitives)
-include_directories("${OCL_PATH}")
-include_directories(${PYTHON_INCLUDE_DIR})
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/dlprimitives)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dlprimitives/include)
-include_directories(${Python3_INCLUDE_DIRS})   # Python include
-include_directories(${pybind11_INCLUDE_DIRS})  # pybind11 include
+option(BUILD_VULKAN_PROBE "Build the Vulkan device discovery probe" OFF)
+option(BUILD_PYTHON_EXTENSION "Build the minimal Python Vulkan extension" OFF)
 
-message(" Pytorch libraries: ${TORCH_LIBRARIES}")
-message(" Python libraries: ${Python3_LIBRARIES}")
-message(" Python include: ${Python3_INCLUDE_DIRS}")
-
-if(NOT WIN32)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O2 -Wall")
+if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
+    find_package(Vulkan 1.1 REQUIRED)
 endif()
 
-# Define our library target
-add_library(pt_ocl SHARED 
-        src/pointwise_ops.cpp
-        src/tensor_ops.cpp
-        src/vision_ops.cpp
-        src/loss_ops.cpp
-        src/random_ops.cpp
-        src/norm_ops.cpp
-        src/utils.cpp
-        src/registeration.cpp
-        src/CLTensor.cpp
-        src/guard.cpp
-        src/python_iface.cpp
-        )
-
-target_compile_features(pt_ocl PRIVATE cxx_std_17)
-
-# Link against LibTorch
-target_link_libraries(pt_ocl ${TORCH_LIBRARIES} ${OCL_LIB} dlprim_core ${Python3_LIBRARIES})
-if(WIN32)
-    target_link_libraries(pt_ocl ${Python3_LIBRARIES})
-endif()
-set_target_properties(pt_ocl PROPERTIES PREFIX "" OUTPUT_NAME "pt_ocl")
-if(NOT WIN32)
-	set_target_properties(pt_ocl PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pytorch_ocl/")
-else()
-	set_target_properties(pt_ocl PROPERTIES
-		RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pytorch_ocl/"
-		SUFFIX ".pyd"
-	)
-	 
+if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
+  if(NOT TARGET vulkan_platform)
+    add_library(vulkan_platform STATIC src/vulkan_platform.cpp)
+    target_compile_features(vulkan_platform PUBLIC cxx_std_17)
+    set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(vulkan_platform PUBLIC Vulkan::Vulkan)
+  endif()
 endif()
 
-	
+if(BUILD_VULKAN_PROBE)
 
+    add_library(vulkan_buffer STATIC src/vulkan_buffer.cpp)
+    target_compile_features(vulkan_buffer PUBLIC cxx_std_17)
+    target_include_directories(vulkan_buffer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(vulkan_buffer PUBLIC vulkan_platform)
 
-foreach(PYNAME __init__.py)
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_ocl/${PYNAME} "${CMAKE_BINARY_DIR}/pytorch_ocl/${PYNAME}" COPYONLY)
-    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_ocl/${PYNAME} DESTINATION python/pytorch_ocl)
-endforeach()
+    add_executable(vulkan_device_probe src/vulkan_device_probe.cpp)
+    target_compile_features(vulkan_device_probe PRIVATE cxx_std_17)
+    target_link_libraries(vulkan_device_probe PRIVATE vulkan_buffer)
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_device_probe COMMAND vulkan_device_probe)
+        set_tests_properties(vulkan_device_probe PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
 
-install(TARGETS pt_ocl 
-		LIBRARY DESTINATION python/pytorch_ocl
-		RUNTIME DESTINATION python/pytorch_ocl
-	)
+if(BUILD_PYTHON_EXTENSION)
+    find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
+    find_package(pybind11 CONFIG REQUIRED)
 
-# Add C++ examples
-if(BUILD_CPLUS_EXAMPLE)
-    add_subdirectory(examples/cplus)
+    pybind11_add_module(pytorch_vulkan_python MODULE src/python_module.cpp)
+    target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
+    target_link_libraries(pytorch_vulkan_python PRIVATE vulkan_platform)
+    set_target_properties(pytorch_vulkan_python PROPERTIES OUTPUT_NAME "_C")
+    set_target_properties(
+        pytorch_vulkan_python
+        PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pytorch_vulkan")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/__init__.py"
+        "${CMAKE_BINARY_DIR}/pytorch_vulkan/__init__.py"
+        COPYONLY)
 endif()
