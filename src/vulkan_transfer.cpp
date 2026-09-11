@@ -67,6 +67,10 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
                 "Vulkan copy requires a CPU and PrivateUse1/Vulkan device; destination ",
                 destination.device(), ", source ", source.device());
     const c10::Device &vulkan_device = destination_cpu ? source.device() : destination.device();
+    const at::Tensor &vulkan_tensor = destination_cpu ? source : destination;
+    TORCH_CHECK(vulkan_tensor.storage_offset() == 0,
+                "Vulkan copy does not support tensors with non-zero storage_offset()",
+                "; offset is ", vulkan_tensor.storage_offset());
     TORCH_CHECK(vulkan_device.index() == 0,
                 "Vulkan copy ", direction(destination, source),
                 " supports only Vulkan device index 0, got ", vulkan_device.index());

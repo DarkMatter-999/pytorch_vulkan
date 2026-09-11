@@ -80,6 +80,15 @@ void test_copy_rejected(c10::Allocator &allocator) {
     expect(rejected, "opaque-pointer copy was accepted");
 }
 
+void test_explicit_shutdown_preserves_live_allocation(c10::Allocator &allocator) {
+    auto data = allocator.allocate(4096);
+    const VulkanPlatform &owned_platform = pytorch_vulkan::allocation_platform(data);
+    pytorch_vulkan::shutdown_platform();
+    expect(owned_platform.device() != VK_NULL_HANDLE,
+           "explicit platform shutdown invalidated a live allocation");
+    data.clear();
+}
+
 } // namespace
 
 int main() {
@@ -116,6 +125,7 @@ int main() {
         test_zero_byte_allocation(*allocator);
         test_oversized_allocation_rejected(*allocator);
         test_copy_rejected(*allocator);
+        test_explicit_shutdown_preserves_live_allocation(*allocator);
         std::cout << "Vulkan allocator lifetime tests passed\n";
         return 0;
     } catch (const std::exception &error) {

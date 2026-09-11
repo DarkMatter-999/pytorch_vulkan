@@ -4,9 +4,11 @@
 
 #include <ATen/ATen.h>
 
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -53,6 +55,31 @@ void test_validation_boundaries() {
                  "matching sizes");
 }
 
+void test_nonzero_storage_offset_is_rejected() {
+    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+    const std::vector<int64_t> sizes{4};
+    const std::vector<int64_t> strides{1};
+    auto destination_base =
+        at::empty({5}, source.options().device(kDevice));
+    auto destination = destination_base;
+    destination.unsafeGetTensorImpl()->set_storage_offset(1);
+    destination.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
+    expect(destination.is_contiguous() && destination.storage_offset() != 0,
+           "destination test tensor is not a contiguous offset view");
+    expect_error([&] { pytorch_vulkan::copy_tensor(destination, source, false); },
+                 "storage_offset");
+
+    auto source_base = at::empty({5}, source.options().device(kDevice));
+    auto source_view = source_base;
+    source_view.unsafeGetTensorImpl()->set_storage_offset(1);
+    source_view.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
+    auto result = at::empty({4}, source.options());
+    expect(source_view.is_contiguous() && source_view.storage_offset() != 0,
+           "source test tensor is not a contiguous offset view");
+    expect_error([&] { pytorch_vulkan::copy_tensor(result, source_view, false); },
+                 "storage_offset");
+}
+
 void test_zero_tensor_copy_is_noop() {
     auto source = at::empty({0}, at::TensorOptions().dtype(at::kFloat));
     auto device_tensor = at::empty({0}, source.options().device(kDevice));
@@ -91,6 +118,7 @@ int main() {
         (void)pytorch_vulkan::platform();
         test_copy_round_trip();
         test_validation_boundaries();
+        test_nonzero_storage_offset_is_rejected();
         test_zero_tensor_copy_is_noop();
         test_zero_allocator_payload();
         test_foreign_payload_rejected();

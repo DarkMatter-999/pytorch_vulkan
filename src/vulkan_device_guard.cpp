@@ -5,6 +5,7 @@
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <c10/util/Exception.h>
 
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 
@@ -51,6 +52,9 @@ std::shared_ptr<VulkanPlatform> platform() {
     std::call_once(platform_initialization, [] {
         try {
             platform_instance = std::make_shared<VulkanPlatform>();
+            // Destroy the cached platform before static teardown can outlive
+            // Vulkan's loader and validation-layer dispatch.
+            std::atexit(&shutdown_platform);
         } catch (...) {
             platform_initialization_error = std::current_exception();
         }
