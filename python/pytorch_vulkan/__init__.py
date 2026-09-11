@@ -1,6 +1,6 @@
 import torch
 
-from ._C import device_count, is_available
+from ._C import current_device, device_count, is_available, set_device
 
 
 class _VulkanDeviceModule:
@@ -14,7 +14,11 @@ class _VulkanDeviceModule:
 
     @staticmethod
     def current_device():
-        return 0
+        return current_device()
+
+    @staticmethod
+    def set_device(index):
+        return set_device(index)
 
 
 torch.utils.rename_privateuse1_backend("vulkan")

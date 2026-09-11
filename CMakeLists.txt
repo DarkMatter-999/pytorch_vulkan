@@ -42,10 +42,23 @@ endif()
 if(BUILD_PYTHON_EXTENSION)
     find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
     find_package(pybind11 CONFIG REQUIRED)
+    find_package(Torch REQUIRED)
 
-    pybind11_add_module(pytorch_vulkan_python MODULE src/python_module.cpp)
+     pybind11_add_module(
+         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan_device_guard.cpp)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
+    target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(pytorch_vulkan_python PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
     target_link_libraries(pytorch_vulkan_python PRIVATE vulkan_platform)
+    target_link_libraries(pytorch_vulkan_python PRIVATE ${TORCH_LIBRARIES})
+    if(PYTORCH_VULKAN_TORCH_COMPILE_PROBE)
+        target_sources(
+            pytorch_vulkan_python
+            PRIVATE "${PYTORCH_VULKAN_TORCH_COMPILE_PROBE}")
+    endif()
     set_target_properties(pytorch_vulkan_python PROPERTIES OUTPUT_NAME "_C")
     set_target_properties(
         pytorch_vulkan_python
