@@ -1,7 +1,9 @@
 #include "vulkan_platform.h"
 
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -10,7 +12,8 @@ constexpr const char *kValidationLayer = "VK_LAYER_KHRONOS_validation";
 
 void check_result(VkResult result, const char *operation) {
     if (result != VK_SUCCESS) {
-        throw std::runtime_error(operation);
+        throw std::runtime_error(std::string(operation) + " failed with VkResult " +
+                                 std::to_string(static_cast<int>(result)));
     }
 }
 
@@ -196,6 +199,15 @@ void VulkanPlatform::cleanup() {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
     }
+    for (const PendingTransferResources &resources : pending_transfer_resources_) {
+        if (resources.fence != VK_NULL_HANDLE) {
+            vkDestroyFence(device_, resources.fence, nullptr);
+        }
+        if (resources.command_buffer != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device_, command_pool_, 1, &resources.command_buffer);
+        }
+    }
+    pending_transfer_resources_.clear();
     if (command_pool_ != VK_NULL_HANDLE) {
         vkDestroyCommandPool(device_, command_pool_, nullptr);
         command_pool_ = VK_NULL_HANDLE;
@@ -242,8 +254,8 @@ VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
 
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
 
-void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
-                                 VkDeviceSize size) const {
+void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
+                                       VkDeviceSize size) const {
     if (source == VK_NULL_HANDLE || destination == VK_NULL_HANDLE || size == 0) {
         throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
     }
@@ -257,6 +269,23 @@ void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
     check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
                  "Could not allocate Vulkan command buffer");
 
+    VkFence fence = VK_NULL_HANDLE;
+    bool submission_may_be_pending = false;
+    const auto release_resources = [&]() {
+        if (fence != VK_NULL_HANDLE) {
+            vkDestroyFence(device_, fence, nullptr);
+            fence = VK_NULL_HANDLE;
+        }
+        if (command_buffer != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+            command_buffer = VK_NULL_HANDLE;
+        }
+    };
+    const auto defer_resources = [&]() {
+        pending_transfer_resources_.push_back({command_buffer, fence});
+        command_buffer = VK_NULL_HANDLE;
+        fence = VK_NULL_HANDLE;
+    };
     try {
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -274,14 +303,66 @@ void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
-        check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, VK_NULL_HANDLE),
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
+                     "Could not create Vulkan transfer fence");
+        // Ensure deferred ownership cannot allocate after submission starts.
+        pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
+        submission_may_be_pending = true;
+        check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, fence),
                      "Could not submit Vulkan command buffer");
-        check_result(vkQueueWaitIdle(compute_queue_),
-                     "Could not synchronize Vulkan compute queue");
+        const VkResult wait_result =
+            vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (wait_result != VK_SUCCESS) {
+            const VkResult recovery_result = vkQueueWaitIdle(compute_queue_);
+            if (recovery_result == VK_SUCCESS) {
+                release_resources();
+            } else {
+                defer_resources();
+                std::ostringstream message;
+                message << "Could not wait for Vulkan transfer fence failed with VkResult "
+                        << static_cast<int>(wait_result)
+                        << "; could not confirm Vulkan transfer completion failed with "
+                           "VkResult "
+                        << static_cast<int>(recovery_result);
+                throw std::runtime_error(message.str());
+            }
+            check_result(wait_result, "Could not wait for Vulkan transfer fence");
+        }
     } catch (...) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+        if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
+            throw;
+        }
+        if (submission_may_be_pending) {
+            const VkResult recovery_result = vkQueueWaitIdle(compute_queue_);
+            if (recovery_result == VK_SUCCESS) {
+                release_resources();
+            } else {
+                defer_resources();
+                std::ostringstream message;
+                try {
+                    throw;
+                } catch (const std::exception &error) {
+                    message << error.what();
+                } catch (...) {
+                    message << "Vulkan transfer failed with a non-standard exception";
+                }
+                message << "; could not confirm Vulkan transfer completion failed with "
+                           "VkResult "
+                        << static_cast<int>(recovery_result);
+                throw std::runtime_error(message.str());
+            }
+        } else {
+            release_resources();
+        }
         throw;
     }
 
-    vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+    release_resources();
+}
+
+void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
+                                  VkDeviceSize size) const {
+    copy_buffer_sync(source, destination, size);
 }

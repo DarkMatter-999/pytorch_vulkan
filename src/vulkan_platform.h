@@ -6,6 +6,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 class VulkanUnavailable : public std::runtime_error {
   public:
@@ -33,10 +34,17 @@ class VulkanPlatform {
     VkDevice device() const;
     VkQueue compute_queue() const;
     VkCommandPool command_pool() const;
+    void copy_buffer_sync(VkBuffer source, VkBuffer destination,
+                          VkDeviceSize size) const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
     bool validation_enabled() const;
 
   private:
+    struct PendingTransferResources {
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+    };
+
     void cleanup();
 
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -48,6 +56,7 @@ class VulkanPlatform {
     bool validation_enabled_ = false;
     VulkanDeviceInfo device_info_;
     uint32_t api_version_ = VK_API_VERSION_1_1;
+    mutable std::vector<PendingTransferResources> pending_transfer_resources_;
 };
 
 namespace pytorch_vulkan {
