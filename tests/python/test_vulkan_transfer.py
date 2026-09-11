@@ -6,6 +6,10 @@ import torch
 import pytorch_vulkan
 
 
+def test_shutdown_platform_is_not_public():
+    assert not hasattr(pytorch_vulkan, "shutdown_platform")
+
+
 @pytest.fixture
 def vulkan_backend():
     if not pytorch_vulkan.is_available():

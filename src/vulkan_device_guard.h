@@ -21,5 +21,6 @@ class VulkanDeviceGuard final : public c10::impl::DeviceGuardImplInterface {
 
 c10::Device current_device();
 void set_device(c10::DeviceIndex index);
+void shutdown_platform();
 
 } // namespace pytorch_vulkan

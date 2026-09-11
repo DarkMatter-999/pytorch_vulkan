@@ -50,7 +50,7 @@ void test_validation_boundaries() {
                  "only float32");
     auto wrong_size = at::ones({3}, at::TensorOptions().dtype(at::kFloat));
     expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, wrong_size, false); },
-                 "matching element counts");
+                 "matching sizes");
 }
 
 void test_zero_tensor_copy_is_noop() {

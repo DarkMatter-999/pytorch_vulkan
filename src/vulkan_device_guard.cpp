@@ -7,7 +7,6 @@
 
 #include <memory>
 #include <mutex>
-#include <cstdlib>
 
 namespace pytorch_vulkan {
 namespace {
@@ -15,8 +14,6 @@ namespace {
 std::shared_ptr<VulkanPlatform> platform_instance;
 std::exception_ptr platform_initialization_error;
 std::once_flag platform_initialization;
-
-void shutdown_platform() { platform_instance.reset(); }
 
 const c10::Device kDevice(c10::DeviceType::PrivateUse1, 0);
 thread_local c10::Device current = kDevice;
@@ -54,7 +51,6 @@ std::shared_ptr<VulkanPlatform> platform() {
     std::call_once(platform_initialization, [] {
         try {
             platform_instance = std::make_shared<VulkanPlatform>();
-            std::atexit(shutdown_platform);
         } catch (...) {
             platform_initialization_error = std::current_exception();
         }
@@ -137,6 +133,8 @@ void set_device(c10::DeviceIndex index) {
     VulkanDeviceGuard guard;
     guard.setDevice(c10::Device(c10::DeviceType::PrivateUse1, index));
 }
+
+void shutdown_platform() { platform_instance.reset(); }
 
 } // namespace pytorch_vulkan
 

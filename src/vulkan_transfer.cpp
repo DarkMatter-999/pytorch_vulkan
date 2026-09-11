@@ -4,6 +4,7 @@
 #include "vulkan_buffer.h"
 
 #include <c10/util/Exception.h>
+#include <torch/library.h>
 
 #include <limits>
 #include <memory>
@@ -23,6 +24,9 @@ std::string direction(const at::Tensor &destination, const at::Tensor &source) {
     }
     if (!source.device().is_cpu() && destination.device().is_cpu()) {
         return "Vulkan->CPU";
+    }
+    if (!source.device().is_cpu() && !destination.device().is_cpu()) {
+        return "Vulkan-to-Vulkan";
     }
     return "unsupported device pair";
 }
@@ -50,12 +54,13 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
     TORCH_CHECK(destination.scalar_type() == at::kFloat && source.scalar_type() == at::kFloat,
                 "Vulkan copy supports only float32 tensors");
     TORCH_CHECK(destination.numel() == source.numel(),
-                "Vulkan copy requires matching element counts");
+                "Vulkan copy requires matching sizes");
 
     const bool destination_cpu = destination.device().is_cpu();
     const bool source_cpu = source.device().is_cpu();
     TORCH_CHECK(destination_cpu != source_cpu,
-                "Vulkan copy requires exactly one CPU and one Vulkan device; destination ",
+                "Vulkan copy ", direction(destination, source),
+                " requires exactly one CPU and one Vulkan device; destination ",
                 destination.device(), ", source ", source.device());
     TORCH_CHECK(destination_cpu ? is_vulkan_device(source.device())
                                 : is_vulkan_device(destination.device()),
@@ -72,12 +77,12 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
 
 namespace pytorch_vulkan {
 
-void copy_tensor(at::Tensor &destination, const at::Tensor &source,
-                 bool non_blocking) {
+at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
+                        bool non_blocking) {
     validate(destination, source, non_blocking);
     const std::size_t bytes = checked_bytes(destination, source);
     if (bytes == 0) {
-        return;
+        return destination;
     }
 
     const bool cpu_to_vulkan = source.device().is_cpu();
@@ -101,7 +106,7 @@ void copy_tensor(at::Tensor &destination, const at::Tensor &source,
         } else {
             vulkan_buffer.read(cpu_destination, size);
         }
-        return;
+        return destination;
     }
 
     std::unique_ptr<VulkanBuffer> staging;
@@ -120,6 +125,11 @@ void copy_tensor(at::Tensor &destination, const at::Tensor &source,
         platform.copy_buffer_sync(vulkan_buffer.buffer(), staging->buffer(), size);
         staging->read(cpu_destination, size);
     }
+    return destination;
 }
 
 } // namespace pytorch_vulkan
+
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+    m.impl("copy_", &pytorch_vulkan::copy_tensor);
+}
