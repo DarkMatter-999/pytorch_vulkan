@@ -22,6 +22,17 @@ def test_torch_empty_uses_vulkan_allocator():
     assert tensor.device.index == 0
 
 
+def test_torch_empty_without_dtype_uses_default_dtype():
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float64)
+        tensor = torch.empty((16,), device="vk")
+
+        assert tensor.dtype is torch.float64
+    finally:
+        torch.set_default_dtype(previous_dtype)
+
+
 def test_multiple_vulkan_tensors_have_independent_lifetimes():
     first = torch.empty((16,), dtype=torch.float32, device="vk")
     second = torch.empty((16,), dtype=torch.float32, device="vk")

@@ -1,4 +1,5 @@
 #include "vulkan_allocator.h"
+#include "vulkan_device_guard.h"
 #include "vulkan_platform.h"
 
 #include <c10/core/Allocator.h>
@@ -85,8 +86,8 @@ void test_copy_rejected(c10::Allocator &allocator) {
 } // namespace
 
 int main() {
-        (void)vulkan_allocator_instance();
-        auto *allocator = c10::GetAllocator(c10::DeviceType::PrivateUse1);
+    (void)vulkan_allocator_instance();
+    auto *allocator = c10::GetAllocator(c10::DeviceType::PrivateUse1);
     try {
         expect(allocator != nullptr, "PrivateUse1 allocator is not registered");
 
@@ -97,6 +98,8 @@ int main() {
             setup_available = false;
         }
         if (!setup_available) {
+            expect(pytorch_vulkan::VulkanDeviceGuard().deviceCount() == 0,
+                   "unavailable Vulkan device count was not zero");
             bool rejected = false;
             try {
                 (void)allocator->allocate(4096);

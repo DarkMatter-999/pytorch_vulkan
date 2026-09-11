@@ -113,11 +113,7 @@ c10::Stream VulkanDeviceGuard::exchangeStream(c10::Stream next) const noexcept {
 }
 
 c10::DeviceIndex VulkanDeviceGuard::deviceCount() const noexcept {
-    try {
-        return platform() != nullptr ? 1 : 0;
-    } catch (...) {
-        return 0;
-    }
+    return VulkanPlatform::is_available() ? 1 : 0;
 }
 
 bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {

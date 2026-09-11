@@ -118,7 +118,7 @@ at::Tensor vulkan_empty(c10::SymIntArrayRef size,
         c10::DispatchKeySet(target.type() == c10::DeviceType::Vulkan
                                 ? c10::DispatchKey::Vulkan
                                 : c10::DispatchKey::PrivateUse1),
-        dtype.value_or(at::kFloat), memory_format);
+        dtype.value_or(c10::get_default_dtype_as_scalartype()), memory_format);
 }
 
 } // namespace
