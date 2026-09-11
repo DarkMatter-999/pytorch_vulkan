@@ -103,10 +103,12 @@ def test_python_extension_imports_and_reports_vulkan(tmp_path):
             str(PYTHON),
             "-c",
             "import torch, pytorch_vulkan; "
-            "assert torch.device('vulkan:0').type == 'vulkan'; "
+            "assert torch.device('vk:0').type == 'vk'; "
             "assert isinstance(pytorch_vulkan.is_available(), bool); "
             "assert pytorch_vulkan.device_count() >= 0; "
-            "assert torch.vulkan.is_available() == pytorch_vulkan.is_available()",
+            "assert torch.vk.is_available() == pytorch_vulkan.is_available(); "
+            "assert torch._C._dispatch_has_kernel_for_dispatch_key("
+            "'aten::empty.memory_format', 'PrivateUse1')",
         ],
         env=environment,
         capture_output=True,
@@ -122,18 +124,18 @@ def test_privateuse1_device_guard_context_and_index_validation(built_extension):
     try:
         import pytorch_vulkan
 
-        assert torch.vulkan.current_device() == 0
-        assert torch.device("vulkan:0").type == "vulkan"
-        with torch.device("vulkan:0"):
-            assert torch.vulkan.current_device() == 0
+        assert torch.vk.current_device() == 0
+        assert torch.device("vk:0").type == "vk"
+        with torch.device("vk:0"):
+            assert torch.vk.current_device() == 0
             with torch.device("cpu"):
-                assert torch.vulkan.current_device() == 0
-            with torch.device("vulkan:0"):
-                assert torch.vulkan.current_device() == 0
-            assert torch.vulkan.current_device() == 0
-        assert torch.vulkan.current_device() == 0
+                assert torch.vk.current_device() == 0
+            with torch.device("vk:0"):
+                assert torch.vk.current_device() == 0
+            assert torch.vk.current_device() == 0
+        assert torch.vk.current_device() == 0
         with pytest.raises(RuntimeError, match="only device index 0"):
-            torch.vulkan.set_device(1)
+            torch.vk.set_device(1)
         assert pytorch_vulkan.current_device() == 0
     finally:
         sys.path.remove(str(built_extension))

@@ -6,9 +6,17 @@
 #include <c10/util/Exception.h>
 
 #include <memory>
+#include <mutex>
+#include <cstdlib>
 
 namespace pytorch_vulkan {
 namespace {
+
+std::shared_ptr<VulkanPlatform> platform_instance;
+std::exception_ptr platform_initialization_error;
+std::once_flag platform_initialization;
+
+void shutdown_platform() { platform_instance.reset(); }
 
 const c10::Device kDevice(c10::DeviceType::PrivateUse1, 0);
 thread_local c10::Device current = kDevice;
@@ -21,21 +29,17 @@ void check_device(c10::Device device) {
                 "Vulkan backend supports only device index 0, got ", device.index());
 }
 
-std::shared_ptr<VulkanPlatform> platform() {
-    static std::shared_ptr<VulkanPlatform> instance = [] {
-        if (!VulkanPlatform::is_available()) {
-            return std::shared_ptr<VulkanPlatform>();
-        }
-        return std::make_shared<VulkanPlatform>();
-    }();
-    TORCH_CHECK(instance != nullptr, "Vulkan device is unavailable");
-    return instance;
-}
-
 class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
   public:
     bool hasPrimaryContext(c10::DeviceIndex device_index) const override {
-        return device_index == 0 && VulkanPlatform::is_available();
+        if (device_index != 0) {
+            return false;
+        }
+        try {
+            return platform() != nullptr;
+        } catch (...) {
+            return false;
+        }
     }
 };
 
@@ -45,6 +49,21 @@ const bool hooks_registered = [] {
 }();
 
 } // namespace
+
+std::shared_ptr<VulkanPlatform> platform() {
+    std::call_once(platform_initialization, [] {
+        try {
+            platform_instance = std::make_shared<VulkanPlatform>();
+            std::atexit(shutdown_platform);
+        } catch (...) {
+            platform_initialization_error = std::current_exception();
+        }
+    });
+    if (platform_initialization_error != nullptr) {
+        std::rethrow_exception(platform_initialization_error);
+    }
+    return platform_instance;
+}
 
 c10::DeviceType VulkanDeviceGuard::type() const {
     return c10::DeviceType::PrivateUse1;
@@ -94,7 +113,11 @@ c10::Stream VulkanDeviceGuard::exchangeStream(c10::Stream next) const noexcept {
 }
 
 c10::DeviceIndex VulkanDeviceGuard::deviceCount() const noexcept {
-    return VulkanPlatform::is_available() ? 1 : 0;
+    try {
+        return platform() != nullptr ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
 }
 
 bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {

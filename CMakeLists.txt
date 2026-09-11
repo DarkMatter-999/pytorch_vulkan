@@ -23,13 +23,19 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   endif()
 endif()
 
+if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
+
+    if(NOT TARGET vulkan_buffer)
+        add_library(vulkan_buffer STATIC src/vulkan_buffer.cpp)
+        target_compile_features(vulkan_buffer PUBLIC cxx_std_17)
+        set_target_properties(vulkan_buffer PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        target_include_directories(vulkan_buffer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(vulkan_buffer PUBLIC vulkan_platform)
+    endif()
+
+endif()
+
 if(BUILD_VULKAN_PROBE)
-
-    add_library(vulkan_buffer STATIC src/vulkan_buffer.cpp)
-    target_compile_features(vulkan_buffer PUBLIC cxx_std_17)
-    target_include_directories(vulkan_buffer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(vulkan_buffer PUBLIC vulkan_platform)
-
     add_executable(vulkan_device_probe src/vulkan_device_probe.cpp)
     target_compile_features(vulkan_device_probe PRIVATE cxx_std_17)
     target_link_libraries(vulkan_device_probe PRIVATE vulkan_buffer)
@@ -44,15 +50,46 @@ if(BUILD_PYTHON_EXTENSION)
     find_package(pybind11 CONFIG REQUIRED)
     find_package(Torch REQUIRED)
 
+    if(TORCH_CXX_FLAGS)
+        separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(vulkan_platform PRIVATE ${TORCH_CXX_FLAGS_LIST})
+        target_compile_options(vulkan_buffer PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+
+    add_library(vulkan_device_guard STATIC src/vulkan_device_guard.cpp)
+    target_compile_features(vulkan_device_guard PUBLIC cxx_std_17)
+    set_target_properties(vulkan_device_guard PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(vulkan_device_guard PUBLIC
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(vulkan_device_guard PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_device_guard PUBLIC vulkan_platform ${TORCH_LIBRARIES})
+
+    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp)
+    target_compile_features(vulkan_allocator PUBLIC cxx_std_17)
+    set_target_properties(vulkan_allocator PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(vulkan_allocator PUBLIC
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(vulkan_allocator PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_allocator PUBLIC vulkan_buffer vulkan_device_guard
+                          vulkan_platform
+                          ${TORCH_LIBRARIES})
+
      pybind11_add_module(
-         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan_device_guard.cpp)
+         pytorch_vulkan_python MODULE src/python_module.cpp)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
         separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
         target_compile_options(pytorch_vulkan_python PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(pytorch_vulkan_python PRIVATE vulkan_platform)
+    target_link_libraries(pytorch_vulkan_python PRIVATE vulkan_allocator
+                          vulkan_device_guard vulkan_buffer vulkan_platform)
     target_link_libraries(pytorch_vulkan_python PRIVATE ${TORCH_LIBRARIES})
     if(PYTORCH_VULKAN_TORCH_COMPILE_PROBE)
         target_sources(
@@ -66,5 +103,19 @@ if(BUILD_PYTHON_EXTENSION)
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/__init__.py"
         "${CMAKE_BINARY_DIR}/pytorch_vulkan/__init__.py"
-        COPYONLY)
+         COPYONLY)
+
+    add_executable(vulkan_allocator_test tests/cpp/vulkan_allocator_test.cpp)
+    target_compile_features(vulkan_allocator_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_allocator_test PRIVATE ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        target_compile_options(vulkan_allocator_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_allocator_test PRIVATE vulkan_allocator
+                          vulkan_device_guard vulkan_buffer vulkan_platform
+                          ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_allocator_test COMMAND vulkan_allocator_test)
+        set_tests_properties(vulkan_allocator_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()

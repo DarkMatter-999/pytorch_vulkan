@@ -75,18 +75,23 @@ unavailable-device test uses `VK_ICD_FILENAMES` to verify a clear failure path.
 
 ## Python Extension
 
-The minimal Python status extension is opt-in and is not yet a tensor backend:
+Build the opt-in Python extension and its PrivateUse1 allocator together:
 
 ```bash
 cmake -S . -B build/vulkan \
   -DBUILD_VULKAN_PROBE=ON \
   -DBUILD_PYTHON_EXTENSION=ON \
   -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
-  -Dpybind11_DIR="$($PWD/.venv/bin/python -m pybind11 --cmakedir)"
+  -Dpybind11_DIR="$($PWD/.venv/bin/python -m pybind11 --cmakedir)" \
+  -DCMAKE_PREFIX_PATH="$($PWD/.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')"
 cmake --build build/vulkan --target pytorch_vulkan_python
-PYTHONPATH=build/vulkan \
-  .venv/bin/python -c 'import pytorch_vulkan; print(pytorch_vulkan.is_available())'
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
+  tests/python/test_vulkan_allocator.py tests/test_python_extension.py -q
 ```
 
-`PrivateUse1` tensor storage, factories, dispatch, and operators are deferred
-until the low-level Vulkan lifecycle is complete.
+The allocation contract covers `torch.empty` metadata and tensor lifetimes only.
+Copies, arithmetic, views, autograd, and operators remain unsupported until later
+slices. The custom PrivateUse1 device name is `vk`; Vulkan API and runtime
+terminology remains unchanged. The smoke test exercises
+`torch.empty((16,), dtype=torch.float32, device="vk")`.

@@ -193,6 +193,9 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
 VulkanPlatform::~VulkanPlatform() { cleanup(); }
 
 void VulkanPlatform::cleanup() {
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
+    }
     if (command_pool_ != VK_NULL_HANDLE) {
         vkDestroyCommandPool(device_, command_pool_, nullptr);
         command_pool_ = VK_NULL_HANDLE;

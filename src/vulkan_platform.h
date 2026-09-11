@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -48,3 +49,9 @@ class VulkanPlatform {
     VulkanDeviceInfo device_info_;
     uint32_t api_version_ = VK_API_VERSION_1_1;
 };
+
+namespace pytorch_vulkan {
+
+std::shared_ptr<VulkanPlatform> platform();
+
+} // namespace pytorch_vulkan

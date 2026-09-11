@@ -21,7 +21,7 @@ class _VulkanDeviceModule:
         return set_device(index)
 
 
-torch.utils.rename_privateuse1_backend("vulkan")
-torch._register_device_module("vulkan", _VulkanDeviceModule)
+torch.utils.rename_privateuse1_backend("vk")
+torch._register_device_module("vk", _VulkanDeviceModule)
 
 __all__ = ["device_count", "is_available"]
