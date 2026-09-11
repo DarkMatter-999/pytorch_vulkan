@@ -3,6 +3,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_device_guard.h"
 #include "vulkan_platform.h"
+#include "vulkan_transfer.h"
 
 #include <ATen/ATen.h>
 #include <ATen/EmptyTensor.h>
@@ -17,6 +18,16 @@
 
 namespace {
 
+std::string device_type_name(c10::DeviceType type) {
+    if (type == c10::DeviceType::PrivateUse1) {
+        return "PrivateUse1";
+    }
+    if (type == c10::DeviceType::Vulkan) {
+        return "Vulkan";
+    }
+    return c10::DeviceTypeName(type).c_str();
+}
+
 struct VulkanAllocation {
     std::shared_ptr<VulkanPlatform> platform;
     std::unique_ptr<VulkanBuffer> buffer;
@@ -24,7 +35,9 @@ struct VulkanAllocation {
 
 std::string allocation_context(c10::Device device, size_t nbytes) {
     std::ostringstream message;
-    message << "requested " << nbytes << " bytes for PrivateUse1 device index "
+    message << "requested " << nbytes << " bytes for "
+            << device_type_name(device.type())
+            << " device index "
             << static_cast<int>(device.index());
     return message.str();
 }
@@ -58,14 +71,34 @@ struct AllocationDeviceOverrideGuard {
 
 } // namespace
 
+namespace pytorch_vulkan {
+
+VulkanBuffer &allocation_buffer(const at::DataPtr &data) {
+    TORCH_CHECK(data.get_context() != nullptr &&
+                    data.get_deleter() == &delete_allocation,
+                "DataPtr context is not a Vulkan allocation");
+    auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
+    TORCH_CHECK(allocation->buffer != nullptr,
+                "Vulkan allocation payload has no buffer");
+    return *allocation->buffer;
+}
+
+const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
+    TORCH_CHECK(data.get_context() != nullptr &&
+                    data.get_deleter() == &delete_allocation,
+                "DataPtr context is not a Vulkan allocation");
+    auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
+    TORCH_CHECK(allocation->platform != nullptr,
+                "Vulkan allocation payload has no platform");
+    return *allocation->platform;
+}
+
+} // namespace pytorch_vulkan
+
 at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
     const c10::Device device = allocation_device_override.value_or(
         pytorch_vulkan::current_device());
     const std::string context = allocation_context(device, nbytes);
-    if (nbytes == 0) {
-        throw std::invalid_argument("Vulkan allocation rejected: " + context);
-    }
-
     constexpr size_t kMaximumAllocationSize = size_t{1} << 40;
     if (nbytes > kMaximumAllocationSize) {
         throw std::invalid_argument("Vulkan allocation rejected: " + context +
@@ -75,6 +108,10 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
     auto allocation = std::make_unique<VulkanAllocation>();
     try {
         check_device(device);
+        if (nbytes == 0) {
+            VulkanAllocation *payload = allocation.release();
+            return at::DataPtr(payload, payload, delete_allocation, device);
+        }
         allocation->platform = pytorch_vulkan::platform();
         allocation->buffer = std::make_unique<VulkanBuffer>(*allocation->platform, nbytes);
     } catch (const VulkanUnavailable &error) {
@@ -121,10 +158,44 @@ at::Tensor vulkan_empty(c10::SymIntArrayRef size,
         dtype.value_or(c10::get_default_dtype_as_scalartype()), memory_format);
 }
 
+at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size,
+                                c10::SymIntArrayRef stride,
+                                c10::optional<at::ScalarType> dtype,
+                                c10::optional<c10::Layout> layout,
+                                c10::optional<c10::Device> device,
+                                c10::optional<bool> pin_memory) {
+    TORCH_CHECK(!layout || *layout == at::Layout::Strided,
+                "Vulkan allocator supports only strided tensors");
+    TORCH_CHECK(!pin_memory || !*pin_memory,
+                "Vulkan allocator does not support pinned memory");
+    const c10::Device requested = device.value_or(pytorch_vulkan::current_device());
+    const c10::Device target(
+        requested.type(), requested.index() == c10::DeviceIndex(-1)
+                              ? c10::DeviceIndex(0)
+                              : requested.index());
+    check_device(target);
+    AllocationDeviceOverrideGuard override(target);
+    return at::detail::empty_strided_symint_generic(
+        size, stride, vulkan_allocator_instance(),
+        c10::DispatchKeySet(target.type() == c10::DeviceType::Vulkan
+                                ? c10::DispatchKey::Vulkan
+                                : c10::DispatchKey::PrivateUse1),
+        dtype.value_or(c10::get_default_dtype_as_scalartype()));
+}
+
+at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destination,
+                            bool non_blocking) {
+    at::Tensor result = destination;
+    pytorch_vulkan::copy_tensor(result, source, non_blocking);
+    return result;
+}
+
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("empty.memory_format", &vulkan_empty);
+    m.impl("empty_strided", &vulkan_empty_strided);
+    m.impl("_copy_from", &vulkan_copy_from);
 }
 
 REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &allocator);

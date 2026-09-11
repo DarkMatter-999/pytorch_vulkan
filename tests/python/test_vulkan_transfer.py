@@ -76,6 +76,19 @@ def test_empty_float32_tensor_transfer_is_a_no_op(vulkan_backend):
     assert result.dtype == torch.float32
 
 
+def test_repeated_empty_vulkan_tensor_lifetimes(vulkan_backend):
+    for _ in range(32):
+        tensor = torch.empty((0,), dtype=torch.float32, device=vulkan_backend)
+        assert tensor.device.type == "vk"
+        assert tensor.device.index == 0
+        assert tensor.numel() == 0
+        assert tensor.shape == (0,)
+        assert tensor.dtype == torch.float32
+        assert tensor.is_contiguous()
+        del tensor
+    gc.collect()
+
+
 def _assert_transfer_rejected(operation, message):
     with pytest.raises(RuntimeError, match=message):
         operation()

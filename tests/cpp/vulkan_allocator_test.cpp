@@ -45,14 +45,11 @@ void test_repeated_lifetimes(c10::Allocator &allocator) {
     }
 }
 
-void test_zero_byte_rejected(c10::Allocator &allocator) {
-    bool rejected = false;
-    try {
-        (void)allocator.allocate(0);
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    expect(rejected, "zero-byte allocation was accepted");
+void test_zero_byte_allocation(c10::Allocator &allocator) {
+    auto data = allocator.allocate(0);
+    expect(data.device() == kDevice, "zero-byte allocation has the wrong device");
+    expect(data.get() != nullptr, "zero-byte allocation payload is null");
+    expect(data.get() == data.get_context(), "zero-byte allocation context mismatch");
 }
 
 void test_oversized_allocation_rejected(c10::Allocator &allocator) {
@@ -116,7 +113,7 @@ int main() {
         test_one_allocation(*allocator);
         test_independent_release_order(*allocator);
         test_repeated_lifetimes(*allocator);
-        test_zero_byte_rejected(*allocator);
+        test_zero_byte_allocation(*allocator);
         test_oversized_allocation_rejected(*allocator);
         test_copy_rejected(*allocator);
         std::cout << "Vulkan allocator lifetime tests passed\n";

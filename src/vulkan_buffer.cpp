@@ -18,6 +18,18 @@ uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type_filter
             return index;
         }
     }
+    if (properties == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        for (uint32_t index = 0; index < memory_properties.memoryTypeCount; ++index) {
+            const bool type_matches = (type_filter & (1U << index)) != 0;
+            const bool host_visible =
+                (memory_properties.memoryTypes[index].propertyFlags &
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+            if (type_matches && host_visible) {
+                return index;
+            }
+        }
+    }
     throw std::runtime_error("No suitable Vulkan memory type is available");
 }
 
@@ -49,7 +61,13 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
         allocation_info.allocationSize = requirements.size;
         allocation_info.memoryTypeIndex =
             find_memory_type(platform.physical_device(), requirements.memoryTypeBits,
-                             memory_properties_);
+                              memory_properties_);
+        VkPhysicalDeviceMemoryProperties available_memory{};
+        vkGetPhysicalDeviceMemoryProperties(platform.physical_device(),
+                                             &available_memory);
+        memory_properties_ = available_memory
+                                  .memoryTypes[allocation_info.memoryTypeIndex]
+                                  .propertyFlags;
         if (vkAllocateMemory(device_, &allocation_info, nullptr, &memory_) !=
             VK_SUCCESS) {
             throw std::runtime_error("Could not allocate Vulkan buffer memory");
@@ -84,6 +102,10 @@ VkBuffer VulkanBuffer::buffer() const { return buffer_; }
 VkDeviceMemory VulkanBuffer::memory() const { return memory_; }
 
 VkDeviceSize VulkanBuffer::size() const { return size_; }
+
+VkMemoryPropertyFlags VulkanBuffer::memory_properties() const {
+    return memory_properties_;
+}
 
 void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offset) {
     if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {

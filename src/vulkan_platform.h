@@ -34,6 +34,7 @@ class VulkanPlatform {
     VkDevice device() const;
     VkQueue compute_queue() const;
     VkCommandPool command_pool() const;
+    void wait_for_transfer() const;
     void copy_buffer_sync(VkBuffer source, VkBuffer destination,
                           VkDeviceSize size) const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;

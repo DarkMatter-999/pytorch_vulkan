@@ -77,7 +77,7 @@ if(BUILD_PYTHON_EXTENSION)
     endif()
     target_link_libraries(vulkan_device_guard PUBLIC vulkan_platform ${TORCH_LIBRARIES})
 
-    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp)
+    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp src/vulkan_transfer.cpp)
     target_compile_features(vulkan_allocator PUBLIC cxx_std_17)
     set_target_properties(vulkan_allocator PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_allocator PUBLIC
@@ -127,5 +127,19 @@ if(BUILD_PYTHON_EXTENSION)
     if(BUILD_TESTING)
         add_test(NAME vulkan_allocator_test COMMAND vulkan_allocator_test)
         set_tests_properties(vulkan_allocator_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp)
+    target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        target_compile_options(vulkan_transfer_tensor_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_transfer_tensor_test PRIVATE vulkan_allocator
+                          vulkan_device_guard vulkan_buffer vulkan_platform
+                          ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_transfer_tensor_test COMMAND vulkan_transfer_tensor_test)
+        set_tests_properties(vulkan_transfer_tensor_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()

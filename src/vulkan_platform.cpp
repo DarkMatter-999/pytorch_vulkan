@@ -362,6 +362,14 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     release_resources();
 }
 
+void VulkanPlatform::wait_for_transfer() const {
+    const VkResult result = vkQueueWaitIdle(compute_queue_);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("Could not wait for Vulkan transfer queue with VkResult " +
+                                 std::to_string(static_cast<int>(result)));
+    }
+}
+
 void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
                                   VkDeviceSize size) const {
     copy_buffer_sync(source, destination, size);

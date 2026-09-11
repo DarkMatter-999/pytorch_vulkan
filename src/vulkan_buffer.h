@@ -15,6 +15,7 @@ class VulkanBuffer {
     VkBuffer buffer() const;
     VkDeviceMemory memory() const;
     VkDeviceSize size() const;
+    VkMemoryPropertyFlags memory_properties() const;
     void write(const void *data, VkDeviceSize size, VkDeviceSize offset = 0);
     void read(void *data, VkDeviceSize size, VkDeviceSize offset = 0) const;
 
