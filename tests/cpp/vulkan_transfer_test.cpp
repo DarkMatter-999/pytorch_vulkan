@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -43,6 +44,8 @@ int main() {
         std::cout << "Vulkan synchronous transfer test passed\n";
         return 0;
     } catch (const VulkanUnavailable &error) {
+        expect(std::string(error.what()).find("Vulkan") != std::string::npos,
+               "unavailable Vulkan transfer reported an unrelated error");
         std::cerr << error.what() << '\n';
         return 77;
     } catch (const std::exception &error) {

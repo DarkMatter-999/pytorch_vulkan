@@ -19,19 +19,31 @@ def vulkan_backend():
 
 def test_cpu_vk_cpu_round_trip(vulkan_backend):
     source = torch.tensor([1.0, -2.5, 3.25, 0.0], dtype=torch.float32)
+    source_before = source.clone()
     device_tensor = source.to("vk")
     result = device_tensor.to("cpu")
+    assert result.device.type == "cpu"
     assert device_tensor.device.type == "vk"
     assert device_tensor.device.index == 0
     assert device_tensor.shape == source.shape
     assert device_tensor.dtype == torch.float32
+    assert device_tensor.numel() == source.numel()
     assert device_tensor.is_contiguous()
     torch.testing.assert_close(result, source, rtol=0, atol=0)
+    torch.testing.assert_close(source, source_before, rtol=0, atol=0)
+
+    destination = torch.empty_like(source, device=vulkan_backend)
+    destination.copy_(source)
+    destination_result = destination.to("cpu")
+    assert destination_result.device.type == "cpu"
+    torch.testing.assert_close(destination_result, source, rtol=0, atol=0)
+    torch.testing.assert_close(source, source_before, rtol=0, atol=0)
 
 
 def test_cpu_vk_cpu_round_trip_scalar_like(vulkan_backend):
     source = torch.tensor(1.25, dtype=torch.float32)
     result = source.to(vulkan_backend).to("cpu")
+    assert result.device.type == "cpu"
     torch.testing.assert_close(result, source, rtol=0, atol=0)
 
 
@@ -41,6 +53,7 @@ def test_cpu_vk_cpu_round_trip_multidimensional_contiguous(vulkan_backend):
     ).contiguous()
     device_tensor = source.to(vulkan_backend)
     result = device_tensor.to("cpu")
+    assert result.device.type == "cpu"
     assert device_tensor.shape == source.shape
     assert device_tensor.is_contiguous()
     torch.testing.assert_close(result, source, rtol=0, atol=0)
@@ -53,19 +66,25 @@ def test_independent_vulkan_tensor_lifetimes_and_repeated_round_trips(
         torch.tensor([float(index), -float(index)], dtype=torch.float32)
         for index in range(4)
     ]
-    device_tensors = [source.to(vulkan_backend) for source in sources]
+    device_tensors = {
+        index: source.to(vulkan_backend) for index, source in enumerate(sources)
+    }
     for index in (3, 1, 0, 2):
+        result = device_tensors[index].to("cpu")
+        assert result.device.type == "cpu"
         torch.testing.assert_close(
-            device_tensors[index].to("cpu"), sources[index], rtol=0, atol=0
+            result, sources[index], rtol=0, atol=0
         )
-    del device_tensors
+        del device_tensors[index]
     gc.collect()
 
     for index in range(32):
         source = torch.tensor([float(index)], dtype=torch.float32)
         device_tensor = source.to(vulkan_backend)
+        result = device_tensor.to("cpu")
+        assert result.device.type == "cpu"
         torch.testing.assert_close(
-            device_tensor.to("cpu"), source, rtol=0, atol=0
+            result, source, rtol=0, atol=0
         )
         del device_tensor
     gc.collect()
@@ -75,6 +94,7 @@ def test_empty_float32_tensor_transfer_is_a_no_op(vulkan_backend):
     source = torch.empty((0,), dtype=torch.float32)
     device_tensor = source.to(vulkan_backend)
     result = device_tensor.to("cpu")
+    assert result.device.type == "cpu"
     assert device_tensor.numel() == 0
     assert result.shape == source.shape
     assert result.dtype == torch.float32
