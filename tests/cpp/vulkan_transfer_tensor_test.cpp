@@ -1,5 +1,7 @@
 #include "vulkan_allocator.h"
-#include "vulkan/operators/add.h"
+#include "vulkan_compute.h"
+#include "vulkan_buffer.h"
+#include "vulkan/operators/binary.h"
 #include "vulkan_platform.h"
 #include "vulkan_transfer.h"
 
@@ -359,6 +361,250 @@ void test_unary_nonzero_storage_offset_is_rejected() {
     expect_error([&] { (void)at::neg(offset); }, "storage_offset");
 }
 
+void test_shared_out_dispatch_helpers() {
+    auto source = at::tensor({-3.0F, 2.0F, 4.0F});
+    auto input = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+
+    auto unary_out = at::empty({1}, source.options().device(kDevice));
+    auto *unary_impl = unary_out.unsafeGetTensorImpl();
+    auto &unary_result = pytorch_vulkan::dispatch_unary_out(
+        input, unary_out, pytorch_vulkan::PointwiseOperation::Neg, "neg");
+    expect(&unary_result == &unary_out && unary_out.unsafeGetTensorImpl() == unary_impl,
+           "unary out did not preserve tensor identity");
+    auto unary_cpu = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(unary_cpu, unary_out, false);
+    expect(unary_cpu.equal(at::tensor({3.0F, -2.0F, -4.0F})),
+           "unary out helper changed values");
+
+    auto scalar_out = at::empty({1}, source.options().device(kDevice));
+    auto &scalar_result = pytorch_vulkan::dispatch_tensor_scalar_out(
+        input, at::Scalar(1.5F), at::Scalar(1.0F), scalar_out,
+        pytorch_vulkan::PointwiseOperation::Add, "add");
+    expect(&scalar_result == &scalar_out && scalar_out.sizes() == source.sizes(),
+           "tensor scalar out helper did not resize in place");
+    auto scalar_cpu = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(scalar_cpu, scalar_out, false);
+    expect(scalar_cpu.equal(at::tensor({-1.5F, 3.5F, 5.5F})),
+           "tensor scalar out helper changed values");
+
+    auto rhs = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(rhs, at::tensor({1.0F, 3.0F, 5.0F}), false);
+    auto binary_out = at::empty({1}, source.options().device(kDevice));
+    auto &binary_result = pytorch_vulkan::dispatch_tensor_tensor_out(
+        input, rhs, at::Scalar(1.0F), binary_out,
+        pytorch_vulkan::PointwiseOperation::Sub, "sub");
+    expect(&binary_result == &binary_out && binary_out.sizes() == source.sizes(),
+           "tensor tensor out helper did not preserve identity or resize");
+    auto binary_cpu = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(binary_cpu, binary_out, false);
+    expect(binary_cpu.equal(at::tensor({-4.0F, -1.0F, -1.0F})),
+           "tensor tensor out helper changed values");
+}
+
+void test_shared_out_empty_path_does_not_dispatch() {
+    auto input = at::empty({0, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto out = at::empty({1}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+    pytorch_vulkan::dispatch_unary_out(
+        input, out, pytorch_vulkan::PointwiseOperation::Neg, "neg");
+    expect(out.sizes() == input.sizes() && platform->compute_dispatch_count() == before,
+           "empty unary out path dispatched or kept the wrong shape");
+}
+
+void test_shared_out_rejects_offset_and_noncontiguous_output() {
+    auto source = at::tensor({1.0F, 2.0F, 3.0F});
+    auto input = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+
+    auto offset = at::empty({4}, source.options().device(kDevice));
+    offset.unsafeGetTensorImpl()->set_storage_offset(1);
+    const std::vector<int64_t> offset_sizes{3};
+    const std::vector<int64_t> offset_strides{1};
+    offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
+    expect_error([&] {
+        pytorch_vulkan::dispatch_unary_out(
+            input, offset, pytorch_vulkan::PointwiseOperation::Neg, "neg");
+    }, "storage_offset");
+
+    auto partial = offset;
+    expect_error([&] {
+        pytorch_vulkan::dispatch_tensor_tensor_out(
+            input, input, at::Scalar(1.0F), partial,
+            pytorch_vulkan::PointwiseOperation::Add, "add");
+    }, "storage_offset");
+
+    auto noncontiguous = at::empty_strided({3, 2}, {1, 3},
+                                           source.options().device(kDevice));
+    auto matrix_input = at::empty({3, 2}, source.options().device(kDevice));
+    expect_error([&] {
+        pytorch_vulkan::dispatch_unary_out(
+            matrix_input, noncontiguous,
+            pytorch_vulkan::PointwiseOperation::Neg, "neg");
+    }, "contiguous");
+
+    auto alias = input;
+    auto &alias_result = pytorch_vulkan::dispatch_unary_out(
+        input, alias, pytorch_vulkan::PointwiseOperation::Neg, "neg");
+    expect(&alias_result == &alias &&
+               alias.unsafeGetTensorImpl() == input.unsafeGetTensorImpl(),
+           "exact full-tensor output alias was not permitted");
+}
+
+void test_shared_out_rejects_partial_and_internal_overlap() {
+    auto values = at::tensor({1.0F, 2.0F, 3.0F});
+    auto input = at::empty_like(values, values.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, values, false);
+
+    auto storage = at::empty({5}, values.options().device(kDevice));
+    auto partial_input = storage.detach();
+    partial_input.unsafeGetTensorImpl()->set_sizes_and_strides(
+        std::vector<int64_t>{3}, std::vector<int64_t>{1});
+    auto rhs = at::empty_like(values, values.options().device(kDevice));
+    auto partial_output = storage;
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+    expect_error([&] {
+        pytorch_vulkan::dispatch_tensor_tensor_out(
+            partial_input, rhs, at::Scalar(1.0F), partial_output,
+            pytorch_vulkan::PointwiseOperation::Add, "add");
+    }, "partially overlaps");
+    expect(platform->compute_dispatch_count() == before,
+           "partial overlap rejection submitted a compute dispatch");
+
+    auto internal_output = at::empty_strided({3}, {0},
+                                             values.options().device(kDevice));
+    expect_error([&] {
+        pytorch_vulkan::dispatch_tensor_tensor_out(
+            input, rhs, at::Scalar(1.0F), internal_output,
+            pytorch_vulkan::PointwiseOperation::Add, "add");
+    }, "internal overlap");
+    expect(platform->compute_dispatch_count() == before,
+           "internal overlap rejection submitted a compute dispatch");
+}
+
+void test_inplace_rejections_preserve_inputs_and_dispatch_count() {
+    auto values = at::tensor({1.0F, -2.0F, 3.0F});
+    auto input = at::empty_like(values, values.options().device(kDevice));
+    auto other = at::empty_like(values, values.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, values, false);
+    pytorch_vulkan::copy_tensor(other, values, false);
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+    expect_error([&] { input.add_(other); }, "in-place");
+    expect(platform->compute_dispatch_count() == before,
+           "in-place add rejection submitted a compute dispatch");
+    auto result = at::empty_like(values);
+    pytorch_vulkan::copy_tensor(result, input, false);
+    expect(result.equal(values), "in-place add rejection mutated its input");
+
+    const auto expect_unchanged = [&](const std::function<void()> &operation,
+                                      const char *message) {
+        pytorch_vulkan::copy_tensor(input, values, false);
+        const std::size_t dispatches = platform->compute_dispatch_count();
+        expect_error(operation, "in-place");
+        expect(platform->compute_dispatch_count() == dispatches, message);
+        pytorch_vulkan::copy_tensor(result, input, false);
+        expect(result.equal(values), "in-place rejection mutated its input");
+    };
+    expect_unchanged([&] { input.add_(1.0F); },
+                     "in-place scalar add rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.sub_(other); },
+                     "in-place sub rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.sub_(1.0F); },
+                     "in-place scalar sub rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.mul_(other); },
+                     "in-place mul rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.mul_(1.0F); },
+                     "in-place scalar mul rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.neg_(); },
+                     "in-place neg rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.abs_(); },
+                     "in-place abs rejection submitted a compute dispatch");
+    expect_unchanged([&] { input.relu_(); },
+                     "in-place relu rejection submitted a compute dispatch");
+}
+
+void test_shared_out_exact_aliases_preserve_values_and_lifecycles() {
+    auto lhs_source = at::tensor({1.0F, 2.0F, 3.0F});
+    auto rhs_source = at::tensor({10.0F, 20.0F, 30.0F});
+    auto lhs = at::empty_like(lhs_source, lhs_source.options().device(kDevice));
+    auto rhs = at::empty_like(rhs_source, rhs_source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
+    pytorch_vulkan::copy_tensor(rhs, rhs_source, false);
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+
+    pytorch_vulkan::dispatch_tensor_tensor_out(
+        lhs, rhs, at::Scalar(1.0F), lhs,
+        pytorch_vulkan::PointwiseOperation::Add, "add");
+    auto lhs_result = at::empty_like(lhs_source);
+    auto rhs_after_lhs = at::empty_like(rhs_source);
+    pytorch_vulkan::copy_tensor(lhs_result, lhs, false);
+    pytorch_vulkan::copy_tensor(rhs_after_lhs, rhs, false);
+    expect(lhs_result.equal(at::tensor({11.0F, 22.0F, 33.0F})) &&
+               rhs_after_lhs.equal(rhs_source),
+           "binary out=lhs alias produced wrong values or changed rhs");
+
+    pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
+    pytorch_vulkan::dispatch_tensor_tensor_out(
+        lhs, rhs, at::Scalar(1.0F), rhs,
+        pytorch_vulkan::PointwiseOperation::Sub, "sub");
+    auto rhs_result = at::empty_like(rhs_source);
+    auto lhs_after_rhs = at::empty_like(lhs_source);
+    pytorch_vulkan::copy_tensor(rhs_result, rhs, false);
+    pytorch_vulkan::copy_tensor(lhs_after_rhs, lhs, false);
+    expect(rhs_result.equal(at::tensor({-9.0F, -18.0F, -27.0F})) &&
+               lhs_after_rhs.equal(lhs_source),
+           "binary out=rhs alias produced wrong values or changed lhs");
+
+    pytorch_vulkan::dispatch_tensor_scalar_out(
+        lhs, at::Scalar(2.0F), at::Scalar(1.0F), lhs,
+        pytorch_vulkan::PointwiseOperation::Mul, "mul");
+    auto scalar_result = at::empty_like(lhs_source);
+    pytorch_vulkan::copy_tensor(scalar_result, lhs, false);
+    expect(scalar_result.equal(at::tensor({2.0F, 4.0F, 6.0F})),
+           "tensor/scalar exact alias produced wrong values");
+    pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
+    pytorch_vulkan::dispatch_tensor_scalar_out(
+        lhs, at::Scalar(2.0F), at::Scalar(1.0F), lhs,
+        pytorch_vulkan::PointwiseOperation::Add, "add", true);
+    pytorch_vulkan::copy_tensor(scalar_result, lhs, false);
+    expect(scalar_result.equal(at::tensor({3.0F, 4.0F, 5.0F})),
+           "scalar-left add exact alias produced wrong values");
+
+    pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
+    pytorch_vulkan::dispatch_tensor_scalar_out(
+        lhs, at::Scalar(2.0F), at::Scalar(1.0F), lhs,
+        pytorch_vulkan::PointwiseOperation::Sub, "rsub", true);
+    pytorch_vulkan::copy_tensor(scalar_result, lhs, false);
+    expect(scalar_result.equal(at::tensor({1.0F, 0.0F, -1.0F})),
+           "scalar-left rsub exact alias produced wrong values");
+    expect(platform->compute_dispatch_count() - before == 5,
+           "exact alias dispatches were not counted");
+    expect(platform->pending_transfer_count() == 0,
+           "exact alias dispatch left pending transfer resources");
+
+    pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
+    platform->compute().unary_alias(
+        pytorch_vulkan::allocation_buffer(lhs.storage().data_ptr()).buffer(),
+        pytorch_vulkan::allocation_buffer(lhs.storage().data_ptr()).buffer(),
+        static_cast<VkDeviceSize>(lhs.numel() * sizeof(float)),
+        static_cast<uint32_t>(pytorch_vulkan::PointwiseOperation::Neg));
+    auto direct_alias_result = at::empty_like(lhs_source);
+    pytorch_vulkan::copy_tensor(direct_alias_result, lhs, false);
+    expect(direct_alias_result.equal(at::tensor({-1.0F, -2.0F, -3.0F})),
+           "direct unary exact alias dispatch produced wrong values");
+}
+
+void test_shared_out_device_index_is_rejected_by_native_allocator() {
+    expect_error([&] {
+        (void)at::empty({3}, at::TensorOptions().dtype(at::kFloat).device(
+            c10::Device(c10::DeviceType::PrivateUse1, 1)));
+    }, "device index 0");
+}
+
 void test_platform_destruction_is_nothrow() {
     static_assert(std::is_nothrow_destructible<VulkanPlatform>::value,
                   "Vulkan cleanup must not throw during ownership quarantine");
@@ -386,6 +632,13 @@ int main() {
         test_add_invalid_input_cleans_up();
         test_repeated_unary_dispatch_and_input_readability();
         test_unary_nonzero_storage_offset_is_rejected();
+        test_shared_out_dispatch_helpers();
+        test_shared_out_empty_path_does_not_dispatch();
+        test_shared_out_rejects_offset_and_noncontiguous_output();
+        test_shared_out_rejects_partial_and_internal_overlap();
+        test_inplace_rejections_preserve_inputs_and_dispatch_count();
+        test_shared_out_exact_aliases_preserve_values_and_lifecycles();
+        test_shared_out_device_index_is_rejected_by_native_allocator();
         test_platform_destruction_is_nothrow();
         std::cout << "Vulkan tensor transfer tests passed\n";
         return 0;

@@ -1,4 +1,5 @@
-#include "add.h"
+#include "binary.h"
+#include "out.h"
 
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
@@ -205,9 +206,37 @@ at::Tensor add_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
     return pointwise_tensor_scalar(tensor, scalar, PointwiseOperation::Add, false, "add");
 }
 
+at::Tensor &add_out(const at::Tensor &lhs, const at::Tensor &rhs,
+                    const at::Scalar &alpha, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_tensor_tensor_out(
+        lhs, rhs, alpha, out, pytorch_vulkan::PointwiseOperation::Add, "add");
+}
+
+at::Tensor &add_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
+                           const at::Scalar &alpha, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_tensor_scalar_out(
+        tensor, scalar, alpha, out, pytorch_vulkan::PointwiseOperation::Add, "add");
+}
+
+at::Tensor &reject_add_inplace_tensor(at::Tensor &self, const at::Tensor &other,
+                                      const at::Scalar &alpha) {
+    TORCH_CHECK(false, "Vulkan add in-place variants are unsupported");
+    return self;
+}
+
+at::Tensor &reject_add_inplace_scalar(at::Tensor &self, const at::Scalar &other,
+                                      const at::Scalar &alpha) {
+    TORCH_CHECK(false, "Vulkan add in-place variants are unsupported");
+    return self;
+}
+
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("add.Tensor", &pytorch_vulkan::add_tensor);
     m.impl("add.Scalar", &pytorch_vulkan::add_scalar);
+    m.impl("add.out", &pytorch_vulkan::add_out);
+    m.impl("add.Scalar_out", &pytorch_vulkan::add_scalar_out);
+    m.impl("add_.Tensor", &pytorch_vulkan::reject_add_inplace_tensor);
+    m.impl("add_.Scalar", &pytorch_vulkan::reject_add_inplace_scalar);
 }

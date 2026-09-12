@@ -115,7 +115,7 @@ Multi-device support, views, autograd, and advanced operators are deferred.
 
 ## Vulkan pointwise scalar operations
 
-The supported public scalar forms are `torch.add(tensor, scalar)` and
+The supported public functional scalar forms are `torch.add(tensor, scalar)` and
 `torch.add(scalar, tensor)` (with `alpha=1`), `torch.sub(tensor, scalar)`,
 `torch.sub(scalar, tensor)`, `torch.mul(tensor, scalar)`, and
 `torch.mul(scalar, tensor)`. The corresponding `+`, `-`, and `*` operators use
@@ -126,11 +126,37 @@ values and placed in the Vulkan compute push constants—there is no scalar
 buffer and no CPU staging or CPU fallback.
 
 Scalar operations are synchronous: the returned tensor is ready when the call
-returns, inputs are unchanged, and output storage is newly allocated on the
-same Vulkan device with the input shape, dtype, and layout. Zero-element
+returns, inputs are unchanged, and functional output storage is newly allocated
+on the same Vulkan device with the input shape, dtype, and layout. Zero-element
 tensors return an empty output with preserved metadata without a compute
 dispatch. The supported tensor-tensor forms also require equal shapes and use
 the same synchronous, newly allocated Vulkan path.
+
+## Vulkan pointwise `out=` operations
+
+The supported `.out` registrations are unary `neg.out`, `abs.out`, and
+`relu.out`; binary `add.out`, `sub.out`, and `mul.out`; scalar `add.Scalar_out`,
+`sub.Scalar_out`, `rsub.Scalar_out`, and `mul.Scalar_out`; and their corresponding
+Python `torch.*(..., out=...)` forms. Binary `add` and `sub` accept only
+`alpha=1`. Scalar forms accept the same Python-number operand positions and
+`alpha=1` as the functional scalar operations above.
+
+Every `.out` input and output must be a contiguous, strided `torch.float32`
+tensor on `vk:0`, with zero storage offset. Binary inputs must have equal
+shapes; broadcasting, dtype promotion, and scalar-tensor operands are not
+supported. The operation returns the exact `out` object. A Vulkan output may
+be resized to the requested shape while retaining Vulkan storage provenance;
+zero-element outputs are supported without a compute dispatch. Inputs are
+unchanged except for an exact full-tensor alias explicitly supplied as `out`.
+Unary and tensor-tensor exact aliases are supported; tensor-scalar aliases are
+supported for both operand positions for `add`, `mul`, and `rsub`, while
+`sub.Scalar_out` remains tensor-left. Partial or uncertain overlap and
+internally overlapping outputs are rejected.
+
+`.out` operations involving Vulkan tensors never fall back to CPU: unsupported
+devices, metadata, layouts, dtypes, shapes, overlap, scalar values, or
+parameters are rejected explicitly. In-place variants and additional dtypes
+remain unsupported.
 
 CPU-only arithmetic remains normal PyTorch behavior because the PrivateUse1
 registrations cannot intercept CPU dispatch. “No CPU fallback” means an
@@ -138,7 +164,7 @@ operation involving Vulkan tensors never silently stages through CPU. Mixed
 CPU/Vulkan tensors, ordinary CPU scalar tensors (including zero-dimensional
 user tensors) in either position, zero-dimensional Vulkan tensors, broadcasting
 or unequal shapes, non-contiguous tensors, non-zero storage offsets,
-non-`float32` dtypes, non-`vk:0` devices, non-unit `alpha`, `out=`, and
+non-`float32` dtypes, non-`vk:0` devices, non-unit `alpha`, and
 in-place variants are rejected explicitly. Complex, non-finite, float32-range
 overflowing, and float32-underflowing Python scalar values are also rejected.
 
@@ -151,8 +177,8 @@ supported.
 
 The functional unary operations `torch.neg`, `torch.abs`, and `torch.relu` are
 supported for contiguous, strided `torch.float32` tensors on `vk:0`. The
-operations allocate a fresh Vulkan output and execute synchronously. `out=`
-and in-place variants remain unsupported. No CPU fallback is provided for
+operations allocate a fresh Vulkan output and execute synchronously. In-place
+variants remain unsupported. No CPU fallback is provided for
 calls involving Vulkan tensors; unsupported Vulkan inputs and overloads are
 rejected explicitly rather than staged through CPU.
 

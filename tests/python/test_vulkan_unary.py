@@ -96,11 +96,14 @@ def _assert_unary_rejected(operation, message=None):
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
-def test_unary_out_variant_is_rejected(vulkan_backend, operation):
+def test_unary_out_variant_is_supported(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
 
-    _assert_unary_rejected(lambda: operation(tensor, out=output), "out")
+    if operation is torch.relu:
+        assert torch.ops.aten.relu.out(tensor, out=output) is output
+    else:
+        assert operation(tensor, out=output) is output
 
 
 @pytest.mark.parametrize(
@@ -108,9 +111,11 @@ def test_unary_out_variant_is_rejected(vulkan_backend, operation):
     [(torch.neg, "neg_"), (torch.abs, "abs_"), (torch.relu, "relu_")],
 )
 def test_unary_inplace_variant_is_rejected(vulkan_backend, operation, method):
-    tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    tensor = torch.tensor([1.0, -2.0], dtype=torch.float32, device=vulkan_backend)
+    before = tensor.cpu()
 
-    _assert_unary_rejected(lambda: getattr(tensor, method)())
+    _assert_unary_rejected(lambda: getattr(tensor, method)(), "in-place")
+    torch.testing.assert_close(tensor.cpu(), before)
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)

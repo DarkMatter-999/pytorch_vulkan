@@ -1,6 +1,7 @@
 #include "unary.h"
 
-#include "add.h"
+#include "binary.h"
+#include "out.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
@@ -96,10 +97,43 @@ at::Tensor relu_tensor(const at::Tensor &input) {
     return dispatch_unary(input, PointwiseOperation::Relu, "relu");
 }
 
+at::Tensor &neg_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Neg, "neg");
+}
+
+at::Tensor &abs_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Abs, "abs");
+}
+
+at::Tensor &relu_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Relu, "relu");
+}
+
+at::Tensor &reject_neg_inplace(at::Tensor &self) {
+    TORCH_CHECK(false, "Vulkan neg in-place variants are unsupported");
+    return self;
+}
+
+at::Tensor &reject_abs_inplace(at::Tensor &self) {
+    TORCH_CHECK(false, "Vulkan abs in-place variants are unsupported");
+    return self;
+}
+
+at::Tensor &reject_relu_inplace(at::Tensor &self) {
+    TORCH_CHECK(false, "Vulkan relu in-place variants are unsupported");
+    return self;
+}
+
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("neg", &pytorch_vulkan::neg_tensor);
     m.impl("abs", &pytorch_vulkan::abs_tensor);
     m.impl("relu", &pytorch_vulkan::relu_tensor);
+    m.impl("neg.out", &pytorch_vulkan::neg_out);
+    m.impl("abs.out", &pytorch_vulkan::abs_out);
+    m.impl("relu.out", &pytorch_vulkan::relu_out);
+    m.impl("neg_", &pytorch_vulkan::reject_neg_inplace);
+    m.impl("abs_", &pytorch_vulkan::reject_abs_inplace);
+    m.impl("relu_", &pytorch_vulkan::reject_relu_inplace);
 }

@@ -172,30 +172,58 @@ void VulkanCompute::add(VkBuffer lhs, VkBuffer rhs, VkBuffer output, VkDeviceSiz
 
 void VulkanCompute::tensor_tensor(VkBuffer lhs, VkBuffer rhs, VkBuffer output,
                                   VkDeviceSize bytes, uint32_t operation) const {
-    dispatch(0, lhs, rhs, output, bytes, 0.0F, operation);
+    dispatch(0, lhs, rhs, output, bytes, 0.0F, operation, false);
+}
+
+void VulkanCompute::tensor_tensor_alias(VkBuffer lhs, VkBuffer rhs, VkBuffer output,
+                                        VkDeviceSize bytes, uint32_t operation) const {
+    dispatch(0, lhs, rhs, output, bytes, 0.0F, operation, true);
 }
 
 void VulkanCompute::tensor_scalar(VkBuffer tensor, VkBuffer output, VkDeviceSize bytes,
                                   float scalar, uint32_t operation) const {
-    dispatch(1, tensor, VK_NULL_HANDLE, output, bytes, scalar, operation);
+    dispatch(1, tensor, VK_NULL_HANDLE, output, bytes, scalar, operation, false);
+}
+
+void VulkanCompute::tensor_scalar_alias(VkBuffer tensor, VkBuffer output, VkDeviceSize bytes,
+                                        float scalar, uint32_t operation) const {
+    dispatch(1, tensor, VK_NULL_HANDLE, output, bytes, scalar, operation, true);
 }
 
 void VulkanCompute::scalar_tensor(float scalar, VkBuffer tensor, VkBuffer output,
                                   VkDeviceSize bytes, uint32_t operation) const {
-    dispatch(2, VK_NULL_HANDLE, tensor, output, bytes, scalar, operation);
+    dispatch(2, VK_NULL_HANDLE, tensor, output, bytes, scalar, operation, false);
+}
+
+void VulkanCompute::scalar_tensor_alias(float scalar, VkBuffer tensor, VkBuffer output,
+                                        VkDeviceSize bytes, uint32_t operation) const {
+    dispatch(2, VK_NULL_HANDLE, tensor, output, bytes, scalar, operation, true);
 }
 
 void VulkanCompute::unary(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
                           uint32_t operation) const {
-    dispatch(3, input, VK_NULL_HANDLE, output, bytes, 0.0F, operation);
+    dispatch(3, input, VK_NULL_HANDLE, output, bytes, 0.0F, operation, false);
+}
+
+void VulkanCompute::unary_alias(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
+                                uint32_t operation) const {
+    dispatch(3, input, VK_NULL_HANDLE, output, bytes, 0.0F, operation, true);
 }
 
 void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer output,
-                             VkDeviceSize bytes, float scalar, uint32_t operation) const {
+                             VkDeviceSize bytes, float scalar, uint32_t operation,
+                             bool exact_alias) const {
     if (mode > 3 || output == VK_NULL_HANDLE ||
         (mode == 0 && (lhs == VK_NULL_HANDLE || rhs == VK_NULL_HANDLE)) ||
         (mode != 0 && ((lhs == VK_NULL_HANDLE) == (rhs == VK_NULL_HANDLE)))) {
         throw std::invalid_argument("Vulkan compute pointwise requires valid buffers");
+    }
+    if (exact_alias &&
+        ((mode == 0 && output != lhs && output != rhs) ||
+         (mode == 1 && output != lhs) ||
+         (mode == 2 && output != rhs) ||
+         (mode == 3 && output != lhs))) {
+        throw std::invalid_argument("Vulkan compute exact alias does not match an input buffer");
     }
     std::scoped_lock lock(platform_.queue_mutex());
     const VkDeviceSize elements = bytes / sizeof(float);

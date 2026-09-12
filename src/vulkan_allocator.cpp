@@ -87,6 +87,10 @@ void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
                 " bytes)");
 }
 
+bool is_vulkan_allocation(const at::DataPtr &data) {
+    return data.get_context() != nullptr && data.get_deleter() == &delete_allocation;
+}
+
 VulkanBuffer &allocation_buffer(const at::DataPtr &data) {
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,

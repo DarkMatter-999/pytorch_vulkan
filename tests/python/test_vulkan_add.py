@@ -285,17 +285,19 @@ def test_second_vulkan_device_add_is_rejected(vulkan_backend):
     )
 
 
-def test_add_out_is_rejected(vulkan_backend):
+def test_add_out_is_supported(vulkan_backend):
     lhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     rhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    _assert_add_rejected(lambda: torch.add(lhs, rhs, out=output), "out")
+    assert torch.add(lhs, rhs, out=output) is output
 
 
 def test_inplace_add_is_rejected(vulkan_backend):
-    lhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    rhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    _assert_add_rejected(lambda: lhs.add_(rhs), r"Could not run 'aten::add\.out'")
+    lhs = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
+    rhs = torch.tensor([3.0, 4.0], dtype=torch.float32, device=vulkan_backend)
+    before = lhs.cpu()
+    _assert_add_rejected(lambda: lhs.add_(rhs), "in-place")
+    torch.testing.assert_close(lhs.cpu(), before)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -373,10 +375,11 @@ def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
 def test_scalar_out_and_inplace_variants_are_rejected(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
-    with pytest.raises(RuntimeError, match=_scalar_rejection_pattern(operation, r"out")):
-        operation(tensor, 1.0, out=output)
+    assert operation(tensor, 1.0, out=output) is output
+    before = tensor.cpu()
     with pytest.raises(
         (RuntimeError, NotImplementedError),
-        match=_scalar_rejection_pattern(operation, r"out"),
+        match=_scalar_rejection_pattern(operation, r"in-place"),
     ):
         getattr(tensor, operation.__name__ + "_")(1.0)
+    torch.testing.assert_close(tensor.cpu(), before)
