@@ -118,14 +118,18 @@ c10::DeviceIndex VulkanDeviceGuard::deviceCount() const noexcept {
 
 bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {
     check_device(stream.device());
-    const VkResult result = vkQueueWaitIdle(platform()->compute_queue());
+    const auto owner = platform();
+    std::scoped_lock lock(owner->queue_mutex());
+    const VkResult result = vkQueueWaitIdle(owner->compute_queue());
     TORCH_CHECK(result == VK_SUCCESS, "Could not query Vulkan compute queue");
     return true;
 }
 
 void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
     check_device(stream.device());
-    const VkResult result = vkQueueWaitIdle(platform()->compute_queue());
+    const auto owner = platform();
+    std::scoped_lock lock(owner->queue_mutex());
+    const VkResult result = vkQueueWaitIdle(owner->compute_queue());
     TORCH_CHECK(result == VK_SUCCESS, "Could not synchronize Vulkan compute queue");
 }
 

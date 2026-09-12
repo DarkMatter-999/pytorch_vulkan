@@ -92,8 +92,12 @@ PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
 
 The custom PrivateUse1 device name is `vk`; Vulkan API and runtime terminology
 remains unchanged. The allocation contract covers `torch.empty` metadata and
-tensor lifetimes. The supported transfer smoke test is a synchronous
-CPU→Vulkan→CPU round trip for contiguous `float32` tensors on `vk:0`:
+tensor lifetimes. The public `Tensor.copy_` transfer contract is synchronous
+and in-place for contiguous `float32` tensors between CPU and `vk:0`: it
+mutates and returns the destination tensor while preserving its metadata.
+Nonblocking copies, dtype conversion, strided tensors, Vulkan-to-Vulkan copies,
+and other unsupported forms are rejected explicitly. The supported transfer
+smoke test is a CPU→Vulkan→CPU round trip:
 
 ```bash
 cmake -S . -B build/vulkan \
@@ -107,6 +111,24 @@ PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
   tests/python/test_vulkan_transfer.py -q
 ```
 
-Nonblocking transfers, dtype conversion, strided tensors, Vulkan-to-Vulkan
-copies, multi-device support, arithmetic, views, autograd, and advanced
-operators are deferred.
+Multi-device support, arithmetic, views, autograd, and advanced operators are
+deferred.
+
+## Vulkan `aten::add.Tensor`
+
+The supported Vulkan public forms are `torch.add(lhs, rhs)` and `lhs + rhs` for two
+contiguous, strided `torch.float32` tensors on the same `vk:0` device. The
+operation is synchronous, does not use CPU staging, leaves both inputs
+unchanged, and returns newly allocated Vulkan storage with the input shape,
+dtype, layout, and device. Equal shapes are required; zero-element tensors
+return an empty output without a compute dispatch.
+
+CPU-only `torch.add(cpu, cpu)` remains normal PyTorch behavior because the
+PrivateUse1 registration cannot intercept it. “No CPU fallback” means an
+operation involving Vulkan tensors never silently stages through CPU. Mixed
+CPU/Vulkan and other unsupported Vulkan-involving forms are rejected explicitly.
+Python scalar operands, zero-dimensional tensors, broadcasting or unequal
+shapes, non-contiguous tensors, non-zero storage offsets, non-`float32` dtypes,
+non-`vk:0` devices, mixed CPU/Vulkan devices, non-unit `alpha`, `out=`, and
+in-place `add_` are rejected explicitly. Vulkan arithmetic beyond this add
+contract, views, autograd, and advanced operators remain deferred.

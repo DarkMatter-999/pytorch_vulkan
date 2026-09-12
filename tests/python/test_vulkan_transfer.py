@@ -40,6 +40,83 @@ def test_cpu_vk_cpu_round_trip(vulkan_backend):
     torch.testing.assert_close(source, source_before, rtol=0, atol=0)
 
 
+def _tensor_metadata(tensor):
+    return (
+        tensor.device,
+        tensor.dtype,
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.storage_offset(),
+        tensor.is_contiguous(),
+    )
+
+
+def test_cpu_to_vulkan_copy_is_in_place_and_synchronous(vulkan_backend):
+    source = torch.tensor([1.0, -2.5, 3.25], dtype=torch.float32)
+    destination = torch.empty_like(source, device=vulkan_backend)
+    metadata_before = _tensor_metadata(destination)
+
+    returned = destination.copy_(source)
+
+    assert returned is destination
+    assert _tensor_metadata(destination) == metadata_before
+    # Public APIs can observe the result through this synchronizing round trip.
+    torch.testing.assert_close(destination.to("cpu"), source, rtol=0, atol=0)
+
+
+def test_vulkan_to_cpu_copy_is_in_place_and_synchronous(vulkan_backend):
+    source = torch.tensor([1.0, -2.5, 3.25], dtype=torch.float32).to(
+        vulkan_backend
+    )
+    destination = torch.empty((3,), dtype=torch.float32)
+    metadata_before = _tensor_metadata(destination)
+
+    returned = destination.copy_(source)
+
+    assert returned is destination
+    assert _tensor_metadata(destination) == metadata_before
+    # The CPU tensor is directly observable when copy_ returns, without another
+    # Vulkan operation that could hide an asynchronous implementation.
+    torch.testing.assert_close(destination, torch.tensor([1.0, -2.5, 3.25]),
+                               rtol=0, atol=0)
+
+
+def test_non_blocking_copy_is_rejected(vulkan_backend):
+    source = torch.ones((2,), dtype=torch.float32)
+    destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    _assert_transfer_rejected(
+        lambda: destination.copy_(source, non_blocking=True), "non_blocking"
+    )
+
+
+def test_unsupported_copy_dtype_is_rejected(vulkan_backend):
+    source = torch.ones((2,), dtype=torch.float64)
+    destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    _assert_transfer_rejected(lambda: destination.copy_(source), "float32")
+
+
+def test_unsupported_non_contiguous_copy_is_rejected(vulkan_backend):
+    source = torch.arange(8, dtype=torch.float32).reshape(2, 4).t()
+    destination = torch.empty_like(source, device=vulkan_backend)
+    assert not source.is_contiguous()
+    _assert_transfer_rejected(lambda: destination.copy_(source), "contiguous")
+
+
+def test_vulkan_to_vulkan_copy_is_rejected(vulkan_backend):
+    source = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    _assert_transfer_rejected(
+        lambda: destination.copy_(source), "Vulkan-to-Vulkan"
+    )
+
+
+def test_non_contiguous_cpu_destination_copy_is_rejected(vulkan_backend):
+    source = torch.empty((2, 3), dtype=torch.float32, device=vulkan_backend)
+    destination = torch.empty((3, 2), dtype=torch.float32).t()
+    assert not destination.is_contiguous()
+    _assert_transfer_rejected(lambda: destination.copy_(source), "contiguous")
+
+
 def test_cpu_vk_cpu_round_trip_scalar_like(vulkan_backend):
     source = torch.tensor(1.25, dtype=torch.float32)
     result = source.to(vulkan_backend).to("cpu")

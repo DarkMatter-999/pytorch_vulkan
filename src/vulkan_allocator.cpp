@@ -73,6 +73,20 @@ struct AllocationDeviceOverrideGuard {
 
 namespace pytorch_vulkan {
 
+void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
+                         const char *label) {
+    TORCH_CHECK(data.get_context() != nullptr &&
+                    data.get_deleter() == &delete_allocation,
+                "Vulkan add ", label, " has an invalid allocation payload");
+    auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
+    TORCH_CHECK(allocation->platform != nullptr && allocation->buffer != nullptr,
+                "Vulkan add ", label, " allocation payload is incomplete");
+    TORCH_CHECK(required_bytes <= allocation->buffer->size(),
+                "Vulkan add ", label, " allocation is undersized (required ",
+                required_bytes, " bytes, allocation is ", allocation->buffer->size(),
+                " bytes)");
+}
+
 VulkanBuffer &allocation_buffer(const at::DataPtr &data) {
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,

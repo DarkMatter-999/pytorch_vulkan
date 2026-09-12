@@ -1,6 +1,11 @@
 #include "vulkan_platform.h"
 
+#include "vulkan_compute.h"
+
 #include <iostream>
+#include <memory>
+#include <mutex>
+#include <array>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -9,6 +14,34 @@
 namespace {
 
 constexpr const char *kValidationLayer = "VK_LAYER_KHRONOS_validation";
+
+// If device-idle cannot be established, the Vulkan handles must remain owned
+// by a live object.  These records intentionally retain their handles for the
+// remainder of the process rather than destroying resources whose completion
+// state is unknown.
+struct QuarantinedVulkanResources {
+    std::unique_ptr<VulkanCompute> compute;
+    VkInstance instance = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkCommandPool command_pool = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
+
+    // Completion is unknown, so retain the compute object's Vulkan handles
+    // and parent device instead of invoking destruction during teardown. The
+    // pending command/fence/pool handle values remain live under this device;
+    // their vector metadata does not own or release Vulkan handles.
+    // The slot intentionally never destroys compute: completion is unknown.
+    ~QuarantinedVulkanResources() { compute.release(); }
+};
+
+// Quarantine bookkeeping must not allocate while cleanup is noexcept.  A
+// bounded process-lifetime table is sufficient for platform instances; if it
+// is exhausted, cleanup deliberately leaks the handles rather than risking a
+// destruction of work whose completion is unknown.
+constexpr std::size_t kQuarantineCapacity = 16;
+std::mutex quarantine_mutex;
+std::array<QuarantinedVulkanResources, kQuarantineCapacity> quarantined_resources;
+std::size_t quarantined_resource_count = 0;
 
 void check_result(VkResult result, const char *operation) {
     if (result != VK_SUCCESS) {
@@ -181,6 +214,7 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                         throw std::runtime_error(
                             "Could not create Vulkan command pool");
                     }
+                    compute_ = std::make_unique<VulkanCompute>(*this);
                     return;
                 }
             }
@@ -193,12 +227,53 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
     }
 }
 
-VulkanPlatform::~VulkanPlatform() { cleanup(); }
+VulkanPlatform::~VulkanPlatform() noexcept { cleanup(); }
 
-void VulkanPlatform::cleanup() {
+void VulkanPlatform::cleanup() noexcept {
+    std::scoped_lock lock(queue_mutex_);
     if (device_ != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device_);
+        if (vkDeviceWaitIdle(device_) != VK_SUCCESS) {
+            std::scoped_lock quarantine_lock(quarantine_mutex);
+            if (quarantined_resource_count < kQuarantineCapacity) {
+                QuarantinedVulkanResources &resources =
+                    quarantined_resources[quarantined_resource_count++];
+                resources.compute = std::move(compute_);
+                resources.instance = instance_;
+                resources.device = device_;
+                resources.command_pool = command_pool_;
+                resources.debug_messenger = debug_messenger_;
+                pending_compute_resources_.clear();
+                pending_transfer_resources_.clear();
+            } else {
+                // No allocation-free owner remains.  Leak every handle and
+                // the compute object rather than destroying unknown work.
+                compute_.release();
+                pending_compute_resources_.clear();
+                pending_transfer_resources_.clear();
+            }
+            instance_ = VK_NULL_HANDLE;
+            device_ = VK_NULL_HANDLE;
+            command_pool_ = VK_NULL_HANDLE;
+            debug_messenger_ = VK_NULL_HANDLE;
+            compute_queue_ = VK_NULL_HANDLE;
+            physical_device_ = VK_NULL_HANDLE;
+            return;
+        }
     }
+    // Compute owns device objects; wait for all queue work before destroying them.
+    compute_.reset();
+    for (const PendingComputeResources &resources : pending_compute_resources_) {
+        if (resources.fence != VK_NULL_HANDLE) {
+            vkDestroyFence(device_, resources.fence, nullptr);
+        }
+        if (resources.command_buffer != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device_, command_pool_, 1, &resources.command_buffer);
+        }
+        if (resources.descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device_, resources.descriptor_pool, nullptr);
+        }
+    }
+    pending_compute_resources_.clear();
     for (const PendingTransferResources &resources : pending_transfer_resources_) {
         if (resources.fence != VK_NULL_HANDLE) {
             vkDestroyFence(device_, resources.fence, nullptr);
@@ -252,6 +327,34 @@ VkQueue VulkanPlatform::compute_queue() const { return compute_queue_; }
 
 VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
 
+VulkanCompute &VulkanPlatform::compute() const { return *compute_; }
+
+std::mutex &VulkanPlatform::queue_mutex() const { return queue_mutex_; }
+
+void VulkanPlatform::defer_compute_resources(VkDescriptorPool descriptor_pool,
+                                              VkCommandBuffer command_buffer,
+                                              VkFence fence) const noexcept {
+    if (pending_compute_resources_.size() < pending_compute_resources_.capacity()) {
+        pending_compute_resources_.push_back({descriptor_pool, command_buffer, fence});
+        return;
+    }
+    // This is a defensive fail-safe for allocator/container anomalies.  The
+    // submitted resources are intentionally leaked, never destroyed while
+    // completion is unknown.
+}
+
+void VulkanPlatform::reserve_compute_resources() const {
+    pending_compute_resources_.reserve(pending_compute_resources_.size() + 1);
+}
+
+std::size_t VulkanPlatform::pending_transfer_count() const {
+    return pending_transfer_resources_.size();
+}
+
+std::size_t VulkanPlatform::compute_dispatch_count() const {
+    return compute_ == nullptr ? 0 : compute_->dispatch_count();
+}
+
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
 
 void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
@@ -259,6 +362,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     if (source == VK_NULL_HANDLE || destination == VK_NULL_HANDLE || size == 0) {
         throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
     }
+
+    std::scoped_lock lock(queue_mutex_);
 
     VkCommandBufferAllocateInfo allocation_info{};
     allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -282,7 +387,12 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         }
     };
     const auto defer_resources = [&]() {
-        pending_transfer_resources_.push_back({command_buffer, fence});
+        if (pending_transfer_resources_.size() < pending_transfer_resources_.capacity()) {
+            pending_transfer_resources_.push_back({command_buffer, fence});
+        }
+        // If bookkeeping capacity is unexpectedly unavailable, intentionally
+        // leak submitted resources rather than destroy them with unknown
+        // completion.
         command_buffer = VK_NULL_HANDLE;
         fence = VK_NULL_HANDLE;
     };
@@ -363,6 +473,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
 }
 
 void VulkanPlatform::wait_for_transfer() const {
+    std::scoped_lock lock(queue_mutex_);
     const VkResult result = vkQueueWaitIdle(compute_queue_);
     if (result != VK_SUCCESS) {
         throw std::runtime_error("Could not wait for Vulkan transfer queue with VkResult " +

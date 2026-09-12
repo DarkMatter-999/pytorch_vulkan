@@ -15,7 +15,9 @@ endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   if(NOT TARGET vulkan_platform)
-    add_library(vulkan_platform STATIC src/vulkan_platform.cpp)
+    add_library(vulkan_platform STATIC src/vulkan_platform.cpp
+                 src/vulkan_compute.cpp src/vulkan/shaders/generated/add_spv.h
+                 src/vulkan/shaders/add.comp)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -91,7 +93,8 @@ if(BUILD_PYTHON_EXTENSION)
                           ${TORCH_LIBRARIES})
 
      pybind11_add_module(
-         pytorch_vulkan_python MODULE src/python_module.cpp)
+         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/add.cpp
+         src/vulkan/operators/add.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -129,7 +132,8 @@ if(BUILD_PYTHON_EXTENSION)
         set_tests_properties(vulkan_allocator_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
-    add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp)
+    add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp
+                   src/vulkan/operators/add.cpp)
     target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
     target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)

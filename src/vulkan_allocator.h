@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vulkan/vulkan.h>
+
 #include <c10/core/Allocator.h>
 
 class VulkanBuffer;
@@ -13,6 +15,8 @@ namespace pytorch_vulkan {
 
 // These accessors borrow objects owned by the DataPtr.  The DataPtr must remain
 // alive for the duration of every use of either returned object.
+void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
+                         const char *label);
 VulkanBuffer &allocation_buffer(const at::DataPtr &data);
 const VulkanPlatform &allocation_platform(const at::DataPtr &data);
 
