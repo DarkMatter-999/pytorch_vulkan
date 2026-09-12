@@ -60,8 +60,7 @@ Run the active test suite with:
 ```bash
 pytest -q tests/test_cpu_only_build.py \
   tests/test_vulkan_probe.py \
-  tests/test_vulkan_unavailable.py \
-  tests/test_python_extension.py
+  tests/test_vulkan_unavailable.py
 ```
 
 Run the CTest probe after configuring with `BUILD_VULKAN_PROBE=ON`:
@@ -87,7 +86,11 @@ cmake -S . -B build/vulkan \
 cmake --build build/vulkan --target pytorch_vulkan_python
 VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
 PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
-  tests/python/test_vulkan_allocator.py tests/test_python_extension.py -q
+  tests/python/test_vulkan_allocator.py -q
+
+# Manual clean-extension build and compile-probe check:
+PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
+  tests/manual_python_extension.py -q
 ```
 
 The custom PrivateUse1 device name is `vk`; Vulkan API and runtime terminology
@@ -194,3 +197,45 @@ with equal logical element counts. All supported calls preserve storage metadata
 without a copy or dispatch. Pointwise and copy execution of general views,
 dtype-changing views, and complete formatting remain unsupported. Boolean
 formatter support and later offset-aware and strided execution are deferred.
+
+## Serialization And Multiprocessing
+
+On PyTorch 2.4, generic `torch.save(vulkan_tensor)` is unsafe: the standard
+storage path reaches an unsupported `aten::set_.source_Storage` operation for
+the opaque Vulkan `DataPtr`. Use the explicit backend API instead:
+
+```python
+pytorch_vulkan.save(vulkan_tensor, path)
+restored = pytorch_vulkan.load(path)
+cpu_restored = pytorch_vulkan.load(path, map_location="cpu")
+vulkan_restored = pytorch_vulkan.load(path, map_location="vk")
+```
+
+The explicit format materializes Vulkan storage into CPU-owned PyTorch tensors
+and never serializes Vulkan handles or allocator state. A generic PyTorch
+fallback is `torch.save(vulkan_tensor.cpu(), path)`. Explicit loading defaults
+to `vk:0` for payloads containing Vulkan tensors and fails if Vulkan is
+unavailable; `map_location="cpu"` forces CPU storage and `map_location="vk"`
+requests `vk:0`. Invalid locations and unsupported metadata are rejected.
+
+Multiprocessing transfers use CPU tensors as the process boundary. Materialize
+with `vulkan_tensor.cpu()` before putting a tensor on a queue, pipe, or pool
+input. `spawn` is the primary start method; each child initializes independent
+Vulkan state. Forking after Vulkan initialization is rejected and callers
+should use `spawn` or CPU materialization. Vulkan IPC and direct transfer of
+Vulkan tensors between processes are not supported. Autograd is not part of
+this serialization or multiprocessing contract.
+
+### Manual Python Extension Verification
+
+`tests/manual_python_extension.py` is intentionally excluded from the default
+pytest discovery because its two checks each configure and build a fresh
+Python extension in an isolated temporary directory. Run it explicitly when
+validating a clean extension build or compile-probe integration:
+
+```text
+PYTHONPATH=build/vulkan .venv/bin/python -m pytest -q tests/manual_python_extension.py
+```
+
+The normal regression command uses the already-built extension and does not
+include this manual build check.

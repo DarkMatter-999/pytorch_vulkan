@@ -3,8 +3,12 @@
 #include "vulkan_compute.h"
 
 #include <iostream>
+#include <atomic>
 #include <memory>
 #include <mutex>
+#if defined(__unix__) || defined(__APPLE__)
+#include <pthread.h>
+#endif
 #include <array>
 #include <sstream>
 #include <stdexcept>
@@ -92,9 +96,45 @@ bool has_debug_utils_extension() {
 
 } // namespace
 
+namespace pytorch_vulkan {
+namespace {
+
+std::atomic<bool> forked_child{false};
+
+void mark_forked_child() noexcept { forked_child.store(true, std::memory_order_relaxed); }
+
+} // namespace
+
+bool inherited_fork_state() noexcept {
+    return forked_child.load(std::memory_order_relaxed);
+}
+
+void register_fork_state_handler() {
+#if defined(__unix__) || defined(__APPLE__)
+    static std::once_flag registration;
+    std::call_once(registration, [] {
+        if (pthread_atfork(nullptr, nullptr, &mark_forked_child) != 0) {
+            throw std::runtime_error("Could not register Vulkan fork-state handler");
+        }
+    });
+#endif
+}
+
+void ensure_process_local_vulkan() {
+    if (inherited_fork_state()) {
+        throw std::runtime_error(
+            "Vulkan cannot be used after fork because the child inherited parent Vulkan "
+            "state; use multiprocessing spawn or materialize tensors on CPU");
+    }
+}
+
+} // namespace pytorch_vulkan
+
 VulkanPlatform::VulkanPlatform(bool enable_validation)
     : validation_enabled_(enable_validation) {
     try {
+        pytorch_vulkan::register_fork_state_handler();
+        pytorch_vulkan::ensure_process_local_vulkan();
         uint32_t loader_version = VK_API_VERSION_1_0;
         const auto enumerate_instance_version =
             reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
@@ -230,6 +270,11 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
 VulkanPlatform::~VulkanPlatform() noexcept { cleanup(); }
 
 void VulkanPlatform::cleanup() noexcept {
+    if (pytorch_vulkan::inherited_fork_state()) {
+        // Do not invoke Vulkan teardown on handles inherited across fork.
+        compute_.release();
+        return;
+    }
     std::scoped_lock lock(queue_mutex_);
     if (device_ != VK_NULL_HANDLE) {
         if (vkDeviceWaitIdle(device_) != VK_SUCCESS) {
@@ -308,6 +353,7 @@ void VulkanPlatform::cleanup() noexcept {
 
 bool VulkanPlatform::is_available() noexcept {
     try {
+        pytorch_vulkan::register_fork_state_handler();
         const VulkanPlatform platform;
         return platform.device() != VK_NULL_HANDLE;
     } catch (...) {

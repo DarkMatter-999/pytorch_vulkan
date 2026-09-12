@@ -49,8 +49,10 @@ const bool hooks_registered = [] {
 } // namespace
 
 std::shared_ptr<VulkanPlatform> platform() {
+    ensure_process_local_vulkan();
     std::call_once(platform_initialization, [] {
         try {
+            register_fork_state_handler();
             platform_instance = std::make_shared<VulkanPlatform>();
             // Destroy the cached platform before static teardown can outlive
             // Vulkan's loader and validation-layer dispatch.

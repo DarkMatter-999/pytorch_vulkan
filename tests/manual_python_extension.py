@@ -8,6 +8,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 
+# This module performs isolated CMake builds and is intentionally excluded from
+# the default pytest suite. Run it explicitly when validating a fresh extension
+# build: `pytest tests/manual_python_extension.py`.
+
 
 def _configure_and_build_extension(build_dir):
     torch_prefix = subprocess.check_output(

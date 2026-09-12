@@ -122,6 +122,10 @@ if(BUILD_PYTHON_EXTENSION)
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/__init__.py"
         "${CMAKE_BINARY_DIR}/pytorch_vulkan/__init__.py"
          COPYONLY)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
+        "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
+         COPYONLY)
 
     add_executable(vulkan_allocator_test tests/cpp/vulkan_allocator_test.cpp)
     target_compile_features(vulkan_allocator_test PRIVATE cxx_std_17)
@@ -152,5 +156,19 @@ if(BUILD_PYTHON_EXTENSION)
     if(BUILD_TESTING)
         add_test(NAME vulkan_transfer_tensor_test COMMAND vulkan_transfer_tensor_test)
         set_tests_properties(vulkan_transfer_tensor_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(vulkan_serialization_probe tests/cpp/vulkan_serialization_probe.cpp)
+    target_compile_features(vulkan_serialization_probe PRIVATE cxx_std_17)
+    target_include_directories(vulkan_serialization_probe PRIVATE ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        target_compile_options(vulkan_serialization_probe PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_serialization_probe PRIVATE vulkan_allocator
+                          vulkan_device_guard vulkan_buffer vulkan_platform
+                          ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_serialization_probe COMMAND vulkan_serialization_probe)
+        set_tests_properties(vulkan_serialization_probe PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()

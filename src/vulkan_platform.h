@@ -85,6 +85,11 @@ class VulkanPlatform {
 
 namespace pytorch_vulkan {
 
+// A forked child cannot safely reuse Vulkan objects created by its parent.
+bool inherited_fork_state() noexcept;
+void register_fork_state_handler();
+void ensure_process_local_vulkan();
+
 std::shared_ptr<VulkanPlatform> platform();
 
 } // namespace pytorch_vulkan

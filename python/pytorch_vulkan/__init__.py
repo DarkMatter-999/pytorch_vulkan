@@ -1,6 +1,7 @@
 import torch
 
 from ._C import current_device, device_count, is_available, set_device
+from .serialization import load, save
 
 
 class _VulkanDeviceModule:
@@ -24,4 +25,4 @@ class _VulkanDeviceModule:
 torch.utils.rename_privateuse1_backend("vk")
 torch._register_device_module("vk", _VulkanDeviceModule)
 
-__all__ = ["device_count", "is_available"]
+__all__ = ["device_count", "is_available", "load", "save"]

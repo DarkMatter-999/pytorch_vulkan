@@ -89,6 +89,10 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
 }
 
 VulkanBuffer::~VulkanBuffer() {
+    if (pytorch_vulkan::inherited_fork_state()) {
+        // Parent-owned Vulkan handles are invalid for destruction in a forked child.
+        return;
+    }
     if (buffer_ != VK_NULL_HANDLE) {
         vkDestroyBuffer(device_, buffer_, nullptr);
     }

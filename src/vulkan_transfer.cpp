@@ -84,6 +84,9 @@ namespace pytorch_vulkan {
 at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
                         bool non_blocking) {
     validate(destination, source, non_blocking);
+    if (!destination.device().is_cpu() || !source.device().is_cpu()) {
+        ensure_process_local_vulkan();
+    }
     const std::size_t bytes = checked_bytes(destination, source);
     if (bytes == 0) {
         return destination;

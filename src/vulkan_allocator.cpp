@@ -92,6 +92,7 @@ bool is_vulkan_allocation(const at::DataPtr &data) {
 }
 
 VulkanBuffer &allocation_buffer(const at::DataPtr &data) {
+    ensure_process_local_vulkan();
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,
                 "DataPtr context is not a Vulkan allocation");
@@ -102,6 +103,7 @@ VulkanBuffer &allocation_buffer(const at::DataPtr &data) {
 }
 
 const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
+    ensure_process_local_vulkan();
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,
                 "DataPtr context is not a Vulkan allocation");
