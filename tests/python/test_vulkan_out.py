@@ -130,12 +130,9 @@ def test_rsub_scalar_out_exact_alias(vulkan_backend):
 def test_out_rejects_same_shaped_partial_overlap(vulkan_backend):
     base = torch.empty((3,), device=vulkan_backend)
     rhs = torch.empty((2,), device=vulkan_backend)
-    try:
-        lhs = base[:2]
-        out = base[1:]
-    except NotImplementedError:
-        pytest.skip("Vulkan view/as_strided support is unavailable in this build")
-    with pytest.raises((RuntimeError, NotImplementedError), match="overlap"):
+    lhs = base[:2]
+    out = base[1:]
+    with pytest.raises((RuntimeError, NotImplementedError), match="storage_offset"):
         torch.add(lhs, rhs, out=out)
 
 
@@ -174,10 +171,7 @@ def test_out_rejects_invalid_metadata_overlap_and_parameters(vulkan_backend):
 
 def test_out_rejects_nonzero_storage_offset(vulkan_backend):
     input = torch.empty((2,), device=vulkan_backend)
-    try:
-        base = torch.empty((3,), device=vulkan_backend)
-        out = torch.as_strided(base, (2,), (1,), storage_offset=1)
-    except NotImplementedError:
-        pytest.skip("Vulkan view/as_strided support is unavailable in this build")
+    base = torch.empty((3,), device=vulkan_backend)
+    out = torch.as_strided(base, (2,), (1,), storage_offset=1)
     with pytest.raises((RuntimeError, NotImplementedError), match="storage_offset"):
         torch.neg(input, out=out)

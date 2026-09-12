@@ -1,6 +1,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_compute.h"
 #include "vulkan_buffer.h"
+#include "vulkan_layout.h"
 #include "vulkan/operators/binary.h"
 #include "vulkan_platform.h"
 #include "vulkan_transfer.h"
@@ -10,6 +11,8 @@
 #include <functional>
 #include <iostream>
 #include <atomic>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -30,6 +33,10 @@ void expect_error(const std::function<void()> &operation, const char *text) {
     try {
         operation();
     } catch (const c10::Error &error) {
+        expect(std::string(error.what()).find(text) != std::string::npos,
+               "unexpected Vulkan transfer error");
+        return;
+    } catch (const std::exception &error) {
         expect(std::string(error.what()).find(text) != std::string::npos,
                "unexpected Vulkan transfer error");
         return;
@@ -126,6 +133,122 @@ void test_foreign_payload_rejected() {
     at::DataPtr foreign(nullptr, nullptr, nullptr, kDevice);
     expect_error([&] { (void)pytorch_vulkan::allocation_buffer(foreign); },
                  "not a Vulkan allocation");
+}
+
+void test_vulkan_layout_inspection() {
+    const std::vector<int64_t> offset_sizes{4};
+    const std::vector<int64_t> offset_strides{1};
+    auto tensor = at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "layout test");
+    expect(layout.storage_offset == 0 && layout.numel == 6,
+           "contiguous Vulkan layout has wrong element metadata");
+    expect(layout.byte_offset == 0 && layout.byte_range == 6 * sizeof(float),
+           "contiguous Vulkan layout has wrong byte range");
+    expect(layout.allocation_bytes >= layout.byte_range,
+           "contiguous Vulkan layout has too-small allocation");
+
+    auto empty = at::empty({0, 3}, tensor.options());
+    const auto empty_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(empty, "layout test");
+    expect(empty_layout.numel == 0 && empty_layout.byte_range == 0 &&
+               empty_layout.allocation_bytes == 0,
+           "empty Vulkan layout requires a buffer or has a nonzero byte range");
+    auto foreign_empty = empty;
+    foreign_empty.storage().set_data_ptr(at::DataPtr(nullptr, nullptr, nullptr, kDevice));
+    expect_error([&] {
+        (void)pytorch_vulkan::inspect_vulkan_tensor_layout(foreign_empty, "layout test");
+    }, "invalid allocation payload");
+
+    auto offset_base = at::empty({5}, tensor.options());
+    auto offset = offset_base;
+    offset.unsafeGetTensorImpl()->set_storage_offset(1);
+    offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
+    const auto offset_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(offset, "layout test");
+    expect(offset_layout.byte_offset == sizeof(float) &&
+               offset_layout.byte_range == 4 * sizeof(float),
+           "offset Vulkan layout has wrong byte range");
+
+    auto foreign = tensor;
+    foreign.storage().set_data_ptr(at::DataPtr(nullptr, nullptr, nullptr, kDevice));
+    expect_error([&] {
+        (void)pytorch_vulkan::inspect_vulkan_tensor_layout(foreign, "layout test");
+    }, "invalid allocation payload");
+
+    auto out_of_range = offset_base;
+    out_of_range.unsafeGetTensorImpl()->set_storage_offset(2);
+    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
+    expect_error([&] {
+        (void)pytorch_vulkan::inspect_vulkan_tensor_layout(out_of_range, "layout test");
+    }, "outside its Vulkan allocation");
+
+    expect_error([&] {
+        (void)pytorch_vulkan::inspect_vulkan_view_layout(offset_base, {2}, {-1}, 0,
+                                                          "layout test");
+    }, "negative stride");
+    expect_error([&] {
+        (void)pytorch_vulkan::inspect_vulkan_view_layout(
+            offset_base, {2}, {std::numeric_limits<int64_t>::max()}, 1, "layout test");
+    }, "overflow");
+}
+
+void test_metadata_only_views() {
+    auto source = at::tensor({0.0F, 1.0F, 2.0F, 3.0F, 4.0F, 5.0F});
+    auto input = at::empty({2, 3}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source.reshape({2, 3}), false);
+    const auto source_sizes = input.sizes().vec();
+    const auto source_strides = input.strides().vec();
+    const auto platform = pytorch_vulkan::platform();
+
+    const auto expect_view = [&](const at::Tensor &view, const char *message) {
+        expect(view.data_ptr() == input.data_ptr() && view.is_contiguous(), message);
+        expect(view.sizes().equals({6}) && view.strides().equals({1}),
+               "Vulkan metadata-only view has wrong metadata");
+        auto result = at::empty({6}, source.options());
+        pytorch_vulkan::copy_tensor(result, view, false);
+        expect(result.equal(source), "Vulkan metadata-only view changed values");
+        expect(input.sizes().equals(source_sizes) && input.strides().equals(source_strides),
+               "Vulkan metadata-only view changed its source metadata");
+    };
+
+    const std::size_t before = platform->compute_dispatch_count();
+    expect_view(at::as_strided(input, {6}, {1}),
+                "Vulkan as_strided did not preserve contiguous storage identity");
+    expect_view(input.view({6}),
+                "Vulkan view did not preserve contiguous storage identity");
+    expect_view(at::_reshape_alias(input, {6}, {1}),
+                "Vulkan _reshape_alias did not preserve contiguous storage identity");
+    expect(platform->compute_dispatch_count() == before,
+           "metadata-only view submitted compute work");
+
+    const auto expect_metadata = [&](const at::Tensor &view, at::IntArrayRef sizes,
+                                     at::IntArrayRef strides, int64_t offset) {
+        expect(view.storage().data_ptr().get() == input.storage().data_ptr().get() &&
+                   view.sizes().equals(sizes) &&
+                   view.strides().equals(strides) && view.storage_offset() == offset,
+               "Vulkan as_strided did not preserve general metadata");
+    };
+    expect_metadata(at::as_strided(input, {2}, {2}), {2}, {2}, 0);
+    expect_metadata(at::as_strided(input, {2, 3}, {1, 2}), {2, 3}, {1, 2}, 0);
+    expect_metadata(at::as_strided(input, {2, 3}, {0, 1}), {2, 3}, {0, 1}, 0);
+    expect_metadata(at::as_strided(input, {2}, {1}, 1), {2}, {1}, 1);
+
+    const auto expect_rejected = [&](const std::function<void()> &operation,
+                                     const char *message) {
+        const std::size_t dispatches = platform->compute_dispatch_count();
+        (void)message;
+        expect_error(operation, "");
+        expect(platform->compute_dispatch_count() == dispatches,
+               "invalid metadata-only view submitted compute work");
+    };
+    expect_rejected([&] { (void)at::as_strided(input, {6}, {1}, 1); },
+                    "storage offset");
+    expect_rejected([&] { (void)input.view({5}); },
+                    "invalid for input");
+    expect_rejected([&] { (void)at::as_strided(input, {2, 3}, {1, 3}); },
+                    "Vulkan as_strided");
+    expect_rejected([&] { (void)at::as_strided(input, {2, 3}, {-1, 1}); },
+                    "Vulkan as_strided");
 }
 
 void test_repeated_add_dispatch_and_retained_output() {
@@ -622,6 +745,8 @@ int main() {
         test_zero_tensor_copy_is_noop();
         test_zero_allocator_payload();
         test_foreign_payload_rejected();
+        test_vulkan_layout_inspection();
+        test_metadata_only_views();
         test_repeated_add_dispatch_and_retained_output();
         test_tensor_tensor_sub_and_mul_dispatch();
         test_zero_element_add_does_not_dispatch();

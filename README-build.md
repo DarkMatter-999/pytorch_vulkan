@@ -169,9 +169,9 @@ in-place variants are rejected explicitly. Complex, non-finite, float32-range
 overflowing, and float32-underflowing Python scalar values are also rejected.
 
 Broadcasting, dtype promotion, scalar-tensor semantics, scalar buffers,
-asynchronous execution, views, autograd, multi-device support, and advanced
-operators remain deferred; only the documented Python-number forms are
-supported.
+asynchronous execution, general view execution and unsupported view layouts,
+autograd, multi-device support, and advanced operators remain deferred; only the
+documented Python-number forms are supported.
 
 ## Vulkan unary operations
 
@@ -182,12 +182,15 @@ variants remain unsupported. No CPU fallback is provided for
 calls involving Vulkan tensors; unsupported Vulkan inputs and overloads are
 rejected explicitly rather than staged through CPU.
 
-### Debug Printing And Future Views
+### Metadata Views And Debug Printing
 
 PyTorch formatting currently reaches `aten::view` through `reshape(-1)`, so
-natural `print(vulkan_tensor)` support is tracked as a separate narrow usability
-slice. That slice will support only metadata-only views of contiguous zero-offset
-`float32` tensors on `vk:0`, preserving storage aliasing without a copy. General
-strided, offset, overlapping, arbitrary reshape, and autograd view semantics
-remain deferred until a dedicated view/reshape design covers their storage,
-aliasing, and replay requirements.
+metadata-only `as_strided` calls are supported for `float32` tensors on `vk:0`
+when their requested non-negative-stride metadata references a valid
+in-allocation range. `as_strided` may describe non-zero offsets, non-contiguous
+layouts, overlap, and a different logical element count. Metadata-only `view` and
+reshape-alias calls remain limited to compatible contiguous, zero-offset layouts
+with equal logical element counts. All supported calls preserve storage metadata
+without a copy or dispatch. Pointwise and copy execution of general views,
+dtype-changing views, and complete formatting remain unsupported. Boolean
+formatter support and later offset-aware and strided execution are deferred.

@@ -79,7 +79,8 @@ if(BUILD_PYTHON_EXTENSION)
     endif()
     target_link_libraries(vulkan_device_guard PUBLIC vulkan_platform ${TORCH_LIBRARIES})
 
-    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp src/vulkan_transfer.cpp)
+    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp src/vulkan_layout.cpp
+                src/vulkan_transfer.cpp)
     target_compile_features(vulkan_allocator PUBLIC cxx_std_17)
     set_target_properties(vulkan_allocator PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_allocator PUBLIC
@@ -95,9 +96,10 @@ if(BUILD_PYTHON_EXTENSION)
     pybind11_add_module(
         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/add.cpp
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
-        src/vulkan/operators/binary.h src/vulkan/operators/out.cpp
-        src/vulkan/operators/out.h src/vulkan/operators/unary.cpp
-        src/vulkan/operators/unary.h)
+         src/vulkan/operators/binary.h src/vulkan/operators/out.cpp
+         src/vulkan/operators/out.h src/vulkan/operators/unary.cpp
+         src/vulkan/operators/unary.h src/vulkan/operators/view.cpp
+         src/vulkan/operators/view.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -138,7 +140,7 @@ if(BUILD_PYTHON_EXTENSION)
     add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp
                    src/vulkan/operators/add.cpp src/vulkan/operators/sub.cpp
                    src/vulkan/operators/mul.cpp src/vulkan/operators/out.cpp
-                   src/vulkan/operators/unary.cpp)
+                   src/vulkan/operators/unary.cpp src/vulkan/operators/view.cpp)
     target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
     target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
