@@ -325,6 +325,40 @@ void test_add_invalid_input_cleans_up() {
            "invalid Vulkan add left pending transfer resources");
 }
 
+void test_repeated_unary_dispatch_and_input_readability() {
+    auto source = at::tensor({-3.5F, 0.0F, 2.25F, -1.0F});
+    auto input = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    const auto expected = at::neg(source);
+
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        auto output = at::neg(input);
+        expect(output.data_ptr() != input.data_ptr(),
+               "Vulkan unary output aliased its input");
+        auto result = at::empty_like(source);
+        pytorch_vulkan::copy_tensor(result, output, false);
+        expect(result.equal(expected), "repeated Vulkan unary changed data");
+    }
+
+    auto input_result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(input_result, input, false);
+    expect(input_result.equal(source), "Vulkan unary changed its input");
+}
+
+void test_unary_nonzero_storage_offset_is_rejected() {
+    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+    auto base = at::empty({5}, source.options().device(kDevice));
+    auto offset = base;
+    const std::vector<int64_t> sizes{4};
+    const std::vector<int64_t> strides{1};
+    offset.unsafeGetTensorImpl()->set_storage_offset(1);
+    offset.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
+    expect(offset.is_contiguous() && offset.storage_offset() != 0,
+           "unary offset test tensor is not a contiguous offset view");
+
+    expect_error([&] { (void)at::neg(offset); }, "storage_offset");
+}
+
 void test_platform_destruction_is_nothrow() {
     static_assert(std::is_nothrow_destructible<VulkanPlatform>::value,
                   "Vulkan cleanup must not throw during ownership quarantine");
@@ -350,6 +384,8 @@ int main() {
         test_zero_element_scalar_add_does_not_dispatch();
         test_concurrent_add_dispatches_are_serialized();
         test_add_invalid_input_cleans_up();
+        test_repeated_unary_dispatch_and_input_readability();
+        test_unary_nonzero_storage_offset_is_rejected();
         test_platform_destruction_is_nothrow();
         std::cout << "Vulkan tensor transfer tests passed\n";
         return 0;

@@ -147,6 +147,15 @@ asynchronous execution, views, autograd, multi-device support, and advanced
 operators remain deferred; only the documented Python-number forms are
 supported.
 
+## Vulkan unary operations
+
+The functional unary operations `torch.neg`, `torch.abs`, and `torch.relu` are
+supported for contiguous, strided `torch.float32` tensors on `vk:0`. The
+operations allocate a fresh Vulkan output and execute synchronously. `out=`
+and in-place variants remain unsupported. No CPU fallback is provided for
+calls involving Vulkan tensors; unsupported Vulkan inputs and overloads are
+rejected explicitly rather than staged through CPU.
+
 ### Debug Printing And Future Views
 
 PyTorch formatting currently reaches `aten::view` through `reshape(-1)`, so

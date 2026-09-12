@@ -13,6 +13,8 @@ layout(set = 0, binding = 1, std430) readonly buffer Rhs { float rhs[]; };
 layout(set = 0, binding = 0, std430) readonly buffer Lhs { float lhs[]; };
 #elif POINTWISE_MODE == 2
 layout(set = 0, binding = 0, std430) readonly buffer Rhs { float rhs[]; };
+#elif POINTWISE_MODE == 3
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
 #else
 #error Unsupported pointwise mode
 #endif
@@ -25,10 +27,21 @@ layout(push_constant) uniform Params {
   uint operation;
 } params;
 
+const uint NEG = 3u;
+const uint ABS = 4u;
+const uint RELU = 5u;
+
 float apply_operation(float lhs_value, float rhs_value) {
   if (params.operation == 0u) return lhs_value + rhs_value;
   if (params.operation == 1u) return lhs_value - rhs_value;
   if (params.operation == 2u) return lhs_value * rhs_value;
+  return 0.0;
+}
+
+float apply_unary(float value) {
+  if (params.operation == NEG) return -value;
+  if (params.operation == ABS) return abs(value);
+  if (params.operation == RELU) return max(value, 0.0);
   return 0.0;
 }
 
@@ -39,7 +52,9 @@ void main() {
   out_data[index] = apply_operation(lhs[index], rhs[index]);
 #elif POINTWISE_MODE == 1
   out_data[index] = apply_operation(lhs[index], params.scalar);
-#else
+#elif POINTWISE_MODE == 2
   out_data[index] = apply_operation(params.scalar, rhs[index]);
+#else
+  out_data[index] = apply_unary(input_data[index]);
 #endif
 }

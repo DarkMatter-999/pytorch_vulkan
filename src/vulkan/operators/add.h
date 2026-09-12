@@ -10,6 +10,9 @@ enum class PointwiseOperation : uint32_t {
     Add = 0,
     Sub = 1,
     Mul = 2,
+    Neg = 3,
+    Abs = 4,
+    Relu = 5,
 };
 
 at::Tensor add_tensor(const at::Tensor &lhs, const at::Tensor &rhs,

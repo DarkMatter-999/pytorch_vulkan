@@ -55,6 +55,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             lhs_binding, output_binding};
         const VkDescriptorSetLayoutBinding scalar_tensor_bindings[] = {
             lhs_binding, output_binding};
+        const VkDescriptorSetLayoutBinding unary_bindings[] = {lhs_binding, output_binding};
 
         const VkShaderModuleCreateInfo tensor_tensor_shader{
             VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
@@ -68,6 +69,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
             vulkan_pointwise_shader::kScalarTensorCodeSize,
             vulkan_pointwise_shader::kScalarTensorCode};
+        const VkShaderModuleCreateInfo unary_shader{
+            VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+            vulkan_pointwise_shader::kUnaryCodeSize,
+            vulkan_pointwise_shader::kUnaryCode};
 
         const auto create_mode = [&](uint32_t mode,
                                      const VkDescriptorSetLayoutBinding *bindings,
@@ -87,6 +92,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_mode(0, tensor_tensor_bindings, 3, tensor_tensor_shader);
         create_mode(1, tensor_scalar_bindings, 2, tensor_scalar_shader);
         create_mode(2, scalar_tensor_bindings, 2, scalar_tensor_shader);
+        create_mode(3, unary_bindings, 2, unary_shader);
         VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
         const auto create_pipeline = [&](uint32_t mode) {
             VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -111,6 +117,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_pipeline(0);
         create_pipeline(1);
         create_pipeline(2);
+        create_pipeline(3);
     } catch (const std::exception &error) {
         for (auto pipeline : pipelines_) {
             if (pipeline != VK_NULL_HANDLE) {
@@ -178,9 +185,14 @@ void VulkanCompute::scalar_tensor(float scalar, VkBuffer tensor, VkBuffer output
     dispatch(2, VK_NULL_HANDLE, tensor, output, bytes, scalar, operation);
 }
 
+void VulkanCompute::unary(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
+                          uint32_t operation) const {
+    dispatch(3, input, VK_NULL_HANDLE, output, bytes, 0.0F, operation);
+}
+
 void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer output,
                              VkDeviceSize bytes, float scalar, uint32_t operation) const {
-    if (mode > 2 || output == VK_NULL_HANDLE ||
+    if (mode > 3 || output == VK_NULL_HANDLE ||
         (mode == 0 && (lhs == VK_NULL_HANDLE || rhs == VK_NULL_HANDLE)) ||
         (mode != 0 && ((lhs == VK_NULL_HANDLE) == (rhs == VK_NULL_HANDLE)))) {
         throw std::invalid_argument("Vulkan compute pointwise requires valid buffers");
@@ -233,7 +245,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer
         const uint32_t bindings[] = {0, mode == 0 ? 1U : 2U, 2};
         const uint32_t write_count = mode == 0 ? 3 : 2;
         for (uint32_t i = 0; i < write_count; ++i) {
-            const uint32_t source = mode == 0 ? i : (i == 0 ? (mode == 1 ? 0 : 1) : 2);
+            const uint32_t source = mode == 0 ? i : (i == 0 ? ((mode == 1 || mode == 3) ? 0 : 1) : 2);
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = set;
             writes[i].dstBinding = bindings[i];

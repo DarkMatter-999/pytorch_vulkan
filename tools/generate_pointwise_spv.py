@@ -37,7 +37,7 @@ def main():
         raise SystemExit(f"expected glslc {EXPECTED_VERSION}, got {version!r}")
 
     names = [("kTensorTensorCode", 0), ("kTensorScalarCode", 1),
-             ("kScalarTensorCode", 2)]
+             ("kScalarTensorCode", 2), ("kUnaryCode", 3)]
     with tempfile.TemporaryDirectory() as directory:
         binaries = []
         for _, mode in names:

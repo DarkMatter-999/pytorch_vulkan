@@ -95,7 +95,8 @@ if(BUILD_PYTHON_EXTENSION)
      pybind11_add_module(
           pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/add.cpp
           src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
-          src/vulkan/operators/add.h)
+          src/vulkan/operators/add.h src/vulkan/operators/unary.cpp
+          src/vulkan/operators/unary.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -134,7 +135,7 @@ if(BUILD_PYTHON_EXTENSION)
     endif()
 
     add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp
-                   src/vulkan/operators/add.cpp)
+                   src/vulkan/operators/add.cpp src/vulkan/operators/unary.cpp)
     target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
     target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)

@@ -22,6 +22,8 @@ class VulkanCompute final {
                        float scalar, uint32_t operation = 0) const;
     void scalar_tensor(float scalar, VkBuffer tensor, VkBuffer output,
                        VkDeviceSize bytes, uint32_t operation = 0) const;
+    void unary(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
+               uint32_t operation) const;
     std::size_t dispatch_count() const;
 
   private:
@@ -31,10 +33,10 @@ class VulkanCompute final {
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptor_set_layouts_[3]{};
-    VkPipelineLayout pipeline_layouts_[3]{};
-    VkShaderModule shader_modules_[3]{};
-    VkPipeline pipelines_[3]{};
+    VkDescriptorSetLayout descriptor_set_layouts_[4]{};
+    VkPipelineLayout pipeline_layouts_[4]{};
+    VkShaderModule shader_modules_[4]{};
+    VkPipeline pipelines_[4]{};
     VkDeviceSize max_storage_buffer_range_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
