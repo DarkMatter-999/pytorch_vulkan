@@ -16,8 +16,8 @@ endif()
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   if(NOT TARGET vulkan_platform)
     add_library(vulkan_platform STATIC src/vulkan_platform.cpp
-                 src/vulkan_compute.cpp src/vulkan/shaders/generated/add_spv.h
-                 src/vulkan/shaders/add.comp)
+                  src/vulkan_compute.cpp src/vulkan/shaders/generated/pointwise_spv.h
+                  src/vulkan/shaders/glsl/pointwise.comp)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -93,8 +93,9 @@ if(BUILD_PYTHON_EXTENSION)
                           ${TORCH_LIBRARIES})
 
      pybind11_add_module(
-         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/add.cpp
-         src/vulkan/operators/add.h)
+          pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/add.cpp
+          src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
+          src/vulkan/operators/add.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)

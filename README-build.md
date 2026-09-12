@@ -111,24 +111,48 @@ PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
   tests/python/test_vulkan_transfer.py -q
 ```
 
-Multi-device support, arithmetic, views, autograd, and advanced operators are
-deferred.
+Multi-device support, views, autograd, and advanced operators are deferred.
 
-## Vulkan `aten::add.Tensor`
+## Vulkan pointwise scalar operations
 
-The supported Vulkan public forms are `torch.add(lhs, rhs)` and `lhs + rhs` for two
-contiguous, strided `torch.float32` tensors on the same `vk:0` device. The
-operation is synchronous, does not use CPU staging, leaves both inputs
-unchanged, and returns newly allocated Vulkan storage with the input shape,
-dtype, layout, and device. Equal shapes are required; zero-element tensors
-return an empty output without a compute dispatch.
+The supported public scalar forms are `torch.add(tensor, scalar)` and
+`torch.add(scalar, tensor)` (with `alpha=1`), `torch.sub(tensor, scalar)`,
+`torch.sub(scalar, tensor)`, `torch.mul(tensor, scalar)`, and
+`torch.mul(scalar, tensor)`. The corresponding `+`, `-`, and `*` operators use
+the same dispatch where Python selects them. The tensor must be a contiguous,
+strided `torch.float32` tensor on `vk:0`; scalar-tensor operands are not
+accepted. Scalar values are converted once to finite, representable float32
+values and placed in the Vulkan compute push constants—there is no scalar
+buffer and no CPU staging or CPU fallback.
 
-CPU-only `torch.add(cpu, cpu)` remains normal PyTorch behavior because the
-PrivateUse1 registration cannot intercept it. “No CPU fallback” means an
+Scalar operations are synchronous: the returned tensor is ready when the call
+returns, inputs are unchanged, and output storage is newly allocated on the
+same Vulkan device with the input shape, dtype, and layout. Zero-element
+tensors return an empty output with preserved metadata without a compute
+dispatch. The supported tensor-tensor forms also require equal shapes and use
+the same synchronous, newly allocated Vulkan path.
+
+CPU-only arithmetic remains normal PyTorch behavior because the PrivateUse1
+registrations cannot intercept CPU dispatch. “No CPU fallback” means an
 operation involving Vulkan tensors never silently stages through CPU. Mixed
-CPU/Vulkan and other unsupported Vulkan-involving forms are rejected explicitly.
-Python scalar operands, zero-dimensional tensors, broadcasting or unequal
-shapes, non-contiguous tensors, non-zero storage offsets, non-`float32` dtypes,
-non-`vk:0` devices, mixed CPU/Vulkan devices, non-unit `alpha`, `out=`, and
-in-place `add_` are rejected explicitly. Vulkan arithmetic beyond this add
-contract, views, autograd, and advanced operators remain deferred.
+CPU/Vulkan tensors, ordinary CPU scalar tensors (including zero-dimensional
+user tensors) in either position, zero-dimensional Vulkan tensors, broadcasting
+or unequal shapes, non-contiguous tensors, non-zero storage offsets,
+non-`float32` dtypes, non-`vk:0` devices, non-unit `alpha`, `out=`, and
+in-place variants are rejected explicitly. Complex, non-finite, float32-range
+overflowing, and float32-underflowing Python scalar values are also rejected.
+
+Broadcasting, dtype promotion, scalar-tensor semantics, scalar buffers,
+asynchronous execution, views, autograd, multi-device support, and advanced
+operators remain deferred; only the documented Python-number forms are
+supported.
+
+### Debug Printing And Future Views
+
+PyTorch formatting currently reaches `aten::view` through `reshape(-1)`, so
+natural `print(vulkan_tensor)` support is tracked as a separate narrow usability
+slice. That slice will support only metadata-only views of contiguous zero-offset
+`float32` tensors on `vk:0`, preserving storage aliasing without a copy. General
+strided, offset, overlapping, arbitrary reshape, and autograd view semantics
+remain deferred until a dedicated view/reshape design covers their storage,
+aliasing, and replay requirements.

@@ -159,6 +159,39 @@ void test_repeated_add_dispatch_and_retained_output() {
            "retained Vulkan add output changed after input release");
 }
 
+void test_tensor_tensor_sub_and_mul_dispatch() {
+    auto lhs_source = at::tensor({1.0F, -2.0F, 3.0F});
+    auto rhs_source = at::tensor({4.0F, 5.0F, -6.0F});
+    auto lhs = at::empty_like(lhs_source, lhs_source.options().device(kDevice));
+    auto rhs = at::empty_like(rhs_source, rhs_source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
+    pytorch_vulkan::copy_tensor(rhs, rhs_source, false);
+
+    auto sub = pytorch_vulkan::pointwise_tensor_operands(
+        lhs, rhs, 1.0F, pytorch_vulkan::PointwiseOperation::Sub, "sub");
+    auto mul = pytorch_vulkan::pointwise_tensor_operands(
+        lhs, rhs, 1.0F, pytorch_vulkan::PointwiseOperation::Mul, "mul");
+    auto sub_result = at::empty_like(lhs_source);
+    auto mul_result = at::empty_like(lhs_source);
+    pytorch_vulkan::copy_tensor(sub_result, sub, false);
+    pytorch_vulkan::copy_tensor(mul_result, mul, false);
+
+    expect(sub_result.equal(at::tensor({-3.0F, -7.0F, 9.0F})),
+           "Vulkan tensor/tensor sub changed data");
+    expect(mul_result.equal(at::tensor({4.0F, -10.0F, -18.0F})),
+           "Vulkan tensor/tensor mul changed data");
+    auto lhs_result = at::empty_like(lhs_source);
+    auto rhs_result = at::empty_like(rhs_source);
+    pytorch_vulkan::copy_tensor(lhs_result, lhs, false);
+    pytorch_vulkan::copy_tensor(rhs_result, rhs, false);
+    expect(lhs_result.equal(lhs_source) && rhs_result.equal(rhs_source),
+           "Vulkan tensor/tensor arithmetic changed inputs");
+    expect(sub.data_ptr() != lhs.data_ptr() && sub.data_ptr() != rhs.data_ptr() &&
+               mul.data_ptr() != lhs.data_ptr() && mul.data_ptr() != rhs.data_ptr() &&
+               sub.data_ptr() != mul.data_ptr(),
+           "Vulkan tensor/tensor arithmetic aliased storage");
+}
+
 void test_zero_element_add_does_not_dispatch() {
     const auto platform = pytorch_vulkan::platform();
     const std::size_t before = platform->compute_dispatch_count();
@@ -168,6 +201,76 @@ void test_zero_element_add_does_not_dispatch() {
     expect(output.numel() == 0, "zero-element Vulkan add returned non-empty output");
     expect(platform->compute_dispatch_count() == before,
            "zero-element Vulkan add submitted a compute dispatch");
+}
+
+void test_scalar_add_dispatch_modes_and_lifecycle() {
+    auto source = at::tensor({1.0F, -2.0F, 3.5F});
+    auto tensor = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(tensor, source, false);
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+
+    auto tensor_scalar = at::add(tensor, at::Scalar(2.5F));
+    auto tensor_scalar_result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(tensor_scalar_result, tensor_scalar, false);
+
+    expect(tensor_scalar_result.equal(at::tensor({3.5F, 0.5F, 6.0F})),
+           "tensor/scalar Vulkan add changed data");
+    expect(platform->compute_dispatch_count() - before == 1,
+           "scalar Vulkan add lost a dispatch count");
+    expect(platform->pending_transfer_count() == 0,
+           "scalar Vulkan add left pending transfer resources");
+}
+
+void test_zero_element_scalar_add_does_not_dispatch() {
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+    auto tensor = at::empty({0, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto output = at::add(tensor, at::Scalar(1.25F));
+    expect(output.numel() == 0 && output.sizes() == tensor.sizes(),
+           "zero-element scalar Vulkan add returned wrong metadata");
+    expect(platform->compute_dispatch_count() == before,
+           "zero-element scalar Vulkan add submitted a compute dispatch");
+    expect(platform->pending_transfer_count() == 0,
+           "zero-element scalar Vulkan add left pending transfer resources");
+}
+
+void test_scalar_pointwise_offset_is_rejected() {
+    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+    auto base = at::empty({5}, source.options().device(kDevice));
+    auto offset = base;
+    const std::vector<int64_t> sizes{4};
+    const std::vector<int64_t> strides{1};
+    offset.unsafeGetTensorImpl()->set_storage_offset(1);
+    offset.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
+    expect(offset.is_contiguous() && offset.storage_offset() != 0,
+           "scalar offset test tensor is not a contiguous offset view");
+
+    const auto expect_offset_or_unwired = [](const std::function<void()> &operation,
+                                             const char *unwired_error) {
+        try {
+            operation();
+        } catch (const c10::Error &error) {
+            const std::string message(error.what());
+            if (message.find("storage_offset") != std::string::npos) {
+                return;
+            }
+            expect(message.find(unwired_error) != std::string::npos,
+                   "scalar offset rejected for an unexpected reason");
+            return;
+        }
+        throw std::runtime_error("scalar offset was accepted");
+    };
+
+    expect_offset_or_unwired(
+        [&] { (void)at::add(offset, at::Scalar(1.0F)); },
+        "Vulkan add does not support a scalar operand");
+    expect_offset_or_unwired(
+        [&] { (void)at::sub(offset, at::Scalar(1.0F)); },
+        "Could not run 'aten::sub.out'");
+    expect_offset_or_unwired(
+        [&] { (void)at::mul(offset, at::Scalar(1.0F)); },
+        "Could not run 'aten::mul.out'");
 }
 
 void test_concurrent_add_dispatches_are_serialized() {
@@ -240,7 +343,11 @@ int main() {
         test_zero_allocator_payload();
         test_foreign_payload_rejected();
         test_repeated_add_dispatch_and_retained_output();
+        test_tensor_tensor_sub_and_mul_dispatch();
         test_zero_element_add_does_not_dispatch();
+        test_scalar_pointwise_offset_is_rejected();
+        test_scalar_add_dispatch_modes_and_lifecycle();
+        test_zero_element_scalar_add_does_not_dispatch();
         test_concurrent_add_dispatches_are_serialized();
         test_add_invalid_input_cleans_up();
         test_platform_destruction_is_nothrow();

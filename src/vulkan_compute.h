@@ -16,17 +16,25 @@ class VulkanCompute final {
     VulkanCompute &operator=(const VulkanCompute &) = delete;
 
     void add(VkBuffer lhs, VkBuffer rhs, VkBuffer output, VkDeviceSize bytes) const;
+    void tensor_tensor(VkBuffer lhs, VkBuffer rhs, VkBuffer output, VkDeviceSize bytes,
+                       uint32_t operation = 0) const;
+    void tensor_scalar(VkBuffer tensor, VkBuffer output, VkDeviceSize bytes,
+                       float scalar, uint32_t operation = 0) const;
+    void scalar_tensor(float scalar, VkBuffer tensor, VkBuffer output,
+                       VkDeviceSize bytes, uint32_t operation = 0) const;
     std::size_t dispatch_count() const;
 
   private:
+    void dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer output,
+                  VkDeviceSize bytes, float scalar, uint32_t operation) const;
     const VulkanPlatform &platform_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
-    VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-    VkShaderModule shader_module_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptor_set_layouts_[3]{};
+    VkPipelineLayout pipeline_layouts_[3]{};
+    VkShaderModule shader_modules_[3]{};
+    VkPipeline pipelines_[3]{};
     VkDeviceSize max_storage_buffer_range_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
