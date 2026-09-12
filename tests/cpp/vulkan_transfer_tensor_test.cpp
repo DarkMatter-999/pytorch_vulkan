@@ -1,4 +1,5 @@
 #include "vulkan_allocator.h"
+#include "vulkan/operators/abs.h"
 #include "vulkan/operators/add.h"
 #include "vulkan_platform.h"
 #include "vulkan_transfer.h"
@@ -33,6 +34,25 @@ void expect_error(const std::function<void()> &operation, const char *text) {
         return;
     }
     throw std::runtime_error("Vulkan transfer accepted invalid input");
+}
+
+bool is_missing_view_dispatch(const std::string &message) {
+    return message.find("Could not run 'aten::view'") != std::string::npos;
+}
+
+void expect_view_rejected(const std::function<void()> &operation, const char *text) {
+    try {
+        operation();
+    } catch (const c10::Error &error) {
+        const std::string message(error.what());
+        if (is_missing_view_dispatch(message)) {
+            return;
+        }
+        expect(message.find(text) != std::string::npos,
+               "Vulkan view rejected input for an unexpected reason");
+        return;
+    }
+    throw std::runtime_error("Vulkan view accepted invalid input");
 }
 
 void test_copy_round_trip() {
@@ -330,6 +350,136 @@ void test_platform_destruction_is_nothrow() {
                   "Vulkan cleanup must not throw during ownership quarantine");
 }
 
+at::Tensor formatter_view(const at::Tensor &tensor) {
+    const std::vector<c10::SymInt> shape{c10::SymInt(tensor.numel())};
+    return at::_ops::view::call(tensor, shape);
+}
+
+void test_formatter_view_aliases_storage_and_keeps_lifetime() {
+    auto source = at::tensor({1.0F, -2.5F, 3.25F, 0.0F});
+    auto device_tensor = at::empty({2, 2}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device_tensor, source.reshape({2, 2}), false);
+
+    auto view = formatter_view(device_tensor);
+    expect(view.storage().data_ptr().get() == device_tensor.storage().data_ptr().get(),
+           "Vulkan formatter view did not alias storage");
+    expect(view.dim() == 1 && view.sizes().size() == 1 && view.size(0) == 4 &&
+               view.numel() == 4,
+           "Vulkan formatter view has wrong one-dimensional metadata");
+    expect(view.stride(0) == 1 && view.is_contiguous() && view.storage_offset() == 0,
+           "Vulkan formatter view has wrong contiguous metadata");
+    expect(view.scalar_type() == at::kFloat && view.device() == kDevice,
+           "Vulkan formatter view has wrong dtype or device");
+    auto before_release = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(before_release, view, false);
+    expect(before_release.equal(source), "Vulkan formatter view changed values");
+
+    device_tensor = at::Tensor();
+    auto after_release = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(after_release, view, false);
+    expect(after_release.equal(source),
+           "Vulkan formatter view did not retain source allocation lifetime");
+}
+
+void test_formatter_view_rejects_unsupported_inputs() {
+    auto source = at::tensor({1.0F, 2.0F, 3.0F, 4.0F});
+    auto non_contiguous = at::empty({4}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(non_contiguous, source, false);
+    const std::vector<int64_t> non_contiguous_sizes{2, 2};
+    const std::vector<int64_t> non_contiguous_strides{1, 2};
+    non_contiguous.unsafeGetTensorImpl()->set_sizes_and_strides(
+        non_contiguous_sizes, non_contiguous_strides);
+    expect_view_rejected([&] { (void)formatter_view(non_contiguous); }, "contiguous");
+
+    auto offset_base = at::empty({5}, source.options().device(kDevice));
+    auto offset = offset_base;
+    offset.unsafeGetTensorImpl()->set_storage_offset(1);
+    const std::vector<int64_t> offset_sizes{3};
+    const std::vector<int64_t> offset_strides{1};
+    offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
+    expect_view_rejected([&] { (void)formatter_view(offset); }, "storage_offset");
+
+    auto wrong_dtype = at::empty({4}, at::TensorOptions().dtype(at::kDouble).device(kDevice));
+    expect_view_rejected([&] { (void)formatter_view(wrong_dtype); }, "float32");
+    auto device_tensor = at::empty({4}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device_tensor, source, false);
+    const std::vector<c10::SymInt> non_formatter_shape{c10::SymInt(2), c10::SymInt(2)};
+    expect_view_rejected(
+        [&] { (void)at::_ops::view::call(device_tensor, non_formatter_shape); },
+        "one-dimensional");
+}
+
+void test_abs_out_dispatch_identity_and_rejection() {
+    auto source = at::tensor({1.0F, -2.5F, 0.0F, 3.25F});
+    auto input = at::empty_like(source, source.options().device(kDevice));
+    auto output = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+    const auto output_sizes = output.sizes().vec();
+    auto &returned = pytorch_vulkan::abs_out(input, output);
+    expect(&returned == &output, "Vulkan abs.out changed output identity");
+    expect(output.sizes().vec() == output_sizes && output.stride(0) == 1 &&
+               output.storage_offset() == 0 && output.is_contiguous(),
+           "Vulkan abs.out changed output metadata");
+    expect(platform->compute_dispatch_count() - before == 1,
+           "Vulkan abs.out lost a dispatch count");
+    auto result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(result, output, false);
+    expect(result.equal(at::tensor({1.0F, 2.5F, 0.0F, 3.25F})),
+           "Vulkan abs.out produced incorrect values");
+
+    auto retained_result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(retained_result, output, false);
+    expect(retained_result.equal(at::tensor({1.0F, 2.5F, 0.0F, 3.25F})),
+           "Vulkan abs.out output became invalid after input release");
+
+    auto zero_input = at::empty({0, 2}, source.options().device(kDevice));
+    auto zero_output = at::empty({0, 2}, source.options().device(kDevice));
+    const std::size_t zero_before = platform->compute_dispatch_count();
+    pytorch_vulkan::abs_out(zero_input, zero_output);
+    expect(platform->compute_dispatch_count() == zero_before,
+           "zero-element Vulkan abs.out submitted a compute dispatch");
+
+    auto offset_base = at::empty({5}, source.options().device(kDevice));
+    auto offset = offset_base;
+    offset.unsafeGetTensorImpl()->set_storage_offset(1);
+    const std::vector<int64_t> offset_sizes{4};
+    const std::vector<int64_t> offset_strides{1};
+    offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
+    expect_error([&] { pytorch_vulkan::abs_out(offset, output); }, "storage_offset");
+    auto non_contiguous = at::empty({2, 2}, source.options().device(kDevice));
+    const std::vector<int64_t> non_contiguous_sizes{2, 2};
+    const std::vector<int64_t> non_contiguous_strides{1, 2};
+    non_contiguous.unsafeGetTensorImpl()->set_sizes_and_strides(
+        non_contiguous_sizes, non_contiguous_strides);
+    expect_error([&] { pytorch_vulkan::abs_out(input, non_contiguous); }, "contiguous");
+    auto wrong_size = at::empty({3}, source.options().device(kDevice));
+    expect_error([&] { pytorch_vulkan::abs_out(input, wrong_size); }, "matching sizes");
+    auto cpu_output = at::empty_like(source);
+    expect_error([&] { pytorch_vulkan::abs_out(input, cpu_output); }, "on Vulkan");
+    expect(platform->pending_transfer_count() == 0,
+           "Vulkan abs.out left pending transfer resources");
+}
+
+void test_vk1_construction_is_rejected_at_supported_device_boundary() {
+    expect_error(
+        [] {
+            (void)at::empty(
+                {4}, at::TensorOptions().dtype(at::kFloat).device(
+                         c10::Device(c10::DeviceType::PrivateUse1, 1)));
+        },
+        "only device index 0");
+}
+
+void test_cpu_view_and_print_inputs_remain_supported() {
+    auto source = at::tensor({1.0F, 2.0F, 3.0F, 4.0F});
+    const std::vector<c10::SymInt> shape{c10::SymInt(2), c10::SymInt(2)};
+    auto view = at::_ops::view::call(source, shape);
+    expect(view.device().is_cpu() && view.equal(source.reshape({2, 2})),
+           "CPU view behavior regressed");
+}
+
 } // namespace
 
 int main() {
@@ -351,6 +501,23 @@ int main() {
         test_concurrent_add_dispatches_are_serialized();
         test_add_invalid_input_cleans_up();
         test_platform_destruction_is_nothrow();
+        bool view_positive_is_unimplemented = false;
+        try {
+            test_formatter_view_aliases_storage_and_keeps_lifetime();
+        } catch (const c10::Error &error) {
+            if (!is_missing_view_dispatch(error.what())) {
+                throw;
+            }
+            view_positive_is_unimplemented = true;
+            std::cerr << "Expected red state: aten::view is not registered for Vulkan\n";
+        }
+        test_formatter_view_rejects_unsupported_inputs();
+        test_vk1_construction_is_rejected_at_supported_device_boundary();
+        test_cpu_view_and_print_inputs_remain_supported();
+        test_abs_out_dispatch_identity_and_rejection();
+        if (view_positive_is_unimplemented) {
+            throw std::runtime_error("formatter view positive contract is unimplemented");
+        }
         std::cout << "Vulkan tensor transfer tests passed\n";
         return 0;
     } catch (const VulkanUnavailable &error) {

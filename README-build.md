@@ -150,9 +150,16 @@ supported.
 ### Debug Printing And Future Views
 
 PyTorch formatting currently reaches `aten::view` through `reshape(-1)`, so
-natural `print(vulkan_tensor)` support is tracked as a separate narrow usability
-slice. That slice will support only metadata-only views of contiguous zero-offset
-`float32` tensors on `vk:0`, preserving storage aliasing without a copy. General
-strided, offset, overlapping, arbitrary reshape, and autograd view semantics
-remain deferred until a dedicated view/reshape design covers their storage,
-aliasing, and replay requirements.
+natural `repr(vulkan_tensor)` and `print(vulkan_tensor)` support is a narrow
+formatter-compatible slice. It supports only metadata-only views of contiguous,
+zero-offset `float32` tensors on `vk:0`, preserving storage aliasing without a
+copy. The formatter's required `aten::abs.out` is supported only when both the
+input and caller-supplied output are contiguous, zero-offset float32 Vulkan
+tensors on the same `vk:0` platform/device, with matching metadata after the
+standard resize of an initially empty `out`; it is synchronous, in-place to
+the supplied output object, and performs no CPU staging.
+This slice is not yet end-to-end complete in the current PyTorch formatter:
+after `abs.out`, formatting also requests the unimplemented `aten::ne.Scalar_out`.
+General strided, offset, overlapping, arbitrary reshape, and autograd view
+semantics remain deferred until a dedicated view/reshape design covers their
+storage, aliasing, and replay requirements.

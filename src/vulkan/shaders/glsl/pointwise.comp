@@ -29,6 +29,7 @@ float apply_operation(float lhs_value, float rhs_value) {
   if (params.operation == 0u) return lhs_value + rhs_value;
   if (params.operation == 1u) return lhs_value - rhs_value;
   if (params.operation == 2u) return lhs_value * rhs_value;
+  if (params.operation == 3u) return lhs_value < 0.0f ? -lhs_value : lhs_value;
   return 0.0;
 }
 
