@@ -78,6 +78,11 @@ std::size_t vulkan_storage_bytes(c10::ScalarType dtype) {
     if (dtype == at::kLong) {
         return sizeof(int64_t);
     }
+    if (dtype == at::kDouble) {
+        TORCH_CHECK(formatter_double_supported(),
+                    "Vulkan formatter Double support requires the shaderFloat64 device feature");
+        return sizeof(double);
+    }
     validate_vulkan_dtype(dtype, "storage");
     return dtype == at::kFloat ? sizeof(float) : sizeof(bool);
 }
@@ -233,7 +238,15 @@ at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size,
 at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destination,
                             bool non_blocking) {
     at::Tensor result = destination;
-    pytorch_vulkan::copy_tensor(result, source, non_blocking);
+    if (destination.device().is_cpu() && !source.device().is_cpu() &&
+        source.scalar_type() == at::kFloat &&
+        destination.scalar_type() == source.scalar_type()) {
+        TORCH_CHECK(!non_blocking,
+                    "Vulkan formatter presentation does not support non_blocking=True");
+        pytorch_vulkan::formatter_presentation_copy(result, source);
+    } else {
+        pytorch_vulkan::copy_tensor(result, source, non_blocking);
+    }
     return result;
 }
 

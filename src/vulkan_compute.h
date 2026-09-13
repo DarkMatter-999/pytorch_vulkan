@@ -31,10 +31,12 @@ class VulkanCompute final {
                bool bool_dtype = false) const;
     void unary_alias(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
                      uint32_t operation, bool bool_dtype = false) const;
+    void unary_offset(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
+                      uint32_t operation, VkDeviceSize input_offset) const;
     void comparison_scalar(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
                            float scalar) const;
     void comparison_tensor(VkBuffer lhs, VkBuffer rhs, VkBuffer output,
-                           VkDeviceSize bytes) const;
+                           VkDeviceSize bytes, uint32_t operation = 0) const;
     void isfinite(VkBuffer input, VkBuffer output, VkDeviceSize bytes) const;
     void masked_select_count(VkBuffer input, VkBuffer mask, VkBuffer counter,
                              uint32_t element_count) const;
@@ -64,17 +66,30 @@ class VulkanCompute final {
                      uint32_t operation = 0) const;
     void pooling(VkBuffer input, VkBuffer output, uint32_t batch, uint32_t channels,
                  uint32_t height, uint32_t width, uint32_t operation = 0) const;
+    void f32_to_double(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
+                       VkDeviceSize output_bytes, uint32_t element_count) const;
+    void formatter_double(VkBuffer input, VkBuffer rhs, VkBuffer output,
+                          VkDeviceSize input_bytes, VkDeviceSize rhs_bytes,
+                          VkDeviceSize output_bytes, uint32_t element_count,
+                          uint32_t operation, double scalar, uint32_t output_numel,
+                          bool bool_output = false) const;
     std::size_t dispatch_count() const;
 
   private:
     void dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer output,
-                  VkDeviceSize bytes, float scalar, uint32_t operation,
-                  bool exact_alias, bool bool_dtype, bool bool_output = false) const;
+                   VkDeviceSize bytes, float scalar, uint32_t operation,
+                   bool exact_alias, bool bool_dtype, bool bool_output = false,
+                   VkDeviceSize lhs_offset = 0, VkDeviceSize output_offset = 0) const;
     void dispatch_extra(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
                         VkDeviceSize output_bytes, VkPipeline pipeline,
                         VkPipelineLayout pipeline_layout,
                         VkDescriptorSetLayout descriptor_layout, const void *params,
                         uint32_t params_size, uint32_t output_numel) const;
+    void dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer output,
+                            VkDeviceSize input_bytes, VkDeviceSize rhs_bytes,
+                            VkDeviceSize output_bytes, const void *params,
+                            uint32_t params_size, uint32_t output_numel,
+                            bool bool_output) const;
     void dispatch_model(VkBuffer input, VkBuffer weight, VkBuffer bias, VkBuffer output,
                         VkDeviceSize input_bytes, VkDeviceSize weight_bytes,
                         VkDeviceSize bias_bytes, VkDeviceSize output_bytes,
@@ -128,6 +143,14 @@ class VulkanCompute final {
     VkPipelineLayout masked_compact_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule masked_compact_shader_ = VK_NULL_HANDLE;
     VkPipeline masked_compact_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout f32_to_double_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule f32_to_double_shader_ = VK_NULL_HANDLE;
+    VkPipeline f32_to_double_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout formatter_double_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout formatter_double_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule formatter_double_shader_ = VK_NULL_HANDLE;
+    VkPipeline formatter_double_pipeline_ = VK_NULL_HANDLE;
     VkDeviceSize max_storage_buffer_range_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};

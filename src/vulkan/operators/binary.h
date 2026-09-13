@@ -15,6 +15,7 @@ enum class PointwiseOperation : uint32_t {
     Relu = 5,
     AbsBackward = 6,
     ReluBackward = 7,
+    Ceil = 10,
 };
 
 at::Tensor add_tensor(const at::Tensor &lhs, const at::Tensor &rhs,

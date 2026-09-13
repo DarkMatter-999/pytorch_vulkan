@@ -1,6 +1,6 @@
 import torch
 
-from ._C import current_device, device_count, is_available, set_device
+from ._C import current_device, device_count, formatter_double_supported, is_available, set_device
 from .serialization import load, save
 
 
@@ -25,4 +25,4 @@ class _VulkanDeviceModule:
 torch.utils.rename_privateuse1_backend("vk")
 torch._register_device_module("vk", _VulkanDeviceModule)
 
-__all__ = ["device_count", "is_available", "load", "save"]
+__all__ = ["device_count", "formatter_double_supported", "is_available", "load", "save"]

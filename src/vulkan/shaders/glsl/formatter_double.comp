@@ -1,0 +1,53 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Input { double input_data[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Rhs { double rhs_data[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer Output { double output_data[]; };
+layout(set = 0, binding = 3, std430) writeonly buffer BoolOutput { uint8_t bool_data[]; };
+
+layout(push_constant) uniform Params {
+  double scalar;
+  uint element_count;
+  uint operation;
+} params;
+
+const uint ABS = 0u;
+const uint MIN = 1u;
+const uint MAX = 2u;
+const uint DIV = 3u;
+const uint NE = 4u;
+const uint GT = 5u;
+const uint CEIL = 6u;
+const uint LT = 7u;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (params.operation == MIN || params.operation == MAX) {
+    if (index == 0u) {
+      double value = input_data[0];
+      for (uint i = 1u; i < params.element_count; ++i)
+        value = params.operation == MIN ? min(value, input_data[i]) : max(value, input_data[i]);
+      output_data[0] = value;
+    }
+    return;
+  }
+  if (index >= params.element_count)
+    return;
+  if (params.operation == ABS)
+    output_data[index] = abs(input_data[index]);
+  else if (params.operation == DIV)
+    output_data[index] = input_data[index] / rhs_data[0];
+  else if (params.operation == CEIL)
+    output_data[index] = ceil(input_data[index]);
+  else if (params.operation == NE)
+    bool_data[index] = uint8_t(input_data[index] != rhs_data[0]);
+  else if (params.operation == GT)
+    bool_data[index] = uint8_t(input_data[index] > params.scalar);
+  else if (params.operation == LT)
+    bool_data[index] = uint8_t(input_data[index] < params.scalar);
+}

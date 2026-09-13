@@ -22,6 +22,11 @@
 #include <type_traits>
 #include <vector>
 
+namespace pytorch_vulkan {
+at::Tensor &formatter_presentation_copy(at::Tensor &destination,
+                                        const at::Tensor &source);
+}
+
 namespace {
 
 const c10::Device kDevice(c10::DeviceType::PrivateUse1, 0);
@@ -67,6 +72,76 @@ void test_copy_returns_without_pending_transfer_resources() {
            "synchronous tensor copy left pending transfer resources");
 }
 
+void test_formatter_presentation_copy_reads_exact_range_and_waits() {
+    auto source = at::tensor({10.0F, 20.0F, 30.0F, 40.0F, 50.0F});
+    auto device_tensor = at::empty({5}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device_tensor, source, false);
+    auto pending = at::add(device_tensor, at::Scalar(1.0F));
+    auto view = at::as_strided(pending, {2}, {1}, 2);
+    auto result = at::empty({2}, source.options());
+    const auto platform = pytorch_vulkan::platform();
+
+    pytorch_vulkan::formatter_presentation_copy(result, view);
+
+    expect(result.equal(at::tensor({31.0F, 41.0F})),
+           "formatter presentation copy read the wrong value range");
+    expect(platform->pending_transfer_count() == 0,
+           "formatter presentation copy left pending transfer resources");
+    auto full_result = at::empty({5}, source.options());
+    pytorch_vulkan::copy_tensor(full_result, pending, false);
+    expect(full_result.equal(at::tensor({11.0F, 21.0F, 31.0F, 41.0F, 51.0F})),
+           "formatter presentation copy invalidated the source buffer");
+}
+
+void test_formatter_presentation_copy_preserves_double_and_rejects_general_readback() {
+    const auto platform = pytorch_vulkan::platform();
+    if (!platform->supports_formatter_double())
+        return;
+
+    auto source = at::tensor({1.25F, -2.5F, 7.0F});
+    auto input = at::empty({3}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    auto double_tensor = input.to(at::kDouble);
+    auto result = at::empty({2}, at::TensorOptions().dtype(at::kDouble));
+    auto view = at::as_strided(double_tensor, {2}, {1}, 1);
+    pytorch_vulkan::formatter_presentation_copy(result, view);
+    expect(result.equal(at::tensor({-2.5, 7.0}, at::TensorOptions().dtype(at::kDouble))),
+           "formatter presentation copy changed Double values");
+    expect_error([&] {
+        auto generic_view_result = at::empty(
+            {2}, at::TensorOptions().dtype(at::kDouble));
+        pytorch_vulkan::copy_tensor(generic_view_result, view, false);
+    }, "readback to CPU is unsupported");
+    expect_error([&] {
+        auto generic = at::empty({3}, at::TensorOptions().dtype(at::kDouble));
+        pytorch_vulkan::copy_tensor(generic, double_tensor, false);
+    }, "readback to CPU is unsupported");
+    expect(platform->pending_transfer_count() == 0,
+           "Double formatter presentation copy left pending resources");
+}
+
+void test_formatter_presentation_copy_rejects_malformed_sources() {
+    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+    auto input = at::empty({4}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    auto result = at::empty({2}, source.options());
+
+    auto noncontiguous = at::as_strided(input, {2, 2}, {1, 2});
+    expect_error([&] {
+        pytorch_vulkan::formatter_presentation_copy(result, noncontiguous);
+    }, "contiguous");
+
+    auto out_of_range = input;
+    out_of_range.unsafeGetTensorImpl()->set_storage_offset(3);
+    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(
+        std::vector<int64_t>{2}, std::vector<int64_t>{1});
+    expect_error([&] {
+        pytorch_vulkan::formatter_presentation_copy(result, out_of_range);
+    }, "undersized");
+    expect(pytorch_vulkan::platform()->pending_transfer_count() == 0,
+           "malformed presentation source left pending resources");
+}
+
 void test_validation_boundaries() {
     auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
     auto device_tensor = at::empty({4}, source.options().device(kDevice));
@@ -80,6 +155,27 @@ void test_validation_boundaries() {
     auto wrong_size = at::ones({3}, at::TensorOptions().dtype(at::kFloat));
     expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, wrong_size, false); },
                  "matching sizes");
+}
+
+void test_formatter_double_storage_and_conversion() {
+    const auto platform = pytorch_vulkan::platform();
+    auto source = at::tensor({1.25F, -2.5F, 0.0F, 7.0F});
+    if (!platform->supports_formatter_double()) {
+        expect_error(
+            [&] { (void)at::empty({4}, at::TensorOptions().dtype(at::kDouble).device(kDevice)); },
+            "shaderFloat64");
+        return;
+    }
+
+    auto double_tensor = at::empty({4}, at::TensorOptions().dtype(at::kDouble).device(kDevice));
+    expect(double_tensor.nbytes() == 4 * sizeof(double),
+           "Double Vulkan storage does not use native sizeof(double)");
+    auto input = at::empty({4}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    auto converted = input.to(at::kDouble);
+    expect(converted.device() == kDevice && converted.scalar_type() == at::kDouble &&
+               converted.is_contiguous() && converted.storage_offset() == 0,
+           "F32-to-Double conversion did not preserve Vulkan formatter layout");
 }
 
 void test_compute_range_rejects_before_descriptor_setup() {
@@ -174,14 +270,16 @@ void test_nonzero_storage_offset_is_rejected() {
                  "storage_offset");
 
     auto source_base = at::empty({5}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(source_base, at::ones({5}, source.options()), false);
     auto source_view = source_base;
     source_view.unsafeGetTensorImpl()->set_storage_offset(1);
     source_view.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
     auto result = at::empty({4}, source.options());
     expect(source_view.is_contiguous() && source_view.storage_offset() != 0,
            "source test tensor is not a contiguous offset view");
-    expect_error([&] { pytorch_vulkan::copy_tensor(result, source_view, false); },
-                 "storage_offset");
+    pytorch_vulkan::copy_tensor(result, source_view, false);
+    expect(result.equal(at::ones({4}, source.options())),
+           "formatter presentation copy rejected a valid source range");
 }
 
 void test_zero_tensor_copy_is_noop() {
@@ -864,7 +962,11 @@ int main() {
         (void)pytorch_vulkan::platform();
         test_copy_round_trip();
         test_copy_returns_without_pending_transfer_resources();
+        test_formatter_presentation_copy_reads_exact_range_and_waits();
+        test_formatter_presentation_copy_preserves_double_and_rejects_general_readback();
+        test_formatter_presentation_copy_rejects_malformed_sources();
         test_validation_boundaries();
+        test_formatter_double_storage_and_conversion();
         test_compute_range_rejects_before_descriptor_setup();
         test_linear_output_count_overflow_rejects_before_dispatch();
         test_convolution_rejects_undersized_allocation_before_dispatch();

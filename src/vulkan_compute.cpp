@@ -6,6 +6,8 @@
 #include "vulkan/shaders/generated/pointwise_spv.h"
 #include "vulkan/shaders/generated/pooling_spv.h"
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
+#include "vulkan/shaders/generated/f32_to_double_spv.h"
+#include "vulkan/shaders/generated/formatter_double_spv.h"
 #include "vulkan_buffer.h"
 #include "vulkan_platform.h"
 
@@ -66,6 +68,12 @@ struct MaskedParams {
 };
 struct PoolingParams {
     uint32_t batch, channels, height, width, operation;
+};
+struct F32ToDoubleParams { uint32_t element_count; };
+struct FormatterDoubleParams {
+    double scalar;
+    uint32_t element_count;
+    uint32_t operation;
 };
 
 constexpr uint32_t kAdd = 0;
@@ -217,8 +225,9 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         const auto create_extra = [&](VkDescriptorSetLayout &descriptor_layout,
                                       VkShaderModule &module,
                                       VkPipelineLayout &pipeline_layout,
-                                      VkPipeline &pipeline, const uint32_t *code,
-                                      std::size_t code_size) {
+                                       VkPipeline &pipeline, const uint32_t *code,
+                                       std::size_t code_size,
+                                       uint32_t push_size = sizeof(ReductionParams)) {
             VkDescriptorSetLayoutCreateInfo layout{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             layout.bindingCount = 2;
@@ -230,8 +239,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                             nullptr, 0, code_size, code};
             check_result(vkCreateShaderModule(device_, &shader, nullptr, &module),
                          "could not create reduction shader module");
-            VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                     static_cast<uint32_t>(sizeof(ReductionParams))};
+             VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size};
             VkPipelineLayoutCreateInfo pipeline_layout_info{
                 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pipeline_layout_info.setLayoutCount = 1;
@@ -269,6 +277,56 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_extra(pooling_descriptor_layout_, pooling_shader_,
                      pooling_pipeline_layout_, pooling_pipeline_,
                      vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize);
+         if (platform.supports_formatter_double()) {
+            create_extra(f32_to_double_descriptor_layout_, f32_to_double_shader_,
+                         f32_to_double_pipeline_layout_, f32_to_double_pipeline_,
+                         vulkan_f32_to_double_shader::kCode,
+                         vulkan_f32_to_double_shader::kCodeSize,
+                          sizeof(F32ToDoubleParams));
+             const VkDescriptorSetLayoutBinding formatter_bindings[] = {
+                 lhs_binding,
+                 {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                 {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                 {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+             VkDescriptorSetLayoutCreateInfo formatter_layout{
+                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+             formatter_layout.bindingCount = 4;
+             formatter_layout.pBindings = formatter_bindings;
+             check_result(vkCreateDescriptorSetLayout(device_, &formatter_layout, nullptr,
+                                                       &formatter_double_descriptor_layout_),
+                          "could not create formatter descriptor layout");
+             VkShaderModuleCreateInfo formatter_shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                                       nullptr, 0,
+                                                       vulkan_formatter_double_shader::kCodeSize,
+                                                       vulkan_formatter_double_shader::kCode};
+             check_result(vkCreateShaderModule(device_, &formatter_shader, nullptr,
+                                               &formatter_double_shader_),
+                          "could not create formatter shader module");
+             VkPushConstantRange formatter_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                                sizeof(FormatterDoubleParams)};
+             VkPipelineLayoutCreateInfo formatter_pipeline_layout{
+                 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+             formatter_pipeline_layout.setLayoutCount = 1;
+             formatter_pipeline_layout.pSetLayouts = &formatter_double_descriptor_layout_;
+             formatter_pipeline_layout.pushConstantRangeCount = 1;
+             formatter_pipeline_layout.pPushConstantRanges = &formatter_push;
+             check_result(vkCreatePipelineLayout(device_, &formatter_pipeline_layout, nullptr,
+                                                  &formatter_double_pipeline_layout_),
+                          "could not create formatter pipeline layout");
+             VkPipelineShaderStageCreateInfo formatter_stage{
+                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+             formatter_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+             formatter_stage.module = formatter_double_shader_;
+             formatter_stage.pName = "main";
+             VkComputePipelineCreateInfo formatter_pipeline{
+                 VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+             formatter_pipeline.stage = formatter_stage;
+             formatter_pipeline.layout = formatter_double_pipeline_layout_;
+             check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
+                                                   &formatter_pipeline, nullptr,
+                                                   &formatter_double_pipeline_),
+                          "could not create formatter pipeline");
+        }
         const VkDescriptorSetLayoutBinding model_bindings[] = {
             lhs_binding,
             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -523,6 +581,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, masked_count_pipeline_, nullptr);
     if (masked_compact_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, masked_compact_pipeline_, nullptr);
+        if (f32_to_double_pipeline_ != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, f32_to_double_pipeline_, nullptr);
+        if (formatter_double_pipeline_ != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, formatter_double_pipeline_, nullptr);
     for (auto module : shader_modules_) {
         if (module != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device_, module, nullptr);
@@ -544,6 +606,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
     if (masked_compact_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
+        if (f32_to_double_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, f32_to_double_shader_, nullptr);
+        if (formatter_double_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, formatter_double_shader_, nullptr);
     for (auto layout : pipeline_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device_, layout, nullptr);
@@ -565,6 +631,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, masked_count_pipeline_layout_, nullptr);
     if (masked_compact_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, masked_compact_pipeline_layout_, nullptr);
+        if (f32_to_double_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, f32_to_double_pipeline_layout_, nullptr);
+        if (formatter_double_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, formatter_double_pipeline_layout_, nullptr);
     for (auto layout : descriptor_set_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device_, layout, nullptr);
@@ -587,6 +657,10 @@ VulkanCompute::~VulkanCompute() {
     if (masked_compact_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, masked_compact_descriptor_layout_,
                                      nullptr);
+        if (f32_to_double_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, f32_to_double_descriptor_layout_, nullptr);
+        if (formatter_double_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, formatter_double_descriptor_layout_, nullptr);
 }
 
 void VulkanCompute::add(VkBuffer lhs, VkBuffer rhs, VkBuffer output,
@@ -646,14 +720,20 @@ void VulkanCompute::unary_alias(VkBuffer input, VkBuffer output, VkDeviceSize by
              bool_dtype);
 }
 
+void VulkanCompute::unary_offset(VkBuffer input, VkBuffer output, VkDeviceSize bytes,
+                                 uint32_t operation, VkDeviceSize input_offset) const {
+    dispatch(3, input, VK_NULL_HANDLE, output, bytes, 0.0F, operation, false, false, false,
+             input_offset, 0);
+}
+
 void VulkanCompute::comparison_scalar(VkBuffer input, VkBuffer output,
                                       VkDeviceSize bytes, float scalar) const {
     dispatch(1, input, VK_NULL_HANDLE, output, bytes, scalar, 8, false, false, true);
 }
 
 void VulkanCompute::comparison_tensor(VkBuffer lhs, VkBuffer rhs, VkBuffer output,
-                                      VkDeviceSize bytes) const {
-    dispatch(0, lhs, rhs, output, bytes, 0.0F, 0, false, false, true);
+                                      VkDeviceSize bytes, uint32_t operation) const {
+    dispatch(0, lhs, rhs, output, bytes, 0.0F, operation, false, false, true);
 }
 
 void VulkanCompute::isfinite(VkBuffer input, VkBuffer output,
@@ -783,6 +863,29 @@ void VulkanCompute::pooling(VkBuffer input, VkBuffer output, uint32_t batch,
         output_numel);
 }
 
+void VulkanCompute::f32_to_double(VkBuffer input, VkBuffer output,
+                                  VkDeviceSize input_bytes, VkDeviceSize output_bytes,
+                                  uint32_t element_count) const {
+    if (!platform_.supports_formatter_double())
+        throw std::invalid_argument("Vulkan formatter Double support is unavailable");
+    F32ToDoubleParams params{element_count};
+    dispatch_extra(input, output, input_bytes, output_bytes, f32_to_double_pipeline_,
+                   f32_to_double_pipeline_layout_, f32_to_double_descriptor_layout_,
+                   &params, sizeof(params), element_count);
+}
+
+void VulkanCompute::formatter_double(VkBuffer input, VkBuffer rhs, VkBuffer output,
+                                     VkDeviceSize input_bytes, VkDeviceSize rhs_bytes,
+                                     VkDeviceSize output_bytes, uint32_t element_count,
+                                     uint32_t operation, double scalar,
+                                     uint32_t output_numel, bool bool_output) const {
+    if (!platform_.supports_formatter_double())
+        throw std::invalid_argument("Vulkan formatter Double support is unavailable");
+    FormatterDoubleParams params{scalar, element_count, operation};
+    dispatch_formatter(input, rhs, output, input_bytes, rhs_bytes, output_bytes, &params,
+                       sizeof(params), output_numel, bool_output);
+}
+
 void VulkanCompute::dispatch_model(VkBuffer input, VkBuffer weight, VkBuffer bias,
                                    VkBuffer output, VkDeviceSize input_bytes,
                                    VkDeviceSize weight_bytes, VkDeviceSize bias_bytes,
@@ -895,12 +998,14 @@ void VulkanCompute::dispatch_extra(VkBuffer input, VkBuffer output,
                                    VkPipeline pipeline,
                                    VkPipelineLayout pipeline_layout,
                                    VkDescriptorSetLayout descriptor_layout,
-                                   const void *params, uint32_t params_size,
-                                   uint32_t output_numel) const {
+                                    const void *params, uint32_t params_size,
+                                    uint32_t output_numel) const {
+    const uint64_t max_elements = static_cast<uint64_t>(max_compute_workgroup_count_x_) *
+                                  static_cast<uint64_t>(kWorkgroupSize);
     if (input == VK_NULL_HANDLE || output == VK_NULL_HANDLE || output_numel == 0 ||
         input_bytes == 0 || input_bytes > max_storage_buffer_range_ ||
         output_bytes > max_storage_buffer_range_ ||
-        output_numel > max_compute_workgroup_count_x_ * kWorkgroupSize)
+        static_cast<uint64_t>(output_numel) > max_elements)
         throw std::invalid_argument("Vulkan compute reduction has an invalid range");
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -984,12 +1089,101 @@ void VulkanCompute::dispatch_extra(VkBuffer input, VkBuffer output,
     }
 }
 
+void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer output,
+                                       VkDeviceSize input_bytes, VkDeviceSize rhs_bytes,
+                                       VkDeviceSize output_bytes, const void *params,
+                                       uint32_t params_size, uint32_t output_numel,
+                                       bool bool_output) const {
+    const uint64_t max_elements = static_cast<uint64_t>(max_compute_workgroup_count_x_) *
+                                  static_cast<uint64_t>(kWorkgroupSize);
+    if (input == VK_NULL_HANDLE || rhs == VK_NULL_HANDLE || output == VK_NULL_HANDLE ||
+        output_numel == 0 || input_bytes == 0 || rhs_bytes == 0 || output_bytes == 0 ||
+        input_bytes > max_storage_buffer_range_ || rhs_bytes > max_storage_buffer_range_ ||
+        output_bytes > max_storage_buffer_range_ || output_numel > max_elements)
+        throw std::invalid_argument("Vulkan formatter Double compute has an invalid range");
+    std::scoped_lock lock(platform_.queue_mutex());
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    const auto cleanup = [&] {
+        if (fence) vkDestroyFence(device_, fence, nullptr);
+        if (cmd) vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
+        if (pool) vkDestroyDescriptorPool(device_, pool, nullptr);
+    };
+    bool submitted = false;
+    try {
+        const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
+        VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = 1;
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
+                     "could not create formatter descriptor pool");
+        VkDescriptorSetAllocateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        set_info.descriptorPool = pool;
+        set_info.descriptorSetCount = 1;
+        set_info.pSetLayouts = &formatter_double_descriptor_layout_;
+        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
+                     "could not allocate formatter descriptor set");
+        const VkDeviceSize bool_bytes = output_bytes;
+        VkDescriptorBufferInfo buffers[] = {{input, 0, input_bytes}, {rhs, 0, rhs_bytes},
+                                            {output, 0, output_bytes},
+                                            {output, 0, bool_bytes}};
+        VkWriteDescriptorSet writes[4]{};
+        for (uint32_t i = 0; i < 4; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &buffers[i];
+        }
+        vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
+        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        allocation.commandPool = command_pool_;
+        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocation.commandBufferCount = 1;
+        check_result(vkAllocateCommandBuffers(device_, &allocation, &cmd),
+                     "could not allocate formatter command buffer");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_result(vkBeginCommandBuffer(cmd, &begin), "could not begin formatter command buffer");
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, formatter_double_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                formatter_double_pipeline_layout_, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(cmd, formatter_double_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, params_size, params);
+        vkCmdDispatch(cmd, (output_numel + kWorkgroupSize - 1) / kWorkgroupSize, 1, 1);
+        check_result(vkEndCommandBuffer(cmd), "could not end formatter command buffer");
+        VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
+                     "could not create formatter fence");
+        platform_.reserve_compute_resources();
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        check_result(vkQueueSubmit(queue_, 1, &submit, fence), "could not submit formatter dispatch");
+        submitted = true;
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+        check_result(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX),
+                     "could not wait for formatter dispatch");
+        cleanup();
+    } catch (const std::exception &error) {
+        if (submitted) vkQueueWaitIdle(queue_);
+        cleanup();
+        throw contextual_error("formatter dispatch failed", error);
+    }
+}
+
 void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer output,
                                     VkBuffer counter, uint32_t element_count,
                                     VkDeviceSize output_bytes, VkPipeline pipeline,
                                     VkPipelineLayout pipeline_layout,
-                                    VkDescriptorSetLayout descriptor_layout,
-                                    uint32_t descriptor_count) const {
+                                     VkDescriptorSetLayout descriptor_layout,
+                                     uint32_t descriptor_count) const {
+    const uint64_t max_elements = static_cast<uint64_t>(max_compute_workgroup_count_x_) *
+                                  static_cast<uint64_t>(kWorkgroupSize);
     const VkDeviceSize input_bytes =
         static_cast<VkDeviceSize>(element_count) * sizeof(float);
     const VkDeviceSize mask_bytes = element_count;
@@ -999,8 +1193,7 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         input_bytes > max_storage_buffer_range_ ||
         mask_bytes > max_storage_buffer_range_ ||
         output_bytes > max_storage_buffer_range_ || output_bytes == 0 ||
-        static_cast<uint64_t>(element_count) >
-            max_compute_workgroup_count_x_ * kWorkgroupSize)
+         static_cast<uint64_t>(element_count) > max_elements)
         throw std::invalid_argument("Vulkan masked-select has an invalid range");
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -1104,7 +1297,8 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
 void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer output,
                              VkDeviceSize bytes, float scalar, uint32_t operation,
                              bool exact_alias, bool bool_dtype,
-                             bool bool_output) const {
+                             bool bool_output, VkDeviceSize lhs_offset,
+                             VkDeviceSize output_offset) const {
     if (mode > 3 || output == VK_NULL_HANDLE ||
         (mode == 0 && (lhs == VK_NULL_HANDLE || rhs == VK_NULL_HANDLE)) ||
         (mode != 0 && ((lhs == VK_NULL_HANDLE) == (rhs == VK_NULL_HANDLE)))) {
@@ -1170,7 +1364,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs, VkBuffer rhs, VkBuffer
         check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
                      "could not allocate pointwise descriptor set");
         VkDescriptorBufferInfo buffers[] = {
-            {lhs, 0, bytes}, {rhs, 0, bytes}, {output, 0, output_bytes}};
+            {lhs, lhs_offset, bytes}, {rhs, 0, bytes}, {output, output_offset, output_bytes}};
         VkWriteDescriptorSet writes[3]{};
         const uint32_t bindings[] = {0, mode == 0 ? 1U : 2U, 2};
         const uint32_t write_count = mode == 0 ? 3 : 2;

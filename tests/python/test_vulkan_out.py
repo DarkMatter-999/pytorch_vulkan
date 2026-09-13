@@ -156,7 +156,7 @@ def test_out_rejects_invalid_metadata_overlap_and_parameters(vulkan_backend):
     rhs = torch.empty((2,), device=vulkan_backend)
     with pytest.raises((RuntimeError, NotImplementedError), match="Vulkan output tensor"):
         torch.add(lhs, rhs, out=torch.empty(2))
-    with pytest.raises((RuntimeError, NotImplementedError), match="float32 and bool"):
+    with pytest.raises((RuntimeError, NotImplementedError), match="dtype Double"):
         torch.add(lhs, rhs, out=torch.empty(2, dtype=torch.float64, device=vulkan_backend))
     with pytest.raises((RuntimeError, NotImplementedError), match="contiguous"):
         torch.add(lhs, rhs, out=torch.empty_strided((2, 2), (1, 2), device=vulkan_backend))
@@ -167,6 +167,17 @@ def test_out_rejects_invalid_metadata_overlap_and_parameters(vulkan_backend):
         torch.add(lhs, rhs, alpha=2, out=torch.empty_like(lhs))
     with pytest.raises((RuntimeError, NotImplementedError), match="non-finite"):
         torch.mul(lhs, float("nan"), out=torch.empty_like(lhs))
+
+
+def test_out_rejects_unrelated_double_operators(vulkan_backend):
+    if not pytorch_vulkan.formatter_double_supported():
+        pytest.skip("formatter Double capability is unavailable")
+
+    value = torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
+    with pytest.raises(RuntimeError, match="Vulkan add does not support dtype Double"):
+        torch.add(value, value)
+    with pytest.raises(RuntimeError, match="Vulkan mul does not support dtype Double"):
+        torch.mul(value, value)
 
 
 def test_out_rejects_nonzero_storage_offset(vulkan_backend):

@@ -22,14 +22,29 @@ def test_torch_empty_uses_vulkan_allocator():
     assert tensor.device.index == 0
 
 
-def test_torch_empty_without_dtype_rejects_deferred_default_double():
+def test_torch_empty_without_dtype_uses_default_double_capability():
     previous_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(torch.float64)
-        with pytest.raises(RuntimeError, match="only float32 and bool"):
-            torch.empty((16,), device="vk")
+        if pytorch_vulkan.formatter_double_supported():
+            tensor = torch.empty((16,), device="vk")
+            assert tensor.dtype is torch.float64
+        else:
+            with pytest.raises(RuntimeError, match="shaderFloat64"):
+                torch.empty((16,), device="vk")
     finally:
         torch.set_default_dtype(previous_dtype)
+
+
+def test_formatter_double_allocation_uses_native_storage_when_supported():
+    if not pytorch_vulkan.formatter_double_supported():
+        with pytest.raises(RuntimeError, match="shaderFloat64"):
+            torch.empty((4,), dtype=torch.float64, device="vk")
+        return
+
+    tensor = torch.empty((4,), dtype=torch.float64, device="vk")
+    assert tensor.dtype is torch.float64
+    assert tensor.nbytes == 4 * torch.tensor([], dtype=torch.float64).element_size()
 
 
 def test_multiple_vulkan_tensors_have_independent_lifetimes():

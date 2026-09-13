@@ -8,6 +8,7 @@ namespace pytorch_vulkan {
 
 // Validates the dtype boundary before allocation, transfer, or operator work.
 void validate_vulkan_dtype(c10::ScalarType dtype, const char *operation);
+bool formatter_double_supported();
 void validate_unary_dtype(c10::ScalarType dtype, PointwiseOperation operation,
                           const char *operation_name);
 void validate_binary_dtypes(c10::ScalarType lhs, c10::ScalarType rhs,

@@ -243,7 +243,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                     available_int8.sType =
                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
                     available_8bit.pNext = &available_int8;
-                    vkGetPhysicalDeviceFeatures2(device, &available_features);
+                     vkGetPhysicalDeviceFeatures2(device, &available_features);
+                     const bool formatter_double_supported = available_features.features.shaderFloat64;
                     const bool bool_pointwise_supported =
                         VK_VERSION_MINOR(properties.apiVersion) >= 2 &&
                         available_int8.shaderInt8 &&
@@ -261,13 +262,16 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
                     device_info.queueCreateInfoCount = 1;
                     device_info.pQueueCreateInfos = &queue_info;
-                    device_info.pEnabledFeatures = nullptr;
+                     VkPhysicalDeviceFeatures enabled_features{};
+                     enabled_features.shaderFloat64 = formatter_double_supported;
+                     device_info.pEnabledFeatures = &enabled_features;
                     device_info.pNext = bool_pointwise_supported ? &enabled_8bit : nullptr;
                     check_result(
                         vkCreateDevice(device, &device_info, nullptr, &device_),
                         "Could not create Vulkan logical device");
                     physical_device_ = device;
-                    bool_pointwise_supported_ = bool_pointwise_supported;
+                     bool_pointwise_supported_ = bool_pointwise_supported;
+                     formatter_double_supported_ = formatter_double_supported;
                     vkGetDeviceQueue(device_, family, 0, &compute_queue_);
                     VkCommandPoolCreateInfo command_pool_info{};
                     command_pool_info.sType =
@@ -433,8 +437,13 @@ bool VulkanPlatform::supports_bool_pointwise() const {
     return bool_pointwise_supported_;
 }
 
+bool VulkanPlatform::supports_formatter_double() const {
+    return formatter_double_supported_;
+}
+
 void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
-                                       VkDeviceSize size) const {
+                                       VkDeviceSize size, VkDeviceSize source_offset,
+                                       VkDeviceSize destination_offset) const {
     if (source == VK_NULL_HANDLE || destination == VK_NULL_HANDLE || size == 0) {
         throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
     }
@@ -480,6 +489,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
                      "Could not begin Vulkan command buffer");
 
         VkBufferCopy copy_region{};
+        copy_region.srcOffset = source_offset;
+        copy_region.dstOffset = destination_offset;
         copy_region.size = size;
         vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
         check_result(vkEndCommandBuffer(command_buffer),

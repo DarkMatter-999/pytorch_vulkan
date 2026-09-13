@@ -25,14 +25,17 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                    src/vulkan/shaders/generated/masked_select_spv.sha256
                      src/vulkan/shaders/generated/convolution_spv.h
                      src/vulkan/shaders/generated/convolution_spv.sha256
-                    src/vulkan/shaders/generated/pooling_spv.h
-                    src/vulkan/shaders/generated/pooling_spv.sha256
+                     src/vulkan/shaders/generated/pooling_spv.h
+                     src/vulkan/shaders/generated/pooling_spv.sha256
+                     src/vulkan/shaders/generated/f32_to_double_spv.h
+                     src/vulkan/shaders/generated/formatter_double_spv.h
+                     src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
                   src/vulkan/shaders/glsl/reduction.comp src/vulkan/shaders/glsl/indexing.comp
                     src/vulkan/shaders/glsl/broadcast.comp
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp
-                     src/vulkan/shaders/glsl/pooling.comp)
+                      src/vulkan/shaders/glsl/pooling.comp)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -122,8 +125,9 @@ if(BUILD_PYTHON_EXTENSION)
            src/vulkan/operators/indexing.h src/vulkan/operators/linear.cpp
            src/vulkan/operators/linear.h src/vulkan/operators/convolution.cpp
            src/vulkan/operators/convolution.h src/vulkan/operators/pooling.cpp
-            src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
-            src/vulkan/operators/comparison.h)
+             src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
+              src/vulkan/operators/comparison.h src/vulkan/operators/f32_to_double.cpp
+              src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -175,14 +179,21 @@ if(BUILD_PYTHON_EXTENSION)
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/convolution_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/convolution_spv.sha256
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/convolution.comp)
-        add_custom_target(vulkan_pooling_shader_integrity
+       add_custom_target(vulkan_pooling_shader_integrity
                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pooling_spv.py
                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py
                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py
                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pooling_spv.py
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pooling_spv.h
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pooling_spv.sha256
-                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pooling.comp)
+                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pooling.comp)
+       add_custom_target(vulkan_formatter_double_shader_integrity
+                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
+                         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_formatter_double_spv.py
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/formatter_double_spv.h
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/formatter_double_spv.sha256
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/formatter_double.comp)
       if(BUILD_TESTING)
           add_test(NAME vulkan_reduction_shader_integrity
                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
@@ -193,7 +204,9 @@ if(BUILD_PYTHON_EXTENSION)
             add_test(NAME vulkan_convolution_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py)
            add_test(NAME vulkan_pooling_shader_integrity
-                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
+                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
+           add_test(NAME vulkan_formatter_double_shader_integrity
+                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
       endif()
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
@@ -220,8 +233,10 @@ if(BUILD_PYTHON_EXTENSION)
                     src/vulkan/operators/unary.cpp src/vulkan/operators/autograd.cpp
                      src/vulkan/operators/view.cpp src/vulkan/operators/reduction.cpp
                       src/vulkan/operators/indexing.cpp src/vulkan/operators/comparison.cpp
-                      src/vulkan/operators/linear.cpp src/vulkan/operators/convolution.cpp
-                      src/vulkan/operators/pooling.cpp)
+                       src/vulkan/operators/linear.cpp src/vulkan/operators/convolution.cpp
+                        src/vulkan/operators/f32_to_double.cpp
+                        src/vulkan/operators/formatter_double.cpp
+                       src/vulkan/operators/pooling.cpp)
     target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
     target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)

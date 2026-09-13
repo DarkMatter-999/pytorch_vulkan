@@ -270,8 +270,11 @@ def test_non_contiguous_add_operand_is_rejected(vulkan_backend):
 
 
 def test_non_float32_add_operand_is_rejected(vulkan_backend):
-    with pytest.raises(RuntimeError, match="float32 and bool"):
+    if pytorch_vulkan.formatter_double_supported():
         torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
+    else:
+        with pytest.raises(RuntimeError, match="shaderFloat64"):
+            torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
 
 
 def test_second_vulkan_device_add_is_rejected(vulkan_backend):

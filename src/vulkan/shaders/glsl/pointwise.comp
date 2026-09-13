@@ -76,6 +76,8 @@ float apply_unary(float value) {
   }
   if (params.operation == RELU_BACKWARD)
     return value > 0.0 ? 1.0 : 0.0;
+  if (params.operation == 10u)
+    return ceil(value);
   return 0.0;
 }
 
@@ -90,7 +92,8 @@ void main() {
   else if (params.operation == 2u)
     out_data[index] = uint8_t((lhs[index] != 0) && (rhs[index] != 0));
 #elif defined(POINTWISE_BOOL_OUTPUT)
-  out_data[index] = uint8_t(uint(lhs[index] == rhs[index]));
+   out_data[index] = uint8_t(uint(params.operation == 10u ? lhs[index] != rhs[index]
+                                                         : lhs[index] == rhs[index]));
 #else
   out_data[index] = apply_operation(lhs[index], rhs[index]);
 #endif

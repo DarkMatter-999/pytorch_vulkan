@@ -145,10 +145,10 @@ use CPU fallback, payload readback, or `dlprimitives`. CPU transfers in model
 tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4
 semantics and compare with the existing floating-point test tolerances.
 
-Float16, Double, general views, strided execution, unsupported model variants,
+Float16, general views, strided execution, unsupported model variants,
 higher-order gradients, and implicit `fill_`/accumulated-leaf paths remain
-explicitly rejected or deferred. Formatter-compatible Double is the separate
-6G follow-up; 6A's native printing/Double work is not part of this gate.
+explicitly rejected or deferred. Formatter-compatible Double is limited to the
+separate formatter contract documented below; it is not general Double support.
 
 ## Vulkan pointwise scalar operations
 
@@ -237,6 +237,25 @@ normal PyTorch behavior. Higher-order gradients, forward-mode AD, arbitrary view
 replay and general reshape autograd semantics remain deferred; retained-graph
 replay is supported within the documented in-place and gradient-accumulation
 boundaries.
+
+## Formatter-Compatible Double
+
+The formatter Double tier is gated by the selected Vulkan physical device's
+`shaderFloat64` feature. The feature is enabled only when reported as available;
+devices without it reject Double allocation and F32-to-Double conversion with an
+explicit capability error. Supported Double allocations use native 64-bit
+storage (`sizeof(double)`), and the only conversion is a checked, contiguous,
+zero-offset Vulkan F32 to Vulkan Double conversion on `vk:0`.
+
+The exact formatter schemas are `abs.default`, `min.default`, `max.default`,
+`ceil.default`, `ne.Tensor`, `div.Tensor`, `gt.Scalar`, `lt.Scalar`, and
+`_local_scalar_dense.default`. Formatter statistics and intermediate values stay
+Vulkan-resident. Only the final scalar value crosses the explicit presentation
+transfer used by `_local_scalar_dense`; normal Double CPU payload readback,
+hidden materialization, and normal CPU fallback remain unsupported. Double
+`add`, `mul`, model operators, arbitrary views, and other unrelated operators
+remain rejected. The dedicated shader artifacts are checked by
+`vulkan_formatter_double_shader_integrity`.
 
 ## Vulkan unary operations
 

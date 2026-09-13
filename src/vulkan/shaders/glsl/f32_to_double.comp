@@ -1,0 +1,14 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Output { double output_data[]; };
+
+layout(push_constant) uniform Params { uint element_count; } params;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index < params.element_count)
+    output_data[index] = double(input_data[index]);
+}

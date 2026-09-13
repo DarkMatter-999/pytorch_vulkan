@@ -11,20 +11,53 @@ def vulkan_backend():
     return "vk:0"
 
 
-def test_print_and_repr_reject_deferred_double_formatting(vulkan_backend):
-    values = torch.tensor([-3.5, 0.0, 2.25, 1.0e20], dtype=torch.float32)
+def test_print_and_repr_present_exact_f32_values(vulkan_backend, capsys):
+    values = torch.tensor(
+        [-3.5, 0.0, 2.25, torch.finfo(torch.float32).max, 1.0e-7],
+        dtype=torch.float32,
+    )
     tensor = values.to(vulkan_backend)
 
-    with pytest.raises(RuntimeError, match="Double"):
-        repr(tensor)
+    rendered = repr(tensor)
+    print(tensor)
+    printed = capsys.readouterr().out
+
+    for text in (rendered, printed):
+        assert "tensor(" in text
+        assert "-3.5000" in text
+        assert "0.0000" in text
+        assert "2.2500" in text
+        assert "3.4028e+38" in text
+        assert "1.0000e-07" in text
+        assert "device='vk:0'" in text
 
 
-def test_multidimensional_print_rejects_deferred_double_formatting(vulkan_backend):
-    cpu = torch.tensor([[-1.0, 0.0], [3.5, 7.25]], dtype=torch.float32)
+def test_multidimensional_print_presents_values_without_materializing_view(vulkan_backend, capsys):
+    cpu = torch.tensor(
+        [[-1.0, 0.0, 1.0e20], [3.5, 7.25, -1.0e-7]], dtype=torch.float32
+    )
     tensor = cpu.to(vulkan_backend)
 
-    with pytest.raises(RuntimeError, match="Double"):
-        print(tensor)
+    view = tensor.view(-1)
+    before = (tuple(tensor.shape), tuple(tensor.stride()), tensor.storage_offset())
+    rendered = repr(tensor)
+    print(tensor)
+    printed = capsys.readouterr().out
+
+    for text in (rendered, printed):
+        assert "-1.0000" in text
+        assert "1.0000e+20" in text
+        assert "-1.0000e-07" in text
+        assert "device='vk:0'" in text
+    assert view.untyped_storage().data_ptr() == tensor.untyped_storage().data_ptr()
+    assert before == (tuple(tensor.shape), tuple(tensor.stride()), tensor.storage_offset())
+
+
+def test_f32_tolist_presents_the_requested_values(vulkan_backend):
+    values = torch.tensor([[-3.5, 0.0], [2.25, 1.0e20]], dtype=torch.float32)
+    tensor = values.to(vulkan_backend)
+
+    assert tensor.tolist() == values.tolist()
 
 
 def test_isfinite_accepts_float32_max(vulkan_backend):
@@ -35,15 +68,14 @@ def test_isfinite_accepts_float32_max(vulkan_backend):
     torch.testing.assert_close(result.cpu(), torch.tensor([True]))
 
 
-def test_print_flattening_view_rejects_deferred_double_formatting(vulkan_backend):
+def test_print_flattening_view_supports_formatter_double(vulkan_backend):
     source = torch.tensor([[-2.0, 0.0], [4.0, 8.0]], dtype=torch.float32).to(vulkan_backend)
     flattened = source.view(-1)
 
     assert flattened.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
     assert tuple(flattened.shape) == (4,)
     assert tuple(flattened.stride()) == (1,)
-    with pytest.raises(RuntimeError, match="Double"):
-        repr(flattened)
+    assert "tensor(" in repr(flattened)
 
 
 def test_masked_select_compacts_f32_values_on_vulkan(vulkan_backend):

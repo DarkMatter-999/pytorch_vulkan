@@ -1,4 +1,5 @@
 #include "autograd.h"
+#include "formatter_double.h"
 
 #include "binary.h"
 #include "convolution.h"
@@ -252,6 +253,8 @@ at::Tensor autograd_mul_scalar(const at::Tensor &tensor, const at::Scalar &scala
 }
 
 at::Tensor autograd_abs(const at::Tensor &input) {
+    if (input.scalar_type() == at::kDouble)
+        return pytorch_vulkan::formatter_double_abs(input);
     return autograd_unary_saved_input<&abs_tensor, &abs_backward_tensor>(input);
 }
 

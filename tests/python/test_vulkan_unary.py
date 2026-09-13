@@ -120,8 +120,11 @@ def test_unary_inplace_variant_is_rejected(vulkan_backend, operation, method):
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
 def test_unary_float64_input_is_rejected(vulkan_backend, operation):
-    with pytest.raises(RuntimeError, match="float32 and bool"):
+    if pytorch_vulkan.formatter_double_supported():
         torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
+    else:
+        with pytest.raises(RuntimeError, match="shaderFloat64"):
+            torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
@@ -144,6 +147,14 @@ def test_unary_nonzero_storage_offset_is_rejected(vulkan_backend, operation):
     assert tensor.storage_offset() != 0
 
     _assert_unary_rejected(lambda: operation(tensor), "zero.*offset|offset.*zero")
+
+
+def test_ceil_nonzero_storage_offset_is_rejected(vulkan_backend):
+    base = torch.tensor([0.25, 1.25, 2.25], dtype=torch.float32, device=vulkan_backend)
+    tensor = torch.as_strided(base, (2,), (1,), storage_offset=1)
+    assert tensor.storage_offset() != 0
+
+    _assert_unary_rejected(lambda: torch.ceil(tensor), "zero.*offset|offset.*zero")
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)

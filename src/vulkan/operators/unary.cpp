@@ -8,6 +8,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
+#include "formatter_double.h"
 
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
@@ -31,10 +32,14 @@ void validate_input(const at::Tensor &input, pytorch_vulkan::PointwiseOperation 
                 " requires a strided tensor");
     TORCH_CHECK(input.is_contiguous(), "Vulkan ", operation_name,
                 " requires a contiguous tensor");
-    TORCH_CHECK(input.storage_offset() == 0, "Vulkan ", operation_name,
+    TORCH_CHECK(input.storage_offset() == 0 ||
+                    (input.dim() == 0 &&
+                     operation == pytorch_vulkan::PointwiseOperation::Ceil),
+                "Vulkan ", operation_name,
                 " does not support tensors with non-zero storage_offset()");
     pytorch_vulkan::validate_unary_dtype(input.scalar_type(), operation, operation_name);
-    TORCH_CHECK(input.dim() != 0, "Vulkan ", operation_name,
+    TORCH_CHECK(input.dim() != 0 || operation == pytorch_vulkan::PointwiseOperation::Ceil,
+                "Vulkan ", operation_name,
                 " does not support zero-dimensional tensor operands");
 }
 
@@ -101,6 +106,30 @@ at::Tensor relu_tensor(const at::Tensor &input) {
     return dispatch_unary(input, PointwiseOperation::Relu, "relu");
 }
 
+at::Tensor ceil_tensor(const at::Tensor &input) {
+    if (input.scalar_type() == at::kDouble)
+        return formatter_double_ceil(input);
+    if (input.dim() == 0 && input.storage_offset() != 0) {
+        validate_input(input, PointwiseOperation::Ceil, "ceil");
+        auto output = at::empty(input.sizes(), input.options());
+        const auto &input_data = input.storage().data_ptr();
+        const auto &output_data = output.storage().data_ptr();
+        validate_allocation(input_data,
+                            static_cast<VkDeviceSize>((input.storage_offset() + 1) * sizeof(float)),
+                            "ceil input");
+        validate_allocation(output_data, sizeof(float), "ceil output");
+        const auto &platform = allocation_platform(input_data);
+        TORCH_CHECK(&platform == &allocation_platform(output_data),
+                    "Vulkan ceil requires one Vulkan platform");
+        platform.compute().unary_offset(allocation_buffer(input_data).buffer(),
+                                        allocation_buffer(output_data).buffer(), sizeof(float),
+                                        static_cast<uint32_t>(PointwiseOperation::Ceil),
+                                        static_cast<VkDeviceSize>(input.storage_offset() * sizeof(float)));
+        return output;
+    }
+    return dispatch_unary(input, PointwiseOperation::Ceil, "ceil");
+}
+
 at::Tensor abs_backward_tensor(const at::Tensor &input, const at::Tensor &grad) {
     return at::mul(dispatch_unary(input, PointwiseOperation::AbsBackward, "abs backward"), grad);
 }
@@ -142,6 +171,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("neg", &pytorch_vulkan::neg_tensor);
     m.impl("abs", &pytorch_vulkan::abs_tensor);
     m.impl("relu", &pytorch_vulkan::relu_tensor);
+    m.impl("ceil", &pytorch_vulkan::ceil_tensor);
     m.impl("neg.out", &pytorch_vulkan::neg_out);
     m.impl("abs.out", &pytorch_vulkan::abs_out);
     m.impl("relu.out", &pytorch_vulkan::relu_out);

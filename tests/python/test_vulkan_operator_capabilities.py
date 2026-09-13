@@ -24,6 +24,37 @@ def test_model_matrix_declares_fixed_phase_6_slices():
         assert operation in matrix
 
 
+def test_formatter_double_matrix_declares_exact_surface_and_boundaries():
+    matrix = open("docs/vulkan_operator_capability_matrix.md").read()
+    for entry in (
+        "`aten::abs.default`",
+        "`aten::min.default`",
+        "`aten::max.default`",
+        "`aten::ceil.default`",
+        "`aten::ne.Tensor`",
+        "`aten::div.Tensor`",
+        "`aten::gt.Scalar`",
+        "`aten::lt.Scalar`",
+        "`aten::_local_scalar_dense.default`",
+        "shaderFloat64",
+        "sizeof(double)",
+        "explicit final-value presentation transfer",
+        "no normal CPU fallback",
+        "Vulkan formatter Double payload readback to CPU is unsupported",
+        "Vulkan formatter Double support requires the shaderFloat64 device feature",
+        "Vulkan formatter conversion supports only Vulkan float32 to Vulkan Double",
+        "Double `add`, `mul`, and unrelated operators remain rejected",
+    ):
+        assert entry in matrix
+
+
+def test_formatter_double_matrix_rejects_unrelated_schema_claims():
+    matrix = open("docs/vulkan_operator_capability_matrix.md").read()
+    assert "`aten::add.Tensor`" not in matrix
+    assert "`aten::mul.Tensor`" not in matrix
+    assert "general Double readback" not in matrix
+
+
 @pytest.fixture
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
