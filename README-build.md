@@ -114,6 +114,21 @@ PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
   tests/python/test_vulkan_transfer.py -q
 ```
 
+Float16 is explicitly deferred. Vulkan allocation, CPU/Vulkan transfer, and
+Vulkan operator requests with `torch.float16` fail at the capability boundary
+with a `Vulkan float16 support is deferred` error, before Vulkan dispatch or
+CPU materialization. CPU-only float16 behavior remains PyTorch behavior.
+
+Before enabling float16, a separate design must specify all of the following:
+
+- PyTorch-compatible storage byte layout and allocation sizing.
+- Vulkan 16-bit storage and arithmetic feature requirements and device policy.
+- Host/device transfer representation, staging, synchronization, and endianness.
+- Scalar promotion and mixed-dtype operator rules.
+- Float16 shader generation, arithmetic precision, and ABI/push-constant path.
+- Operator registration and forward parity coverage.
+- First-order reverse-mode autograd formulas, saved tensors, and gradient dtype/storage.
+
 Multi-device support, general views, and advanced operators are deferred.
 
 ## Vulkan pointwise scalar operations

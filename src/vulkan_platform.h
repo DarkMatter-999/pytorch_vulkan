@@ -48,6 +48,7 @@ class VulkanPlatform {
                           VkDeviceSize size) const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
     bool validation_enabled() const;
+    bool supports_bool_pointwise() const;
 
   private:
     struct PendingTransferResources {
@@ -76,6 +77,7 @@ class VulkanPlatform {
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     bool validation_enabled_ = false;
+    bool bool_pointwise_supported_ = false;
     VulkanDeviceInfo device_info_;
     uint32_t api_version_ = VK_API_VERSION_1_1;
     mutable std::vector<PendingTransferResources> pending_transfer_resources_;

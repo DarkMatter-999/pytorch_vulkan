@@ -16,8 +16,14 @@ endif()
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   if(NOT TARGET vulkan_platform)
     add_library(vulkan_platform STATIC src/vulkan_platform.cpp
-                  src/vulkan_compute.cpp src/vulkan/shaders/generated/pointwise_spv.h
-                  src/vulkan/shaders/glsl/pointwise.comp)
+                   src/vulkan_compute.cpp src/vulkan/shaders/generated/pointwise_spv.h
+                   src/vulkan/shaders/generated/reduction_indexing_spv.h
+                   src/vulkan/shaders/generated/reduction_indexing_spv.sha256
+                   src/vulkan/shaders/generated/model_spv.h
+                   src/vulkan/shaders/generated/model_spv.sha256
+                   src/vulkan/shaders/glsl/pointwise.comp
+                  src/vulkan/shaders/glsl/reduction.comp src/vulkan/shaders/glsl/indexing.comp
+                  src/vulkan/shaders/glsl/broadcast.comp)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -80,7 +86,7 @@ if(BUILD_PYTHON_EXTENSION)
     target_link_libraries(vulkan_device_guard PUBLIC vulkan_platform ${TORCH_LIBRARIES})
 
     add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp src/vulkan_layout.cpp
-                src/vulkan_transfer.cpp)
+                src/vulkan_transfer.cpp src/vulkan/operators/capability.cpp)
     target_compile_features(vulkan_allocator PUBLIC cxx_std_17)
     set_target_properties(vulkan_allocator PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_allocator PUBLIC
@@ -99,9 +105,15 @@ if(BUILD_PYTHON_EXTENSION)
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
          src/vulkan/operators/autograd.h src/vulkan/operators/binary.h
          src/vulkan/operators/out.cpp
-         src/vulkan/operators/out.h src/vulkan/operators/unary.cpp
+          src/vulkan/operators/out.h src/vulkan/operators/capability.h
+          src/vulkan/operators/unary.cpp
          src/vulkan/operators/unary.h src/vulkan/operators/view.cpp
-         src/vulkan/operators/view.h)
+          src/vulkan/operators/view.h src/vulkan/operators/reduction.cpp
+          src/vulkan/operators/reduction.h src/vulkan/operators/indexing.cpp
+           src/vulkan/operators/indexing.h src/vulkan/operators/linear.cpp
+           src/vulkan/operators/linear.h src/vulkan/operators/convolution.cpp
+           src/vulkan/operators/convolution.h src/vulkan/operators/pooling.cpp
+           src/vulkan/operators/pooling.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -124,6 +136,28 @@ if(BUILD_PYTHON_EXTENSION)
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/__init__.py"
         "${CMAKE_BINARY_DIR}/pytorch_vulkan/__init__.py"
          COPYONLY)
+    add_custom_target(vulkan_reduction_shader_integrity
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
+                      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
+                              ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_reduction_indexing_spv.py
+                              ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/reduction_indexing_spv.h
+                              ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/reduction_indexing_spv.sha256
+                              ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/reduction.comp
+                              ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/indexing.comp
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/broadcast.comp)
+     add_custom_target(vulkan_model_shader_integrity
+                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py
+                       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py
+                               ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_model_spv.py
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/model_spv.h
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/model_spv.sha256
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/model.comp)
+    if(BUILD_TESTING)
+         add_test(NAME vulkan_reduction_shader_integrity
+                  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
+         add_test(NAME vulkan_model_shader_integrity
+                  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py)
+    endif()
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
         "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
@@ -144,10 +178,11 @@ if(BUILD_PYTHON_EXTENSION)
     endif()
 
     add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp
-                   src/vulkan/operators/add.cpp src/vulkan/operators/sub.cpp
-                   src/vulkan/operators/mul.cpp src/vulkan/operators/out.cpp
-                   src/vulkan/operators/unary.cpp src/vulkan/operators/autograd.cpp
-                   src/vulkan/operators/view.cpp)
+                    src/vulkan/operators/add.cpp src/vulkan/operators/sub.cpp
+                    src/vulkan/operators/mul.cpp src/vulkan/operators/out.cpp
+                    src/vulkan/operators/unary.cpp src/vulkan/operators/autograd.cpp
+                   src/vulkan/operators/view.cpp src/vulkan/operators/reduction.cpp
+                   src/vulkan/operators/indexing.cpp)
     target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
     target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -159,6 +194,20 @@ if(BUILD_PYTHON_EXTENSION)
     if(BUILD_TESTING)
         add_test(NAME vulkan_transfer_tensor_test COMMAND vulkan_transfer_tensor_test)
         set_tests_properties(vulkan_transfer_tensor_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(vulkan_dtype_test tests/cpp/vulkan_dtype_test.cpp)
+    target_compile_features(vulkan_dtype_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_dtype_test PRIVATE ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        target_compile_options(vulkan_dtype_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_dtype_test PRIVATE vulkan_allocator
+                          vulkan_device_guard vulkan_buffer vulkan_platform
+                          ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_dtype_test COMMAND vulkan_dtype_test)
+        set_tests_properties(vulkan_dtype_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
     add_executable(vulkan_serialization_probe tests/cpp/vulkan_serialization_probe.cpp)

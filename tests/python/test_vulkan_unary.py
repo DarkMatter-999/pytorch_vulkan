@@ -120,9 +120,8 @@ def test_unary_inplace_variant_is_rejected(vulkan_backend, operation, method):
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
 def test_unary_float64_input_is_rejected(vulkan_backend, operation):
-    tensor = torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
-
-    _assert_unary_rejected(lambda: operation(tensor), "float32")
+    with pytest.raises(RuntimeError, match="float32 and bool"):
+        torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
@@ -162,3 +161,10 @@ def test_unary_zero_dimensional_input_is_rejected(vulkan_backend, operation):
     tensor = torch.empty((), dtype=torch.float32, device=vulkan_backend)
 
     _assert_unary_rejected(lambda: operation(tensor), "zero-dimensional")
+
+
+@pytest.mark.parametrize("operation", UNARY_OPERATIONS)
+def test_unary_bool_input_is_rejected_by_capability_matrix(vulkan_backend, operation):
+    tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+
+    _assert_unary_rejected(lambda: operation(tensor), "bool|float32|support")

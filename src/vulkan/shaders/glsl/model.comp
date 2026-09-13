@@ -1,0 +1,18 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0) readonly buffer Input { float values[]; };
+layout(set = 0, binding = 1) readonly buffer Weight { float weight[]; };
+layout(set = 0, binding = 2) readonly buffer Bias { float bias[]; };
+layout(set = 0, binding = 3) writeonly buffer Output { float results[]; };
+layout(push_constant) uniform Params { uint rows; uint features; uint outputs; } params;
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  uint count = params.rows * params.outputs;
+  if (index >= count) return;
+  uint row = index / params.outputs;
+  uint column = index % params.outputs;
+  float value = bias[column];
+  for (uint i = 0; i < params.features; ++i)
+    value += values[row * params.features + i] * weight[column * params.features + i];
+  results[index] = value;
+}

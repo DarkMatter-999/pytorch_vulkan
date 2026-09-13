@@ -1,0 +1,48 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Output { float output_data[]; };
+layout(push_constant, std430) uniform Params {
+  uint rank;
+  uint output_numel;
+  uint reduce_mask;
+  uint reduce_numel;
+  uint sizes[8];
+  uint mean;
+} params;
+void main() {
+  uint output_index = gl_GlobalInvocationID.x;
+  if (output_index >= params.output_numel) return;
+  uint remainder = output_index;
+  uint base = 0u;
+  for (int d = int(params.rank) - 1; d >= 0; --d) {
+    uint dim = uint(d);
+    if ((params.reduce_mask & (1u << dim)) == 0u) {
+      uint coordinate = remainder % params.sizes[dim];
+      remainder /= params.sizes[dim];
+      uint stride = 1u;
+      for (uint j = dim + 1u; j < params.rank; ++j)
+        stride *= params.sizes[j];
+      base += coordinate * stride;
+    }
+  }
+  float value = 0.0;
+  uint reduced = params.reduce_numel;
+  for (uint index = 0u; index < reduced; ++index) {
+    uint reduced_remainder = index;
+    uint input_index = base;
+    for (int d = int(params.rank) - 1; d >= 0; --d) {
+      uint dim = uint(d);
+      if ((params.reduce_mask & (1u << dim)) != 0u) {
+        uint coordinate = reduced_remainder % params.sizes[dim];
+        reduced_remainder /= params.sizes[dim];
+        uint stride = 1u;
+        for (uint j = dim + 1u; j < params.rank; ++j)
+          stride *= params.sizes[j];
+        input_index += coordinate * stride;
+      }
+    }
+    value += input_data[input_index];
+  }
+  output_data[output_index] = params.mean != 0u ? value / float(reduced) : value;
+}

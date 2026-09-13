@@ -114,3 +114,15 @@ def test_binary_inplace_rejection_remains_explicit(vulkan_backend):
     other = _vk([3.0, 4.0], vulkan_backend)
     with pytest.raises((RuntimeError, NotImplementedError), match="in-place|Could not run"):
         tensor.mul_(other)
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.mul])
+def test_bool_binary_result_does_not_require_grad(vulkan_backend, operation):
+    lhs = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+    rhs = torch.tensor([False, True], dtype=torch.bool, device=vulkan_backend)
+
+    result = operation(lhs, rhs)
+
+    assert result.dtype is torch.bool
+    assert not result.requires_grad
+    assert result.grad_fn is None

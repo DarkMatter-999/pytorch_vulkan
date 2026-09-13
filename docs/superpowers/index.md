@@ -6,6 +6,7 @@ This index covers the current project documentation under `docs/superpowers/` an
 
 ### Specifications and Roadmaps
 
+- [Vulkan Phase 4 Capability Matrix](../vulkan_operator_capability_matrix.md) - Versioned PyTorch 2.4 operator/dtype inventory and fixed CNN/MLP workload contract.
 - [Vulkan Serialization And Multiprocessing Design](specs/2026-09-12-vulkan-serialization-multiprocessing-design.md) - Explicit CPU-owned Vulkan serialization and spawn-based multiprocessing contract.
 - [Vulkan Autograd Integration Design](specs/2026-09-12-vulkan-autograd-design.md) - Hybrid first-order autograd support for shipped operators and paired forward/backward rollout policy.
 - [Vulkan View And Reshape Design](specs/2026-09-12-vulkan-view-reshape-design.md) - Staged design for safe metadata-only views and later reshape support.

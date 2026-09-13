@@ -234,14 +234,40 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                     queue_info.queueCount = 1;
                     queue_info.pQueuePriorities = &queue_priority;
 
+                    VkPhysicalDeviceFeatures2 available_features{};
+                    available_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    VkPhysicalDevice8BitStorageFeatures available_8bit{};
+                    available_8bit.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+                    available_features.pNext = &available_8bit;
+                    VkPhysicalDeviceShaderFloat16Int8Features available_int8{};
+                    available_int8.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+                    available_8bit.pNext = &available_int8;
+                    vkGetPhysicalDeviceFeatures2(device, &available_features);
+                    const bool bool_pointwise_supported =
+                        VK_VERSION_MINOR(properties.apiVersion) >= 2 &&
+                        available_int8.shaderInt8 &&
+                        available_8bit.storageBuffer8BitAccess;
+
+                    VkPhysicalDevice8BitStorageFeatures enabled_8bit{};
+                    enabled_8bit.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+                    enabled_8bit.storageBuffer8BitAccess = bool_pointwise_supported;
+                    VkPhysicalDeviceShaderFloat16Int8Features enabled_int8{};
+                    enabled_int8.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+                    enabled_int8.shaderInt8 = bool_pointwise_supported;
+                    enabled_8bit.pNext = &enabled_int8;
                     VkDeviceCreateInfo device_info{};
                     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
                     device_info.queueCreateInfoCount = 1;
                     device_info.pQueueCreateInfos = &queue_info;
+                    device_info.pEnabledFeatures = nullptr;
+                    device_info.pNext = bool_pointwise_supported ? &enabled_8bit : nullptr;
                     check_result(
                         vkCreateDevice(device, &device_info, nullptr, &device_),
                         "Could not create Vulkan logical device");
                     physical_device_ = device;
+                    bool_pointwise_supported_ = bool_pointwise_supported;
                     vkGetDeviceQueue(device_, family, 0, &compute_queue_);
                     VkCommandPoolCreateInfo command_pool_info{};
                     command_pool_info.sType =
@@ -402,6 +428,10 @@ std::size_t VulkanPlatform::compute_dispatch_count() const {
 }
 
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
+
+bool VulkanPlatform::supports_bool_pointwise() const {
+    return bool_pointwise_supported_;
+}
 
 void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
                                        VkDeviceSize size) const {

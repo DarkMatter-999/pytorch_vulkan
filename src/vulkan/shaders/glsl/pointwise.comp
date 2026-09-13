@@ -1,5 +1,10 @@
 #version 450
 
+#ifdef POINTWISE_BOOL
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#endif
+
 layout(local_size_x = 256) in;
 
 #ifndef POINTWISE_MODE
@@ -7,8 +12,13 @@ layout(local_size_x = 256) in;
 #endif
 
 #if POINTWISE_MODE == 0
+#ifdef POINTWISE_BOOL
+layout(set = 0, binding = 0, std430) readonly buffer Lhs { uint8_t lhs[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Rhs { uint8_t rhs[]; };
+#else
 layout(set = 0, binding = 0, std430) readonly buffer Lhs { float lhs[]; };
 layout(set = 0, binding = 1, std430) readonly buffer Rhs { float rhs[]; };
+#endif
 #elif POINTWISE_MODE == 1
 layout(set = 0, binding = 0, std430) readonly buffer Lhs { float lhs[]; };
 #elif POINTWISE_MODE == 2
@@ -19,7 +29,11 @@ layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[];
 #error Unsupported pointwise mode
 #endif
 
+#ifdef POINTWISE_BOOL
+layout(set = 0, binding = 2, std430) writeonly buffer Out { uint8_t out_data[]; };
+#else
 layout(set = 0, binding = 2, std430) writeonly buffer Out { float out_data[]; };
+#endif
 
 layout(push_constant) uniform Params {
   float scalar;
@@ -55,7 +69,12 @@ void main() {
   uint index = gl_GlobalInvocationID.x;
   if (index >= params.element_count) return;
 #if POINTWISE_MODE == 0
+#ifdef POINTWISE_BOOL
+  if (params.operation == 0u) out_data[index] = uint8_t((lhs[index] != 0) || (rhs[index] != 0));
+  else if (params.operation == 2u) out_data[index] = uint8_t((lhs[index] != 0) && (rhs[index] != 0));
+#else
   out_data[index] = apply_operation(lhs[index], rhs[index]);
+#endif
 #elif POINTWISE_MODE == 1
   out_data[index] = apply_operation(lhs[index], params.scalar);
 #elif POINTWISE_MODE == 2

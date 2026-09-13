@@ -57,6 +57,7 @@ void delete_allocation(void *context) noexcept {
 
 VulkanAllocator allocator;
 thread_local c10::optional<c10::Device> allocation_device_override;
+thread_local bool allow_index_output_allocation = false;
 
 struct AllocationDeviceOverrideGuard {
     const c10::optional<c10::Device> previous;
@@ -72,6 +73,24 @@ struct AllocationDeviceOverrideGuard {
 } // namespace
 
 namespace pytorch_vulkan {
+
+std::size_t vulkan_storage_bytes(c10::ScalarType dtype) {
+    if (dtype == at::kLong) {
+        return sizeof(int64_t);
+    }
+    validate_vulkan_dtype(dtype, "storage");
+    return dtype == at::kFloat ? sizeof(float) : sizeof(bool);
+}
+
+VulkanIndexOutputAllocationGuard::VulkanIndexOutputAllocationGuard() {
+    TORCH_CHECK(!allow_index_output_allocation,
+                "Vulkan index output allocation guard cannot be nested");
+    allow_index_output_allocation = true;
+}
+
+VulkanIndexOutputAllocationGuard::~VulkanIndexOutputAllocationGuard() {
+    allow_index_output_allocation = false;
+}
 
 void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
                          const char *label) {
@@ -166,16 +185,20 @@ at::Tensor vulkan_empty(c10::SymIntArrayRef size,
     const c10::Device requested = device.value_or(pytorch_vulkan::current_device());
     const c10::Device target(
         requested.type(), requested.index() == c10::DeviceIndex(-1)
-                              ? c10::DeviceIndex(0)
-                              : requested.index());
+                               ? c10::DeviceIndex(0)
+                               : requested.index());
     check_device(target);
+    const auto allocation_dtype = dtype.value_or(c10::get_default_dtype_as_scalartype());
+    TORCH_CHECK((allocation_dtype == at::kLong && allow_index_output_allocation) ||
+                    (pytorch_vulkan::validate_vulkan_dtype(allocation_dtype, "allocation"), true),
+                "Vulkan allocation dtype is unsupported");
     AllocationDeviceOverrideGuard override(target);
     return at::detail::empty_generic_symint(
         size, vulkan_allocator_instance(),
         c10::DispatchKeySet(target.type() == c10::DeviceType::Vulkan
                                 ? c10::DispatchKey::Vulkan
                                 : c10::DispatchKey::PrivateUse1),
-        dtype.value_or(c10::get_default_dtype_as_scalartype()), memory_format);
+         allocation_dtype, memory_format);
 }
 
 at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size,
@@ -191,16 +214,20 @@ at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size,
     const c10::Device requested = device.value_or(pytorch_vulkan::current_device());
     const c10::Device target(
         requested.type(), requested.index() == c10::DeviceIndex(-1)
-                              ? c10::DeviceIndex(0)
-                              : requested.index());
+                               ? c10::DeviceIndex(0)
+                               : requested.index());
     check_device(target);
+    const auto allocation_dtype = dtype.value_or(c10::get_default_dtype_as_scalartype());
+    TORCH_CHECK((allocation_dtype == at::kLong && allow_index_output_allocation) ||
+                    (pytorch_vulkan::validate_vulkan_dtype(allocation_dtype, "allocation"), true),
+                "Vulkan allocation dtype is unsupported");
     AllocationDeviceOverrideGuard override(target);
     return at::detail::empty_strided_symint_generic(
         size, stride, vulkan_allocator_instance(),
         c10::DispatchKeySet(target.type() == c10::DeviceType::Vulkan
                                 ? c10::DispatchKey::Vulkan
                                 : c10::DispatchKey::PrivateUse1),
-        dtype.value_or(c10::get_default_dtype_as_scalartype()));
+         allocation_dtype);
 }
 
 at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destination,

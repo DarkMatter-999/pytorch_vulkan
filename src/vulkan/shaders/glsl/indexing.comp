@@ -1,0 +1,39 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Output { uint output_data[]; };
+layout(push_constant, std430) uniform Params {
+  uint rank;
+  uint output_numel;
+  uint reduce_dim;
+  uint reduce_size;
+  uint sizes[8];
+} params;
+void main() {
+  uint output_index = gl_GlobalInvocationID.x;
+  if (output_index >= params.output_numel) return;
+  uint remainder = output_index;
+  uint base = 0u;
+  for (int d = int(params.rank) - 1; d >= 0; --d) {
+    uint dim = uint(d);
+    if (dim != params.reduce_dim) {
+      uint coordinate = remainder % params.sizes[dim];
+      remainder /= params.sizes[dim];
+      uint stride = 1u;
+      for (uint j = dim + 1u; j < params.rank; ++j) stride *= params.sizes[j];
+      base += coordinate * stride;
+    }
+  }
+  float best = input_data[base];
+  uint best_index = 0u;
+  for (uint index = 1u; index < params.reduce_size; ++index) {
+    uint stride = 1u;
+    for (uint j = params.reduce_dim + 1u; j < params.rank; ++j) stride *= params.sizes[j];
+    float candidate = input_data[base + index * stride];
+    if ((isnan(candidate) && !isnan(best)) || (!isnan(candidate) && !isnan(best) && candidate > best)) {
+      best = candidate; best_index = index;
+    }
+  }
+  output_data[output_index * 2u] = best_index;
+  output_data[output_index * 2u + 1u] = 0u;
+}

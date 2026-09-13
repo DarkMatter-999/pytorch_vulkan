@@ -3,6 +3,9 @@
 #include <vulkan/vulkan.h>
 
 #include <c10/core/Allocator.h>
+#include <c10/core/ScalarType.h>
+
+#include "vulkan/operators/capability.h"
 
 class VulkanBuffer;
 class VulkanPlatform;
@@ -12,6 +15,16 @@ class Tensor;
 }
 
 namespace pytorch_vulkan {
+
+// Vulkan buffers use the native byte representation of the supported dtype.
+std::size_t vulkan_storage_bytes(c10::ScalarType dtype);
+
+class VulkanIndexOutputAllocationGuard {
+  public:
+    VulkanIndexOutputAllocationGuard();
+    ~VulkanIndexOutputAllocationGuard();
+    VulkanIndexOutputAllocationGuard(const VulkanIndexOutputAllocationGuard &) = delete;
+};
 
 // These accessors borrow objects owned by the DataPtr.  The DataPtr must remain
 // alive for the duration of every use of either returned object.

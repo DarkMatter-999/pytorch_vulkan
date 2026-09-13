@@ -1,5 +1,6 @@
 #include "binary.h"
 #include "autograd.h"
+#include "capability.h"
 #include "out.h"
 
 #include "vulkan_allocator.h"
@@ -25,15 +26,18 @@ std::size_t checked_bytes(const at::Tensor &tensor) {
     const int64_t elements = tensor.numel();
     TORCH_CHECK(elements >= 0, "Vulkan add has a negative element count");
     const auto count = static_cast<uint64_t>(elements);
-    TORCH_CHECK(count <= std::numeric_limits<std::size_t>::max() / sizeof(float),
+    const std::size_t element_bytes =
+        pytorch_vulkan::vulkan_storage_bytes(tensor.scalar_type());
+    TORCH_CHECK(count <= std::numeric_limits<std::size_t>::max() / element_bytes,
                 "Vulkan add byte count does not fit size_t");
-    const auto bytes = count * sizeof(float);
+    const auto bytes = count * element_bytes;
     TORCH_CHECK(bytes <= std::numeric_limits<VkDeviceSize>::max(),
                 "Vulkan add byte count does not fit VkDeviceSize");
     return static_cast<std::size_t>(bytes);
 }
 
-void validate_tensor(const at::Tensor &tensor, const char *operation_name) {
+void validate_tensor(const at::Tensor &tensor, pytorch_vulkan::PointwiseOperation operation,
+                     const char *operation_name) {
     TORCH_CHECK(is_vulkan_device(tensor.device()), "Vulkan ", operation_name,
                 " requires a Vulkan tensor");
     TORCH_CHECK(tensor.device().index() == 0, "Vulkan ", operation_name,
@@ -44,14 +48,13 @@ void validate_tensor(const at::Tensor &tensor, const char *operation_name) {
                 " requires a contiguous tensor");
     TORCH_CHECK(tensor.storage_offset() == 0, "Vulkan ", operation_name,
                 " does not support tensors with non-zero storage_offset()");
-    TORCH_CHECK(tensor.scalar_type() == at::kFloat, "Vulkan ", operation_name,
-                " supports only float32 tensors");
+    pytorch_vulkan::validate_scalar_dtype(tensor.scalar_type(), operation, operation_name);
     TORCH_CHECK(tensor.dim() != 0, "Vulkan ", operation_name,
                 " does not support zero-dimensional tensor operands");
 }
 
 void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &alpha,
-              const char *operation_name) {
+              pytorch_vulkan::PointwiseOperation operation, const char *operation_name) {
     TORCH_CHECK(!(lhs.device().is_cpu() && rhs.device().is_cpu()),
                 "Vulkan ", operation_name, " requires a Vulkan operand");
     TORCH_CHECK(!(lhs.device().is_cpu() && lhs.dim() == 0) &&
@@ -71,8 +74,8 @@ void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &al
                 "Vulkan ", operation_name, " requires contiguous tensors");
     TORCH_CHECK(lhs.storage_offset() == 0 && rhs.storage_offset() == 0,
                 "Vulkan ", operation_name, " does not support tensors with non-zero storage_offset()");
-    TORCH_CHECK(lhs.scalar_type() == at::kFloat && rhs.scalar_type() == at::kFloat,
-                "Vulkan ", operation_name, " supports only float32 tensors");
+    pytorch_vulkan::validate_binary_dtypes(lhs.scalar_type(), rhs.scalar_type(),
+                                           operation, operation_name);
     TORCH_CHECK(lhs.dim() != 0 && rhs.dim() != 0,
                 "Vulkan ", operation_name, " does not support zero-dimensional tensor operands");
     TORCH_CHECK(lhs.sizes().equals(rhs.sizes()),
@@ -105,7 +108,7 @@ float scalar_to_float(const at::Scalar &scalar, const char *operation_name) {
 at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
                                   pytorch_vulkan::PointwiseOperation operation,
                                   bool scalar_left, const char *operation_name) {
-    validate_tensor(tensor, operation_name);
+    validate_tensor(tensor, operation, operation_name);
     at::Tensor output = at::empty(tensor.sizes(), tensor.options().device(tensor.device()));
     const std::size_t bytes = checked_bytes(tensor);
     if (bytes == 0) {
@@ -151,7 +154,12 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
     const bool rhs_wrapped_number = rhs.device().is_cpu() && rhs.dim() == 0 &&
                                     rhs.unsafeGetTensorImpl()->is_wrapped_number();
     if (!lhs_wrapped_number && !rhs_wrapped_number) {
-        validate(lhs, rhs, alpha, operation_name);
+        validate(lhs, rhs, alpha, operation, operation_name);
+        const bool uses_bool = pointwise_uses_bool(lhs.scalar_type(), operation);
+        validate_pointwise_device_capability(
+            uses_bool,
+            !uses_bool || allocation_platform(lhs.storage().data_ptr()).supports_bool_pointwise(),
+            operation_name);
         at::Tensor output = at::empty(lhs.sizes(), lhs.options().device(lhs.device()));
         const std::size_t bytes = checked_bytes(lhs);
         if (bytes == 0) {
@@ -177,7 +185,8 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
                     " requires all tensors to use the same Vulkan platform/device");
         lhs_platform.compute().tensor_tensor(lhs_buffer.buffer(), rhs_buffer.buffer(),
                                              output_buffer.buffer(), size,
-                                             static_cast<uint32_t>(operation));
+                                             static_cast<uint32_t>(operation),
+                                             pointwise_uses_bool(lhs.scalar_type(), operation));
         return output;
     }
     TORCH_CHECK(lhs_wrapped_number != rhs_wrapped_number,

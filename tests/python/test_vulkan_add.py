@@ -270,9 +270,8 @@ def test_non_contiguous_add_operand_is_rejected(vulkan_backend):
 
 
 def test_non_float32_add_operand_is_rejected(vulkan_backend):
-    lhs = torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
-    rhs = torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
-    _assert_add_rejected(lambda: torch.add(lhs, rhs), "float32")
+    with pytest.raises(RuntimeError, match="float32 and bool"):
+        torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
 
 
 def test_second_vulkan_device_add_is_rejected(vulkan_backend):
@@ -329,7 +328,7 @@ def test_unsupported_scalar_values_are_rejected(vulkan_backend, operation, scala
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_invalid_scalar_tensor_metadata_is_rejected(vulkan_backend, operation):
-    wrong_dtype = torch.empty((2,), dtype=torch.float64, device=vulkan_backend)
+    wrong_dtype = torch.empty((2,), dtype=torch.bool, device=vulkan_backend)
     with pytest.raises(
         RuntimeError,
         match=_scalar_rejection_pattern(operation, r"scalar operand"),
@@ -383,3 +382,74 @@ def test_scalar_out_and_inplace_variants_are_rejected(vulkan_backend, operation)
     ):
         getattr(tensor, operation.__name__ + "_")(1.0)
     torch.testing.assert_close(tensor.cpu(), before)
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.mul])
+def test_approved_bool_tensor_operation_matches_cpu(vulkan_backend, operation):
+    lhs_cpu = torch.tensor([[True, False], [False, True]], dtype=torch.bool)
+    rhs_cpu = torch.tensor([[True, True], [False, False]], dtype=torch.bool)
+    lhs = lhs_cpu.to(vulkan_backend)
+    rhs = rhs_cpu.to(vulkan_backend)
+
+    result = operation(lhs, rhs)
+
+    expected = operation(lhs_cpu, rhs_cpu)
+    assert result.device == lhs.device
+    assert result.dtype is torch.bool
+    assert result.shape == lhs.shape
+    assert result.is_contiguous()
+    torch.testing.assert_close(result.cpu(), expected)
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.mul])
+def test_approved_bool_tensor_operation_out_matches_cpu(vulkan_backend, operation):
+    lhs_cpu = torch.tensor([True, False], dtype=torch.bool)
+    rhs_cpu = torch.tensor([False, True], dtype=torch.bool)
+    lhs = lhs_cpu.to(vulkan_backend)
+    rhs = rhs_cpu.to(vulkan_backend)
+    output = torch.empty_like(lhs)
+
+    assert operation(lhs, rhs, out=output) is output
+    torch.testing.assert_close(output.cpu(), operation(lhs_cpu, rhs_cpu))
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.mul])
+def test_bool_tensor_operation_rejects_float32_out(vulkan_backend, operation):
+    lhs = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+    rhs = torch.tensor([False, True], dtype=torch.bool, device=vulkan_backend)
+    output = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="matching dtypes|dtype"):
+        operation(lhs, rhs, out=output)
+
+
+def test_bool_sub_tensor_operation_is_rejected(vulkan_backend):
+    tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="bool|dtype|support"):
+        torch.sub(tensor, tensor)
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.mul])
+def test_bool_scalar_operation_is_rejected(vulkan_backend, operation):
+    tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="bool|dtype|support|scalar"):
+        operation(tensor, 1)
+
+
+def test_float_scalar_operation_rejects_bool_out(vulkan_backend):
+    tensor = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
+    output = torch.empty((2,), dtype=torch.bool, device=vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="matching.*dtype|dtype"):
+        torch.add(tensor, 1.0, out=output)
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.mul])
+def test_bool_inplace_operation_is_rejected(vulkan_backend, operation):
+    tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+    other = torch.tensor([False, True], dtype=torch.bool, device=vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="in-place"):
+        getattr(tensor, operation.__name__ + "_")(other)

@@ -35,9 +35,11 @@ std::size_t checked_bytes(const at::Tensor &destination, const at::Tensor &sourc
     const int64_t elements = destination.numel();
     TORCH_CHECK(elements >= 0, "Vulkan copy has a negative element count");
     const auto count = static_cast<uint64_t>(elements);
-    TORCH_CHECK(count <= std::numeric_limits<std::size_t>::max() / sizeof(float),
+    const std::size_t element_bytes =
+        pytorch_vulkan::vulkan_storage_bytes(destination.scalar_type());
+    TORCH_CHECK(count <= std::numeric_limits<std::size_t>::max() / element_bytes,
                 "Vulkan copy byte count does not fit size_t");
-    const auto bytes = count * sizeof(float);
+    const auto bytes = count * element_bytes;
     TORCH_CHECK(bytes <= std::numeric_limits<VkDeviceSize>::max(),
                 "Vulkan copy byte count does not fit VkDeviceSize");
     (void)source;
@@ -51,8 +53,10 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
                 "Vulkan copy requires strided tensors");
     TORCH_CHECK(destination.is_contiguous() && source.is_contiguous(),
                 "Vulkan copy requires contiguous tensors");
-    TORCH_CHECK(destination.scalar_type() == at::kFloat && source.scalar_type() == at::kFloat,
-                "Vulkan copy supports only float32 tensors");
+    (void)pytorch_vulkan::vulkan_storage_bytes(destination.scalar_type());
+    (void)pytorch_vulkan::vulkan_storage_bytes(source.scalar_type());
+    TORCH_CHECK(destination.scalar_type() == source.scalar_type(),
+                "Vulkan copy requires matching dtypes");
     TORCH_CHECK(destination.numel() == source.numel(),
                 "Vulkan copy requires matching sizes");
 
@@ -102,8 +106,8 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
                 " exceeds Vulkan allocation (", bytes, " bytes, allocation is ",
                 vulkan_buffer.size(), " bytes)");
 
-    float *cpu_destination = cpu_to_vulkan ? nullptr : destination.data_ptr<float>();
-    const float *cpu_source = cpu_to_vulkan ? source.data_ptr<float>() : nullptr;
+    void *cpu_destination = cpu_to_vulkan ? nullptr : destination.data_ptr();
+    const void *cpu_source = cpu_to_vulkan ? source.data_ptr() : nullptr;
     const bool host_visible = (vulkan_buffer.memory_properties() &
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
     if (host_visible) {

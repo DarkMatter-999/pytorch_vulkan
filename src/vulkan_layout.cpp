@@ -29,8 +29,7 @@ void validate_storage_owner(const at::Tensor &tensor, const char *label) {
                 "Vulkan ", label, " must be a Vulkan device index 0 tensor");
     TORCH_CHECK(tensor.layout() == at::kStrided,
                 "Vulkan ", label, " must be strided");
-    TORCH_CHECK(tensor.scalar_type() == at::kFloat,
-                "Vulkan ", label, " must be float32");
+    (void)pytorch_vulkan::vulkan_storage_bytes(tensor.scalar_type());
     TORCH_CHECK(pytorch_vulkan::is_vulkan_allocation(tensor.storage().data_ptr()),
                 "Vulkan ", label, " has an invalid allocation payload");
 }
@@ -74,7 +73,8 @@ pytorch_vulkan::VulkanTensorLayout inspect_layout(const at::Tensor &storage_owne
         }
     }
 
-    constexpr uint64_t kElementBytes = sizeof(float);
+    const uint64_t kElementBytes =
+        static_cast<uint64_t>(pytorch_vulkan::vulkan_storage_bytes(storage_owner.scalar_type()));
     const uint64_t byte_offset = checked_multiply(
         static_cast<uint64_t>(storage_offset), kElementBytes, label);
     const uint64_t byte_range = empty
