@@ -387,6 +387,34 @@ void test_vulkan_layout_inspection() {
         "overflow");
 }
 
+void test_vulkan_layout_descriptor_and_index_mapping() {
+    auto tensor = at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    const auto transposed = at::as_strided(tensor, {3, 2}, {1, 3}, 0);
+    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(transposed, "descriptor test");
+    expect(layout.rank == 2 && layout.sizes == std::vector<int64_t>({3, 2}) &&
+               layout.strides == std::vector<int64_t>({1, 3}) &&
+               layout.element_bytes == sizeof(float) &&
+               layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
+           "Vulkan layout descriptor lost shape, stride, or overlap metadata");
+    expect(pytorch_vulkan::vulkan_storage_offset(layout, {0, 0}) == 0 &&
+               pytorch_vulkan::vulkan_storage_offset(layout, {2, 1}) == 5 &&
+               pytorch_vulkan::vulkan_storage_offset(layout, 5) == 5,
+           "Vulkan layout descriptor mapped logical indices incorrectly");
+
+    const auto broadcast = at::as_strided(tensor, {2, 3}, {0, 1}, 0);
+    const auto broadcast_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(broadcast, "descriptor test");
+    expect(broadcast_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::Yes,
+           "zero-stride Vulkan view was not classified as internally overlapping");
+    expect(pytorch_vulkan::vulkan_storage_offset(broadcast_layout, 5) == 2,
+           "zero-stride Vulkan view mapped its linear index incorrectly");
+
+    expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {3, 0}); },
+                 "coordinate");
+    expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, 6); },
+                 "linear index");
+}
+
 void test_metadata_only_views() {
     auto source = at::tensor({0.0F, 1.0F, 2.0F, 3.0F, 4.0F, 5.0F});
     auto input = at::empty({2, 3}, source.options().device(kDevice));
@@ -977,6 +1005,7 @@ int main() {
         test_zero_allocator_payload();
         test_foreign_payload_rejected();
         test_vulkan_layout_inspection();
+        test_vulkan_layout_descriptor_and_index_mapping();
         test_metadata_only_views();
         test_repeated_add_dispatch_and_retained_output();
         test_tensor_tensor_sub_and_mul_dispatch();

@@ -70,3 +70,19 @@ def test_as_strided_accepts_general_in_allocation_metadata(vulkan_backend):
     assert tuple(views[1].stride()) == (1, 2)
     assert tuple(views[2].stride()) == (0, 1)
     assert views[3].storage_offset() == 1
+
+
+def test_strided_views_cover_transpose_slice_zero_stride_and_empty(vulkan_backend):
+    source = torch.arange(12, dtype=torch.float32).reshape(3, 4).to(vulkan_backend)
+    transpose = source.transpose(0, 1)
+    sliced = source[:, 1:]
+    broadcast = torch.as_strided(source, (2, 3), (0, 1), storage_offset=2)
+    empty = torch.as_strided(source, (0, 4), (4, 1), storage_offset=12)
+
+    for view in (transpose, sliced, broadcast, empty):
+        assert view.device == source.device
+        assert view.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+    assert tuple(transpose.stride()) == (1, 4)
+    assert tuple(sliced.shape) == (3, 3) and tuple(sliced.stride()) == (4, 1)
+    assert tuple(broadcast.stride()) == (0, 1) and broadcast.storage_offset() == 2
+    assert empty.numel() == 0
