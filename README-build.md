@@ -114,7 +114,7 @@ PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
   tests/python/test_vulkan_transfer.py -q
 ```
 
-Multi-device support, views, autograd, and advanced operators are deferred.
+Multi-device support, general views, and advanced operators are deferred.
 
 ## Vulkan pointwise scalar operations
 
@@ -173,8 +173,27 @@ overflowing, and float32-underflowing Python scalar values are also rejected.
 
 Broadcasting, dtype promotion, scalar-tensor semantics, scalar buffers,
 asynchronous execution, general view execution and unsupported view layouts,
-autograd, multi-device support, and advanced operators remain deferred; only the
+multi-device support, and advanced operators remain deferred; only the
 documented Python-number forms are supported.
+
+## Vulkan autograd capability
+
+The initial Vulkan autograd boundary supports first-order reverse-mode backward
+for six operator families: `neg`, `abs`, `relu`, `add`, `sub`, and `mul`. The
+supported paths preserve the existing contiguous `float32`, `vk:0`, synchronous
+forward contract and keep gradients on Vulkan:
+
+| Operator | Backward paths |
+| --- | --- |
+| `neg`, `abs`, `relu` | tensor input |
+| `add`, `sub`, `mul` | equal-shape tensor/tensor; documented tensor/Python-number forms |
+
+Unsupported Vulkan operators, overloads, layouts, dtypes, and devices fail with
+an explicit backend error before CPU materialization. CPU-only autograd remains
+normal PyTorch behavior. Higher-order gradients, forward-mode AD, arbitrary view
+replay and general reshape autograd semantics remain deferred; retained-graph
+replay is supported within the documented in-place and gradient-accumulation
+boundaries.
 
 ## Vulkan unary operations
 

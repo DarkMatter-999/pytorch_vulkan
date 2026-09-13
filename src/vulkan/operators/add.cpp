@@ -1,4 +1,5 @@
 #include "binary.h"
+#include "autograd.h"
 #include "out.h"
 
 #include "vulkan_allocator.h"
@@ -239,4 +240,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("add.Scalar_out", &pytorch_vulkan::add_scalar_out);
     m.impl("add_.Tensor", &pytorch_vulkan::reject_add_inplace_tensor);
     m.impl("add_.Scalar", &pytorch_vulkan::reject_add_inplace_scalar);
+}
+
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+    m.impl("add.Tensor", &pytorch_vulkan::autograd_add_tensor);
+    m.impl("add.Scalar", &pytorch_vulkan::autograd_add_scalar);
 }

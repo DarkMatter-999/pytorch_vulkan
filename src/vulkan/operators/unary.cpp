@@ -1,5 +1,6 @@
 #include "unary.h"
 
+#include "autograd.h"
 #include "binary.h"
 #include "out.h"
 #include "vulkan_allocator.h"
@@ -97,6 +98,14 @@ at::Tensor relu_tensor(const at::Tensor &input) {
     return dispatch_unary(input, PointwiseOperation::Relu, "relu");
 }
 
+at::Tensor abs_backward_tensor(const at::Tensor &input, const at::Tensor &grad) {
+    return at::mul(dispatch_unary(input, PointwiseOperation::AbsBackward, "abs backward"), grad);
+}
+
+at::Tensor relu_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
+    return at::mul(dispatch_unary(output, PointwiseOperation::ReluBackward, "relu backward"), grad);
+}
+
 at::Tensor &neg_out(const at::Tensor &input, at::Tensor &out) {
     return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Neg, "neg");
 }
@@ -136,4 +145,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("neg_", &pytorch_vulkan::reject_neg_inplace);
     m.impl("abs_", &pytorch_vulkan::reject_abs_inplace);
     m.impl("relu_", &pytorch_vulkan::reject_relu_inplace);
+}
+
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+    m.impl("neg", &pytorch_vulkan::autograd_neg);
+    m.impl("abs", &pytorch_vulkan::autograd_abs);
+    m.impl("relu", &pytorch_vulkan::autograd_relu);
 }

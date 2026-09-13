@@ -1,4 +1,5 @@
 #include "binary.h"
+#include "autograd.h"
 #include "out.h"
 
 #include <torch/library.h>
@@ -44,4 +45,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("mul.Scalar_out", &mul_scalar_out);
     m.impl("mul_.Tensor", &reject_mul_inplace_tensor);
     m.impl("mul_.Scalar", &reject_mul_inplace_scalar);
+}
+
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+    m.impl("mul.Tensor", &pytorch_vulkan::autograd_mul_tensor);
+    m.impl("mul.Scalar", &pytorch_vulkan::autograd_mul_scalar);
 }

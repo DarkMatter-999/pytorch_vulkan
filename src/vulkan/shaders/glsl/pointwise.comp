@@ -30,6 +30,8 @@ layout(push_constant) uniform Params {
 const uint NEG = 3u;
 const uint ABS = 4u;
 const uint RELU = 5u;
+const uint ABS_BACKWARD = 6u;
+const uint RELU_BACKWARD = 7u;
 
 float apply_operation(float lhs_value, float rhs_value) {
   if (params.operation == 0u) return lhs_value + rhs_value;
@@ -42,6 +44,10 @@ float apply_unary(float value) {
   if (params.operation == NEG) return -value;
   if (params.operation == ABS) return abs(value);
   if (params.operation == RELU) return max(value, 0.0);
+  if (params.operation == ABS_BACKWARD) {
+    return value > 0.0 ? 1.0 : (value < 0.0 ? -1.0 : 0.0);
+  }
+  if (params.operation == RELU_BACKWARD) return value > 0.0 ? 1.0 : 0.0;
   return 0.0;
 }
 
