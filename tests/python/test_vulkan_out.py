@@ -156,7 +156,7 @@ def test_out_rejects_invalid_metadata_overlap_and_parameters(vulkan_backend):
     rhs = torch.empty((2,), device=vulkan_backend)
     with pytest.raises((RuntimeError, NotImplementedError), match="Vulkan output tensor"):
         torch.add(lhs, rhs, out=torch.empty(2))
-    with pytest.raises((RuntimeError, NotImplementedError), match="float32 output"):
+    with pytest.raises((RuntimeError, NotImplementedError), match="float32 and bool"):
         torch.add(lhs, rhs, out=torch.empty(2, dtype=torch.float64, device=vulkan_backend))
     with pytest.raises((RuntimeError, NotImplementedError), match="contiguous"):
         torch.add(lhs, rhs, out=torch.empty_strided((2, 2), (1, 2), device=vulkan_backend))

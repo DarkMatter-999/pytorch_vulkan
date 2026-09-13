@@ -20,7 +20,7 @@ using RawBinaryScalarBackward = at::Tensor (*)(const at::Tensor &, const at::Sca
 template <RawUnaryForward Forward, RawUnaryBackward Backward>
 class UnaryAutogradFunctionSaved
     : public torch::autograd::Function<UnaryAutogradFunctionSaved<Forward, Backward>> {
-public:
+  public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input) {
         at::AutoDispatchBelowAutograd guard;
@@ -29,9 +29,9 @@ public:
         return output;
     }
 
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grad_outputs) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
         at::AutoDispatchBelowAutograd guard;
         if (!grad_outputs[0].defined()) {
             return {at::Tensor()};
@@ -47,8 +47,9 @@ at::Tensor autograd_unary_saved_input(const at::Tensor &input) {
 
 template <RawUnaryForward Forward, RawUnaryBackward Backward>
 class UnaryAutogradFunctionSavedOutput
-    : public torch::autograd::Function<UnaryAutogradFunctionSavedOutput<Forward, Backward>> {
-public:
+    : public torch::autograd::Function<
+          UnaryAutogradFunctionSavedOutput<Forward, Backward>> {
+  public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input) {
         at::AutoDispatchBelowAutograd guard;
@@ -57,9 +58,9 @@ public:
         return output;
     }
 
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grad_outputs) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
         at::AutoDispatchBelowAutograd guard;
         if (!grad_outputs[0].defined()) {
             return {at::Tensor()};
@@ -76,7 +77,7 @@ at::Tensor autograd_unary_saved_output(const at::Tensor &input) {
 template <RawUnaryForward Forward, RawUnaryNoSaveBackward Backward>
 class UnaryAutogradFunctionNoSave
     : public torch::autograd::Function<UnaryAutogradFunctionNoSave<Forward, Backward>> {
-public:
+  public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input) {
         (void)ctx;
@@ -84,9 +85,9 @@ public:
         return Forward(input);
     }
 
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grad_outputs) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
         (void)ctx;
         at::AutoDispatchBelowAutograd guard;
         if (!grad_outputs[0].defined()) {
@@ -107,12 +108,11 @@ at::Tensor autograd_relu(const at::Tensor &input);
 at::Tensor neg_backward(const at::Tensor &grad);
 
 template <RawBinaryTensorForward Forward, RawBinaryTensorBackward BackwardLhs,
-          RawBinaryTensorBackward BackwardRhs,
-          bool SaveOperands>
+          RawBinaryTensorBackward BackwardRhs, bool SaveOperands>
 class BinaryTensorAutogradFunction
-    : public torch::autograd::Function<
-          BinaryTensorAutogradFunction<Forward, BackwardLhs, BackwardRhs, SaveOperands>> {
-public:
+    : public torch::autograd::Function<BinaryTensorAutogradFunction<
+          Forward, BackwardLhs, BackwardRhs, SaveOperands>> {
+  public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &lhs, const at::Tensor &rhs,
                               const at::Scalar &alpha) {
@@ -124,9 +124,9 @@ public:
         return output;
     }
 
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grad_outputs) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
         at::AutoDispatchBelowAutograd guard;
         if (!grad_outputs[0].defined()) {
             return {at::Tensor(), at::Tensor(), at::Tensor()};
@@ -144,12 +144,11 @@ public:
 };
 
 template <RawBinaryTensorForward Forward, RawBinaryTensorBackward BackwardLhs,
-          RawBinaryTensorBackward BackwardRhs,
-          bool SaveOperands = false>
+          RawBinaryTensorBackward BackwardRhs, bool SaveOperands = false>
 at::Tensor autograd_binary_tensor(const at::Tensor &lhs, const at::Tensor &rhs,
                                   const at::Scalar &alpha) {
-    return BinaryTensorAutogradFunction<Forward, BackwardLhs, BackwardRhs, SaveOperands>::apply(
-        lhs, rhs, alpha);
+    return BinaryTensorAutogradFunction<Forward, BackwardLhs, BackwardRhs,
+                                        SaveOperands>::apply(lhs, rhs, alpha);
 }
 
 template <RawBinaryScalarForward Forward, RawBinaryScalarBackward Backward,
@@ -157,7 +156,7 @@ template <RawBinaryScalarForward Forward, RawBinaryScalarBackward Backward,
 class BinaryScalarAutogradFunction
     : public torch::autograd::Function<
           BinaryScalarAutogradFunction<Forward, Backward, ScalarLeft>> {
-public:
+  public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &tensor, const at::Scalar &scalar,
                               const at::Scalar &alpha) {
@@ -167,17 +166,17 @@ public:
         return Forward(tensor, scalar, alpha);
     }
 
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grad_outputs) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
         (void)ctx;
         at::AutoDispatchBelowAutograd guard;
         if (!grad_outputs[0].defined()) {
             return {at::Tensor(), at::Tensor(), at::Tensor()};
         }
         const at::Scalar scalar = ctx->saved_data["scalar"].toScalar();
-        return {Backward(at::Tensor(), scalar, grad_outputs[0]),
-                at::Tensor(), at::Tensor()};
+        return {Backward(at::Tensor(), scalar, grad_outputs[0]), at::Tensor(),
+                at::Tensor()};
     }
 };
 
@@ -189,12 +188,24 @@ at::Tensor autograd_binary_scalar(const at::Tensor &tensor, const at::Scalar &sc
         tensor, scalar, alpha);
 }
 
-at::Tensor autograd_add_tensor(const at::Tensor &, const at::Tensor &, const at::Scalar &);
-at::Tensor autograd_sub_tensor(const at::Tensor &, const at::Tensor &, const at::Scalar &);
+at::Tensor autograd_add_tensor(const at::Tensor &, const at::Tensor &,
+                               const at::Scalar &);
+at::Tensor autograd_sub_tensor(const at::Tensor &, const at::Tensor &,
+                               const at::Scalar &);
 at::Tensor autograd_mul_tensor(const at::Tensor &, const at::Tensor &);
-at::Tensor autograd_add_scalar(const at::Tensor &, const at::Scalar &, const at::Scalar &);
-at::Tensor autograd_sub_scalar(const at::Tensor &, const at::Scalar &, const at::Scalar &);
-at::Tensor autograd_rsub_scalar(const at::Tensor &, const at::Scalar &, const at::Scalar &);
+at::Tensor autograd_add_scalar(const at::Tensor &, const at::Scalar &,
+                               const at::Scalar &);
+at::Tensor autograd_sub_scalar(const at::Tensor &, const at::Scalar &,
+                               const at::Scalar &);
+at::Tensor autograd_rsub_scalar(const at::Tensor &, const at::Scalar &,
+                                const at::Scalar &);
 at::Tensor autograd_mul_scalar(const at::Tensor &, const at::Scalar &);
+at::Tensor autograd_linear(const at::Tensor &, const at::Tensor &,
+                           const c10::optional<at::Tensor> &);
+at::Tensor autograd_convolution(const at::Tensor &, const at::Tensor &,
+                                const c10::optional<at::Tensor> &, at::IntArrayRef,
+                                at::IntArrayRef, at::IntArrayRef, bool, at::IntArrayRef,
+                                int64_t);
+at::Tensor autograd_adaptive_avg_pool2d(const at::Tensor &, at::IntArrayRef);
 
 } // namespace pytorch_vulkan

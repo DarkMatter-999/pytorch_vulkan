@@ -12,6 +12,18 @@ def test_reduction_indexing_matrix_is_declared():
         assert operation in matrix
 
 
+def test_model_matrix_declares_fixed_phase_6_slices():
+    matrix = open("docs/vulkan_operator_capability_matrix.md").read()
+    for operation in (
+        "`aten::linear`",
+        "`aten::convolution`",
+        "`aten::_adaptive_avg_pool2d`",
+        "fixed MLP",
+        "fixed CNN",
+    ):
+        assert operation in matrix
+
+
 @pytest.fixture
 def vulkan_backend():
     if not pytorch_vulkan.is_available():

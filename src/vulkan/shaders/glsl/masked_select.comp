@@ -1,0 +1,27 @@
+#version 450
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Mask { uint8_t mask_data[]; };
+#ifdef MASKED_SELECT_COUNT
+layout(set = 0, binding = 2, std430) buffer Counter { uint counter; };
+#else
+layout(set = 0, binding = 2, std430) writeonly buffer Output { float output_data[]; };
+layout(set = 0, binding = 3, std430) buffer Counter { uint counter; };
+#endif
+layout(push_constant) uniform Params { uint element_count; }
+params;
+void main() {
+  if (gl_LocalInvocationIndex != 0u)
+    return;
+#ifdef MASKED_SELECT_COUNT
+  for (uint index = 0u; index < params.element_count; ++index)
+    if (mask_data[index] != uint8_t(0))
+      atomicAdd(counter, 1u);
+#else
+  for (uint index = 0u; index < params.element_count; ++index)
+    if (mask_data[index] != uint8_t(0))
+      output_data[atomicAdd(counter, 1u)] = input_data[index];
+#endif
+}

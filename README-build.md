@@ -131,6 +131,25 @@ Before enabling float16, a separate design must specify all of the following:
 
 Multi-device support, general views, and advanced operators are deferred.
 
+## Fixed model slices
+
+The accepted Phase 6 model gate covers PyTorch 2.4's fixed F32 workloads:
+
+- MLP: two `aten::linear` layers with ReLU, shapes `(2, 8) -> (2, 16) -> (2, 4)`.
+- CNN: fixed `aten::convolution`, ReLU, and global
+  `aten::_adaptive_avg_pool2d`, shapes `(2, 1, 8, 8) -> (2, 4, 1, 1)`.
+
+Every intermediate, output, and first-order gradient is contiguous F32 on
+`vk:0`. The implementation dispatches directly through Vulkan and does not
+use CPU fallback, payload readback, or `dlprimitives`. CPU transfers in model
+tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4
+semantics and compare with the existing floating-point test tolerances.
+
+Float16, Double, general views, strided execution, unsupported model variants,
+higher-order gradients, and implicit `fill_`/accumulated-leaf paths remain
+explicitly rejected or deferred. Formatter-compatible Double is the separate
+6G follow-up; 6A's native printing/Double work is not part of this gate.
+
 ## Vulkan pointwise scalar operations
 
 The supported public functional scalar forms are `torch.add(tensor, scalar)` and
@@ -190,6 +209,15 @@ Broadcasting, dtype promotion, scalar-tensor semantics, scalar buffers,
 asynchronous execution, general view execution and unsupported view layouts,
 multi-device support, and advanced operators remain deferred; only the
 documented Python-number forms are supported.
+
+## Vulkan masked select
+
+`torch.masked_select` supports contiguous, zero-offset F32 inputs and same-shaped
+contiguous, zero-offset Vulkan bool masks on `vk:0`. It runs a Vulkan count pass,
+reads only a host-visible coherent four-byte count, allocates exact-size F32
+output, and runs an ordered Vulkan compaction pass. Tensor and mask payloads are
+never read back and unsupported dtypes, devices, layouts, offsets, broadcasts,
+and allocation forms are rejected without CPU fallback.
 
 ## Vulkan autograd capability
 

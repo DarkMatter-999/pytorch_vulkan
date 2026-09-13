@@ -1,0 +1,29 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0) readonly buffer Input { float input_values[]; };
+layout(set = 0, binding = 1) writeonly buffer Output { float output_values[]; };
+layout(push_constant) uniform Params {
+  uint batch;
+  uint channels;
+  uint height;
+  uint width;
+  uint operation;
+}
+params;
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  uint output_count = params.batch * params.channels;
+  if (index >=
+      (params.operation == 0u ? output_count : output_count * params.height * params.width))
+    return;
+  if (params.operation == 0u) {
+    float sum = 0.0;
+    uint base = index * params.height * params.width;
+    for (uint i = 0u; i < params.height * params.width; ++i)
+      sum += input_values[base + i];
+    output_values[index] = sum / float(params.height * params.width);
+  } else {
+    uint spatial = params.height * params.width;
+    output_values[index] = input_values[index / spatial] / float(spatial);
+  }
+}

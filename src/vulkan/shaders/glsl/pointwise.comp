@@ -4,6 +4,10 @@
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #endif
+#ifdef POINTWISE_BOOL_OUTPUT
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#endif
 
 layout(local_size_x = 256) in;
 
@@ -29,7 +33,7 @@ layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[];
 #error Unsupported pointwise mode
 #endif
 
-#ifdef POINTWISE_BOOL
+#if defined(POINTWISE_BOOL) || defined(POINTWISE_BOOL_OUTPUT)
 layout(set = 0, binding = 2, std430) writeonly buffer Out { uint8_t out_data[]; };
 #else
 layout(set = 0, binding = 2, std430) writeonly buffer Out { float out_data[]; };
@@ -39,47 +43,71 @@ layout(push_constant) uniform Params {
   float scalar;
   uint element_count;
   uint operation;
-} params;
+}
+params;
 
 const uint NEG = 3u;
 const uint ABS = 4u;
 const uint RELU = 5u;
 const uint ABS_BACKWARD = 6u;
 const uint RELU_BACKWARD = 7u;
+const uint NE_SCALAR = 8u;
+const uint ISFINITE = 9u;
 
 float apply_operation(float lhs_value, float rhs_value) {
-  if (params.operation == 0u) return lhs_value + rhs_value;
-  if (params.operation == 1u) return lhs_value - rhs_value;
-  if (params.operation == 2u) return lhs_value * rhs_value;
+  if (params.operation == 0u)
+    return lhs_value + rhs_value;
+  if (params.operation == 1u)
+    return lhs_value - rhs_value;
+  if (params.operation == 2u)
+    return lhs_value * rhs_value;
   return 0.0;
 }
 
 float apply_unary(float value) {
-  if (params.operation == NEG) return -value;
-  if (params.operation == ABS) return abs(value);
-  if (params.operation == RELU) return max(value, 0.0);
+  if (params.operation == NEG)
+    return -value;
+  if (params.operation == ABS)
+    return abs(value);
+  if (params.operation == RELU)
+    return max(value, 0.0);
   if (params.operation == ABS_BACKWARD) {
     return value > 0.0 ? 1.0 : (value < 0.0 ? -1.0 : 0.0);
   }
-  if (params.operation == RELU_BACKWARD) return value > 0.0 ? 1.0 : 0.0;
+  if (params.operation == RELU_BACKWARD)
+    return value > 0.0 ? 1.0 : 0.0;
   return 0.0;
 }
 
 void main() {
   uint index = gl_GlobalInvocationID.x;
-  if (index >= params.element_count) return;
+  if (index >= params.element_count)
+    return;
 #if POINTWISE_MODE == 0
 #ifdef POINTWISE_BOOL
-  if (params.operation == 0u) out_data[index] = uint8_t((lhs[index] != 0) || (rhs[index] != 0));
-  else if (params.operation == 2u) out_data[index] = uint8_t((lhs[index] != 0) && (rhs[index] != 0));
+  if (params.operation == 0u)
+    out_data[index] = uint8_t((lhs[index] != 0) || (rhs[index] != 0));
+  else if (params.operation == 2u)
+    out_data[index] = uint8_t((lhs[index] != 0) && (rhs[index] != 0));
+#elif defined(POINTWISE_BOOL_OUTPUT)
+  out_data[index] = uint8_t(uint(lhs[index] == rhs[index]));
 #else
   out_data[index] = apply_operation(lhs[index], rhs[index]);
 #endif
 #elif POINTWISE_MODE == 1
+#ifdef POINTWISE_BOOL_OUTPUT
+  out_data[index] = uint8_t(lhs[index] != params.scalar);
+#else
   out_data[index] = apply_operation(lhs[index], params.scalar);
+#endif
 #elif POINTWISE_MODE == 2
   out_data[index] = apply_operation(params.scalar, rhs[index]);
 #else
+#ifdef POINTWISE_BOOL_OUTPUT
+  out_data[index] = uint8_t(
+      uint(input_data[index] == input_data[index] && abs(input_data[index]) <= 3.402823466e+38));
+#else
   out_data[index] = apply_unary(input_data[index]);
+#endif
 #endif
 }

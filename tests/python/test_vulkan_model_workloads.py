@@ -15,9 +15,10 @@ def _assert_vulkan(tensor):
     assert tensor.device.type == "vk"
     assert tensor.device.index == 0
     assert tensor.is_contiguous()
+    assert tensor.dtype is torch.float32
 
 
-def test_fixed_mlp_forward_and_first_order_gradients(vulkan_backend):
+def test_fixed_model_forward_and_first_order_gradients(vulkan_backend):
     torch.manual_seed(7)
     cpu_input = torch.randn(2, 8, dtype=torch.float32, requires_grad=True)
     cpu_weight = torch.randn(16, 8, dtype=torch.float32, requires_grad=True)
@@ -32,13 +33,14 @@ def test_fixed_mlp_forward_and_first_order_gradients(vulkan_backend):
 
     cpu_hidden = torch.relu(torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias))
     cpu_output = torch.nn.functional.linear(cpu_hidden, cpu_weight2, cpu_bias2)
-    cpu_loss = cpu_output.sum()
-    cpu_loss.backward()
+    cpu_output.backward(torch.ones_like(cpu_output))
     vk_hidden = torch.relu(torch.nn.functional.linear(vk_input, vk_weight, vk_bias))
     vk_output = torch.nn.functional.linear(vk_hidden, vk_weight2, vk_bias2)
     _assert_vulkan(vk_hidden)
     _assert_vulkan(vk_output)
-    vk_output.sum().backward()
+    grad_output = torch.add(torch.mul(vk_output.detach(), 0.0), 1.0)
+    _assert_vulkan(grad_output)
+    vk_output.backward(grad_output)
 
     torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
     torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad)
@@ -46,6 +48,37 @@ def test_fixed_mlp_forward_and_first_order_gradients(vulkan_backend):
     torch.testing.assert_close(vk_bias.grad.cpu(), cpu_bias.grad)
     torch.testing.assert_close(vk_weight2.grad.cpu(), cpu_weight2.grad)
     torch.testing.assert_close(vk_bias2.grad.cpu(), cpu_bias2.grad)
+    for gradient in (vk_input.grad, vk_weight.grad, vk_bias.grad, vk_weight2.grad, vk_bias2.grad):
+        _assert_vulkan(gradient)
+
+
+def test_fixed_mlp_forward(vulkan_backend):
+    torch.manual_seed(7)
+    cpu_input = torch.randn(2, 8, dtype=torch.float32)
+    cpu_weight = torch.randn(16, 8, dtype=torch.float32)
+    cpu_bias = torch.randn(16, dtype=torch.float32)
+    cpu_weight2 = torch.randn(4, 16, dtype=torch.float32)
+    cpu_bias2 = torch.randn(4, dtype=torch.float32)
+
+    cpu_output = torch.nn.functional.linear(
+        torch.relu(torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)),
+        cpu_weight2,
+        cpu_bias2,
+    )
+    vk_hidden = torch.relu(
+        torch.nn.functional.linear(
+            cpu_input.to(vulkan_backend),
+            cpu_weight.to(vulkan_backend),
+            cpu_bias.to(vulkan_backend),
+        )
+    )
+    vk_output = torch.nn.functional.linear(
+        vk_hidden, cpu_weight2.to(vulkan_backend), cpu_bias2.to(vulkan_backend)
+    )
+
+    _assert_vulkan(vk_hidden)
+    _assert_vulkan(vk_output)
+    torch.testing.assert_close(vk_output.cpu(), cpu_output)
 
 
 def test_fixed_cnn_forward_and_first_order_gradients(vulkan_backend):
@@ -58,18 +91,24 @@ def test_fixed_cnn_forward_and_first_order_gradients(vulkan_backend):
     vk_bias = cpu_bias.detach().to(vulkan_backend).requires_grad_()
 
     cpu_conv = torch.nn.functional.conv2d(cpu_input, cpu_weight, cpu_bias, padding=1)
-    cpu_pool = torch.nn.functional.adaptive_avg_pool2d(torch.relu(cpu_conv), 1)
-    cpu_pool.sum().backward()
+    cpu_output = torch.nn.functional.adaptive_avg_pool2d(torch.relu(cpu_conv), (1, 1))
+    grad_output = torch.randn_like(cpu_output)
     vk_conv = torch.nn.functional.conv2d(vk_input, vk_weight, vk_bias, padding=1)
+    vk_relu = torch.relu(vk_conv)
+    vk_output = torch.nn.functional.adaptive_avg_pool2d(vk_relu, (1, 1))
     _assert_vulkan(vk_conv)
-    vk_pool = torch.nn.functional.adaptive_avg_pool2d(torch.relu(vk_conv), 1)
-    _assert_vulkan(vk_pool)
-    vk_pool.sum().backward()
+    _assert_vulkan(vk_relu)
+    _assert_vulkan(vk_output)
+    cpu_output.backward(grad_output)
+    vk_output.backward(grad_output.to(vulkan_backend))
 
-    torch.testing.assert_close(vk_pool.cpu(), cpu_pool.detach())
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
     torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad)
     torch.testing.assert_close(vk_weight.grad.cpu(), cpu_weight.grad)
     torch.testing.assert_close(vk_bias.grad.cpu(), cpu_bias.grad)
+    _assert_vulkan(vk_input.grad)
+    _assert_vulkan(vk_weight.grad)
+    _assert_vulkan(vk_bias.grad)
 
 
 def test_model_workload_float16_is_explicitly_unsupported(vulkan_backend):
@@ -77,3 +116,18 @@ def test_model_workload_float16_is_explicitly_unsupported(vulkan_backend):
         x = torch.ones(2, 4, dtype=torch.float16, device=vulkan_backend)
         weight = torch.ones(3, 4, dtype=torch.float16, device=vulkan_backend)
         torch.nn.functional.linear(x, weight)
+
+
+def test_model_workload_unsupported_variants_are_rejected(vulkan_backend):
+    input = torch.randn(2, 1, 8, 8, dtype=torch.float32).to(vulkan_backend)
+    weight = torch.randn(4, 1, 3, 3, dtype=torch.float32).to(vulkan_backend)
+    bias = torch.randn(4, dtype=torch.float32).to(vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="convolution|stride|fixed"):
+        torch.nn.functional.conv2d(input, weight, bias, stride=2, padding=1)
+
+    with pytest.raises(RuntimeError, match="pooling|output|size|fixed"):
+        torch.nn.functional.adaptive_avg_pool2d(
+            torch.relu(torch.nn.functional.conv2d(input, weight, bias, padding=1)),
+            (2, 2),
+        )

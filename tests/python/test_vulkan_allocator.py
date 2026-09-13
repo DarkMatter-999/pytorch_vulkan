@@ -22,13 +22,12 @@ def test_torch_empty_uses_vulkan_allocator():
     assert tensor.device.index == 0
 
 
-def test_torch_empty_without_dtype_uses_default_dtype():
+def test_torch_empty_without_dtype_rejects_deferred_default_double():
     previous_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(torch.float64)
-        tensor = torch.empty((16,), device="vk")
-
-        assert tensor.dtype is torch.float64
+        with pytest.raises(RuntimeError, match="only float32 and bool"):
+            torch.empty((16,), device="vk")
     finally:
         torch.set_default_dtype(previous_dtype)
 

@@ -1,10 +1,103 @@
 #include "convolution.h"
+#include "autograd.h"
+#include "vulkan_allocator.h"
+#include "vulkan_buffer.h"
+#include "vulkan_compute.h"
+#include "vulkan_platform.h"
 #include <c10/util/Exception.h>
+#include <limits>
 #include <torch/library.h>
 namespace pytorch_vulkan {
-at::Tensor convolution_overrideable(const at::Tensor &, const at::Tensor &, const c10::optional<at::Tensor> &,
-                                    at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, bool, at::IntArrayRef, int64_t) {
-    TORCH_CHECK(false, "Vulkan convolution is not declared in the implemented model slice");
+namespace {
+VkDeviceSize bytes(const at::Tensor &t, const char *name) {
+    TORCH_CHECK(t.numel() >= 0 &&
+                    static_cast<uint64_t>(t.numel()) <=
+                        std::numeric_limits<uint64_t>::max() / sizeof(float),
+                "Vulkan convolution ", name, " byte count overflows");
+    const uint64_t value = static_cast<uint64_t>(t.numel()) * sizeof(float);
+    TORCH_CHECK(value <= std::numeric_limits<VkDeviceSize>::max(),
+                "Vulkan convolution ", name, " byte count exceeds range");
+    return static_cast<VkDeviceSize>(value);
 }
+void validate(const at::Tensor &t, const char *name) {
+    TORCH_CHECK(t.device().type() == c10::DeviceType::PrivateUse1 &&
+                    t.device().index() == 0,
+                "Vulkan convolution ", name, " requires vk:0");
+    TORCH_CHECK(
+        t.scalar_type() == at::kFloat && t.is_contiguous() && t.storage_offset() == 0,
+        "Vulkan convolution ", name, " requires contiguous float32 with zero offset");
 }
-TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) { m.impl("convolution_overrideable", &pytorch_vulkan::convolution_overrideable); }
+at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
+               const at::Tensor &bias, uint32_t operation) {
+    validate(input, "input");
+    validate(weight, "weight");
+    validate(bias, "bias");
+    TORCH_CHECK((operation == 0 && input.sizes().equals({2, 1, 8, 8})) ||
+                    (operation != 0 && input.sizes().equals({2, 4, 8, 8})),
+                "Vulkan convolution input has an unsupported fixed shape");
+    TORCH_CHECK(weight.dim() == 4 &&
+                    ((operation == 2 && weight.sizes().equals({2, 1, 8, 8})) ||
+                     (operation != 2 && weight.sizes().equals({4, 1, 3, 3}))),
+                "Vulkan convolution weight has an unsupported fixed shape");
+    TORCH_CHECK(bias.dim() == 1 && bias.size(0) == 4,
+                "Vulkan convolution bias has fixed shape (4)");
+    TORCH_CHECK(input.device() == weight.device() && input.device() == bias.device(),
+                "Vulkan convolution tensors require one device");
+    at::Tensor output = operation == 0   ? at::empty({2, 4, 8, 8}, input.options())
+                        : operation == 1 ? at::empty({2, 1, 8, 8}, input.options())
+                        : operation == 2 ? at::empty({4, 1, 3, 3}, input.options())
+                                         : at::empty({4}, input.options());
+    const auto &in_data = input.storage().data_ptr();
+    const auto &weight_data = weight.storage().data_ptr();
+    const auto &bias_data = bias.storage().data_ptr();
+    const auto &out_data = output.storage().data_ptr();
+    const auto &platform = allocation_platform(in_data);
+    TORCH_CHECK(&platform == &allocation_platform(weight_data) &&
+                    &platform == &allocation_platform(bias_data) &&
+                    &platform == &allocation_platform(out_data),
+                "Vulkan convolution requires Vulkan allocations");
+    validate_allocation(in_data, bytes(input, "input"), "convolution input");
+    validate_allocation(weight_data, bytes(weight, "weight"), "convolution weight");
+    validate_allocation(bias_data, bytes(bias, "bias"), "convolution bias");
+    validate_allocation(out_data, bytes(output, "output"), "convolution output");
+    platform.compute().convolution(allocation_buffer(in_data).buffer(),
+                                   allocation_buffer(weight_data).buffer(),
+                                   allocation_buffer(bias_data).buffer(),
+                                   allocation_buffer(out_data).buffer(), operation);
+    return output;
+}
+} // namespace
+at::Tensor convolution(const at::Tensor &input, const at::Tensor &weight,
+                       const c10::optional<at::Tensor> &bias, at::IntArrayRef stride,
+                       at::IntArrayRef padding, at::IntArrayRef dilation,
+                       bool transposed, at::IntArrayRef output_padding,
+                       int64_t groups) {
+    TORCH_CHECK(bias.has_value(), "Vulkan convolution requires bias");
+    TORCH_CHECK(stride.equals({1, 1}) && padding.equals({1, 1}) &&
+                    dilation.equals({1, 1}) && output_padding.equals({0, 0}) &&
+                    !transposed && groups == 1,
+                "Vulkan convolution supports only fixed stride, padding, dilation, "
+                "groups, and non-transposed parameters");
+    return run(input, weight, *bias, 0);
+}
+at::Tensor convolution_backward_input(const at::Tensor &grad,
+                                      const at::Tensor &weight) {
+    return run(grad, weight, at::empty({4}, grad.options()), 1);
+}
+at::Tensor convolution_backward_weight(const at::Tensor &grad,
+                                       const at::Tensor &input) {
+    return run(grad, input, at::empty({4}, grad.options()), 2);
+}
+at::Tensor convolution_backward_bias(const at::Tensor &grad) {
+    return run(grad, at::empty({4, 1, 3, 3}, grad.options()),
+               at::empty({4}, grad.options()), 3);
+}
+} // namespace pytorch_vulkan
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+    m.impl("convolution", &pytorch_vulkan::convolution);
+    m.impl("convolution_overrideable", &pytorch_vulkan::convolution);
+}
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+    m.impl("convolution", &pytorch_vulkan::autograd_convolution);
+    m.impl("convolution_overrideable", &pytorch_vulkan::autograd_convolution);
+}

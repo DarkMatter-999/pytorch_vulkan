@@ -36,16 +36,21 @@ def main():
     if re.fullmatch(r"\d+\.\d+", first_line) is None or first_line != EXPECTED_VERSION:
         raise SystemExit(f"expected glslc {EXPECTED_VERSION}, got {version!r}")
 
-    names = [("kTensorTensorCode", 0, False), ("kTensorScalarCode", 1, False),
-             ("kScalarTensorCode", 2, False), ("kUnaryCode", 3, False),
-             ("kBoolTensorTensorCode", 0, True)]
+    names = [("kTensorTensorCode", 0, False, False), ("kTensorScalarCode", 1, False, False),
+             ("kScalarTensorCode", 2, False, False), ("kUnaryCode", 3, False, False),
+             ("kBoolTensorTensorCode", 0, True, False),
+             ("kBoolOutputTensorScalarCode", 1, False, True),
+             ("kBoolOutputUnaryCode", 3, False, True),
+             ("kBoolOutputTensorTensorCode", 0, False, True)]
     with tempfile.TemporaryDirectory() as directory:
         binaries = []
-        for _, mode, bool_dtype in names:
+        for _, mode, bool_dtype, bool_output in names:
             path = pathlib.Path(directory) / f"pointwise_{mode}_{int(bool_dtype)}.spv"
             command = ["glslc", "-Os", f"-DPOINTWISE_MODE={mode}"]
             if bool_dtype:
                 command.append("-DPOINTWISE_BOOL")
+            if bool_output:
+                command.append("-DPOINTWISE_BOOL_OUTPUT")
             command.extend(["-o", str(path), str(SOURCE)])
             subprocess.run(command, check=True)
             binaries.append(path.read_bytes())
@@ -53,7 +58,7 @@ def main():
     with OUTPUT.open("w", encoding="ascii") as header:
         header.write("#pragma once\n\n#include <cstddef>\n#include <cstdint>\n\n")
         header.write("namespace vulkan_pointwise_shader {\n")
-        for (name, _, _), binary in zip(names, binaries):
+        for (name, _, _, _), binary in zip(names, binaries):
             words = [int.from_bytes(binary[index:index + 4], "little")
                      for index in range(0, len(binary), 4)]
             header.write(f"inline constexpr uint32_t {name}[] = {{\n")

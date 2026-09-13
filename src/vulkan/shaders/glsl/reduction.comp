@@ -9,10 +9,12 @@ layout(push_constant, std430) uniform Params {
   uint reduce_numel;
   uint sizes[8];
   uint mean;
-} params;
+}
+params;
 void main() {
   uint output_index = gl_GlobalInvocationID.x;
-  if (output_index >= params.output_numel) return;
+  if (output_index >= params.output_numel)
+    return;
   uint remainder = output_index;
   uint base = 0u;
   for (int d = int(params.rank) - 1; d >= 0; --d) {
