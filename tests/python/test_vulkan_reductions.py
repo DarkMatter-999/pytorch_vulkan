@@ -64,7 +64,7 @@ def test_reduction_matches_cpu_for_general_views(vulkan_backend, view):
 
 
 def test_reduction_rejects_overlapping_input(vulkan_backend):
-    input = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)
+    input = torch.arange(6, dtype=torch.float32, device="cpu").reshape(2, 3).to(vulkan_backend)
     overlapping = input.as_strided((2, 2), (1, 1))
     with pytest.raises(RuntimeError, match="overlap|overlapping"):
         torch.sum(overlapping, dim=1)
@@ -77,8 +77,10 @@ def test_reduction_rejects_rank_nine(vulkan_backend):
 
 
 @pytest.mark.parametrize("operation", [torch.sum, torch.mean])
-def test_reduction_rejects_empty_input_outside_matrix(vulkan_backend, operation):
+def test_reduction_matches_cpu_for_empty_reduced_dimension(vulkan_backend, operation):
     input = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
     result = operation(input, dim=0)
     expected = operation(input.cpu(), dim=0)
+    assert result.device == input.device
+    assert result.device.type == "vk"
     torch.testing.assert_close(result.cpu(), expected, equal_nan=True)

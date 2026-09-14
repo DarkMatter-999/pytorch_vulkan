@@ -67,6 +67,8 @@ struct IndexingParams {
 struct BroadcastParams {
     uint32_t rank, output_numel;
     float scale;
+};
+struct BroadcastMetadata {
     uint32_t input_sizes[8];
     uint32_t output_sizes[8];
     uint32_t sizes[8];
@@ -356,7 +358,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_extra(broadcast_descriptor_layout_, broadcast_shader_,
                      broadcast_pipeline_layout_, broadcast_pipeline_,
                      vulkan_reduction_shader::kBroadcastCode,
-                     vulkan_reduction_shader::kBroadcastCodeSize);
+                     vulkan_reduction_shader::kBroadcastCodeSize,
+                     sizeof(BroadcastParams), 3);
         create_extra(pooling_descriptor_layout_, pooling_shader_,
                      pooling_pipeline_layout_, pooling_pipeline_,
                       vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize,
@@ -894,7 +897,15 @@ void VulkanCompute::broadcast(VkBuffer input, const VulkanTensorLayout &input_la
                               VkBuffer output, const VulkanTensorLayout &output_layout,
                               uint32_t output_numel, float scale) const {
     BroadcastParams params{};
-    fill_layout_metadata(params, input_layout, "broadcast");
+    BroadcastMetadata metadata{};
+    ReductionParams input_metadata{};
+    fill_layout_metadata(input_metadata, input_layout, "broadcast");
+    params.rank = input_metadata.rank;
+    metadata.storage_offset = input_metadata.storage_offset;
+    for (uint32_t i = 0; i < params.rank; ++i) {
+        metadata.sizes[i] = input_metadata.sizes[i];
+        metadata.strides[i] = input_metadata.strides[i];
+    }
     if (output_layout.rank != input_layout.rank ||
         output_layout.sizes.size() != static_cast<size_t>(output_layout.rank) ||
         output_layout.strides.size() != static_cast<size_t>(output_layout.rank))
@@ -904,13 +915,14 @@ void VulkanCompute::broadcast(VkBuffer input, const VulkanTensorLayout &input_la
     params.output_numel = output_numel;
     params.scale = scale;
     for (uint32_t i = 0; i < params.rank; ++i) {
-        params.input_sizes[i] = static_cast<uint32_t>(input_layout.sizes[i]);
-        params.output_sizes[i] = static_cast<uint32_t>(output_layout.sizes[i]);
+        metadata.input_sizes[i] = static_cast<uint32_t>(input_layout.sizes[i]);
+        metadata.output_sizes[i] = static_cast<uint32_t>(output_layout.sizes[i]);
     }
     dispatch_extra(input, output, input_layout.allocation_bytes,
                    output_layout.allocation_bytes,
                    broadcast_pipeline_, broadcast_pipeline_layout_,
-                   broadcast_descriptor_layout_, &params, sizeof(params), output_numel);
+                   broadcast_descriptor_layout_, &params, sizeof(params), output_numel,
+                   &metadata, sizeof(metadata));
 }
 
 void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,

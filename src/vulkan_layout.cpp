@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_set>
 
 namespace {
 
@@ -37,42 +38,66 @@ void validate_storage_owner(const at::Tensor &tensor, const char *label) {
 }
 
 pytorch_vulkan::VulkanOverlap classify_strided_overlap(at::IntArrayRef sizes,
-                                                        at::IntArrayRef strides,
-                                                        const char *label) {
-    // Validated nonnegative strides make this sorted-span check exact: a stride
-    // below the addresses covered by earlier dimensions necessarily aliases.
-    // Tensor descriptors use ATen's three-state classification below instead.
+                                                         at::IntArrayRef strides,
+                                                         const char *label) {
+    // A sorted-span proof is sufficient when each dimension begins strictly
+    // beyond every address reachable by the preceding dimensions.  If that
+    // proof is inconclusive, enumerate small layouts exactly; large layouts
+    // are conservatively rejected rather than risking a false No.
     std::vector<std::pair<uint64_t, uint64_t>> dimensions;
     dimensions.reserve(sizes.size());
+    uint64_t numel = 1;
     for (size_t dim = 0; dim < sizes.size(); ++dim) {
+        TORCH_CHECK(sizes[dim] >= 0 && strides[dim] >= 0,
+                    "Vulkan ", label, " overlap classifier received invalid metadata");
+        numel = checked_multiply(numel, static_cast<uint64_t>(sizes[dim]), label);
         if (sizes[dim] <= 1) {
             continue;
         }
-        dimensions.emplace_back(static_cast<uint64_t>(strides[dim]),
-                                static_cast<uint64_t>(sizes[dim]));
+        const auto stride = static_cast<uint64_t>(strides[dim]);
+        if (stride == 0) return pytorch_vulkan::VulkanOverlap::Yes;
+        dimensions.emplace_back(stride, static_cast<uint64_t>(sizes[dim]));
     }
     std::sort(dimensions.begin(), dimensions.end());
-    uint64_t covered = 1;
+    uint64_t span = 0;
+    bool proof_inconclusive = false;
     for (const auto &[stride, size] : dimensions) {
-        if (stride < covered) {
-            return pytorch_vulkan::VulkanOverlap::Yes;
+        if (stride <= span) {
+            proof_inconclusive = true;
+            break;
         }
-        covered = checked_multiply(covered, size, label);
+        span = checked_add(span, checked_multiply(size - 1, stride, label), label);
+    }
+    if (!proof_inconclusive) {
+        return pytorch_vulkan::VulkanOverlap::No;
+    }
+
+    constexpr uint64_t kExactElementLimit = 1U << 20;
+    if (numel > kExactElementLimit) return pytorch_vulkan::VulkanOverlap::TooHard;
+    std::unordered_set<uint64_t> addresses;
+    addresses.reserve(static_cast<size_t>(numel));
+    for (uint64_t linear = 0; linear < numel; ++linear) {
+        uint64_t remaining = linear;
+        uint64_t address = 0;
+        for (int64_t dim = static_cast<int64_t>(sizes.size()) - 1; dim >= 0; --dim) {
+            const uint64_t size = static_cast<uint64_t>(sizes[dim]);
+            if (size != 0) {
+                address = checked_add(
+                    address, checked_multiply(remaining % size,
+                                              static_cast<uint64_t>(strides[dim]), label), label);
+                remaining /= size;
+            }
+        }
+        if (!addresses.insert(address).second) return pytorch_vulkan::VulkanOverlap::Yes;
     }
     return pytorch_vulkan::VulkanOverlap::No;
 }
 
 pytorch_vulkan::VulkanOverlap classify_tensor_overlap(const at::Tensor &tensor) {
-    const auto overlap = at::has_internal_overlap(tensor);
-    switch (overlap) {
-        case at::MemOverlap::No:
-            return pytorch_vulkan::VulkanOverlap::No;
-        case at::MemOverlap::Yes:
-            return pytorch_vulkan::VulkanOverlap::Yes;
-        case at::MemOverlap::TooHard:
-            return pytorch_vulkan::VulkanOverlap::TooHard;
-    }
-    TORCH_CHECK(false, "Vulkan tensor overlap classification is invalid");
+    // ATen reports many positive-stride permutations and slices as TooHard.
+    // The Vulkan layout contract already rejects negative strides, so the
+    // exact sorted-span check is sufficient and preserves valid views.
+    return classify_strided_overlap(tensor.sizes(), tensor.strides(), "tensor");
 }
 
 pytorch_vulkan::VulkanTensorLayout inspect_layout(const at::Tensor &storage_owner,
@@ -98,7 +123,6 @@ pytorch_vulkan::VulkanTensorLayout inspect_layout(const at::Tensor &storage_owne
     }
     TORCH_CHECK(numel <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()),
                 "Vulkan ", label, " numel exceeds int64 range");
-
     uint64_t max_element = static_cast<uint64_t>(storage_offset);
     if (!empty) {
         for (size_t dim = 0; dim < sizes.size(); ++dim) {
@@ -129,13 +153,35 @@ pytorch_vulkan::VulkanTensorLayout inspect_layout(const at::Tensor &storage_owne
                     byte_range <= std::numeric_limits<VkDeviceSize>::max() &&
                     end_byte <= std::numeric_limits<VkDeviceSize>::max(),
                 "Vulkan ", label, " layout exceeds VkDeviceSize range");
+    if (!empty) {
+        for (size_t dim = 0; dim < sizes.size(); ++dim) {
+            TORCH_CHECK(static_cast<uint64_t>(sizes[dim]) <=
+                            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) &&
+                        static_cast<uint64_t>(strides[dim]) <=
+                            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()),
+                        "Vulkan ", label, " metadata exceeds shader address range");
+        }
+        TORCH_CHECK(numel <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()),
+                    "Vulkan ", label, " numel exceeds shader address range");
+        TORCH_CHECK(max_element <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()),
+                    "Vulkan ", label, " reachable address exceeds shader address range");
+        TORCH_CHECK(static_cast<uint64_t>(storage_offset) <=
+                        static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()),
+                    "Vulkan ", label, " storage offset exceeds shader address range");
+    }
 
     const at::DataPtr &data = storage_owner.storage().data_ptr();
     VkDeviceSize allocation_bytes = 0;
-    if (!empty) {
+    if (!empty || !pytorch_vulkan::is_vulkan_allocation(data) ||
+        storage_owner.storage().nbytes() != 0) {
         // Validate the allocator's platform and buffer payload before borrowing it.
         pytorch_vulkan::validate_allocation(data, 0, label);
         allocation_bytes = pytorch_vulkan::allocation_buffer(data).size();
+    }
+    if (empty) {
+        TORCH_CHECK(byte_offset <= allocation_bytes,
+                    "Vulkan ", label, " empty view offset is outside its Vulkan allocation");
+    } else {
         TORCH_CHECK(end_byte <= allocation_bytes,
                     "Vulkan ", label, " reaches outside its Vulkan allocation");
     }

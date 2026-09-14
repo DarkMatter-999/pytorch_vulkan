@@ -129,7 +129,13 @@ Before enabling float16, a separate design must specify all of the following:
 - Operator registration and forward parity coverage.
 - First-order reverse-mode autograd formulas, saved tensors, and gradient dtype/storage.
 
-Multi-device support, general views, and advanced operators are deferred.
+Metadata-only general views and incompatible reshape copies are supported on
+Linux `vk:0` within their documented float32 and non-negative-stride contracts,
+including first-order reverse-mode autograd. Migrated consuming operators
+(pointwise, reductions, linear, convolution, and pooling) support only their
+explicitly documented layouts; unsupported overlap, offsets, dtypes, ranks,
+shapes, and other layouts remain explicitly rejected. Multi-device support and
+advanced operators remain deferred.
 
 ## Fixed model slices
 
@@ -145,9 +151,9 @@ use CPU fallback, payload readback, or `dlprimitives`. CPU transfers in model
 tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4
 semantics and compare with the existing floating-point test tolerances.
 
-Float16, general views, strided execution, unsupported model variants,
-higher-order gradients, and implicit `fill_`/accumulated-leaf paths remain
-explicitly rejected or deferred. Formatter-compatible Double is limited to the
+Float16, unsupported model variants, higher-order gradients, and implicit
+`fill_`/accumulated-leaf paths remain explicitly rejected or deferred.
+Formatter-compatible Double is limited to the
 separate formatter contract documented below; it is not general Double support.
 
 ## Vulkan pointwise scalar operations
@@ -206,8 +212,8 @@ in-place variants are rejected explicitly. Complex, non-finite, float32-range
 overflowing, and float32-underflowing Python scalar values are also rejected.
 
 Broadcasting, dtype promotion, scalar-tensor semantics, scalar buffers,
-asynchronous execution, general view execution and unsupported view layouts,
-multi-device support, and advanced operators remain deferred; only the
+asynchronous execution, multi-device support, and advanced operators remain
+deferred; only the
 documented Python-number forms are supported.
 
 ## Vulkan masked select
@@ -233,10 +239,11 @@ forward contract and keep gradients on Vulkan:
 
 Unsupported Vulkan operators, overloads, layouts, dtypes, and devices fail with
 an explicit backend error before CPU materialization. CPU-only autograd remains
-normal PyTorch behavior. Higher-order gradients, forward-mode AD, arbitrary view
-replay and general reshape autograd semantics remain deferred; retained-graph
-replay is supported within the documented in-place and gradient-accumulation
-boundaries.
+normal PyTorch behavior. Higher-order gradients and forward-mode AD remain
+deferred. Metadata-only views replay through chained view operations, and
+incompatible `reshape` uses a Vulkan copy while preserving first-order
+reverse-mode autograd. Consuming operators separately document the layouts
+they accept; view construction does not imply universal operator support.
 
 ## Formatter-Compatible Double
 
@@ -276,8 +283,9 @@ layouts, overlap, and a different logical element count. Metadata-only `view` an
 reshape-alias calls remain limited to compatible contiguous, zero-offset layouts
 with equal logical element counts. All supported calls preserve storage metadata
 without a copy or dispatch. Pointwise and copy execution of general views,
-dtype-changing views, and complete formatting remain unsupported. Boolean
-formatter support and later offset-aware and strided execution are deferred.
+dtype-changing views, and complete formatting remain unsupported unless listed
+by the consuming operator's contract. View construction does not imply
+consuming-operator support.
 
 ## Serialization And Multiprocessing
 
@@ -297,15 +305,18 @@ and never serializes Vulkan handles or allocator state. A generic PyTorch
 fallback is `torch.save(vulkan_tensor.cpu(), path)`. Explicit loading defaults
 to `vk:0` for payloads containing Vulkan tensors and fails if Vulkan is
 unavailable; `map_location="cpu"` forces CPU storage and `map_location="vk"`
-requests `vk:0`. Invalid locations and unsupported metadata are rejected.
+requests `vk:0`. Invalid locations and unsupported metadata are rejected. View
+sizes, strides, storage offsets, shared storage, and `requires_grad` are
+preserved; autograd graphs are not serialized.
 
 Multiprocessing transfers use CPU tensors as the process boundary. Materialize
 with `vulkan_tensor.cpu()` before putting a tensor on a queue, pipe, or pool
 input. `spawn` is the primary start method; each child initializes independent
 Vulkan state. Forking after Vulkan initialization is rejected and callers
 should use `spawn` or CPU materialization. Vulkan IPC and direct transfer of
-Vulkan tensors between processes are not supported. Autograd is not part of
-this serialization or multiprocessing contract.
+Vulkan tensors between processes are not supported. A spawned child may
+independently rebuild Vulkan views, but autograd graphs are not transferred
+between processes.
 
 ### Manual Python Extension Verification
 

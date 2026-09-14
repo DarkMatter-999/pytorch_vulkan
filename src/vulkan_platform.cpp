@@ -559,6 +559,52 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     release_resources();
 }
 
+void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
+                                      VkDeviceSize size, uint32_t data) const {
+    if (buffer == VK_NULL_HANDLE || size == 0 || (offset % 4) != 0 || (size % 4) != 0) {
+        throw std::invalid_argument("Invalid Vulkan buffer fill arguments");
+    }
+    std::scoped_lock lock(queue_mutex_);
+    VkCommandBufferAllocateInfo allocation_info{};
+    allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocation_info.commandPool = command_pool_;
+    allocation_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocation_info.commandBufferCount = 1;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
+                 "Could not allocate Vulkan fill command buffer");
+    VkFence fence = VK_NULL_HANDLE;
+    try {
+        VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_result(vkBeginCommandBuffer(command_buffer, &begin_info),
+                     "Could not begin Vulkan fill command buffer");
+        vkCmdFillBuffer(command_buffer, buffer, offset, size, data);
+        check_result(vkEndCommandBuffer(command_buffer),
+                     "Could not end Vulkan fill command buffer");
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &command_buffer;
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
+                     "Could not create Vulkan fill fence");
+        check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, fence),
+                     "Could not submit Vulkan fill command buffer");
+        check_result(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX),
+                     "Could not wait for Vulkan fill fence");
+    } catch (...) {
+        vkQueueWaitIdle(compute_queue_);
+        if (fence != VK_NULL_HANDLE) vkDestroyFence(device_, fence, nullptr);
+        vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+        throw;
+    }
+    vkDestroyFence(device_, fence, nullptr);
+    vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+}
+
 void VulkanPlatform::wait_for_transfer() const {
     std::scoped_lock lock(queue_mutex_);
     const VkResult result = vkQueueWaitIdle(compute_queue_);

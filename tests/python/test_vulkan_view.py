@@ -56,6 +56,18 @@ def test_metadata_only_views_reject_unsupported_metadata(vulkan_backend):
     )
 
 
+def test_as_strided_rejects_reachable_uint32_address_overflow(vulkan_backend):
+    source = _source(vulkan_backend)
+    _assert_view_rejected(
+        lambda: torch.as_strided(source, (2,), (2**32 - 1,), storage_offset=1),
+        "shader address",
+    )
+    _assert_view_rejected(
+        lambda: torch.as_strided(source, (2, 2), (2**31, 2**31)),
+        "shader address",
+    )
+
+
 def test_as_strided_accepts_general_in_allocation_metadata(vulkan_backend):
     source = _source(vulkan_backend)
     views = [
@@ -86,6 +98,20 @@ def test_strided_views_cover_transpose_slice_zero_stride_and_empty(vulkan_backen
     assert tuple(sliced.shape) == (3, 3) and tuple(sliced.stride()) == (4, 1)
     assert tuple(broadcast.stride()) == (0, 1) and broadcast.storage_offset() == 2
     assert empty.numel() == 0
+
+
+def test_empty_strided_view_validates_storage_boundary(vulkan_backend):
+    source = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
+    valid = torch.as_strided(source, (0,), (1,), storage_offset=4)
+    assert valid.numel() == 0
+    _assert_view_rejected(
+        lambda: torch.as_strided(source, (0,), (1,), storage_offset=5),
+        "outside its Vulkan allocation",
+    )
+    _assert_view_rejected(
+        lambda: torch.as_strided(source, (0,), (1,), storage_offset=2**32 + 1),
+        "outside its Vulkan allocation",
+    )
 
 
 def test_reshape_alias_and_incompatible_reshape_copy(vulkan_backend):
@@ -157,3 +183,42 @@ def test_contiguous_empty_general_view(vulkan_backend):
 
     assert result.numel() == 0
     assert result.is_contiguous()
+
+
+def test_chained_metadata_views_replay_autograd(vulkan_backend):
+    cpu = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    source = cpu.to(vulkan_backend).detach().requires_grad_()
+    view = source.transpose(0, 1)
+    view.retain_grad()
+
+    result = torch.neg(view)
+    result.backward(torch.ones(result.shape, dtype=result.dtype).to(vulkan_backend))
+
+    assert view.grad is not None
+    assert source.grad is not None
+    torch.testing.assert_close(view.grad.cpu(), -torch.ones_like(view.cpu()))
+    torch.testing.assert_close(source.grad.cpu(), -torch.ones_like(cpu))
+
+
+def test_incompatible_reshape_copy_keeps_autograd(vulkan_backend):
+    cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    source = cpu.to(vulkan_backend).detach().requires_grad_()
+    result = torch.neg(source.transpose(0, 1).reshape(6))
+
+    result.backward(torch.ones(result.shape, dtype=result.dtype).to(vulkan_backend))
+
+    assert source.grad is not None
+    torch.testing.assert_close(source.grad.cpu(), -torch.ones_like(cpu))
+
+
+def test_incompatible_reshape_copy_maps_nonuniform_gradient_like_cpu(vulkan_backend):
+    cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3).requires_grad_()
+    cpu_result = cpu.transpose(0, 1).reshape(6)
+    cpu_result.backward(torch.arange(1, 7, dtype=torch.float32))
+
+    source = cpu.detach().to(vulkan_backend).requires_grad_()
+    result = source.transpose(0, 1).reshape(6)
+    result.backward(torch.arange(1, 7, dtype=torch.float32).to(vulkan_backend))
+
+    assert source.grad is not None
+    torch.testing.assert_close(source.grad.cpu(), cpu.grad, rtol=0, atol=0)

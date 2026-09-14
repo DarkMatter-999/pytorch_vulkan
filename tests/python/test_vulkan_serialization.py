@@ -75,6 +75,23 @@ def test_explicit_round_trip_preserves_requires_grad():
 
 
 @pytest.mark.skipif(not pytorch_vulkan.is_available(), reason="no Vulkan device")
+def test_explicit_round_trip_preserves_chained_view_metadata():
+    source = _source().to("vk")
+    view = source.transpose(0, 1)[:, 1:3]
+
+    buffer = io.BytesIO()
+    pytorch_vulkan.save({"source": source, "view": view}, buffer)
+    buffer.seek(0)
+    restored = pytorch_vulkan.load(buffer, map_location="vk")
+
+    assert tuple(restored["view"].shape) == tuple(view.shape)
+    assert tuple(restored["view"].stride()) == tuple(view.stride())
+    assert restored["view"].storage_offset() == view.storage_offset()
+    assert restored["view"].untyped_storage()._cdata == restored["source"].untyped_storage()._cdata
+    torch.testing.assert_close(restored["view"].cpu(), view.cpu(), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not pytorch_vulkan.is_available(), reason="no Vulkan device")
 def test_generic_torch_save_requires_cpu_materialization():
     tensor = _source().to("vk")
     with pytest.raises((NotImplementedError, RuntimeError)):

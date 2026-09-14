@@ -138,8 +138,21 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
                         output.sizes().equals(expected_sizes),
                     "Vulkan ", name, " out requires a contiguous float32 output with the expected shape");
     }
-    if (output_numel == 0) return output;
     auto input_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, name);
+    if (output_numel == 0) return output;
+    if (reduce_numel == 0) {
+        // Reduction over an empty dimension has a defined result even though
+        // the empty Vulkan input has no backing buffer to dispatch against.
+        // Initialize the already allocated Vulkan output directly.
+        auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, name);
+        const auto &output_data = output.storage().data_ptr();
+        pytorch_vulkan::validate_allocation(output_data, output_layout.allocation_bytes, name);
+        const uint32_t pattern = mean ? 0x7fc00000U : 0U;
+        pytorch_vulkan::allocation_platform(output_data).fill_buffer_sync(
+            pytorch_vulkan::allocation_buffer(output_data).buffer(), output_layout.byte_offset,
+            output_layout.byte_range, pattern);
+        return output;
+    }
     TORCH_CHECK(input_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
                 "Vulkan ", name, " rejects overlapping input views");
     auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, name);

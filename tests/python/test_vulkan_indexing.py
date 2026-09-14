@@ -48,7 +48,7 @@ def test_argmax_matches_cpu_for_transpose_slice_and_offset(vulkan_backend):
 
 
 def test_argmax_rejects_overlapping_input(vulkan_backend):
-    input = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)
+    input = torch.arange(6, dtype=torch.float32, device="cpu").reshape(2, 3).to(vulkan_backend)
     overlapping = input.as_strided((2, 2), (1, 1))
     with pytest.raises(RuntimeError, match="overlap|overlapping"):
         torch.argmax(overlapping, dim=1)
@@ -75,10 +75,11 @@ def test_argmax_rejects_rank_nine(vulkan_backend):
         torch.argmax(input, dim=0)
 
 
-def test_argmax_rejects_empty_input(vulkan_backend):
+def test_argmax_returns_empty_result_for_empty_non_reduced_dimension(vulkan_backend):
     input = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
-    with pytest.raises(RuntimeError, match="empty"):
-        torch.argmax(input, dim=1)
+    result = torch.argmax(input, dim=1)
+    assert result.shape == (0,)
+    assert result.numel() == 0
 
 
 def test_arbitrary_vulkan_int64_allocation_is_rejected(vulkan_backend):

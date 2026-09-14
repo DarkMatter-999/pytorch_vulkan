@@ -133,19 +133,16 @@ def test_masked_select_rejects_cpu_mask(vulkan_backend):
         torch.masked_select(values, torch.ones(4, dtype=torch.bool))
 
 
-@pytest.mark.parametrize(
-    "values_factory, message",
-    [
-        (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (2, 2), (1, 2)), "contiguous"),
-        (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (4,), (1,), 1), "storage_offset"),
-    ],
-)
-def test_masked_select_rejects_unsupported_input_forms(vulkan_backend, values_factory, message):
+@pytest.mark.parametrize("values_factory, expected", [
+    (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (2, 2), (1, 2)),
+     torch.tensor([0.0, 2.0, 1.0, 3.0])),
+    (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (4,), (1,), 1),
+     torch.tensor([1.0, 2.0, 3.0, 4.0])),
+])
+def test_masked_select_accepts_positive_stride_and_offset_values(vulkan_backend, values_factory, expected):
     values = values_factory(vulkan_backend)
     mask = torch.ones(values.shape, dtype=torch.bool).to(vulkan_backend)
-
-    with pytest.raises(RuntimeError, match=message):
-        torch.masked_select(values, mask)
+    torch.testing.assert_close(torch.masked_select(values, mask).cpu(), expected)
 
 
 def test_masked_select_preserves_global_double_rejection(vulkan_backend):

@@ -47,6 +47,8 @@ class VulkanPlatform {
     void copy_buffer_sync(VkBuffer source, VkBuffer destination,
                           VkDeviceSize size, VkDeviceSize source_offset = 0,
                           VkDeviceSize destination_offset = 0) const;
+    void fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
+                          uint32_t data) const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
     bool validation_enabled() const;
     bool supports_bool_pointwise() const;

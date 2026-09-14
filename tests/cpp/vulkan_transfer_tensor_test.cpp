@@ -2,6 +2,7 @@
 #include "vulkan/operators/comparison.h"
 #include "vulkan/operators/convolution.h"
 #include "vulkan/operators/pooling.h"
+#include "vulkan/operators/reduction.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
@@ -475,7 +476,43 @@ void test_vulkan_layout_descriptor_and_index_mapping() {
     expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {3, 0}); },
                  "coordinate");
     expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, 6); },
-                 "linear index");
+                  "linear index");
+
+    auto overlapping = at::empty_strided({3, 3}, {2, 4}, tensor.options());
+    const auto overlapping_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(overlapping, "descriptor test");
+    expect(overlapping_layout.internal_overlap != pytorch_vulkan::VulkanOverlap::No,
+           "non-unit-stride repeated addresses were classified as non-overlapping");
+}
+
+void test_empty_reductions_stay_on_vulkan() {
+    auto input = at::empty({0, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto sum = pytorch_vulkan::sum_tensor(input, 0, false, c10::nullopt);
+    auto mean = pytorch_vulkan::mean_tensor(input, 0, false, c10::nullopt);
+    expect(sum.device() == kDevice && mean.device() == kDevice,
+           "empty reductions materialized their result on CPU");
+    auto sum_cpu = at::empty_like(sum, sum.options().device(c10::kCPU));
+    auto mean_cpu = at::empty_like(mean, mean.options().device(c10::kCPU));
+    pytorch_vulkan::copy_tensor(sum_cpu, sum, false);
+    pytorch_vulkan::copy_tensor(mean_cpu, mean, false);
+    expect(sum_cpu.equal(at::zeros_like(sum_cpu)) &&
+               at::isnan(mean_cpu).all().item<bool>(),
+           "empty Vulkan reductions produced incorrect identity values");
+}
+
+void test_empty_reductions_validate_input_layout() {
+    auto input = at::empty({0}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto foreign = input;
+    foreign.storage().set_data_ptr(at::DataPtr(nullptr, nullptr, nullptr, kDevice));
+    expect_error([&] { (void)pytorch_vulkan::sum_tensor(foreign, 0, false, c10::nullopt); }, "");
+
+    auto out_of_range = input;
+    out_of_range.unsafeGetTensorImpl()->set_storage_offset(1);
+    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(
+        std::vector<int64_t>{0}, std::vector<int64_t>{1});
+    expect_error(
+        [&] { (void)pytorch_vulkan::mean_tensor(out_of_range, 0, false, c10::nullopt); },
+        "");
 }
 
 void test_vulkan_layout_address_rejects_storage_offset_overflow() {
@@ -494,6 +531,51 @@ void test_vulkan_layout_address_rejects_storage_offset_overflow() {
     expect_error(
         [&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {1}); },
         "address exceeds int64 range");
+}
+
+void test_vulkan_layout_rejects_shader_address_overflow() {
+    auto input = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    const int64_t max_uint32 = std::numeric_limits<uint32_t>::max();
+
+    expect_error(
+        [&] {
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(
+                input, {2}, {max_uint32}, 1, "shader address");
+        },
+        "shader address");
+    expect_error(
+        [&] {
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(
+                input, {2, 2}, {static_cast<int64_t>(uint32_t{0x80000000}),
+                                static_cast<int64_t>(uint32_t{0x80000000})},
+                0, "shader address");
+        },
+        "shader address");
+}
+
+void test_empty_vulkan_view_checks_allocation_boundary() {
+    auto input = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    const auto valid = pytorch_vulkan::inspect_vulkan_view_layout(
+        input, {0}, {1}, 4, "empty boundary");
+    expect(valid.numel == 0 && valid.byte_range == 0 && valid.byte_offset == valid.allocation_bytes,
+           "empty Vulkan view at allocation boundary was rejected");
+    expect_error(
+        [&] {
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(
+                input, {0}, {1}, 5, "empty boundary");
+        },
+        "empty boundary");
+}
+
+void test_empty_vulkan_view_does_not_use_shader_address_limit() {
+    auto input = at::empty({0}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    expect_error(
+        [&] {
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(
+                input, {0}, {1}, static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1,
+                "empty address");
+        },
+        "outside its Vulkan allocation");
 }
 
 void test_metadata_only_views() {
@@ -1093,7 +1175,12 @@ int main() {
         test_foreign_payload_rejected();
         test_vulkan_layout_inspection();
         test_vulkan_layout_descriptor_and_index_mapping();
+        test_empty_reductions_stay_on_vulkan();
+        test_empty_reductions_validate_input_layout();
         test_vulkan_layout_address_rejects_storage_offset_overflow();
+        test_vulkan_layout_rejects_shader_address_overflow();
+        test_empty_vulkan_view_checks_allocation_boundary();
+        test_empty_vulkan_view_does_not_use_shader_address_limit();
         test_metadata_only_views();
         test_repeated_add_dispatch_and_retained_output();
         test_tensor_tensor_sub_and_mul_dispatch();

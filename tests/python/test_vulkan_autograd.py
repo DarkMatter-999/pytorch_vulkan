@@ -109,3 +109,34 @@ def test_unsupported_vulkan_operator_fails_without_cpu_fallback(vulkan_backend):
 
     with pytest.raises(RuntimeError, match="Could not run|not implemented|Vulkan"):
         torch.sin(x)
+
+
+def test_saved_vulkan_view_survives_forward_scope_and_backward(vulkan_backend):
+    cpu = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    source = cpu.to(vulkan_backend).detach().requires_grad_()
+
+    def build_result(value):
+        saved_view = value.transpose(0, 1)
+        return torch.neg(saved_view)
+
+    result = build_result(source)
+    result.backward(torch.ones(result.shape, dtype=result.dtype).to(vulkan_backend))
+
+    torch.testing.assert_close(source.grad.cpu(), -torch.ones_like(cpu))
+
+
+def test_migrated_linear_backward_accepts_a_view(vulkan_backend):
+    cpu_input = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    cpu_weight = torch.arange(8, dtype=torch.float32).reshape(2, 4)
+    input_view = cpu_input[:, ::2]
+    weight_view = cpu_weight[:, ::2]
+    vk_input = input_view.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = weight_view.detach().to(vulkan_backend).requires_grad_()
+
+    output = torch.nn.functional.linear(vk_input, vk_weight)
+    output.backward(torch.ones(output.shape, dtype=output.dtype).to(vulkan_backend))
+
+    assert vk_input.grad is not None
+    assert vk_weight.grad is not None
+    torch.testing.assert_close(vk_input.grad.cpu(), torch.ones_like(input_view) @ weight_view)
+    torch.testing.assert_close(vk_weight.grad.cpu(), torch.ones_like(output.cpu()).t() @ input_view)

@@ -14,6 +14,12 @@ def _spawn_vulkan_child(queue, result_queue):
     result_queue.put((result.tolist(), result.device.type, pytorch_vulkan.is_available()))
 
 
+def _spawn_view_child(queue, result_queue):
+    tensor = queue.get().to("vk")
+    view = tensor.transpose(0, 1)[:, 1:3]
+    result_queue.put((view.tolist(), tuple(view.stride()), view.storage_offset()))
+
+
 def _fork_vulkan_child(write_fd, tensor):
     messages = []
     try:
@@ -90,3 +96,19 @@ def test_repeated_spawned_children_exit_cleanly(vulkan_backend):
         assert values == [float(value) + 2.0]
         assert device_type == "cpu"
         assert available is True
+
+
+def test_spawn_cpu_boundary_rebuilds_view_metadata_in_child(vulkan_backend):
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue()
+    result_queue = context.Queue()
+    process = context.Process(target=_spawn_view_child, args=(queue, result_queue))
+    queue.put(torch.arange(12, dtype=torch.float32).reshape(3, 4))
+    process.start()
+    values, strides, offset = result_queue.get(timeout=30)
+    process.join(timeout=30)
+
+    assert process.exitcode == 0
+    assert values == [[4.0, 8.0], [5.0, 9.0], [6.0, 10.0], [7.0, 11.0]]
+    assert strides == (1, 4)
+    assert offset == 4

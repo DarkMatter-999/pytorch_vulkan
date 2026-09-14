@@ -205,6 +205,11 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
 
 at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     validate_input(self, "masked_select");
+    // The masked-select shader consumes a densely packed logical sequence.
+    // Materialize positive-stride and offset value views while retaining the
+    // existing strict mask contract.
+    at::Tensor values = self.contiguous();
+    if (values.storage_offset() != 0) values = values.clone();
     TORCH_CHECK(mask.device() == self.device(),
                 "Vulkan masked_select requires mask and input on the same vk:0 device");
     TORCH_CHECK(mask.scalar_type() == at::kBool,
@@ -214,9 +219,9 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     TORCH_CHECK(
         mask.storage_offset() == 0,
         "Vulkan masked_select does not support non-zero storage_offset() on the mask");
-    TORCH_CHECK(mask.sizes().equals(self.sizes()),
+    TORCH_CHECK(mask.sizes().equals(values.sizes()),
                 "Vulkan masked_select requires equal shapes");
-    const auto &input_data = self.storage().data_ptr();
+    const auto &input_data = values.storage().data_ptr();
     const auto &mask_data = mask.storage().data_ptr();
     TORCH_CHECK(is_vulkan_allocation(input_data) && is_vulkan_allocation(mask_data),
                 "Vulkan masked_select requires Vulkan allocation provenance");
@@ -224,12 +229,12 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     TORCH_CHECK(&platform == &allocation_platform(mask_data) &&
                     platform.supports_bool_pointwise(),
                 "Vulkan masked_select requires bool pointwise Vulkan capability");
-    TORCH_CHECK(static_cast<uint64_t>(self.numel()) <=
+    TORCH_CHECK(static_cast<uint64_t>(values.numel()) <=
                     std::numeric_limits<uint32_t>::max(),
                 "Vulkan masked_select exceeds the supported element count");
-    if (self.numel() == 0)
-        return at::empty({0}, self.options());
-    const uint32_t element_count = static_cast<uint32_t>(self.numel());
+    if (values.numel() == 0)
+        return at::empty({0}, values.options());
+    const uint32_t element_count = static_cast<uint32_t>(values.numel());
     const VkDeviceSize input_bytes =
         static_cast<VkDeviceSize>(element_count) * sizeof(float);
     validate_allocation(input_data, input_bytes, "masked_select input");
@@ -253,7 +258,7 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     counter.read(&selected, sizeof(selected));
     TORCH_CHECK(selected <= element_count,
                 "Vulkan masked_select counter exceeded input size");
-    at::Tensor result = at::empty({static_cast<int64_t>(selected)}, self.options());
+    at::Tensor result = at::empty({static_cast<int64_t>(selected)}, values.options());
     if (selected == 0)
         return result;
     const auto &result_data = result.storage().data_ptr();
