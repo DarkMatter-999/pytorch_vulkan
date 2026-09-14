@@ -174,14 +174,12 @@ def test_unary_float32_layout_shape_and_explicit_transfer_contract(
         (3, 2), (1, 3), dtype=torch.float32, device=vulkan_backend
     )
     assert not non_contiguous.is_contiguous()
-    assert_vulkan_capability(
-        operation, (non_contiguous,), supported=False, error_pattern=r"contiguous"
-    )
+    result = assert_vulkan_capability(operation, (non_contiguous,), supported=True)
+    assert result.shape == non_contiguous.shape
 
     zero_dimensional = torch.empty((), dtype=torch.float32, device=vulkan_backend)
-    assert_vulkan_capability(
-        operation, (zero_dimensional,), supported=False, error_pattern=r"zero-dimensional"
-    )
+    zero_result = assert_vulkan_capability(operation, (zero_dimensional,), supported=True)
+    assert zero_result.dim() == 0
 
     source = torch.tensor([1.0, -2.0], dtype=torch.float32, device=vulkan_backend)
     result = assert_vulkan_capability(operation, (source,), supported=True)

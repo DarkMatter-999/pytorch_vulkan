@@ -50,14 +50,35 @@ def test_reduction_rejects_bool_and_float16(vulkan_backend, operation):
         operation(torch.ones((2, 3), dtype=torch.float16).to(vulkan_backend), dim=1)
 
 
-def test_reduction_rejects_non_contiguous_input(vulkan_backend):
-    input = torch.empty_strided((2, 3), (1, 2), dtype=torch.float32, device=vulkan_backend)
-    with pytest.raises(RuntimeError, match="contiguous"):
-        torch.sum(input, dim=1)
+@pytest.mark.parametrize("view", [
+    lambda x: x.t(),
+    lambda x: x[:, 1:],
+    lambda x: x.as_strided((2, 2), (3, 1), 1),
+])
+def test_reduction_matches_cpu_for_general_views(vulkan_backend, view):
+    cpu_base = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    cpu_input = view(cpu_base)
+    vk_input = view(cpu_base.to(vulkan_backend))
+    torch.testing.assert_close(torch.sum(vk_input, dim=-1).cpu(), torch.sum(cpu_input, dim=-1))
+    torch.testing.assert_close(torch.mean(vk_input, dim=0).cpu(), torch.mean(cpu_input, dim=0))
+
+
+def test_reduction_rejects_overlapping_input(vulkan_backend):
+    input = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)
+    overlapping = input.as_strided((2, 2), (1, 1))
+    with pytest.raises(RuntimeError, match="overlap|overlapping"):
+        torch.sum(overlapping, dim=1)
+
+
+def test_reduction_rejects_rank_nine(vulkan_backend):
+    input = torch.empty((1,) * 9, dtype=torch.float32, device=vulkan_backend)
+    with pytest.raises(RuntimeError, match="rank|ranks"):
+        torch.sum(input, dim=0)
 
 
 @pytest.mark.parametrize("operation", [torch.sum, torch.mean])
 def test_reduction_rejects_empty_input_outside_matrix(vulkan_backend, operation):
     input = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
-    with pytest.raises(RuntimeError, match="empty"):
-        operation(input, dim=0)
+    result = operation(input, dim=0)
+    expected = operation(input.cpu(), dim=0)
+    torch.testing.assert_close(result.cpu(), expected, equal_nan=True)

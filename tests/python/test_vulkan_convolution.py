@@ -149,14 +149,14 @@ def test_conv2d_rejects_rank_dtype_layout_device_and_offset(vulkan_backend):
         torch.nn.functional.conv2d(input.unsqueeze(0), weight, bias, padding=1)
     with pytest.raises(RuntimeError, match="float32|dtype"):
         torch.nn.functional.conv2d(input, weight.to(torch.float64), bias, padding=1)
-    with pytest.raises(RuntimeError, match="contiguous|layout"):
-        torch.nn.functional.conv2d(input.transpose(2, 3), weight, bias, padding=1)
     with pytest.raises(RuntimeError, match="device|Vulkan"):
         torch.nn.functional.conv2d(input, weight.cpu(), bias, padding=1)
+    transposed_input = input.transpose(2, 3)
+    assert not transposed_input.is_contiguous()
+    torch.nn.functional.conv2d(transposed_input, weight, bias, padding=1)
     offset_input = torch.empty((3, 1, 8, 8), device=vulkan_backend)[1:]
     assert offset_input.storage_offset() != 0
-    with pytest.raises(RuntimeError, match="offset|contiguous"):
-        torch.nn.functional.conv2d(offset_input, weight, bias, padding=1)
+    torch.nn.functional.conv2d(offset_input, weight, bias, padding=1)
 
 
 @pytest.mark.parametrize("operand", ["input", "weight", "bias"])
@@ -168,17 +168,25 @@ def test_conv2d_rejects_each_non_f32_operand(vulkan_backend, operand):
 
 
 @pytest.mark.parametrize("operand", ["input", "weight", "bias"])
-def test_conv2d_rejects_each_non_contiguous_operand(vulkan_backend, operand):
-    input, weight, bias = _conv_inputs(vulkan_backend)
+def test_conv2d_accepts_each_positive_stride_operand(vulkan_backend, operand):
+    cpu_input, cpu_weight, cpu_bias = _conv_inputs("cpu")
+    input, weight, bias = (cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend),
+                           cpu_bias.to(vulkan_backend))
     if operand == "input":
+        cpu_input = cpu_input.transpose(2, 3)
         input = input.transpose(2, 3)
     elif operand == "weight":
+        cpu_weight = cpu_weight.transpose(2, 3)
         weight = weight.transpose(2, 3)
     else:
-        bias = torch.empty(8, device=vulkan_backend)[::2]
-    assert not {"input": input, "weight": weight, "bias": bias}[operand].is_contiguous()
-    with pytest.raises(RuntimeError, match="contiguous|layout"):
-        torch.nn.functional.conv2d(input, weight, bias, padding=1)
+        bias_base = torch.cat((cpu_bias, torch.zeros_like(cpu_bias)))
+        cpu_bias = bias_base[::2]
+        bias = bias_base.to(vulkan_backend)[::2]
+    view = {"input": input, "weight": weight, "bias": bias}[operand]
+    assert not view.is_contiguous()
+    actual = torch.nn.functional.conv2d(input, weight, bias, padding=1)
+    expected = torch.nn.functional.conv2d(cpu_input, cpu_weight, cpu_bias, padding=1)
+    torch.testing.assert_close(actual.cpu(), expected)
 
 
 @pytest.mark.parametrize("operand", ["input", "weight", "bias"])
@@ -195,17 +203,64 @@ def test_conv2d_rejects_each_device_mismatch(vulkan_backend, operand):
 
 
 @pytest.mark.parametrize("operand", ["input", "weight", "bias"])
-def test_conv2d_rejects_each_nonzero_storage_offset(vulkan_backend, operand):
-    input, weight, bias = _conv_inputs(vulkan_backend)
+def test_conv2d_accepts_each_nonzero_storage_offset(vulkan_backend, operand):
+    cpu_input, cpu_weight, cpu_bias = _conv_inputs("cpu")
+    base_input, base_weight, base_bias = cpu_input, cpu_weight, cpu_bias
+    input, weight, bias = (cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend),
+                           cpu_bias.to(vulkan_backend))
     if operand == "input":
-        input = torch.empty((3, 1, 8, 8), device=vulkan_backend)[1:]
+        cpu_input = torch.cat((base_input, base_input[:1]), dim=0)[1:]
+        input = torch.cat((base_input, base_input[:1]), dim=0).to(vulkan_backend)[1:]
     elif operand == "weight":
-        weight = torch.empty((5, 1, 3, 3), device=vulkan_backend)[1:]
+        cpu_weight = torch.cat((base_weight, base_weight[:1]), dim=0)[1:]
+        weight = torch.cat((base_weight, base_weight[:1]), dim=0).to(vulkan_backend)[1:]
     else:
-        bias = torch.empty(5, device=vulkan_backend)[1:]
-    assert {"input": input, "weight": weight, "bias": bias}[operand].storage_offset() != 0
-    with pytest.raises(RuntimeError, match="offset|contiguous"):
-        torch.nn.functional.conv2d(input, weight, bias, padding=1)
+        cpu_bias = torch.cat((base_bias, base_bias[:1]))[1:]
+        bias = torch.cat((base_bias, base_bias[:1])).to(vulkan_backend)[1:]
+    view = {"input": input, "weight": weight, "bias": bias}[operand]
+    assert view.storage_offset() != 0
+    actual = torch.nn.functional.conv2d(input, weight, bias, padding=1)
+    expected = torch.nn.functional.conv2d(cpu_input, cpu_weight, cpu_bias, padding=1)
+    torch.testing.assert_close(actual.cpu(), expected)
+
+
+def test_conv2d_accepts_positive_stride_views_for_all_operands(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _conv_inputs("cpu")
+    input_view = torch.randn((2, 1, 8, 16), dtype=torch.float32)[:, :, :, ::2]
+    weight_view = torch.randn((4, 1, 3, 6), dtype=torch.float32)[:, :, :, ::2]
+    bias_view = torch.cat((cpu_bias, torch.zeros_like(cpu_bias)))[::2]
+    result = torch.nn.functional.conv2d(input_view.to(vulkan_backend),
+                                        weight_view.to(vulkan_backend),
+                                        bias_view.to(vulkan_backend), padding=1)
+    expected = torch.nn.functional.conv2d(input_view, weight_view, bias_view, padding=1)
+    torch.testing.assert_close(result.cpu(), expected)
+
+
+def test_conv2d_backward_accepts_view_operands(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _conv_inputs("cpu", requires_grad=True)
+    cpu_input = cpu_input.transpose(2, 3)
+    cpu_weight = torch.randn((4, 1, 3, 6), dtype=torch.float32, requires_grad=True)[:, :, :, ::2]
+    cpu_input.retain_grad()
+    cpu_weight.retain_grad()
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+    vk_bias = cpu_bias.detach().to(vulkan_backend).requires_grad_()
+    cpu_output = torch.nn.functional.conv2d(cpu_input, cpu_weight, cpu_bias, padding=1)
+    vk_output = torch.nn.functional.conv2d(vk_input, vk_weight, vk_bias, padding=1)
+    grad = torch.ones_like(cpu_output)
+    cpu_output.backward(grad)
+    vk_output.backward(grad.to(vulkan_backend))
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
+    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad)
+    torch.testing.assert_close(vk_weight.grad.cpu(), cpu_weight.grad)
+
+
+def test_conv2d_backward_rejects_unsupported_view_rank(vulkan_backend):
+    _, cpu_weight, cpu_bias = _conv_inputs("cpu")
+    weight, bias = cpu_weight.to(vulkan_backend), cpu_bias.to(vulkan_backend)
+    value = torch.randn((2, 1, 8, 8)).unsqueeze(0).to(vulkan_backend)
+    with pytest.raises(RuntimeError, match="rank|shape|4-D|Expected"):
+        torch.nn.functional.conv2d(value, weight, bias, padding=1)
 
 
 def _conv_transpose_inputs(device):

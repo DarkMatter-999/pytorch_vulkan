@@ -4,9 +4,11 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
+#include "vulkan_layout.h"
 
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
+#include <ATen/MemoryOverlap.h>
 #include <torch/library.h>
 
 #include <cmath>
@@ -22,23 +24,33 @@ void validate_input(const at::Tensor &input, const char *name) {
                 "Vulkan ", name, " requires vk:0 input");
     TORCH_CHECK(input.scalar_type() == at::kFloat, "Vulkan ", name,
                 " requires float32 input");
-    TORCH_CHECK(input.layout() == at::kStrided && input.is_contiguous(), "Vulkan ",
-                name, " requires a contiguous strided input");
-    TORCH_CHECK(input.storage_offset() == 0, "Vulkan ", name,
-                " does not support non-zero storage_offset()");
-    TORCH_CHECK(input.dim() != 0, "Vulkan ", name,
-                " does not support zero-dimensional input");
+    const auto layout = inspect_vulkan_tensor_layout(input, name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", name, " supports ranks up to 8");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ", name,
+                " element count exceeds the supported range");
 }
 
 void validate_output(const at::Tensor &input, at::Tensor &out, const char *name) {
     TORCH_CHECK(out.device() == input.device() && out.scalar_type() == at::kBool,
                 "Vulkan ", name, " requires a bool vk:0 output");
-    TORCH_CHECK(out.layout() == at::kStrided && out.is_contiguous() &&
-                    out.storage_offset() == 0 && out.sizes().equals(input.sizes()),
-                "Vulkan ", name,
-                " requires contiguous zero-offset output with equal shape");
+    TORCH_CHECK(out.layout() == at::kStrided && out.sizes().equals(input.sizes()),
+                "Vulkan ", name, " requires a strided output with equal shape");
+    const auto layout = inspect_vulkan_tensor_layout(out, name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", name, " supports ranks up to 8");
+    TORCH_CHECK(at::has_internal_overlap(out) == at::MemOverlap::No,
+                "Vulkan ", name, " output has internal overlap");
+    const auto overlap = at::get_overlap_status(input, out);
+    TORCH_CHECK(overlap != at::MemOverlapStatus::Partial &&
+                    overlap != at::MemOverlapStatus::TooHard,
+                "Vulkan ", name, " output partially overlaps an input");
+    if (overlap == at::MemOverlapStatus::Full)
+        TORCH_CHECK(input.data_ptr() == out.data_ptr() && input.strides().equals(out.strides()) &&
+                        input.storage_offset() == out.storage_offset(),
+                    "Vulkan ", name, " permits only exact full-tensor output aliases");
     const auto &input_data = input.storage().data_ptr();
     const auto &out_data = out.storage().data_ptr();
+    const auto input_layout = inspect_vulkan_tensor_layout(input, name);
+    const auto output_layout = inspect_vulkan_tensor_layout(out, name);
     TORCH_CHECK(is_vulkan_allocation(input_data) && is_vulkan_allocation(out_data),
                 "Vulkan ", name, " requires Vulkan allocation provenance");
     const auto &input_platform = allocation_platform(input_data);
@@ -61,6 +73,8 @@ at::Tensor &dispatch(const at::Tensor &input, at::Tensor &out, bool finite,
                      float scalar, const char *name) {
     validate_input(input, name);
     validate_output(input, out, name);
+    const auto input_layout = inspect_vulkan_tensor_layout(input, name);
+    const auto output_layout = inspect_vulkan_tensor_layout(out, name);
     const VkDeviceSize bytes = checked_bytes(input, name);
     if (bytes == 0)
         return out;
@@ -74,12 +88,12 @@ at::Tensor &dispatch(const at::Tensor &input, at::Tensor &out, bool finite,
     TORCH_CHECK(&platform == &allocation_platform(out_data), "Vulkan ", name,
                 " requires one Vulkan platform");
     if (finite) {
-        platform.compute().isfinite(allocation_buffer(input_data).buffer(),
-                                    allocation_buffer(out_data).buffer(), bytes);
+        platform.compute().isfinite(allocation_buffer(input_data).buffer(), input_layout,
+                                     allocation_buffer(out_data).buffer(), output_layout);
     } else {
-        platform.compute().comparison_scalar(allocation_buffer(input_data).buffer(),
-                                             allocation_buffer(out_data).buffer(),
-                                             bytes, scalar);
+        platform.compute().comparison_scalar(allocation_buffer(input_data).buffer(), input_layout,
+                                             allocation_buffer(out_data).buffer(), output_layout,
+                                             scalar);
     }
     return out;
 }
@@ -107,7 +121,17 @@ at::Tensor &eq_tensor_out(const at::Tensor &self, const at::Tensor &other,
     validate_input(other, "eq.Tensor_out");
     TORCH_CHECK(other.device() == self.device() && other.sizes().equals(self.sizes()),
                 "Vulkan eq.Tensor_out requires equal devices and shapes");
+    const auto lhs_layout = inspect_vulkan_tensor_layout(self, "eq.Tensor_out");
+    const auto rhs_layout = inspect_vulkan_tensor_layout(other, "eq.Tensor_out");
     validate_output(self, out, "eq.Tensor_out");
+    const auto output_layout = inspect_vulkan_tensor_layout(out, "eq.Tensor_out");
+    TORCH_CHECK(at::has_internal_overlap(out) == at::MemOverlap::No,
+                "Vulkan eq.Tensor_out output has internal overlap");
+    const auto lhs_overlap = at::get_overlap_status(self, out);
+    const auto rhs_overlap = at::get_overlap_status(other, out);
+    TORCH_CHECK(lhs_overlap == at::MemOverlapStatus::No &&
+                    rhs_overlap == at::MemOverlapStatus::No,
+                "Vulkan eq.Tensor_out output aliases an input");
     const VkDeviceSize bytes = checked_bytes(self, "eq.Tensor_out");
     if (bytes == 0)
         return out;
@@ -122,9 +146,9 @@ at::Tensor &eq_tensor_out(const at::Tensor &self, const at::Tensor &other,
     TORCH_CHECK(&platform == &allocation_platform(rhs) &&
                     &platform == &allocation_platform(result),
                 "Vulkan eq.Tensor_out requires one Vulkan platform");
-    platform.compute().comparison_tensor(allocation_buffer(lhs).buffer(),
-                                         allocation_buffer(rhs).buffer(),
-                                         allocation_buffer(result).buffer(), bytes);
+    platform.compute().comparison_tensor(allocation_buffer(lhs).buffer(), lhs_layout,
+                                         allocation_buffer(rhs).buffer(), rhs_layout,
+                                         allocation_buffer(result).buffer(), output_layout);
     return out;
 }
 
@@ -134,16 +158,36 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
                     other.device() == self.device() && out.device() == self.device() &&
                     self.scalar_type() == at::kBool &&
                     other.scalar_type() == at::kBool &&
-                    out.scalar_type() == at::kBool && self.is_contiguous() &&
-                    other.is_contiguous() && out.is_contiguous() &&
-                    self.storage_offset() == 0 && other.storage_offset() == 0 &&
-                    out.storage_offset() == 0 && self.sizes().equals(other.sizes()) &&
-                    self.sizes().equals(out.sizes()),
-                "Vulkan bitwise_and.Tensor_out requires contiguous equal-shape bool "
-                "vk:0 tensors");
+                     out.scalar_type() == at::kBool &&
+                     self.sizes().equals(other.sizes()) &&
+                     self.sizes().equals(out.sizes()),
+                 "Vulkan bitwise_and.Tensor_out requires equal-shape bool "
+                 "vk:0 tensors");
     const auto &lhs = self.storage().data_ptr();
     const auto &rhs = other.storage().data_ptr();
     const auto &result = out.storage().data_ptr();
+    const auto lhs_layout = inspect_vulkan_tensor_layout(self, "bitwise_and lhs");
+    const auto rhs_layout = inspect_vulkan_tensor_layout(other, "bitwise_and rhs");
+    const auto output_layout = inspect_vulkan_tensor_layout(out, "bitwise_and output");
+    for (const auto *layout : {&lhs_layout, &rhs_layout, &output_layout}) {
+        TORCH_CHECK(layout->rank <= 8, "Vulkan bitwise_and.Tensor_out supports ranks up to 8");
+        TORCH_CHECK(layout->numel <= std::numeric_limits<uint32_t>::max(),
+                    "Vulkan bitwise_and.Tensor_out element count exceeds the supported range");
+    }
+    TORCH_CHECK(at::has_internal_overlap(out) == at::MemOverlap::No,
+                "Vulkan bitwise_and.Tensor_out output has internal overlap");
+    for (const auto *input : {&self, &other}) {
+        const auto overlap = at::get_overlap_status(*input, out);
+        TORCH_CHECK(overlap != at::MemOverlapStatus::Partial &&
+                        overlap != at::MemOverlapStatus::TooHard,
+                    "Vulkan bitwise_and.Tensor_out output partially overlaps an input");
+        if (overlap == at::MemOverlapStatus::Full)
+            TORCH_CHECK(input->data_ptr() == out.data_ptr() &&
+                            input->sizes().equals(out.sizes()) &&
+                            input->strides().equals(out.strides()) &&
+                            input->storage_offset() == out.storage_offset(),
+                        "Vulkan bitwise_and.Tensor_out permits only exact full-tensor aliases");
+    }
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(self.numel() * sizeof(bool));
     validate_allocation(lhs, bytes, "bitwise_and lhs");
     validate_allocation(rhs, bytes, "bitwise_and rhs");
@@ -154,8 +198,8 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
                     platform.supports_bool_pointwise(),
                 "Vulkan bitwise_and.Tensor_out requires bool pointwise capability");
     platform.compute().tensor_tensor(
-        allocation_buffer(lhs).buffer(), allocation_buffer(rhs).buffer(),
-        allocation_buffer(result).buffer(), bytes, 2, true);
+        allocation_buffer(lhs).buffer(), lhs_layout, allocation_buffer(rhs).buffer(), rhs_layout,
+        allocation_buffer(result).buffer(), output_layout, 2, true);
     return out;
 }
 

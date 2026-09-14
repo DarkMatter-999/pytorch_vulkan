@@ -64,10 +64,11 @@ def test_bool_copy_is_in_place_and_synchronous(vulkan_backend):
     assert torch.equal(destination.cpu(), source)
 
 
-def test_bool_non_contiguous_transfer_is_rejected(vulkan_backend):
+def test_bool_non_contiguous_transfer_is_supported(vulkan_backend):
     source = torch.tensor([[True, False], [False, True]], dtype=torch.bool).t()
     assert not source.is_contiguous()
-    _assert_rejected(lambda: source.to(vulkan_backend), "contiguous")
+    result = source.to(vulkan_backend)
+    assert torch.equal(result.cpu(), source)
 
 
 def test_bool_non_blocking_transfer_is_rejected(vulkan_backend):
@@ -77,10 +78,11 @@ def test_bool_non_blocking_transfer_is_rejected(vulkan_backend):
     )
 
 
-def test_bool_vulkan_to_vulkan_transfer_is_rejected(vulkan_backend):
+def test_bool_vulkan_to_vulkan_transfer_is_supported(vulkan_backend):
     source = torch.tensor([True, False], dtype=torch.bool).to(vulkan_backend)
     destination = torch.empty_like(source)
-    _assert_rejected(lambda: destination.copy_(source), "Vulkan-to-Vulkan")
+    destination.copy_(source)
+    assert torch.equal(destination.cpu(), source.cpu())
 
 
 def test_bool_mismatched_dtype_transfer_is_rejected(vulkan_backend):
@@ -89,11 +91,12 @@ def test_bool_mismatched_dtype_transfer_is_rejected(vulkan_backend):
     _assert_rejected(lambda: destination.copy_(source), "matching dtypes")
 
 
-def test_bool_non_contiguous_destination_transfer_is_rejected(vulkan_backend):
+def test_bool_non_contiguous_destination_transfer_is_supported(vulkan_backend):
     source = torch.tensor([[True, False], [False, True]], dtype=torch.bool)
     destination = torch.empty((2, 2), dtype=torch.bool, device=vulkan_backend).t()
     assert not destination.is_contiguous()
-    _assert_rejected(lambda: destination.copy_(source), "contiguous")
+    destination.copy_(source)
+    assert torch.equal(destination.cpu(), source)
 
 
 def test_bool_invalid_device_index_is_rejected(vulkan_backend):

@@ -193,7 +193,13 @@ if(BUILD_PYTHON_EXTENSION)
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_formatter_double_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/formatter_double_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/formatter_double_spv.sha256
-                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/formatter_double.comp)
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/formatter_double.comp)
+       add_custom_target(vulkan_pointwise_shader_integrity
+                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py
+                         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pointwise_spv.h
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pointwise_spv.sha256
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pointwise.comp)
       if(BUILD_TESTING)
           add_test(NAME vulkan_reduction_shader_integrity
                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
@@ -206,7 +212,9 @@ if(BUILD_PYTHON_EXTENSION)
            add_test(NAME vulkan_pooling_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
            add_test(NAME vulkan_formatter_double_shader_integrity
-                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
+                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
+           add_test(NAME vulkan_pointwise_shader_integrity
+                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
       endif()
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"

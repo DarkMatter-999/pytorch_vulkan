@@ -40,6 +40,22 @@ def test_argmax_nan_and_tie_matches_cpu(vulkan_backend):
     torch.testing.assert_close(result.cpu(), torch.argmax(cpu_input, dim=1))
 
 
+def test_argmax_matches_cpu_for_transpose_slice_and_offset(vulkan_backend):
+    cpu_base = torch.tensor([[1.0, 8.0, 2.0, 7.0], [9.0, 3.0, 6.0, 4.0], [5.0, 0.0, 11.0, 10.0]])
+    for cpu_input in (cpu_base.t(), cpu_base[:, 1:], cpu_base.as_strided((2, 3), (4, 1), 1)):
+        result = torch.argmax(cpu_input.to(vulkan_backend), dim=-1)
+        torch.testing.assert_close(result.cpu(), torch.argmax(cpu_input, dim=-1))
+
+
+def test_argmax_rejects_overlapping_input(vulkan_backend):
+    input = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)
+    overlapping = input.as_strided((2, 2), (1, 1))
+    with pytest.raises(RuntimeError, match="overlap|overlapping"):
+        torch.argmax(overlapping, dim=1)
+    with pytest.raises(RuntimeError, match="overlap|overlapping"):
+        torch.argmax(overlapping)
+
+
 def test_argmax_rejects_bool_and_float16(vulkan_backend):
     with pytest.raises(RuntimeError, match="Vulkan|bool"):
         torch.argmax(torch.ones((2, 3), dtype=torch.bool).to(vulkan_backend), dim=1)

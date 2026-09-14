@@ -7,6 +7,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
+#include "vulkan_layout.h"
 
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
@@ -36,21 +37,36 @@ std::size_t checked_bytes(const at::Tensor &tensor) {
     return static_cast<std::size_t>(bytes);
 }
 
-void validate_tensor(const at::Tensor &tensor, pytorch_vulkan::PointwiseOperation operation,
-                     const char *operation_name) {
+pytorch_vulkan::VulkanTensorLayout validate_tensor(
+    const at::Tensor &tensor, pytorch_vulkan::PointwiseOperation operation,
+    const char *operation_name) {
     TORCH_CHECK(is_vulkan_device(tensor.device()), "Vulkan ", operation_name,
                 " requires a Vulkan tensor");
     TORCH_CHECK(tensor.device().index() == 0, "Vulkan ", operation_name,
                 " supports only Vulkan device index 0");
     TORCH_CHECK(tensor.layout() == at::kStrided, "Vulkan ", operation_name,
                 " requires a strided tensor");
-    TORCH_CHECK(tensor.is_contiguous(), "Vulkan ", operation_name,
-                " requires a contiguous tensor");
-    TORCH_CHECK(tensor.storage_offset() == 0, "Vulkan ", operation_name,
-                " does not support tensors with non-zero storage_offset()");
     pytorch_vulkan::validate_scalar_dtype(tensor.scalar_type(), operation, operation_name);
-    TORCH_CHECK(tensor.dim() != 0, "Vulkan ", operation_name,
-                " does not support zero-dimensional tensor operands");
+    auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, operation_name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", operation_name, " supports ranks up to 8");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ",
+                operation_name, " element count exceeds the supported range");
+    return layout;
+}
+
+pytorch_vulkan::VulkanTensorLayout validate_binary_layout(
+    const at::Tensor &tensor, const char *operation_name) {
+    TORCH_CHECK(is_vulkan_device(tensor.device()), "Vulkan ", operation_name,
+                " requires a Vulkan tensor");
+    TORCH_CHECK(tensor.device().index() == 0, "Vulkan ", operation_name,
+                " supports only Vulkan device index 0");
+    TORCH_CHECK(tensor.layout() == at::kStrided, "Vulkan ", operation_name,
+                " requires a strided tensor");
+    auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, operation_name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", operation_name, " supports ranks up to 8");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ",
+                operation_name, " element count exceeds the supported range");
+    return layout;
 }
 
 void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &alpha,
@@ -70,18 +86,14 @@ void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &al
                 "Vulkan ", operation_name, " supports only Vulkan device index 0");
     TORCH_CHECK(lhs.layout() == at::kStrided && rhs.layout() == at::kStrided,
                 "Vulkan ", operation_name, " requires strided tensors");
-    TORCH_CHECK(lhs.is_contiguous() && rhs.is_contiguous(),
-                "Vulkan ", operation_name, " requires contiguous tensors");
-    TORCH_CHECK(lhs.storage_offset() == 0 && rhs.storage_offset() == 0,
-                "Vulkan ", operation_name, " does not support tensors with non-zero storage_offset()");
     pytorch_vulkan::validate_binary_dtypes(lhs.scalar_type(), rhs.scalar_type(),
                                            operation, operation_name);
-    TORCH_CHECK(lhs.dim() != 0 && rhs.dim() != 0,
-                "Vulkan ", operation_name, " does not support zero-dimensional tensor operands");
     TORCH_CHECK(lhs.sizes().equals(rhs.sizes()),
                 "Vulkan ", operation_name, " requires equal tensor sizes; broadcasting is unsupported");
     TORCH_CHECK(alpha.toDouble() == 1.0,
                 "Vulkan ", operation_name, " supports only alpha == 1");
+    (void)validate_binary_layout(lhs, operation_name);
+    (void)validate_binary_layout(rhs, operation_name);
 }
 
 float scalar_to_float(const at::Scalar &scalar, const char *operation_name) {
@@ -108,18 +120,17 @@ float scalar_to_float(const at::Scalar &scalar, const char *operation_name) {
 at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
                                   pytorch_vulkan::PointwiseOperation operation,
                                   bool scalar_left, const char *operation_name) {
-    validate_tensor(tensor, operation, operation_name);
+    const auto tensor_layout = validate_tensor(tensor, operation, operation_name);
     at::Tensor output = at::empty(tensor.sizes(), tensor.options().device(tensor.device()));
-    const std::size_t bytes = checked_bytes(tensor);
-    if (bytes == 0) {
+    const auto output_layout = validate_tensor(output, operation, operation_name);
+    if (tensor_layout.numel == 0) {
         return output;
     }
 
     const at::DataPtr &tensor_data = tensor.storage().data_ptr();
     const at::DataPtr &output_data = output.storage().data_ptr();
-    const VkDeviceSize size = static_cast<VkDeviceSize>(bytes);
-    pytorch_vulkan::validate_allocation(tensor_data, size, "tensor");
-    pytorch_vulkan::validate_allocation(output_data, size, "output");
+    pytorch_vulkan::validate_allocation(tensor_data, tensor_layout.allocation_bytes, "tensor");
+    pytorch_vulkan::validate_allocation(output_data, output_layout.allocation_bytes, "output");
     VulkanBuffer &tensor_buffer = pytorch_vulkan::allocation_buffer(tensor_data);
     VulkanBuffer &output_buffer = pytorch_vulkan::allocation_buffer(output_data);
     const VulkanPlatform &tensor_platform = pytorch_vulkan::allocation_platform(tensor_data);
@@ -131,11 +142,11 @@ at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
 
     const uint32_t op = static_cast<uint32_t>(operation);
     if (scalar_left) {
-        tensor_platform.compute().scalar_tensor(scalar, tensor_buffer.buffer(),
-                                                 output_buffer.buffer(), size, op);
+        tensor_platform.compute().scalar_tensor(scalar, tensor_buffer.buffer(), tensor_layout,
+                                                output_buffer.buffer(), output_layout, op);
     } else {
-        tensor_platform.compute().tensor_scalar(tensor_buffer.buffer(), output_buffer.buffer(),
-                                                size, scalar, op);
+        tensor_platform.compute().tensor_scalar(tensor_buffer.buffer(), tensor_layout,
+                                                output_buffer.buffer(), output_layout, scalar, op);
     }
     return output;
 }
@@ -161,17 +172,18 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
             !uses_bool || allocation_platform(lhs.storage().data_ptr()).supports_bool_pointwise(),
             operation_name);
         at::Tensor output = at::empty(lhs.sizes(), lhs.options().device(lhs.device()));
-        const std::size_t bytes = checked_bytes(lhs);
-        if (bytes == 0) {
+        const auto lhs_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(lhs, operation_name);
+        const auto rhs_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(rhs, operation_name);
+        const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, operation_name);
+        if (lhs_layout.numel == 0) {
             return output;
         }
         const at::DataPtr &lhs_data = lhs.storage().data_ptr();
         const at::DataPtr &rhs_data = rhs.storage().data_ptr();
         const at::DataPtr &output_data = output.storage().data_ptr();
-        const VkDeviceSize size = static_cast<VkDeviceSize>(bytes);
-        validate_allocation(lhs_data, size, "lhs");
-        validate_allocation(rhs_data, size, "rhs");
-        validate_allocation(output_data, size, "output");
+        validate_allocation(lhs_data, lhs_layout.allocation_bytes, "lhs");
+        validate_allocation(rhs_data, rhs_layout.allocation_bytes, "rhs");
+        validate_allocation(output_data, output_layout.allocation_bytes, "output");
         VulkanBuffer &lhs_buffer = allocation_buffer(lhs_data);
         VulkanBuffer &rhs_buffer = allocation_buffer(rhs_data);
         VulkanBuffer &output_buffer = allocation_buffer(output_data);
@@ -183,8 +195,9 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
                         lhs_platform.device() == output_platform.device(),
                     "Vulkan ", operation_name,
                     " requires all tensors to use the same Vulkan platform/device");
-        lhs_platform.compute().tensor_tensor(lhs_buffer.buffer(), rhs_buffer.buffer(),
-                                             output_buffer.buffer(), size,
+        lhs_platform.compute().tensor_tensor(lhs_buffer.buffer(), lhs_layout,
+                                             rhs_buffer.buffer(), rhs_layout,
+                                             output_buffer.buffer(), output_layout,
                                              static_cast<uint32_t>(operation),
                                              pointwise_uses_bool(lhs.scalar_type(), operation));
         return output;

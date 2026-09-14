@@ -128,33 +128,42 @@ def test_unary_float64_input_is_rejected(vulkan_backend, operation):
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
-def test_unary_non_contiguous_input_is_rejected(vulkan_backend, operation):
-    tensor = torch.empty_strided(
-        (3, 2), (1, 3), dtype=torch.float32, device=vulkan_backend
+def test_unary_stride_aware_inputs_match_cpu(vulkan_backend, operation):
+    base_cpu = torch.tensor(
+        [[-3.0, 1.0, 2.0], [4.0, -5.0, 6.0]], dtype=torch.float32
     )
-    assert not tensor.is_contiguous()
+    base = base_cpu.to(vulkan_backend)
+    cpu_views = [
+        base_cpu.transpose(0, 1),
+        base_cpu[:, 1:],
+        torch.as_strided(base_cpu, (2, 3), (0, 1), storage_offset=0),
+        torch.as_strided(base_cpu, (2, 2), (1, 2), storage_offset=1),
+    ]
+    views = [
+        base.transpose(0, 1),
+        base[:, 1:],
+        torch.as_strided(base, (2, 3), (0, 1), storage_offset=0),
+        torch.as_strided(base, (2, 2), (1, 2), storage_offset=1),
+    ]
 
-    _assert_unary_rejected(lambda: operation(tensor), "contiguous")
+    for tensor, cpu_view in zip(views, cpu_views):
+        result = operation(tensor)
+        expected = operation(cpu_view)
+        torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("operation", UNARY_OPERATIONS)
-def test_unary_nonzero_storage_offset_is_rejected(vulkan_backend, operation):
-    base = torch.empty((3,), dtype=torch.float32, device=vulkan_backend)
-    try:
-        tensor = torch.as_strided(base, (2,), (1,), storage_offset=1)
-    except NotImplementedError:
-        pytest.skip("as_strided is unavailable for the Vulkan backend")
-    assert tensor.storage_offset() != 0
+def test_unary_rejects_rank_above_eight_before_dispatch(vulkan_backend):
+    tensor = torch.empty((1,) * 9, dtype=torch.float32, device=vulkan_backend)
 
-    _assert_unary_rejected(lambda: operation(tensor), "zero.*offset|offset.*zero")
+    _assert_unary_rejected(lambda: torch.neg(tensor), "rank.*8")
 
 
-def test_ceil_nonzero_storage_offset_is_rejected(vulkan_backend):
+def test_ceil_nonzero_storage_offset_matches_expected(vulkan_backend):
     base = torch.tensor([0.25, 1.25, 2.25], dtype=torch.float32, device=vulkan_backend)
     tensor = torch.as_strided(base, (2,), (1,), storage_offset=1)
     assert tensor.storage_offset() != 0
 
-    _assert_unary_rejected(lambda: torch.ceil(tensor), "zero.*offset|offset.*zero")
+    torch.testing.assert_close(torch.ceil(tensor).cpu(), torch.tensor([2.0, 3.0]))
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
@@ -168,10 +177,11 @@ def test_unary_second_vulkan_device_is_rejected(vulkan_backend, operation):
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
-def test_unary_zero_dimensional_input_is_rejected(vulkan_backend, operation):
+def test_unary_zero_dimensional_input_is_supported(vulkan_backend, operation):
     tensor = torch.empty((), dtype=torch.float32, device=vulkan_backend)
 
-    _assert_unary_rejected(lambda: operation(tensor), "zero-dimensional")
+    result = operation(tensor)
+    assert result.dim() == 0
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)

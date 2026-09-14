@@ -5,6 +5,7 @@
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
 #include "capability.h"
+#include "vulkan_layout.h"
 
 #include <ATen/MemoryOverlap.h>
 #include <c10/core/DeviceType.h>
@@ -45,22 +46,22 @@ int64_t expected_numel(at::IntArrayRef sizes, const char *name) {
     return result;
 }
 
-void validate_input(const at::Tensor &input, pytorch_vulkan::PointwiseOperation operation,
-                    const char *name) {
+pytorch_vulkan::VulkanTensorLayout validate_input(
+    const at::Tensor &input, pytorch_vulkan::PointwiseOperation operation,
+    const char *name) {
     TORCH_CHECK(is_vulkan_device(input.device()), "Vulkan ", name,
                 " requires a Vulkan tensor");
     TORCH_CHECK(input.device().index() == 0, "Vulkan ", name,
                 " supports only Vulkan device index 0");
     TORCH_CHECK(input.layout() == at::kStrided, "Vulkan ", name,
                 " requires a strided tensor");
-    TORCH_CHECK(input.is_contiguous(), "Vulkan ", name,
-                " requires a contiguous tensor");
-    TORCH_CHECK(input.storage_offset() == 0, "Vulkan ", name,
-                " does not support tensors with non-zero storage_offset()");
     pytorch_vulkan::validate_binary_dtypes(input.scalar_type(), input.scalar_type(),
                                            operation, name);
-    TORCH_CHECK(input.dim() != 0, "Vulkan ", name,
-                " does not support zero-dimensional tensor operands");
+    auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", name, " supports ranks up to 8");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ", name,
+                " element count exceeds the supported range");
+    return layout;
 }
 
 void validate_output_metadata(const at::Tensor &out, pytorch_vulkan::PointwiseOperation operation,
@@ -72,8 +73,10 @@ void validate_output_metadata(const at::Tensor &out, pytorch_vulkan::PointwiseOp
     TORCH_CHECK(out.layout() == at::kStrided, "Vulkan ", name,
                 " requires a strided output tensor");
     pytorch_vulkan::validate_output_dtype(out.scalar_type(), operation, name);
-    TORCH_CHECK(out.storage_offset() == 0, "Vulkan ", name,
-                " does not support output tensors with non-zero storage_offset()");
+    auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(out, name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", name, " supports ranks up to 8");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ", name,
+                " element count exceeds the supported range");
 }
 
 void resize_output(at::Tensor &out, at::IntArrayRef sizes, const char *name) {
@@ -83,12 +86,14 @@ void resize_output(at::Tensor &out, at::IntArrayRef sizes, const char *name) {
         TORCH_CHECK(pytorch_vulkan::is_vulkan_allocation(data) &&
                         data.device() == out.device(),
                     "Vulkan ", name, " output has invalid Vulkan storage provenance");
-        out.unsafeGetTensorImpl()->set_sizes_contiguous(sizes);
+        if (!out.sizes().equals(sizes))
+            out.unsafeGetTensorImpl()->set_sizes_contiguous(sizes);
         return;
     }
     const c10::Device before_device = out.device();
     const at::DataPtr &before_data = out.storage().data_ptr();
     const auto before_deleter = before_data.get_deleter();
+    const bool preserves_layout = out.numel() == requested_numel && out.sizes().equals(sizes);
     TORCH_CHECK(pytorch_vulkan::is_vulkan_allocation(before_data) &&
                     before_data.device() == before_device,
                 "Vulkan ", name, " output has invalid Vulkan storage provenance");
@@ -102,15 +107,15 @@ void resize_output(at::Tensor &out, at::IntArrayRef sizes, const char *name) {
                         " does not support resizing the output: ", error.what());
         }
     }
-    out.unsafeGetTensorImpl()->set_sizes_contiguous(sizes);
+    if (!out.sizes().equals(sizes))
+        out.unsafeGetTensorImpl()->set_sizes_contiguous(sizes);
     const at::DataPtr &after_data = out.storage().data_ptr();
     TORCH_CHECK(out.device() == before_device &&
                     pytorch_vulkan::is_vulkan_allocation(after_data) &&
                     after_data.get_deleter() == before_deleter &&
                     is_vulkan_device(out.device()) && out.layout() == at::kStrided &&
                     (out.scalar_type() == at::kFloat || out.scalar_type() == at::kBool) &&
-                    out.storage_offset() == 0 &&
-                    out.is_contiguous(),
+                    (preserves_layout || (out.storage_offset() == 0 && out.is_contiguous())),
                 "Vulkan ", name,
                 " cannot safely resize the Vulkan output without replacing it");
 }
@@ -137,7 +142,10 @@ void validate_overlap_status(at::MemOverlapStatus overlap, const at::Tensor &inp
                 "Vulkan ", name, " output partially overlaps an input");
     if (overlap == at::MemOverlapStatus::Full) {
         TORCH_CHECK(input.data_ptr() == out.data_ptr() &&
-                        input.numel() == out.numel(),
+                        input.numel() == out.numel() &&
+                        input.sizes().equals(out.sizes()) &&
+                        input.strides().equals(out.strides()) &&
+                        input.storage_offset() == out.storage_offset(),
                     "Vulkan ", name,
                     " permits only exact full-tensor output aliases");
     }
@@ -190,30 +198,27 @@ namespace pytorch_vulkan {
 
 at::Tensor &dispatch_unary_out(const at::Tensor &input, at::Tensor &out,
                                PointwiseOperation operation, const char *name) {
-    validate_input(input, operation, name);
+    const auto input_layout = validate_input(input, operation, name);
     validate_output_metadata(out, operation, name);
     const auto before_overlap = classify_overlap(input, out, name);
     validate_overlap_status(before_overlap, input, out, name);
-    TORCH_CHECK(out.is_contiguous(), "Vulkan ", name,
-                " requires a contiguous output tensor");
     resize_output(out, input.sizes(), name);
     validate_overlap_status(classify_overlap(input, out, name), input, out, name);
-    const std::size_t bytes = checked_bytes(input, name);
-    if (bytes == 0) {
+    const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(out, name);
+    if (input_layout.numel == 0) {
         validate_zero_allocation(input, name);
         validate_zero_allocation(out, name);
         return out;
     }
-    const VulkanPlatform &platform = validate_allocations(&input, nullptr, out, bytes, name);
+    const VulkanPlatform &platform = validate_allocations(&input, nullptr, out,
+                                                          static_cast<std::size_t>(input_layout.byte_range), name);
     const auto input_buffer = allocation_buffer(input.storage().data_ptr()).buffer();
     const auto output_buffer = allocation_buffer(out.storage().data_ptr()).buffer();
     if (classify_overlap(input, out, name) == at::MemOverlapStatus::Full) {
-        platform.compute().unary_alias(input_buffer, output_buffer,
-                                       static_cast<VkDeviceSize>(bytes),
+        platform.compute().unary_alias(input_buffer, input_layout, output_buffer, output_layout,
                                        static_cast<uint32_t>(operation));
     } else {
-        platform.compute().unary(input_buffer, output_buffer,
-                                 static_cast<VkDeviceSize>(bytes),
+        platform.compute().unary(input_buffer, input_layout, output_buffer, output_layout,
                                  static_cast<uint32_t>(operation));
     }
     return out;
@@ -234,8 +239,8 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
         }
         return dispatch_tensor_scalar_out(lhs, rhs.item(), alpha, out, operation, name);
     }
-    validate_input(lhs, operation, name);
-    validate_input(rhs, operation, name);
+    const auto lhs_layout = validate_input(lhs, operation, name);
+    const auto rhs_layout = validate_input(rhs, operation, name);
     TORCH_CHECK(lhs.device() == rhs.device(), "Vulkan ", name,
                 " requires equal devices");
     TORCH_CHECK(lhs.sizes().equals(rhs.sizes()), "Vulkan ", name,
@@ -252,31 +257,30 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
     const auto rhs_before_overlap = classify_overlap(rhs, out, name);
     validate_overlap_status(lhs_before_overlap, lhs, out, name);
     validate_overlap_status(rhs_before_overlap, rhs, out, name);
-    TORCH_CHECK(out.is_contiguous(), "Vulkan ", name,
-                " requires a contiguous output tensor");
     resize_output(out, lhs.sizes(), name);
     validate_overlap_status(classify_overlap(lhs, out, name), lhs, out, name);
     validate_overlap_status(classify_overlap(rhs, out, name), rhs, out, name);
-    const std::size_t bytes = checked_bytes(lhs, name);
-    if (bytes == 0) {
+    const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(out, name);
+    if (lhs_layout.numel == 0) {
         validate_zero_allocation(lhs, name);
         validate_zero_allocation(rhs, name);
         validate_zero_allocation(out, name);
         return out;
     }
-    const VulkanPlatform &platform = validate_allocations(&lhs, &rhs, out, bytes, name);
+    const VulkanPlatform &platform = validate_allocations(
+        &lhs, &rhs, out, static_cast<std::size_t>(lhs_layout.byte_range), name);
     const auto lhs_buffer = allocation_buffer(lhs.storage().data_ptr()).buffer();
     const auto rhs_buffer = allocation_buffer(rhs.storage().data_ptr()).buffer();
     const auto output_buffer = allocation_buffer(out.storage().data_ptr()).buffer();
     if (lhs_before_overlap == at::MemOverlapStatus::Full ||
         rhs_before_overlap == at::MemOverlapStatus::Full) {
         platform.compute().tensor_tensor_alias(
-            lhs_buffer, rhs_buffer, output_buffer, static_cast<VkDeviceSize>(bytes),
+            lhs_buffer, lhs_layout, rhs_buffer, rhs_layout, output_buffer, output_layout,
             static_cast<uint32_t>(operation),
             pointwise_uses_bool(lhs.scalar_type(), operation));
     } else {
         platform.compute().tensor_tensor(
-            lhs_buffer, rhs_buffer, output_buffer, static_cast<VkDeviceSize>(bytes),
+            lhs_buffer, lhs_layout, rhs_buffer, rhs_layout, output_buffer, output_layout,
             static_cast<uint32_t>(operation),
             pointwise_uses_bool(lhs.scalar_type(), operation));
     }
@@ -287,7 +291,7 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor, const at::Scala
                                         const at::Scalar &alpha, at::Tensor &out,
                                         PointwiseOperation operation, const char *name,
                                         bool scalar_left) {
-    validate_input(tensor, operation, name);
+    const auto tensor_layout = validate_input(tensor, operation, name);
     pytorch_vulkan::validate_scalar_dtype(tensor.scalar_type(), operation, name);
     TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan ", name, " supports only alpha == 1");
     const float value = scalar_to_float(scalar, name);
@@ -296,36 +300,35 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor, const at::Scala
                 " requires matching input and output dtypes");
     const auto before_overlap = classify_overlap(tensor, out, name);
     validate_overlap_status(before_overlap, tensor, out, name);
-    TORCH_CHECK(out.is_contiguous(), "Vulkan ", name,
-                " requires a contiguous output tensor");
     resize_output(out, tensor.sizes(), name);
     validate_overlap_status(classify_overlap(tensor, out, name), tensor, out, name);
-    const std::size_t bytes = checked_bytes(tensor, name);
-    if (bytes == 0) {
+    const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(out, name);
+    if (tensor_layout.numel == 0) {
         validate_zero_allocation(tensor, name);
         validate_zero_allocation(out, name);
         return out;
     }
-    const VulkanPlatform &platform = validate_allocations(&tensor, nullptr, out, bytes, name);
+    const VulkanPlatform &platform = validate_allocations(
+        &tensor, nullptr, out, static_cast<std::size_t>(tensor_layout.byte_range), name);
     const auto tensor_buffer = allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto output_buffer = allocation_buffer(out.storage().data_ptr()).buffer();
     if (classify_overlap(tensor, out, name) == at::MemOverlapStatus::Full) {
         if (scalar_left) {
             platform.compute().scalar_tensor_alias(
-                value, tensor_buffer, output_buffer, static_cast<VkDeviceSize>(bytes),
+                value, tensor_buffer, tensor_layout, output_buffer, output_layout,
                 static_cast<uint32_t>(operation));
         } else {
             platform.compute().tensor_scalar_alias(
-                tensor_buffer, output_buffer, static_cast<VkDeviceSize>(bytes), value,
+                tensor_buffer, tensor_layout, output_buffer, output_layout, value,
                 static_cast<uint32_t>(operation));
         }
     } else if (scalar_left) {
-        platform.compute().scalar_tensor(
-            value, tensor_buffer, output_buffer, static_cast<VkDeviceSize>(bytes),
+            platform.compute().scalar_tensor(
+            value, tensor_buffer, tensor_layout, output_buffer, output_layout,
             static_cast<uint32_t>(operation));
     } else {
-        platform.compute().tensor_scalar(
-            tensor_buffer, output_buffer, static_cast<VkDeviceSize>(bytes), value,
+            platform.compute().tensor_scalar(
+            tensor_buffer, tensor_layout, output_buffer, output_layout, value,
             static_cast<uint32_t>(operation));
     }
     return out;

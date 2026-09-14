@@ -3,6 +3,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
+#include "vulkan_layout.h"
 #include "vulkan_platform.h"
 #include <c10/util/Exception.h>
 #include <limits>
@@ -23,15 +24,17 @@ void validate(const at::Tensor &t, const char *name) {
     TORCH_CHECK(t.device().type() == c10::DeviceType::PrivateUse1 &&
                     t.device().index() == 0,
                 "Vulkan convolution ", name, " requires vk:0");
-    TORCH_CHECK(
-        t.scalar_type() == at::kFloat && t.is_contiguous() && t.storage_offset() == 0,
-        "Vulkan convolution ", name, " requires contiguous float32 with zero offset");
+    TORCH_CHECK(t.scalar_type() == at::kFloat,
+                "Vulkan convolution ", name, " requires float32");
 }
 at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
                const at::Tensor &bias, uint32_t operation) {
     validate(input, "input");
     validate(weight, "weight");
     validate(bias, "bias");
+    const auto input_layout = inspect_vulkan_tensor_layout(input, "convolution input");
+    const auto weight_layout = inspect_vulkan_tensor_layout(weight, "convolution weight");
+    const auto bias_layout = inspect_vulkan_tensor_layout(bias, "convolution bias");
     TORCH_CHECK((operation == 0 && input.sizes().equals({2, 1, 8, 8})) ||
                     (operation != 0 && input.sizes().equals({2, 4, 8, 8})),
                 "Vulkan convolution input has an unsupported fixed shape");
@@ -51,6 +54,7 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     const auto &weight_data = weight.storage().data_ptr();
     const auto &bias_data = bias.storage().data_ptr();
     const auto &out_data = output.storage().data_ptr();
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "convolution output");
     const auto &platform = allocation_platform(in_data);
     TORCH_CHECK(&platform == &allocation_platform(weight_data) &&
                     &platform == &allocation_platform(bias_data) &&
@@ -63,7 +67,8 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     platform.compute().convolution(allocation_buffer(in_data).buffer(),
                                    allocation_buffer(weight_data).buffer(),
                                    allocation_buffer(bias_data).buffer(),
-                                   allocation_buffer(out_data).buffer(), operation);
+                                   allocation_buffer(out_data).buffer(), input_layout,
+                                   weight_layout, bias_layout, output_layout, operation);
     return output;
 }
 } // namespace

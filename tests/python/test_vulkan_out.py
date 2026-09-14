@@ -132,8 +132,56 @@ def test_out_rejects_same_shaped_partial_overlap(vulkan_backend):
     rhs = torch.empty((2,), device=vulkan_backend)
     lhs = base[:2]
     out = base[1:]
-    with pytest.raises((RuntimeError, NotImplementedError), match="storage_offset"):
+    with pytest.raises((RuntimeError, NotImplementedError), match="overlap"):
         torch.add(lhs, rhs, out=out)
+
+
+def test_non_contiguous_out_preserves_layout_and_values(vulkan_backend):
+    lhs = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=vulkan_backend)
+    rhs = torch.tensor([[5.0, 6.0], [7.0, 8.0]], device=vulkan_backend)
+    out = torch.empty_strided((2, 2), (1, 2), device=vulkan_backend)
+    assert not out.is_contiguous()
+
+    assert torch.add(lhs, rhs, out=out) is out
+    assert tuple(out.stride()) == (1, 2)
+    torch.testing.assert_close(torch.neg(out).cpu(), -(lhs.cpu() + rhs.cpu()))
+
+
+def test_out_rejects_internal_overlap(vulkan_backend):
+    lhs = torch.empty((2, 2), device=vulkan_backend)
+    rhs = torch.empty_like(lhs)
+    out = torch.empty_strided((2, 2), (0, 1), device=vulkan_backend)
+
+    with pytest.raises((RuntimeError, NotImplementedError), match="internal overlap"):
+        torch.add(lhs, rhs, out=out)
+
+
+def test_bool_out_exact_alias_is_safe(vulkan_backend):
+    lhs = torch.tensor([True, False, True], dtype=torch.bool, device=vulkan_backend)
+    rhs = torch.tensor([True, True, False], dtype=torch.bool, device=vulkan_backend)
+    expected = torch.logical_and(lhs.cpu(), rhs.cpu())
+
+    assert torch.bitwise_and(lhs, rhs, out=lhs) is lhs
+    torch.testing.assert_close(lhs.cpu(), expected)
+
+
+def test_bool_out_rejects_partial_and_internal_overlap(vulkan_backend):
+    base = torch.empty((3,), dtype=torch.bool, device=vulkan_backend)
+    rhs = torch.empty((2,), dtype=torch.bool, device=vulkan_backend)
+    with pytest.raises((RuntimeError, NotImplementedError), match="overlap"):
+        torch.bitwise_and(base[:2], rhs, out=base[1:])
+
+    internal = torch.empty_strided((2,), (0,), dtype=torch.bool, device=vulkan_backend)
+    with pytest.raises((RuntimeError, NotImplementedError), match="internal overlap"):
+        torch.bitwise_and(rhs, rhs, out=internal)
+
+
+def test_bool_out_rejects_rank_above_eight(vulkan_backend):
+    lhs = torch.empty((1,) * 9, dtype=torch.bool, device=vulkan_backend)
+    rhs = torch.empty_like(lhs)
+    out = torch.empty_like(lhs)
+    with pytest.raises((RuntimeError, NotImplementedError), match="rank.*8"):
+        torch.bitwise_and(lhs, rhs, out=out)
 
 
 @pytest.mark.parametrize(
@@ -158,8 +206,8 @@ def test_out_rejects_invalid_metadata_overlap_and_parameters(vulkan_backend):
         torch.add(lhs, rhs, out=torch.empty(2))
     with pytest.raises((RuntimeError, NotImplementedError), match="dtype Double"):
         torch.add(lhs, rhs, out=torch.empty(2, dtype=torch.float64, device=vulkan_backend))
-    with pytest.raises((RuntimeError, NotImplementedError), match="contiguous"):
-        torch.add(lhs, rhs, out=torch.empty_strided((2, 2), (1, 2), device=vulkan_backend))
+    non_contiguous = torch.empty_strided((2, 2), (1, 2), device=vulkan_backend)
+    assert torch.add(lhs, rhs, out=non_contiguous) is non_contiguous
     internally_overlapping = torch.empty_strided((2,), (0,), device=vulkan_backend)
     with pytest.raises((RuntimeError, NotImplementedError), match="internal overlap"):
         torch.add(lhs, rhs, out=internally_overlapping)
@@ -180,9 +228,8 @@ def test_out_rejects_unrelated_double_operators(vulkan_backend):
         torch.mul(value, value)
 
 
-def test_out_rejects_nonzero_storage_offset(vulkan_backend):
+def test_out_accepts_nonzero_storage_offset(vulkan_backend):
     input = torch.empty((2,), device=vulkan_backend)
     base = torch.empty((3,), device=vulkan_backend)
     out = torch.as_strided(base, (2,), (1,), storage_offset=1)
-    with pytest.raises((RuntimeError, NotImplementedError), match="storage_offset"):
-        torch.neg(input, out=out)
+    assert torch.neg(input, out=out) is out

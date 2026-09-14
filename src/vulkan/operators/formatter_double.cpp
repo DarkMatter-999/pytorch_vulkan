@@ -4,6 +4,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
+#include "vulkan_layout.h"
 #include "vulkan_transfer.h"
 #include "unary.h"
 
@@ -127,9 +128,11 @@ at::Tensor formatter_double_ne(const at::Tensor &input, const at::Tensor &other)
         TORCH_CHECK(&platform == &allocation_platform(rhs) &&
                         &platform == &allocation_platform(out),
                     "Vulkan ne.Tensor requires one Vulkan platform");
-        platform.compute().comparison_tensor(allocation_buffer(lhs).buffer(),
-                                             allocation_buffer(rhs).buffer(),
-                                             allocation_buffer(out).buffer(), bytes, 10);
+         platform.compute().comparison_tensor(
+             allocation_buffer(lhs).buffer(), inspect_vulkan_tensor_layout(input, "ne lhs"),
+             allocation_buffer(rhs).buffer(), inspect_vulkan_tensor_layout(other, "ne rhs"),
+             allocation_buffer(out).buffer(), inspect_vulkan_tensor_layout(output, "ne output"),
+             10);
         return output;
     }
     validate(input, "ne.Tensor");

@@ -60,20 +60,55 @@ def test_adaptive_avg_pool2d_rejects_non_rank4(vulkan_backend, shape):
 
 
 def test_adaptive_avg_pool2d_rejects_empty_input(vulkan_backend):
-    with pytest.raises(RuntimeError, match="empty|nonempty|numel|size"):
-        torch.nn.functional.adaptive_avg_pool2d(torch.empty((0, 4, 3, 5), device=vulkan_backend), (1, 1))
+    with pytest.raises(RuntimeError, match="non-empty|empty|numel|input"):
+        torch.ops.aten._adaptive_avg_pool2d.default(
+            torch.empty((0, 4, 3, 5), device=vulkan_backend), [1, 1]
+        )
 
 
 def test_adaptive_avg_pool2d_rejects_dtype_layout_device_and_offset(vulkan_backend):
     value = _pool_input(vulkan_backend)
     with pytest.raises(RuntimeError, match="float32|dtype"):
         torch.nn.functional.adaptive_avg_pool2d(value.to(torch.float64), (1, 1))
-    with pytest.raises(RuntimeError, match="contiguous|layout"):
-        torch.nn.functional.adaptive_avg_pool2d(value.transpose(2, 3), (1, 1))
+    torch.nn.functional.adaptive_avg_pool2d(value.transpose(2, 3), (1, 1))
     offset = torch.empty((3, 4, 3, 5), device=vulkan_backend)[1:]
     assert offset.storage_offset() != 0
-    with pytest.raises(RuntimeError, match="offset|zero"):
-        torch.nn.functional.adaptive_avg_pool2d(offset, (1, 1))
+    torch.nn.functional.adaptive_avg_pool2d(offset, (1, 1))
+
+
+def test_adaptive_avg_pool2d_accepts_positive_stride_view(vulkan_backend):
+    cpu_input = _pool_input("cpu")
+    view = cpu_input[:, :, :, :].transpose(2, 3)
+    result = torch.nn.functional.adaptive_avg_pool2d(view.to(vulkan_backend), (1, 1))
+    expected = torch.nn.functional.adaptive_avg_pool2d(view, (1, 1))
+    torch.testing.assert_close(result.cpu(), expected)
+
+
+def test_adaptive_avg_pool2d_rejects_overlapping_view(vulkan_backend):
+    value = torch.empty((2, 4, 3, 5), device=vulkan_backend)[:, :, :, :1].expand(
+        2, 4, 3, 5
+    )
+    with pytest.raises(RuntimeError, match="overlap|layout|unsupported"):
+        torch.ops.aten._adaptive_avg_pool2d.default(value, [1, 1])
+
+
+def test_adaptive_avg_pool2d_backward_accepts_view_operands(vulkan_backend):
+    cpu_input = _pool_input("cpu", requires_grad=True).transpose(2, 3)
+    cpu_input.retain_grad()
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    cpu_output = torch.nn.functional.adaptive_avg_pool2d(cpu_input, (1, 1))
+    vk_output = torch.nn.functional.adaptive_avg_pool2d(vk_input, (1, 1))
+    grad = torch.ones_like(cpu_output)
+    cpu_output.backward(grad)
+    vk_output.backward(grad.to(vulkan_backend))
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
+    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad)
+
+
+def test_adaptive_avg_pool2d_rejects_unsupported_view_rank(vulkan_backend):
+    value = torch.empty((1, 2, 4, 3, 5), device=vulkan_backend)
+    with pytest.raises(RuntimeError, match="rank|shape|4-D|dimension"):
+        torch.ops.aten._adaptive_avg_pool2d.default(value, [1, 1])
 
 
 def test_adaptive_avg_pool2d_preserves_deferred_formatter_and_fill_contract(vulkan_backend):

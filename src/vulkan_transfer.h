@@ -7,6 +7,8 @@ namespace pytorch_vulkan {
 at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
                         bool non_blocking);
 
+at::Tensor vulkan_contiguous_copy(const at::Tensor &source);
+
 // Internal final-value presentation path used by tensor formatting.
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                                         const at::Tensor &source);

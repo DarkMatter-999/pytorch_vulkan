@@ -8,6 +8,8 @@ layout(push_constant, std430) uniform Params {
   uint reduce_dim;
   uint reduce_size;
   uint sizes[8];
+  uint strides[8];
+  uint storage_offset;
 }
 params;
 void main() {
@@ -15,25 +17,19 @@ void main() {
   if (output_index >= params.output_numel)
     return;
   uint remainder = output_index;
-  uint base = 0u;
+  uint base = params.storage_offset;
   for (int d = int(params.rank) - 1; d >= 0; --d) {
     uint dim = uint(d);
     if (dim != params.reduce_dim) {
       uint coordinate = remainder % params.sizes[dim];
       remainder /= params.sizes[dim];
-      uint stride = 1u;
-      for (uint j = dim + 1u; j < params.rank; ++j)
-        stride *= params.sizes[j];
-      base += coordinate * stride;
+      base += coordinate * params.strides[dim];
     }
   }
   float best = input_data[base];
   uint best_index = 0u;
   for (uint index = 1u; index < params.reduce_size; ++index) {
-    uint stride = 1u;
-    for (uint j = params.reduce_dim + 1u; j < params.rank; ++j)
-      stride *= params.sizes[j];
-    float candidate = input_data[base + index * stride];
+    float candidate = input_data[base + index * params.strides[params.reduce_dim]];
     if ((isnan(candidate) && !isnan(best)) ||
         (!isnan(candidate) && !isnan(best) && candidate > best)) {
       best = candidate;

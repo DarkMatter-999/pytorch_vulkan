@@ -86,3 +86,74 @@ def test_strided_views_cover_transpose_slice_zero_stride_and_empty(vulkan_backen
     assert tuple(sliced.shape) == (3, 3) and tuple(sliced.stride()) == (4, 1)
     assert tuple(broadcast.stride()) == (0, 1) and broadcast.storage_offset() == 2
     assert empty.numel() == 0
+
+
+def test_reshape_alias_and_incompatible_reshape_copy(vulkan_backend):
+    source = _source(vulkan_backend)
+    alias = source.reshape(6)
+    transposed = source.transpose(0, 1)
+    copied = transposed.reshape(6)
+
+    assert alias.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+    assert copied.untyped_storage().data_ptr() != transposed.untyped_storage().data_ptr()
+    assert alias.device == source.device == copied.device
+
+    del alias, transposed, source
+    torch.testing.assert_close(copied.cpu(), torch.tensor([0., 3., 1., 4., 2., 5.]))
+
+
+def test_reshape_alias_accepts_compute_stride_noncontiguous_layout(vulkan_backend):
+    base = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4).to(vulkan_backend)
+    source = base[:, :, :2]
+    result = source.reshape(6, 2)
+
+    assert not source.is_contiguous()
+    assert result.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+    assert tuple(result.shape) == (6, 2)
+    assert tuple(result.stride()) == (4, 1)
+
+
+def test_reshape_copy_rejects_unsupported_layout_before_transfer(vulkan_backend):
+    source = _source(vulkan_backend)
+    overlapping = torch.as_strided(source, (2, 3), (0, 1))
+    with pytest.raises(RuntimeError, match="non-overlapping"):
+        overlapping.reshape(6)
+
+
+def test_copy_preserves_transposed_and_sliced_logical_order(vulkan_backend):
+    cpu = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    source = cpu.to(vulkan_backend).transpose(0, 1)[:, 1:3]
+    destination = torch.empty_strided(source.shape, (1, 4), device=vulkan_backend)
+
+    destination.copy_(source)
+
+    assert tuple(destination.stride()) == (1, 4)
+    torch.testing.assert_close(destination.cpu(), cpu.t().contiguous()[:, 1:3])
+
+
+def test_contiguous_materializes_general_vulkan_view(vulkan_backend):
+    cpu = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    source = cpu.to(vulkan_backend).transpose(0, 1)
+
+    result = source.contiguous()
+
+    assert result.is_contiguous()
+    assert result.untyped_storage().data_ptr() != source.untyped_storage().data_ptr()
+    assert result.device == source.device and result.dtype == source.dtype
+    torch.testing.assert_close(result.cpu(), cpu.t())
+
+
+def test_copy_rejects_overlapping_destination(vulkan_backend):
+    source = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
+    destination = torch.as_strided(source, (2, 2), (0, 1))
+
+    with pytest.raises(RuntimeError, match="internal overlap"):
+        destination.copy_(source)
+
+
+def test_contiguous_empty_general_view(vulkan_backend):
+    source = torch.empty_strided((0, 3), (3, 1), device=vulkan_backend)
+    result = source.contiguous()
+
+    assert result.numel() == 0
+    assert result.is_contiguous()

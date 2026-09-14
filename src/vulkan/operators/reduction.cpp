@@ -3,6 +3,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
+#include "vulkan_layout.h"
 #include "vulkan_platform.h"
 
 #include <c10/core/DeviceType.h>
@@ -15,12 +16,16 @@
 #include <vector>
 
 namespace {
+uint64_t checked_product(uint64_t lhs, uint64_t rhs, const char *name) {
+    TORCH_CHECK(rhs == 0 || lhs <= std::numeric_limits<uint64_t>::max() / rhs,
+                "Vulkan ", name, " size arithmetic overflow");
+    return lhs * rhs;
+}
+
 void validate_input(const at::Tensor &input, const char *name) {
     TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 && input.device().index() == 0,
                 "Vulkan ", name, " requires Vulkan device index 0");
-    TORCH_CHECK(input.layout() == at::kStrided && input.is_contiguous(),
-                "Vulkan ", name, " requires a contiguous strided tensor");
-    TORCH_CHECK(input.storage_offset() == 0, "Vulkan ", name, " does not support non-zero storage_offset()");
+    TORCH_CHECK(input.layout() == at::kStrided, "Vulkan ", name, " requires a strided tensor");
 }
 
 std::vector<int64_t> normalized_dims(const at::Tensor &, c10::OptionalArrayRef<int64_t>, const char *);
@@ -35,7 +40,10 @@ public:
         at::AutoDispatchBelowAutograd guard;
         auto normalized = normalized_dims(input, dims, Mean ? "mean" : "sum");
         uint64_t mask = 0, count = 1;
-        for (auto dim : normalized) { mask |= 1ULL << dim; count *= input.size(dim); }
+        for (auto dim : normalized) {
+            mask |= 1ULL << dim;
+            count = checked_product(count, static_cast<uint64_t>(input.size(dim)), "reduction");
+        }
         ctx->save_for_backward({input});
         ctx->saved_data["mask"] = static_cast<int64_t>(mask);
         ctx->saved_data["count"] = static_cast<int64_t>(count);
@@ -51,24 +59,24 @@ public:
         auto mask = static_cast<uint64_t>(ctx->saved_data["mask"].toInt());
         bool keepdim = ctx->saved_data["keepdim"].toBool();
         std::vector<int64_t> compact_shape, full_shape;
-        std::vector<uint32_t> input_sizes(input.dim()), output_sizes(input.dim());
         for (int64_t d = 0; d < input.dim(); ++d) {
             const bool reduced = mask & (1ULL << d);
             full_shape.push_back(reduced ? 1 : input.size(d));
-            input_sizes[d] = reduced ? 1U : static_cast<uint32_t>(input.size(d));
-            output_sizes[d] = static_cast<uint32_t>(input.size(d));
             if (keepdim || !reduced) compact_shape.push_back(reduced ? 1 : input.size(d));
         }
         auto expanded = grads[0].reshape(compact_shape).reshape(full_shape);
         auto result = at::empty(input.sizes(), input.options());
+        const auto expanded_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(expanded, "reduction gradient");
+        const auto result_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(result, "reduction gradient");
+        TORCH_CHECK(expanded_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
+                    "Vulkan reduction gradient rejects overlapping input views");
         const auto &source_data = expanded.storage().data_ptr();
         const auto &result_data = result.storage().data_ptr();
         const auto &platform = pytorch_vulkan::allocation_platform(source_data);
-        pytorch_vulkan::validate_allocation(source_data, expanded.numel() * sizeof(float), "reduction gradient");
-        pytorch_vulkan::validate_allocation(result_data, result.numel() * sizeof(float), "reduction gradient");
-        platform.compute().broadcast(pytorch_vulkan::allocation_buffer(source_data).buffer(),
-                                     pytorch_vulkan::allocation_buffer(result_data).buffer(),
-                                     static_cast<uint32_t>(input.dim()), input_sizes.data(), output_sizes.data(),
+        pytorch_vulkan::validate_allocation(source_data, expanded_layout.allocation_bytes, "reduction gradient");
+        pytorch_vulkan::validate_allocation(result_data, result_layout.allocation_bytes, "reduction gradient");
+        platform.compute().broadcast(pytorch_vulkan::allocation_buffer(source_data).buffer(), expanded_layout,
+                                     pytorch_vulkan::allocation_buffer(result_data).buffer(), result_layout,
                                      static_cast<uint32_t>(input.numel()),
                                      Mean ? static_cast<float>(1.0 / static_cast<double>(ctx->saved_data["count"].toInt())) : 1.0F);
         return {result, at::Tensor(), at::Tensor(), at::Tensor()};
@@ -106,8 +114,6 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
     validate_input(input, name);
     TORCH_CHECK(input.dim() > 0, "Vulkan ", name, " does not support zero-dimensional inputs");
     pytorch_vulkan::validate_operator_rank(input.dim(), name);
-    TORCH_CHECK(input.numel() != 0, "Vulkan ", name,
-                " does not support empty inputs in the current capability matrix");
     pytorch_vulkan::validate_reduction_dtype(input.scalar_type(), mean, name);
     auto reduced_dims = normalized_dims(input, dims, name);
     TORCH_CHECK(!reduced_dims.empty(), "Vulkan ", name, " requires at least one dimension");
@@ -118,9 +124,10 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
     for (int64_t d = 0; d < input.dim(); ++d) {
         TORCH_CHECK(input.size(d) <= std::numeric_limits<uint32_t>::max(), "Vulkan ", name, " dimension is too large");
         sizes[d] = static_cast<uint32_t>(input.size(d));
-        if (reduced[d]) reduce_numel *= sizes[d];
+        if (reduced[d]) reduce_numel = checked_product(reduce_numel, sizes[d], name);
     }
-    for (auto size : output_sizes(input, reduced_dims, keepdim)) output_numel *= static_cast<uint64_t>(size);
+    for (auto size : output_sizes(input, reduced_dims, keepdim))
+        output_numel = checked_product(output_numel, static_cast<uint64_t>(size), name);
     TORCH_CHECK(reduce_numel <= std::numeric_limits<uint32_t>::max() && output_numel <= std::numeric_limits<uint32_t>::max(),
                 "Vulkan ", name, " exceeds dispatch limits");
     auto expected_sizes = output_sizes(input, reduced_dims, keepdim);
@@ -132,20 +139,27 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
                     "Vulkan ", name, " out requires a contiguous float32 output with the expected shape");
     }
     if (output_numel == 0) return output;
+    auto input_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, name);
+    TORCH_CHECK(input_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
+                "Vulkan ", name, " rejects overlapping input views");
+    auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, name);
+    TORCH_CHECK(output_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
+                "Vulkan ", name, " rejects overlapping output views");
     const auto &in_data = input.storage().data_ptr();
     const auto &out_data = output.storage().data_ptr();
-    pytorch_vulkan::validate_allocation(in_data, input.numel() * sizeof(float), "input");
-    pytorch_vulkan::validate_allocation(out_data, output.numel() * sizeof(float), "output");
+    input_layout.allocation_bytes = pytorch_vulkan::allocation_buffer(in_data).size();
+    output_layout.allocation_bytes = pytorch_vulkan::allocation_buffer(out_data).size();
+    pytorch_vulkan::validate_allocation(in_data, input_layout.allocation_bytes, "input");
+    pytorch_vulkan::validate_allocation(out_data, output_layout.allocation_bytes, "output");
     const auto &platform = pytorch_vulkan::allocation_platform(in_data);
     TORCH_CHECK(&platform == &pytorch_vulkan::allocation_platform(out_data), "Vulkan ", name,
                 " requires one Vulkan platform");
     uint32_t mask = 0;
     for (auto dim : reduced_dims) mask |= 1u << dim;
-    platform.compute().reduction(pytorch_vulkan::allocation_buffer(in_data).buffer(),
-                                 pytorch_vulkan::allocation_buffer(out_data).buffer(),
-                                 static_cast<VkDeviceSize>(input.numel() * sizeof(float)),
-                                 static_cast<uint32_t>(input.dim()), sizes.data(), mask,
-                                 static_cast<uint32_t>(reduce_numel), static_cast<uint32_t>(output_numel), mean);
+    platform.compute().reduction(pytorch_vulkan::allocation_buffer(in_data).buffer(), input_layout,
+                                 pytorch_vulkan::allocation_buffer(out_data).buffer(), output_layout,
+                                 mask, static_cast<uint32_t>(reduce_numel),
+                                 static_cast<uint32_t>(output_numel), mean);
     return output;
 }
 }

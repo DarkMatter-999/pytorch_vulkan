@@ -39,10 +39,21 @@ layout(set = 0, binding = 2, std430) writeonly buffer Out { uint8_t out_data[]; 
 layout(set = 0, binding = 2, std430) writeonly buffer Out { float out_data[]; };
 #endif
 
+struct TensorMetadata {
+  uint rank;
+  uint sizes[8];
+  uint strides[8];
+  uint storage_offset;
+  uint padding[2];
+};
+
+layout(set = 0, binding = 3, std430) readonly buffer Metadata { uint values[]; } metadata;
+
 layout(push_constant) uniform Params {
   float scalar;
   uint element_count;
   uint operation;
+  uint padding;
 }
 params;
 
@@ -81,36 +92,56 @@ float apply_unary(float value) {
   return 0.0;
 }
 
+uint logical_offset(uint base, uint linear_index) {
+  uint offset = metadata.values[base + 17u];
+  uint rank = metadata.values[base];
+  for (int dimension = int(rank) - 1; dimension >= 0; --dimension) {
+    uint coordinate = linear_index % metadata.values[base + 1u + uint(dimension)];
+    linear_index /= metadata.values[base + 1u + uint(dimension)];
+    offset += coordinate * metadata.values[base + 9u + uint(dimension)];
+  }
+  return offset;
+}
+
 void main() {
   uint index = gl_GlobalInvocationID.x;
   if (index >= params.element_count)
     return;
 #if POINTWISE_MODE == 0
+  uint lhs_offset = logical_offset(0u, index);
+  uint rhs_offset = logical_offset(20u, index);
+  uint output_offset = logical_offset(40u, index);
 #ifdef POINTWISE_BOOL
   if (params.operation == 0u)
-    out_data[index] = uint8_t((lhs[index] != 0) || (rhs[index] != 0));
+    out_data[output_offset] = uint8_t((lhs[lhs_offset] != 0) || (rhs[rhs_offset] != 0));
   else if (params.operation == 2u)
-    out_data[index] = uint8_t((lhs[index] != 0) && (rhs[index] != 0));
+    out_data[output_offset] = uint8_t((lhs[lhs_offset] != 0) && (rhs[rhs_offset] != 0));
 #elif defined(POINTWISE_BOOL_OUTPUT)
-   out_data[index] = uint8_t(uint(params.operation == 10u ? lhs[index] != rhs[index]
-                                                         : lhs[index] == rhs[index]));
+   out_data[output_offset] = uint8_t(uint(params.operation == 10u ? lhs[lhs_offset] != rhs[rhs_offset]
+                                                                  : lhs[lhs_offset] == rhs[rhs_offset]));
 #else
-  out_data[index] = apply_operation(lhs[index], rhs[index]);
+  out_data[output_offset] = apply_operation(lhs[lhs_offset], rhs[rhs_offset]);
 #endif
 #elif POINTWISE_MODE == 1
+  uint input_offset = logical_offset(0u, index);
+  uint output_offset = logical_offset(40u, index);
 #ifdef POINTWISE_BOOL_OUTPUT
-  out_data[index] = uint8_t(lhs[index] != params.scalar);
+  out_data[output_offset] = uint8_t(lhs[input_offset] != params.scalar);
 #else
-  out_data[index] = apply_operation(lhs[index], params.scalar);
+  out_data[output_offset] = apply_operation(lhs[input_offset], params.scalar);
 #endif
 #elif POINTWISE_MODE == 2
-  out_data[index] = apply_operation(params.scalar, rhs[index]);
+  uint input_offset = logical_offset(20u, index);
+  uint output_offset = logical_offset(40u, index);
+  out_data[output_offset] = apply_operation(params.scalar, rhs[input_offset]);
 #else
+  uint input_offset = logical_offset(0u, index);
+  uint output_offset = logical_offset(40u, index);
 #ifdef POINTWISE_BOOL_OUTPUT
-  out_data[index] = uint8_t(
-      uint(input_data[index] == input_data[index] && abs(input_data[index]) <= 3.402823466e+38));
+  out_data[output_offset] = uint8_t(
+      uint(input_data[input_offset] == input_data[input_offset] && abs(input_data[input_offset]) <= 3.402823466e+38));
 #else
-  out_data[index] = apply_unary(input_data[index]);
+  out_data[output_offset] = apply_unary(input_data[input_offset]);
 #endif
 #endif
 }

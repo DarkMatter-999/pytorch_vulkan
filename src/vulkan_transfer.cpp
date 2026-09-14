@@ -2,14 +2,17 @@
 
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
+#include "vulkan_layout.h"
 
 #include <c10/util/Exception.h>
+#include <ATen/MemoryOverlap.h>
 #include <torch/library.h>
 
 #include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -58,15 +61,84 @@ std::size_t checked_range_bytes(const at::Tensor &source, std::size_t bytes) {
     return static_cast<std::size_t>(byte_offset) + bytes;
 }
 
-void validate(const at::Tensor &destination, const at::Tensor &source,
-              bool non_blocking) {
-    TORCH_CHECK(!non_blocking, "Vulkan copy does not support non_blocking=True");
-    TORCH_CHECK(destination.layout() == at::kStrided && source.layout() == at::kStrided,
+uint64_t checked_byte_offset(int64_t element_offset, uint64_t element_bytes,
+                             const char *label) {
+    TORCH_CHECK(element_offset >= 0, "Vulkan ", label, " has a negative element offset");
+    const auto offset = static_cast<uint64_t>(element_offset);
+    TORCH_CHECK(offset <= std::numeric_limits<uint64_t>::max() / element_bytes,
+                "Vulkan ", label, " byte offset overflows");
+    return offset * element_bytes;
+}
+
+struct TransferLayout {
+    std::vector<int64_t> sizes;
+    std::vector<int64_t> strides;
+    int64_t numel = 0;
+    std::size_t element_bytes = 0;
+    bool vulkan = false;
+    pytorch_vulkan::VulkanTensorLayout vulkan_layout{};
+};
+
+TransferLayout transfer_layout(const at::Tensor &tensor, const char *label) {
+    TORCH_CHECK(tensor.layout() == at::kStrided,
                 "Vulkan copy requires strided tensors");
-    TORCH_CHECK(destination.is_contiguous() && source.is_contiguous(),
-                "Vulkan copy requires contiguous tensors");
-    (void)pytorch_vulkan::vulkan_storage_bytes(destination.scalar_type());
-    (void)pytorch_vulkan::vulkan_storage_bytes(source.scalar_type());
+    TransferLayout result;
+    result.sizes = tensor.sizes().vec();
+    result.strides = tensor.strides().vec();
+    result.numel = tensor.numel();
+    result.element_bytes = pytorch_vulkan::vulkan_storage_bytes(tensor.scalar_type());
+    for (const auto stride : result.strides) {
+        TORCH_CHECK(stride >= 0, "Vulkan copy ", label, " has a negative stride");
+    }
+    TORCH_CHECK(result.numel >= 0, "Vulkan copy has a negative element count");
+    if (is_vulkan_device(tensor.device())) {
+        result.vulkan = true;
+        result.vulkan_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, label);
+    }
+    return result;
+}
+
+uint64_t logical_offset(const TransferLayout &layout, int64_t linear_index) {
+    if (layout.vulkan)
+        return static_cast<uint64_t>(pytorch_vulkan::vulkan_storage_offset(
+            layout.vulkan_layout, linear_index));
+    TORCH_CHECK(linear_index >= 0 && linear_index < layout.numel,
+                "Vulkan copy linear index is out of range");
+    uint64_t offset = 0;
+    if (!layout.sizes.empty()) {
+        uint64_t remaining = static_cast<uint64_t>(linear_index);
+        for (int64_t dim = static_cast<int64_t>(layout.sizes.size()) - 1; dim >= 0; --dim) {
+            const auto coordinate = remaining % static_cast<uint64_t>(layout.sizes[dim]);
+            remaining /= static_cast<uint64_t>(layout.sizes[dim]);
+            if (layout.strides[dim] == 0)
+                continue;
+            TORCH_CHECK(coordinate <= std::numeric_limits<uint64_t>::max() /
+                                         static_cast<uint64_t>(layout.strides[dim]),
+                        "Vulkan copy address arithmetic overflow");
+            TORCH_CHECK(offset <= std::numeric_limits<uint64_t>::max() -
+                                         coordinate * static_cast<uint64_t>(layout.strides[dim]),
+                        "Vulkan copy address arithmetic overflow");
+            offset += coordinate * static_cast<uint64_t>(layout.strides[dim]);
+        }
+    }
+    return offset;
+}
+
+bool same_allocation(const at::Tensor &lhs, const at::Tensor &rhs) {
+    return lhs.storage().data_ptr().get_context() == rhs.storage().data_ptr().get_context();
+}
+
+bool same_layout(const TransferLayout &lhs, const TransferLayout &rhs) {
+    return lhs.sizes == rhs.sizes && lhs.strides == rhs.strides &&
+           lhs.vulkan_layout.storage_offset == rhs.vulkan_layout.storage_offset;
+}
+
+void validate(const at::Tensor &destination, const at::Tensor &source,
+              bool non_blocking, TransferLayout &destination_layout,
+              TransferLayout &source_layout) {
+    TORCH_CHECK(!non_blocking, "Vulkan copy does not support non_blocking=True");
+    destination_layout = transfer_layout(destination, "destination");
+    source_layout = transfer_layout(source, "source");
     if (destination.scalar_type() != source.scalar_type() &&
         (destination.scalar_type() == at::kDouble || source.scalar_type() == at::kDouble)) {
         TORCH_CHECK(false,
@@ -79,24 +151,39 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
 
     const bool destination_cpu = destination.device().is_cpu();
     const bool source_cpu = source.device().is_cpu();
+    if (destination_cpu) {
+        TORCH_CHECK(at::has_internal_overlap(destination) == at::MemOverlap::No,
+                    "Vulkan copy destination has internal overlap");
+    }
     TORCH_CHECK(!(destination_cpu && !source_cpu && source.scalar_type() == at::kDouble),
                 "Vulkan formatter Double payload readback to CPU is unsupported");
-    TORCH_CHECK(destination_cpu != source_cpu,
+    TORCH_CHECK(!(destination_cpu && source_cpu),
                 "Vulkan copy ", direction(destination, source),
-                " requires exactly one CPU and one Vulkan device; destination ",
+                " requires exactly one CPU and one Vulkan device, or two Vulkan tensors; destination ",
                 destination.device(), ", source ", source.device());
     TORCH_CHECK(destination_cpu ? is_vulkan_device(source.device())
                                 : is_vulkan_device(destination.device()),
                 "Vulkan copy requires a CPU and PrivateUse1/Vulkan device; destination ",
                 destination.device(), ", source ", source.device());
     const c10::Device &vulkan_device = destination_cpu ? source.device() : destination.device();
-    const at::Tensor &vulkan_tensor = destination_cpu ? source : destination;
-    TORCH_CHECK(vulkan_tensor.storage_offset() == 0,
-                "Vulkan copy does not support tensors with non-zero storage_offset()",
-                "; offset is ", vulkan_tensor.storage_offset());
     TORCH_CHECK(vulkan_device.index() == 0,
                 "Vulkan copy ", direction(destination, source),
                 " supports only Vulkan device index 0, got ", vulkan_device.index());
+    if (!destination_cpu && !source_cpu) {
+        TORCH_CHECK(destination.device() == source.device(),
+                    "Vulkan copy requires tensors on the same Vulkan device");
+        TORCH_CHECK(destination_layout.vulkan_layout.internal_overlap ==
+                        pytorch_vulkan::VulkanOverlap::No,
+                    "Vulkan copy destination has internal overlap");
+        if (same_allocation(destination, source)) {
+            const auto &dl = destination_layout.vulkan_layout;
+            const auto &sl = source_layout.vulkan_layout;
+            const bool ranges_overlap = dl.byte_offset < sl.byte_offset + sl.byte_range &&
+                sl.byte_offset < dl.byte_offset + dl.byte_range;
+            TORCH_CHECK(!ranges_overlap || same_layout(destination_layout, source_layout),
+                        "Vulkan copy source and destination partially overlap");
+        }
+    }
     (void)checked_bytes(destination, source);
 }
 
@@ -104,16 +191,69 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
 
 namespace pytorch_vulkan {
 
+at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
+    const auto source_layout = inspect_vulkan_tensor_layout(source, "reshape source");
+    TORCH_CHECK(source_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan reshape copy requires a non-overlapping source layout");
+
+    at::Tensor destination = at::empty(source.sizes(),
+                                       source.options().device(source.device()));
+    const auto destination_layout =
+        inspect_vulkan_tensor_layout(destination, "reshape destination");
+    TORCH_CHECK(destination_layout.internal_overlap == VulkanOverlap::No &&
+                    destination_layout.storage_offset == 0 &&
+                    at::geometry_is_contiguous(destination_layout.sizes,
+                                                destination_layout.strides),
+                "Vulkan reshape copy requires a contiguous destination layout");
+    TORCH_CHECK(source_layout.scalar_type == destination_layout.scalar_type,
+                "Vulkan reshape copy requires matching dtypes");
+    TORCH_CHECK(source_layout.numel == destination_layout.numel,
+                "Vulkan reshape copy requires matching element counts");
+
+    if (source_layout.numel == 0) {
+        return destination;
+    }
+
+    const at::DataPtr &source_data = source.storage().data_ptr();
+    const at::DataPtr &destination_data = destination.storage().data_ptr();
+    validate_allocation(source_data, source_layout.byte_offset + source_layout.byte_range,
+                        "reshape source");
+    validate_allocation(destination_data,
+                        destination_layout.byte_offset + destination_layout.byte_range,
+                        "reshape destination");
+    const VulkanBuffer &source_buffer = allocation_buffer(source_data);
+    const VulkanBuffer &destination_buffer = allocation_buffer(destination_data);
+    const VulkanPlatform &platform = allocation_platform(source_data);
+    TORCH_CHECK(&platform == &allocation_platform(destination_data),
+                "Vulkan reshape copy requires tensors on the same Vulkan device");
+
+    for (int64_t index = 0; index < source_layout.numel; ++index) {
+        const auto source_element = vulkan_storage_offset(source_layout, index);
+        const auto destination_element = vulkan_storage_offset(destination_layout, index);
+        const auto source_offset = static_cast<VkDeviceSize>(checked_byte_offset(
+            source_element, source_layout.element_bytes, "reshape source"));
+        const auto destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
+            destination_element, destination_layout.element_bytes, "reshape destination"));
+        platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
+                                  static_cast<VkDeviceSize>(source_layout.element_bytes),
+                                  source_offset, destination_offset);
+    }
+    return destination;
+}
+
 at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
                         bool non_blocking) {
     if (destination.device().is_cpu() && !source.device().is_cpu() &&
         source.scalar_type() == at::kFloat &&
-        destination.scalar_type() == source.scalar_type()) {
+        destination.scalar_type() == source.scalar_type() &&
+        destination.is_contiguous() && source.is_contiguous()) {
         TORCH_CHECK(!non_blocking,
                     "Vulkan formatter presentation does not support non_blocking=True");
         return formatter_presentation_copy(destination, source);
     }
-    validate(destination, source, non_blocking);
+    TransferLayout destination_layout;
+    TransferLayout source_layout;
+    validate(destination, source, non_blocking, destination_layout, source_layout);
     if (!destination.device().is_cpu() || !source.device().is_cpu()) {
         ensure_process_local_vulkan();
     }
@@ -121,46 +261,65 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     if (bytes == 0) {
         return destination;
     }
+    if (!destination.device().is_cpu() && !source.device().is_cpu() &&
+        same_allocation(destination, source) &&
+        same_layout(destination_layout, source_layout)) {
+        return destination;
+    }
 
     const bool cpu_to_vulkan = source.device().is_cpu();
+    const bool vulkan_to_vulkan = !destination.device().is_cpu() && !cpu_to_vulkan;
     const at::Tensor &vulkan_tensor = cpu_to_vulkan ? destination : source;
     const at::DataPtr &vulkan_data = vulkan_tensor.storage().data_ptr();
     VulkanBuffer &vulkan_buffer = allocation_buffer(vulkan_data);
     const VulkanPlatform &platform = allocation_platform(vulkan_data);
-    const VkDeviceSize size = static_cast<VkDeviceSize>(bytes);
-    TORCH_CHECK(size <= vulkan_buffer.size(), "Vulkan copy ", direction(destination, source),
-                " exceeds Vulkan allocation (", bytes, " bytes, allocation is ",
-                vulkan_buffer.size(), " bytes)");
-
-    void *cpu_destination = cpu_to_vulkan ? nullptr : destination.data_ptr();
-    const void *cpu_source = cpu_to_vulkan ? source.data_ptr() : nullptr;
     const bool host_visible = (vulkan_buffer.memory_properties() &
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
-    if (host_visible) {
-        platform.wait_for_transfer();
-        if (cpu_to_vulkan) {
-            vulkan_buffer.write(cpu_source, size);
-        } else {
-            vulkan_buffer.read(cpu_destination, size);
-        }
-        return destination;
-    }
-
     std::unique_ptr<VulkanBuffer> staging;
-    try {
+    if (!vulkan_to_vulkan && !host_visible) {
         staging = std::make_unique<VulkanBuffer>(
-            platform, size, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    } catch (const std::exception &error) {
-        throw std::runtime_error(std::string("Vulkan copy staging allocation failed for ") +
-                                 direction(destination, source) + ": " + error.what());
+            platform, destination_layout.element_bytes,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
-    if (cpu_to_vulkan) {
-        staging->write(cpu_source, size);
-        platform.copy_buffer_sync(staging->buffer(), vulkan_buffer.buffer(), size);
-    } else {
-        platform.copy_buffer_sync(vulkan_buffer.buffer(), staging->buffer(), size);
-        staging->read(cpu_destination, size);
+    if (host_visible || vulkan_to_vulkan)
+        platform.wait_for_transfer();
+
+    const auto *cpu_source = source.device().is_cpu()
+        ? static_cast<const char *>(source.data_ptr()) : nullptr;
+    auto *cpu_destination = destination.device().is_cpu()
+        ? static_cast<char *>(destination.data_ptr()) : nullptr;
+    const auto element_size = static_cast<VkDeviceSize>(destination_layout.element_bytes);
+    for (int64_t index = 0; index < destination_layout.numel; ++index) {
+        const VkDeviceSize destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
+            static_cast<int64_t>(logical_offset(destination_layout, index)),
+            destination_layout.element_bytes, "destination"));
+        const VkDeviceSize source_offset = static_cast<VkDeviceSize>(checked_byte_offset(
+            static_cast<int64_t>(logical_offset(source_layout, index)),
+            source_layout.element_bytes, "source"));
+        if (cpu_to_vulkan) {
+            if (host_visible) {
+                vulkan_buffer.write(cpu_source + source_offset, element_size,
+                                     destination_offset);
+            } else {
+                staging->write(cpu_source + source_offset, element_size);
+                platform.copy_buffer_sync(staging->buffer(), vulkan_buffer.buffer(),
+                                           element_size, 0, destination_offset);
+            }
+        } else if (vulkan_to_vulkan) {
+            const auto &source_buffer = allocation_buffer(source.storage().data_ptr());
+            auto &destination_buffer = allocation_buffer(destination.storage().data_ptr());
+            platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
+                                       element_size, source_offset, destination_offset);
+        } else {
+            if (host_visible) {
+                vulkan_buffer.read(cpu_destination + destination_offset, element_size,
+                                   source_offset);
+            } else {
+                platform.copy_buffer_sync(vulkan_buffer.buffer(), staging->buffer(),
+                                           element_size, source_offset, 0);
+                staging->read(cpu_destination + destination_offset, element_size);
+            }
+        }
     }
     return destination;
 }
@@ -169,9 +328,10 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                                         const at::Tensor &source) {
     TORCH_CHECK(destination.device().is_cpu() && !source.device().is_cpu(),
                 "Vulkan formatter presentation requires Vulkan source and CPU destination");
-    TORCH_CHECK(destination.layout() == at::kStrided && source.layout() == at::kStrided &&
-                    destination.is_contiguous() && source.is_contiguous(),
-                "Vulkan formatter presentation requires contiguous tensors");
+    TORCH_CHECK(destination.layout() == at::kStrided && source.layout() == at::kStrided,
+                "Vulkan formatter presentation requires strided tensors");
+    if (!destination.is_contiguous() || !source.is_contiguous())
+        return copy_tensor(destination, source, false);
     TORCH_CHECK(destination.scalar_type() == source.scalar_type(),
                 "Vulkan formatter presentation requires matching dtypes");
     TORCH_CHECK(source.device().type() == c10::DeviceType::PrivateUse1 &&

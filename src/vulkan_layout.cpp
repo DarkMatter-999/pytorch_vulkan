@@ -3,6 +3,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 
+#include <ATen/MemoryOverlap.h>
 #include <c10/util/Exception.h>
 
 #include <algorithm>
@@ -38,6 +39,9 @@ void validate_storage_owner(const at::Tensor &tensor, const char *label) {
 pytorch_vulkan::VulkanOverlap classify_strided_overlap(at::IntArrayRef sizes,
                                                         at::IntArrayRef strides,
                                                         const char *label) {
+    // Validated nonnegative strides make this sorted-span check exact: a stride
+    // below the addresses covered by earlier dimensions necessarily aliases.
+    // Tensor descriptors use ATen's three-state classification below instead.
     std::vector<std::pair<uint64_t, uint64_t>> dimensions;
     dimensions.reserve(sizes.size());
     for (size_t dim = 0; dim < sizes.size(); ++dim) {
@@ -58,11 +62,25 @@ pytorch_vulkan::VulkanOverlap classify_strided_overlap(at::IntArrayRef sizes,
     return pytorch_vulkan::VulkanOverlap::No;
 }
 
+pytorch_vulkan::VulkanOverlap classify_tensor_overlap(const at::Tensor &tensor) {
+    const auto overlap = at::has_internal_overlap(tensor);
+    switch (overlap) {
+        case at::MemOverlap::No:
+            return pytorch_vulkan::VulkanOverlap::No;
+        case at::MemOverlap::Yes:
+            return pytorch_vulkan::VulkanOverlap::Yes;
+        case at::MemOverlap::TooHard:
+            return pytorch_vulkan::VulkanOverlap::TooHard;
+    }
+    TORCH_CHECK(false, "Vulkan tensor overlap classification is invalid");
+}
+
 pytorch_vulkan::VulkanTensorLayout inspect_layout(const at::Tensor &storage_owner,
                                                    at::IntArrayRef sizes,
                                                    at::IntArrayRef strides,
                                                    int64_t storage_offset,
-                                                   const char *label) {
+                                                   const char *label,
+                                                   const at::Tensor *overlap_tensor) {
     validate_storage_owner(storage_owner, label);
     TORCH_CHECK(sizes.size() == strides.size(),
                 "Vulkan ", label, " sizes and strides must have matching ranks");
@@ -122,10 +140,11 @@ pytorch_vulkan::VulkanTensorLayout inspect_layout(const at::Tensor &storage_owne
                     "Vulkan ", label, " reaches outside its Vulkan allocation");
     }
 
-    const auto overlap_classification =
-        classify_strided_overlap(sizes, strides, label);
+    const auto overlap_classification = overlap_tensor
+        ? classify_tensor_overlap(*overlap_tensor)
+        : classify_strided_overlap(sizes, strides, label);
     return {static_cast<int64_t>(sizes.size()), sizes.vec(), strides.vec(),
-            storage_owner.scalar_type(), kElementBytes, storage_offset,
+            static_cast<int>(storage_owner.scalar_type()), kElementBytes, storage_offset,
             static_cast<int64_t>(numel),
             static_cast<VkDeviceSize>(byte_offset), static_cast<VkDeviceSize>(byte_range),
             allocation_bytes, overlap_classification};
@@ -138,7 +157,7 @@ namespace pytorch_vulkan {
 VulkanTensorLayout inspect_vulkan_tensor_layout(const at::Tensor &tensor,
                                                  const char *label) {
     return inspect_layout(tensor, tensor.sizes(), tensor.strides(), tensor.storage_offset(),
-                          label);
+                           label, &tensor);
 }
 
 VulkanTensorLayout inspect_vulkan_view_layout(const at::Tensor &storage_owner,
@@ -146,7 +165,7 @@ VulkanTensorLayout inspect_vulkan_view_layout(const at::Tensor &storage_owner,
                                                at::IntArrayRef strides,
                                                int64_t storage_offset,
                                                const char *label) {
-    return inspect_layout(storage_owner, sizes, strides, storage_offset, label);
+    return inspect_layout(storage_owner, sizes, strides, storage_offset, label, nullptr);
 }
 
 int64_t vulkan_storage_offset(const VulkanTensorLayout &layout,

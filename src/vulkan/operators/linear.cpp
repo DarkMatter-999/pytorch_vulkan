@@ -5,6 +5,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
+#include "vulkan_layout.h"
 #include "vulkan_platform.h"
 
 #include <c10/core/DeviceType.h>
@@ -26,6 +27,19 @@ VkDeviceSize checked_bytes(const at::Tensor &tensor, const char *name) {
                 "Vulkan ", name, " byte count exceeds supported size");
     return static_cast<VkDeviceSize>(bytes);
 }
+
+bool layouts_overlap(const at::Tensor &lhs, const VulkanTensorLayout &lhs_layout,
+                     const at::Tensor &rhs, const VulkanTensorLayout &rhs_layout) {
+    if (lhs.storage().data_ptr().get_context() != rhs.storage().data_ptr().get_context() ||
+        lhs_layout.byte_range == 0 || rhs_layout.byte_range == 0)
+        return false;
+    const uint64_t lhs_end = static_cast<uint64_t>(lhs_layout.byte_offset) +
+                             static_cast<uint64_t>(lhs_layout.byte_range);
+    const uint64_t rhs_end = static_cast<uint64_t>(rhs_layout.byte_offset) +
+                             static_cast<uint64_t>(rhs_layout.byte_range);
+    return static_cast<uint64_t>(lhs_layout.byte_offset) < rhs_end &&
+           static_cast<uint64_t>(rhs_layout.byte_offset) < lhs_end;
+}
 } // namespace
 
 at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
@@ -41,29 +55,33 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
     TORCH_CHECK(input.dim() == 2 && weight.dim() == 2 &&
                     input.size(1) ==
                         (transposed_weight ? weight.size(0) : weight.size(1)),
-                "Vulkan linear supports contiguous 2-D input and weight with matching "
-                "features");
-    const bool packed_transpose = transposed_weight && weight.stride(0) == 1 &&
-                                  weight.stride(1) == weight.size(0);
-    TORCH_CHECK(input.is_contiguous() && (weight.is_contiguous() || packed_transpose) &&
-                    input.storage_offset() == 0 && weight.storage_offset() == 0,
-                "Vulkan linear requires contiguous tensors with zero storage offset");
+                "Vulkan linear supports 2-D input and weight with matching features");
+    const auto input_layout = inspect_vulkan_tensor_layout(input, "linear input");
+    const auto weight_layout = inspect_vulkan_tensor_layout(weight, "linear weight");
     at::Tensor b = bias.has_value() ? *bias : at::empty({1}, input.options());
     TORCH_CHECK(
         !bias.has_value() ||
             (b.device() == input.device() && b.scalar_type() == at::kFloat &&
              b.dim() == 1 &&
              b.size(0) == (transposed_weight ? weight.size(1) : weight.size(0)) &&
-             b.is_contiguous() && b.storage_offset() == 0),
-        "Vulkan linear requires a contiguous float32 bias with out_features elements");
+              b.layout() == at::kStrided),
+         "Vulkan linear requires a strided float32 bias with out_features elements");
+    const auto bias_layout = inspect_vulkan_tensor_layout(b, "linear bias");
     const int64_t outputs = transposed_weight ? weight.size(1) : weight.size(0);
     at::Tensor output =
         out ? *out : at::empty({input.size(0), outputs}, input.options());
     TORCH_CHECK(output.device() == input.device() &&
                     output.scalar_type() == at::kFloat &&
                     output.sizes().equals({input.size(0), outputs}) &&
-                    output.is_contiguous() && output.storage_offset() == 0,
-                "Vulkan linear output requires matching contiguous float32 metadata");
+                    output.layout() == at::kStrided,
+                 "Vulkan linear output requires matching strided float32 metadata");
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "linear output");
+    TORCH_CHECK(output_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan linear output has unsupported overlap");
+    TORCH_CHECK(!layouts_overlap(input, input_layout, output, output_layout) &&
+                    !layouts_overlap(weight, weight_layout, output, output_layout) &&
+                    !layouts_overlap(b, bias_layout, output, output_layout),
+                "Vulkan linear output may not alias input, weight, or bias");
     const auto &in_data = input.storage().data_ptr();
     const auto &weight_data = weight.storage().data_ptr();
     const auto &bias_data = b.storage().data_ptr();
@@ -88,8 +106,9 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
     platform.compute().linear(
         allocation_buffer(in_data).buffer(), allocation_buffer(weight_data).buffer(),
         allocation_buffer(bias_data).buffer(), allocation_buffer(out_data).buffer(),
+        input_layout, weight_layout, bias_layout, output_layout,
         static_cast<uint32_t>(input.size(0)), static_cast<uint32_t>(input.size(1)),
-        static_cast<uint32_t>(outputs), transposed_weight && weight.is_contiguous(),
+        static_cast<uint32_t>(outputs), transposed_weight,
         bias.has_value());
     return output;
 }
@@ -104,9 +123,8 @@ void validate_gradient_tensor(const at::Tensor &tensor, const char *name) {
     TORCH_CHECK(tensor.device().type() == c10::DeviceType::PrivateUse1 &&
                     tensor.device().index() == 0,
                 "Vulkan linear ", name, " requires Vulkan device index 0");
-    TORCH_CHECK(tensor.scalar_type() == at::kFloat && tensor.dim() == 2 &&
-                    tensor.is_contiguous() && tensor.storage_offset() == 0,
-                "Vulkan linear ", name, " requires a contiguous float32 2-D tensor");
+    TORCH_CHECK(tensor.scalar_type() == at::kFloat && tensor.dim() == 2,
+                "Vulkan linear ", name, " requires a float32 2-D tensor");
 }
 
 at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
@@ -114,6 +132,8 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
                            uint32_t operation) {
     validate_gradient_tensor(input, "gradient input");
     validate_gradient_tensor(weight, "gradient weight");
+    const auto input_layout = inspect_vulkan_tensor_layout(input, "linear gradient input");
+    const auto weight_layout = inspect_vulkan_tensor_layout(weight, "linear gradient weight");
     if (operation == 1) {
         TORCH_CHECK(input.size(0) == rows && input.size(1) == features &&
                         weight.size(0) == features && weight.size(1) == outputs,
@@ -125,6 +145,8 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
     }
     at::Tensor output = at::empty({rows, outputs}, input.options());
     at::Tensor dummy_bias = at::empty({1}, input.options());
+    const auto bias_layout = inspect_vulkan_tensor_layout(dummy_bias, "linear gradient bias");
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "linear gradient output");
     const auto &input_data = input.storage().data_ptr();
     const auto &weight_data = weight.storage().data_ptr();
     const auto &bias_data = dummy_bias.storage().data_ptr();
@@ -145,6 +167,7 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
     platform.compute().linear(
         allocation_buffer(input_data).buffer(), allocation_buffer(weight_data).buffer(),
         allocation_buffer(bias_data).buffer(), allocation_buffer(output_data).buffer(),
+        input_layout, weight_layout, bias_layout, output_layout,
         static_cast<uint32_t>(rows), static_cast<uint32_t>(features),
         static_cast<uint32_t>(outputs), false, false, operation);
     return output;

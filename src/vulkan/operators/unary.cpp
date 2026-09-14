@@ -8,6 +8,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
+#include "vulkan_layout.h"
 #include "formatter_double.h"
 
 #include <c10/core/DeviceType.h>
@@ -22,25 +23,21 @@ bool is_vulkan_device(const c10::Device &device) {
     return device.type() == c10::DeviceType::PrivateUse1;
 }
 
-void validate_input(const at::Tensor &input, pytorch_vulkan::PointwiseOperation operation,
-                    const char *operation_name) {
+pytorch_vulkan::VulkanTensorLayout validate_input(
+    const at::Tensor &input, pytorch_vulkan::PointwiseOperation operation,
+    const char *operation_name) {
     TORCH_CHECK(is_vulkan_device(input.device()), "Vulkan ", operation_name,
                 " requires a Vulkan tensor");
     TORCH_CHECK(input.device().index() == 0, "Vulkan ", operation_name,
                 " supports only Vulkan device index 0");
     TORCH_CHECK(input.layout() == at::kStrided, "Vulkan ", operation_name,
                 " requires a strided tensor");
-    TORCH_CHECK(input.is_contiguous(), "Vulkan ", operation_name,
-                " requires a contiguous tensor");
-    TORCH_CHECK(input.storage_offset() == 0 ||
-                    (input.dim() == 0 &&
-                     operation == pytorch_vulkan::PointwiseOperation::Ceil),
-                "Vulkan ", operation_name,
-                " does not support tensors with non-zero storage_offset()");
     pytorch_vulkan::validate_unary_dtype(input.scalar_type(), operation, operation_name);
-    TORCH_CHECK(input.dim() != 0 || operation == pytorch_vulkan::PointwiseOperation::Ceil,
-                "Vulkan ", operation_name,
-                " does not support zero-dimensional tensor operands");
+    auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, operation_name);
+    TORCH_CHECK(layout.rank <= 8, "Vulkan ", operation_name, " supports ranks up to 8");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ", operation_name,
+                " element count exceeds the supported range");
+    return layout;
 }
 
 std::size_t checked_bytes(const at::Tensor &input, const char *operation_name) {
@@ -61,19 +58,18 @@ std::size_t checked_bytes(const at::Tensor &input, const char *operation_name) {
 at::Tensor dispatch_unary(const at::Tensor &input,
                           pytorch_vulkan::PointwiseOperation operation,
                           const char *operation_name) {
-    validate_input(input, operation, operation_name);
+    const auto input_layout = validate_input(input, operation, operation_name);
     at::Tensor output =
         at::empty(input.sizes(), input.options().device(input.device()));
-    const std::size_t bytes = checked_bytes(input, operation_name);
-    if (bytes == 0) {
+    const auto output_layout = validate_input(output, operation, operation_name);
+    if (input_layout.numel == 0) {
         return output;
     }
 
     const at::DataPtr &input_data = input.storage().data_ptr();
     const at::DataPtr &output_data = output.storage().data_ptr();
-    const VkDeviceSize size = static_cast<VkDeviceSize>(bytes);
-    pytorch_vulkan::validate_allocation(input_data, size, "input");
-    pytorch_vulkan::validate_allocation(output_data, size, "output");
+    pytorch_vulkan::validate_allocation(input_data, input_layout.allocation_bytes, "input");
+    pytorch_vulkan::validate_allocation(output_data, output_layout.allocation_bytes, "output");
     const VulkanPlatform &input_platform =
         pytorch_vulkan::allocation_platform(input_data);
     const VulkanPlatform &output_platform =
@@ -85,8 +81,8 @@ at::Tensor dispatch_unary(const at::Tensor &input,
 
     VulkanBuffer &input_buffer = pytorch_vulkan::allocation_buffer(input_data);
     VulkanBuffer &output_buffer = pytorch_vulkan::allocation_buffer(output_data);
-    input_platform.compute().unary(input_buffer.buffer(), output_buffer.buffer(), size,
-                                   static_cast<uint32_t>(operation));
+    input_platform.compute().unary(input_buffer.buffer(), input_layout, output_buffer.buffer(),
+                                   output_layout, static_cast<uint32_t>(operation));
     return output;
 }
 
@@ -109,24 +105,6 @@ at::Tensor relu_tensor(const at::Tensor &input) {
 at::Tensor ceil_tensor(const at::Tensor &input) {
     if (input.scalar_type() == at::kDouble)
         return formatter_double_ceil(input);
-    if (input.dim() == 0 && input.storage_offset() != 0) {
-        validate_input(input, PointwiseOperation::Ceil, "ceil");
-        auto output = at::empty(input.sizes(), input.options());
-        const auto &input_data = input.storage().data_ptr();
-        const auto &output_data = output.storage().data_ptr();
-        validate_allocation(input_data,
-                            static_cast<VkDeviceSize>((input.storage_offset() + 1) * sizeof(float)),
-                            "ceil input");
-        validate_allocation(output_data, sizeof(float), "ceil output");
-        const auto &platform = allocation_platform(input_data);
-        TORCH_CHECK(&platform == &allocation_platform(output_data),
-                    "Vulkan ceil requires one Vulkan platform");
-        platform.compute().unary_offset(allocation_buffer(input_data).buffer(),
-                                        allocation_buffer(output_data).buffer(), sizeof(float),
-                                        static_cast<uint32_t>(PointwiseOperation::Ceil),
-                                        static_cast<VkDeviceSize>(input.storage_offset() * sizeof(float)));
-        return output;
-    }
     return dispatch_unary(input, PointwiseOperation::Ceil, "ceil");
 }
 

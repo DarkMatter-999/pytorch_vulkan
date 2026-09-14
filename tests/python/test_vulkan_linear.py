@@ -131,14 +131,16 @@ def test_addmm_out_rejects_non_default_scalars(vulkan_backend, keyword):
 
 
 def test_addmm_rejects_arbitrary_non_contiguous_mat2(vulkan_backend):
-    _, _, bias = _linear_inputs("cpu")
-    mat1 = torch.randn((2, 8), dtype=torch.float32).to(vulkan_backend)
-    mat2 = torch.randn((8, 32), dtype=torch.float32).to(vulkan_backend)[:, ::2]
+    cpu_input, _, bias = _linear_inputs("cpu")
+    cpu_mat2_base = torch.randn((8, 32), dtype=torch.float32)
+    cpu_mat2 = cpu_mat2_base[:, ::2]
+    mat1 = cpu_input.to(vulkan_backend)
+    mat2 = cpu_mat2_base.to(vulkan_backend)[:, ::2]
     assert not mat2.is_contiguous()
     assert mat2.stride() != (1, 8)
 
-    with pytest.raises(RuntimeError, match="contiguous|transpose|layout"):
-        torch.addmm(bias.to(vulkan_backend), mat1, mat2)
+    result = torch.addmm(bias.to(vulkan_backend), mat1, mat2)
+    torch.testing.assert_close(result.cpu(), torch.addmm(bias, cpu_input, cpu_mat2))
 
 
 def test_linear_rejects_invalid_rank_shape_dtype_layout_device_and_offset(vulkan_backend):
@@ -153,12 +155,96 @@ def test_linear_rejects_invalid_rank_shape_dtype_layout_device_and_offset(vulkan
         torch.nn.functional.linear(input_vk, torch.empty((16, 7), device=vulkan_backend), bias_vk)
     with pytest.raises(RuntimeError, match="float32|dtype"):
         torch.nn.functional.linear(input_vk, weight_vk.to(torch.bool), bias_vk)
-    with pytest.raises(RuntimeError, match="contiguous|layout"):
-        torch.nn.functional.linear(input_vk.transpose(0, 1), weight_vk, bias_vk)
     with pytest.raises(RuntimeError, match="same device|Vulkan"):
         torch.nn.functional.linear(input_vk, weight_vk.cpu(), bias_vk)
 
+    transposed_input = torch.randn((8, 2), dtype=torch.float32).to(vulkan_backend).transpose(0, 1)
+    assert not transposed_input.is_contiguous()
+    torch.nn.functional.linear(transposed_input, weight_vk, bias_vk)
     offset_input = torch.empty((3, 8), dtype=torch.float32, device=vulkan_backend)[1:]
     assert offset_input.storage_offset() != 0
-    with pytest.raises(RuntimeError, match="zero storage offset|offset"):
-        torch.nn.functional.linear(offset_input, weight_vk, bias_vk)
+    torch.nn.functional.linear(offset_input, weight_vk, bias_vk)
+
+
+def test_linear_accepts_positive_stride_views_for_all_operands(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
+    cpu_input_view = cpu_input[:, ::2]
+    cpu_weight_view = cpu_weight[:, ::2]
+    cpu_bias_view = torch.cat((cpu_bias, torch.zeros_like(cpu_bias)))[::2]
+    input_view = cpu_input.to(vulkan_backend)[:, ::2]
+    weight_view = cpu_weight.to(vulkan_backend)[:, ::2]
+    bias_view = torch.cat((cpu_bias, torch.zeros_like(cpu_bias))).to(vulkan_backend)[::2]
+    result = torch.nn.functional.linear(input_view, weight_view, bias_view)
+    expected = torch.nn.functional.linear(cpu_input_view, cpu_weight_view, cpu_bias_view)
+    torch.testing.assert_close(result.cpu(), expected)
+
+
+def test_linear_rejects_overlapping_output_view(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
+    input, weight, bias = (cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend),
+                           cpu_bias.to(vulkan_backend))
+    output = torch.empty((1, 16), device=vulkan_backend).expand(2, 16)
+    with pytest.raises(RuntimeError, match="overlap|layout|output"):
+        torch.addmm(bias.to(vulkan_backend), input, weight.t(), out=output)
+
+
+def test_linear_accepts_noncontiguous_nonzero_offset_output_view(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
+    input = cpu_input.to(vulkan_backend)
+    weight = cpu_weight.to(vulkan_backend)
+    bias = cpu_bias.to(vulkan_backend)
+    output = torch.empty((17, 2), device=vulkan_backend)[1:].transpose(0, 1)
+    assert output.shape == (2, 16)
+    assert output.storage_offset() != 0
+    assert not output.is_contiguous()
+    result = torch.addmm(bias, input, weight.t(), out=output)
+    expected = torch.addmm(cpu_bias, cpu_input, cpu_weight.t())
+    assert result is output
+    torch.testing.assert_close(result.cpu(), expected)
+
+
+@pytest.mark.parametrize("operand", ["input", "weight", "bias"])
+def test_addmm_rejects_output_aliasing_each_operand(vulkan_backend, operand):
+    cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
+    input, weight, bias = (cpu_input.to(vulkan_backend), cpu_weight.t().to(vulkan_backend),
+                           cpu_bias.to(vulkan_backend))
+    if operand == "input":
+        storage = torch.empty((2, 16), device=vulkan_backend)
+        input = storage[:, :8]
+        output = storage
+    elif operand == "weight":
+        storage = torch.empty((16, 16), device=vulkan_backend)
+        weight = storage[:, :8].t()
+        output = storage[:2]
+    else:
+        storage = torch.empty((32,), device=vulkan_backend)
+        bias = storage[:16]
+        output = storage.view(2, 16)
+    with pytest.raises(RuntimeError, match="alias|overlap|output"):
+        torch.addmm(bias, input, weight, out=output)
+
+
+def test_linear_backward_accepts_view_operands(vulkan_backend):
+    cpu_input = torch.randn((2, 16), dtype=torch.float32, requires_grad=True)
+    cpu_weight = torch.randn((16, 16), dtype=torch.float32, requires_grad=True)
+    cpu_input_view = cpu_input[:, ::2]
+    cpu_weight_view = cpu_weight[:, ::2]
+    cpu_input_view.retain_grad()
+    cpu_weight_view.retain_grad()
+    vk_input = cpu_input_view.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = cpu_weight_view.detach().to(vulkan_backend).requires_grad_()
+    cpu_output = torch.nn.functional.linear(cpu_input_view, cpu_weight_view)
+    vk_output = torch.nn.functional.linear(vk_input, vk_weight)
+    cpu_output.backward(torch.ones_like(cpu_output))
+    vk_output.backward(torch.ones_like(vk_output.cpu()).to(vulkan_backend))
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
+    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input_view.grad)
+    torch.testing.assert_close(vk_weight.grad.cpu(), cpu_weight_view.grad)
+
+
+def test_linear_backward_rejects_unsupported_view_rank(vulkan_backend):
+    _, cpu_weight, _ = _linear_inputs("cpu")
+    weight = cpu_weight.to(vulkan_backend)
+    value = torch.randn((2, 8)).unsqueeze(0).to(vulkan_backend).requires_grad_()
+    with pytest.raises(RuntimeError, match="2-D|rank|dimension"):
+        torch.nn.functional.linear(value, weight)

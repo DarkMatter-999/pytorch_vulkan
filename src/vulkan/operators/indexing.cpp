@@ -4,6 +4,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_platform.h"
+#include "vulkan_layout.h"
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
 #include <torch/library.h>
@@ -17,13 +18,14 @@ at::Tensor argmax_tensor_impl(const at::Tensor &input, c10::optional<int64_t> di
                               at::Tensor *provided_output) {
     TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 && input.device().index() == 0,
                 "Vulkan argmax requires Vulkan device index 0");
-    TORCH_CHECK(input.layout() == at::kStrided && input.is_contiguous() && input.storage_offset() == 0,
-                "Vulkan argmax requires a contiguous strided tensor with zero storage offset");
+    TORCH_CHECK(input.layout() == at::kStrided, "Vulkan argmax requires a strided tensor");
     validate_index_input_dtype(input.scalar_type(), "argmax");
     TORCH_CHECK(input.dim() > 0, "Vulkan argmax does not support zero-dimensional inputs");
     validate_operator_rank(input.dim(), "argmax");
-    TORCH_CHECK(input.numel() != 0, "Vulkan argmax does not support empty inputs in the current capability matrix");
     if (!dim) {
+        const auto original_layout = inspect_vulkan_tensor_layout(input, "argmax");
+        TORCH_CHECK(original_layout.internal_overlap == VulkanOverlap::No,
+                    "Vulkan argmax rejects overlapping input views");
         auto flattened = input.reshape({input.numel()});
         if (provided_output) {
             auto scalar_output = provided_output->reshape({});
@@ -53,7 +55,15 @@ at::Tensor argmax_tensor_impl(const at::Tensor &input, c10::optional<int64_t> di
                     "Vulkan argmax out has invalid metadata");
     }
     uint64_t output_numel = 1;
-    for (auto size : shape) output_numel *= size;
+    for (auto size : shape) {
+        TORCH_CHECK(size == 0 || output_numel <= std::numeric_limits<uint64_t>::max() /
+                                      static_cast<uint64_t>(size),
+                    "Vulkan argmax output size arithmetic overflow");
+        output_numel *= static_cast<uint64_t>(size);
+    }
+    TORCH_CHECK(output_numel <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan argmax output exceeds dispatch limits");
+    if (output_numel == 0) return output;
     std::vector<uint32_t> sizes(input.dim());
     for (int64_t d = 0; d < input.dim(); ++d) {
         TORCH_CHECK(input.size(d) <= std::numeric_limits<uint32_t>::max(), "Vulkan argmax dimension is too large");
@@ -61,15 +71,18 @@ at::Tensor argmax_tensor_impl(const at::Tensor &input, c10::optional<int64_t> di
     }
     const auto &in_data = input.storage().data_ptr();
     const auto &out_data = output.storage().data_ptr();
-    validate_allocation(in_data, input.numel() * sizeof(float), "input");
-    validate_allocation(out_data, output.numel() * sizeof(int64_t), "output");
+    const auto input_layout = inspect_vulkan_tensor_layout(input, "argmax");
+    TORCH_CHECK(input_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan argmax rejects overlapping input views");
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "argmax");
+    validate_allocation(in_data, input_layout.allocation_bytes, "input");
+    validate_allocation(out_data, output_layout.allocation_bytes, "output");
     const auto &platform = allocation_platform(in_data);
     TORCH_CHECK(&platform == &allocation_platform(out_data), "Vulkan argmax requires one Vulkan platform");
-    platform.compute().argmax(allocation_buffer(in_data).buffer(), allocation_buffer(out_data).buffer(),
-                              static_cast<VkDeviceSize>(input.numel() * sizeof(float)),
-                              static_cast<uint32_t>(input.dim()), sizes.data(),
-                              static_cast<uint32_t>(reduce_dim), static_cast<uint32_t>(input.size(reduce_dim)),
-                              static_cast<uint32_t>(output_numel));
+    platform.compute().argmax(allocation_buffer(in_data).buffer(), input_layout,
+                               allocation_buffer(out_data).buffer(), output_layout,
+                               static_cast<uint32_t>(reduce_dim), static_cast<uint32_t>(input.size(reduce_dim)),
+                               static_cast<uint32_t>(output_numel));
     return output;
 }
 

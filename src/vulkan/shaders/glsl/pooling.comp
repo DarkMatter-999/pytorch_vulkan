@@ -2,6 +2,8 @@
 layout(local_size_x = 256) in;
 layout(set = 0, binding = 0) readonly buffer Input { float input_values[]; };
 layout(set = 0, binding = 1) writeonly buffer Output { float output_values[]; };
+struct TensorMetadata { uint rank; uint sizes[8]; uint strides[8]; uint storage_offset; uint padding[2]; };
+layout(set = 0, binding = 2, std430) readonly buffer Metadata { TensorMetadata tensors[2]; } metadata;
 layout(push_constant) uniform Params {
   uint batch;
   uint channels;
@@ -18,12 +20,23 @@ void main() {
     return;
   if (params.operation == 0u) {
     float sum = 0.0;
-    uint base = index * params.height * params.width;
-    for (uint i = 0u; i < params.height * params.width; ++i)
-      sum += input_values[base + i];
-    output_values[index] = sum / float(params.height * params.width);
+    uint n = index / params.channels;
+    uint c = index % params.channels;
+    TensorMetadata im = metadata.tensors[0];
+    TensorMetadata om = metadata.tensors[1];
+    for (uint h = 0u; h < params.height; ++h)
+      for (uint w = 0u; w < params.width; ++w)
+        sum += input_values[im.storage_offset + n * im.strides[0] + c * im.strides[1] + h * im.strides[2] + w * im.strides[3]];
+    output_values[om.storage_offset + n * om.strides[0] + c * om.strides[1]] = sum / float(params.height * params.width);
   } else {
     uint spatial = params.height * params.width;
-    output_values[index] = input_values[index / spatial] / float(spatial);
+    uint n = index / (params.channels * spatial);
+    uint c = (index / spatial) % params.channels;
+    uint h = (index / params.width) % params.height;
+    uint w = index % params.width;
+    TensorMetadata im = metadata.tensors[0];
+    TensorMetadata om = metadata.tensors[1];
+    output_values[om.storage_offset + n * om.strides[0] + c * om.strides[1] + h * om.strides[2] + w * om.strides[3]] =
+        input_values[im.storage_offset + n * im.strides[0] + c * im.strides[1]] / float(spatial);
   }
 }

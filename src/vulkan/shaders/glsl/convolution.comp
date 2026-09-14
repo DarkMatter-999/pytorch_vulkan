@@ -4,6 +4,8 @@ layout(set = 0, binding = 0) readonly buffer Input { float input_values[]; };
 layout(set = 0, binding = 1) readonly buffer Weight { float weight_values[]; };
 layout(set = 0, binding = 2) readonly buffer Bias { float bias_values[]; };
 layout(set = 0, binding = 3) writeonly buffer Output { float output_values[]; };
+struct TensorMetadata { uint rank; uint sizes[8]; uint strides[8]; uint storage_offset; uint padding[2]; };
+layout(set = 0, binding = 4, std430) readonly buffer Metadata { TensorMetadata tensors[4]; } metadata;
 layout(push_constant) uniform Params {
   uint batch;
   uint input_channels;
@@ -18,13 +20,20 @@ layout(push_constant) uniform Params {
 }
 params;
 uint ii(uint n, uint c, uint h, uint w) {
-  return ((n * params.input_channels + c) * params.input_height + h) * params.input_width + w;
+  TensorMetadata m = metadata.tensors[0];
+  return m.storage_offset + n * m.strides[0] + c * m.strides[1] + h * m.strides[2] + w * m.strides[3];
 }
 uint oi(uint n, uint c, uint h, uint w) {
-  return ((n * params.output_channels + c) * params.output_height + h) * params.output_width + w;
+  TensorMetadata m = metadata.tensors[3];
+  return m.storage_offset + n * m.strides[0] + c * m.strides[1] + h * m.strides[2] + w * m.strides[3];
 }
 uint wi(uint oc, uint ic, uint kh, uint kw) {
-  return ((oc * params.input_channels + ic) * params.kernel_height + kh) * params.kernel_width + kw;
+  TensorMetadata m = metadata.tensors[1];
+  return m.storage_offset + oc * m.strides[0] + ic * m.strides[1] + kh * m.strides[2] + kw * m.strides[3];
+}
+uint bi(uint n, uint c, uint h, uint w) {
+  TensorMetadata m = metadata.tensors[1];
+  return m.storage_offset + n * m.strides[0] + c * m.strides[1] + h * m.strides[2] + w * m.strides[3];
 }
 void main() {
   uint index = gl_GlobalInvocationID.x;
@@ -36,7 +45,8 @@ void main() {
     uint oh = (index / params.output_width) % params.output_height;
     uint oc = (index / (params.output_width * params.output_height)) % params.output_channels;
     uint n = index / (params.output_width * params.output_height * params.output_channels);
-    float value = bias_values[oc];
+    TensorMetadata bm = metadata.tensors[2];
+    float value = bias_values[bm.storage_offset + oc * bm.strides[0]];
     for (uint ic = 0u; ic < params.input_channels; ++ic)
       for (uint kh = 0u; kh < params.kernel_height; ++kh)
         for (uint kw = 0u; kw < params.kernel_width; ++kw) {
@@ -63,7 +73,7 @@ void main() {
           int ow = int(iwv) - int(kw) + 1;
           if (oh >= 0 && oh < int(params.output_height) && ow >= 0 && ow < int(params.output_width))
             value +=
-                input_values[oi(n, oc, uint(oh), uint(ow))] * weight_values[wi(oc, ic, kh, kw)];
+                input_values[ii(n, oc, uint(oh), uint(ow))] * weight_values[wi(oc, ic, kh, kw)];
         }
     output_values[index] = value;
   } else if (params.operation == 2u) {
@@ -82,7 +92,7 @@ void main() {
           int ih = int(oh) + int(kh) - 1;
           int iw = int(ow) + int(kw) - 1;
           if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
-            value += input_values[oi(n, oc, oh, ow)] * weight_values[ii(n, ic, uint(ih), uint(iw))];
+            value += input_values[ii(n, oc, oh, ow)] * weight_values[bi(n, ic, uint(ih), uint(iw))];
         }
     output_values[index] = value;
   } else {
@@ -92,7 +102,7 @@ void main() {
     for (uint n = 0u; n < params.batch; ++n)
       for (uint oh = 0u; oh < params.output_height; ++oh)
         for (uint ow = 0u; ow < params.output_width; ++ow)
-          value += input_values[oi(n, index, oh, ow)];
+          value += input_values[ii(n, index, oh, ow)];
     output_values[index] = value;
   }
 }

@@ -95,26 +95,36 @@ def test_unsupported_copy_dtype_is_rejected(vulkan_backend):
     _assert_transfer_rejected(lambda: destination.copy_(source), "float32")
 
 
-def test_unsupported_non_contiguous_copy_is_rejected(vulkan_backend):
+def test_non_contiguous_copy_is_supported(vulkan_backend):
     source = torch.arange(8, dtype=torch.float32).reshape(2, 4).t()
     destination = torch.empty_like(source, device=vulkan_backend)
     assert not source.is_contiguous()
-    _assert_transfer_rejected(lambda: destination.copy_(source), "contiguous")
+    destination.copy_(source)
+    torch.testing.assert_close(destination.cpu(), source)
 
 
-def test_vulkan_to_vulkan_copy_is_rejected(vulkan_backend):
-    source = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+def test_broadcast_source_copy_is_supported(vulkan_backend):
+    source = torch.tensor([1.0, 2.0], dtype=torch.float32).expand(3, 2)
+    destination = torch.empty(source.shape, dtype=source.dtype, device=vulkan_backend)
+
+    destination.copy_(source)
+
+    torch.testing.assert_close(destination.cpu(), source)
+
+
+def test_vulkan_to_vulkan_copy_is_supported(vulkan_backend):
+    source = torch.arange(2, dtype=torch.float32).to(vulkan_backend)
     destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    _assert_transfer_rejected(
-        lambda: destination.copy_(source), "Vulkan-to-Vulkan"
-    )
+    assert destination.copy_(source) is destination
+    torch.testing.assert_close(destination.cpu(), source.cpu())
 
 
-def test_non_contiguous_cpu_destination_copy_is_rejected(vulkan_backend):
+def test_non_contiguous_cpu_destination_copy_is_supported(vulkan_backend):
     source = torch.empty((2, 3), dtype=torch.float32, device=vulkan_backend)
     destination = torch.empty((3, 2), dtype=torch.float32).t()
     assert not destination.is_contiguous()
-    _assert_transfer_rejected(lambda: destination.copy_(source), "contiguous")
+    destination.copy_(source)
+    torch.testing.assert_close(destination, source.cpu())
 
 
 def test_cpu_vk_cpu_round_trip_scalar_like(vulkan_backend):
@@ -209,10 +219,11 @@ def test_integer_transfer_is_rejected(vulkan_backend):
     )
 
 
-def test_non_contiguous_transfer_is_rejected(vulkan_backend):
+def test_non_contiguous_transfer_is_supported(vulkan_backend):
     source = torch.arange(8, dtype=torch.float32).reshape(2, 4).t()
     assert not source.is_contiguous()
-    _assert_transfer_rejected(lambda: source.to(vulkan_backend), "contiguous")
+    result = source.to(vulkan_backend)
+    torch.testing.assert_close(result.cpu(), source)
 
 
 def test_non_blocking_transfer_is_rejected(vulkan_backend):
@@ -222,7 +233,7 @@ def test_non_blocking_transfer_is_rejected(vulkan_backend):
     )
 
 
-def test_vulkan_to_vulkan_transfer_is_rejected(vulkan_backend):
+def test_vulkan_to_vulkan_to_copy_remains_unsupported(vulkan_backend):
     def transfer():
         source = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
         source.to(vulkan_backend, copy=True)

@@ -8,6 +8,9 @@ layout(push_constant, std430) uniform Params {
   float scale;
   uint input_sizes[8];
   uint output_sizes[8];
+  uint sizes[8];
+  uint strides[8];
+  uint storage_offset;
 }
 params;
 void main() {
@@ -15,16 +18,13 @@ void main() {
   if (output_index >= params.output_numel)
     return;
   uint remainder = output_index;
-  uint input_index = 0u;
+  uint input_index = params.storage_offset;
   for (int d = int(params.rank) - 1; d >= 0; --d) {
     uint dim = uint(d);
     uint coordinate = remainder % params.output_sizes[dim];
     remainder /= params.output_sizes[dim];
     if (params.input_sizes[dim] != 1u) {
-      uint stride = 1u;
-      for (uint j = dim + 1u; j < params.rank; ++j)
-        stride *= params.input_sizes[j];
-      input_index += coordinate * stride;
+      input_index += coordinate * params.strides[dim];
     }
   }
   output_data[output_index] = input_data[input_index] * params.scale;

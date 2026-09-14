@@ -12,6 +12,10 @@
 
 #include <limits>
 
+namespace pytorch_vulkan {
+at::Tensor vulkan_contiguous_copy(const at::Tensor &source);
+}
+
 namespace {
 
 int64_t requested_numel(at::IntArrayRef sizes, const char *name) {
@@ -81,10 +85,26 @@ at::Tensor reshape_alias_tensor(const at::Tensor &self, at::IntArrayRef size,
     return metadata_only_view(self, size, stride, std::nullopt, "_reshape_alias", true);
 }
 
+at::Tensor reshape_tensor(const at::Tensor &self, at::IntArrayRef size) {
+    const auto inferred_size = at::infer_size_dv(size, self.numel());
+    const auto stride = at::detail::computeStride(self.sizes(), self.strides(), inferred_size);
+    if (stride.has_value()) {
+        // computeStride is reshape's compatibility contract; unlike view, it
+        // also accepts compatible non-contiguous source layouts.
+        return metadata_only_view(self, inferred_size, *stride, std::nullopt, "reshape", false);
+    }
+    return pytorch_vulkan::vulkan_contiguous_copy(self).view(inferred_size);
+}
+
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("as_strided", &pytorch_vulkan::as_strided_tensor);
     m.impl("view", &pytorch_vulkan::view_tensor);
     m.impl("_reshape_alias", &pytorch_vulkan::reshape_alias_tensor);
+    m.impl("reshape", &pytorch_vulkan::reshape_tensor);
+}
+
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+    m.impl("reshape", &pytorch_vulkan::reshape_tensor);
 }

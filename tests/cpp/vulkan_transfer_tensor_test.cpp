@@ -127,9 +127,10 @@ void test_formatter_presentation_copy_rejects_malformed_sources() {
     auto result = at::empty({2}, source.options());
 
     auto noncontiguous = at::as_strided(input, {2, 2}, {1, 2});
-    expect_error([&] {
-        pytorch_vulkan::formatter_presentation_copy(result, noncontiguous);
-    }, "contiguous");
+    auto strided_result = at::empty({4}, source.options());
+    pytorch_vulkan::formatter_presentation_copy(strided_result, noncontiguous);
+    expect(strided_result.equal(at::ones({4}, source.options())),
+           "strided presentation copy changed values");
 
     auto out_of_range = input;
     out_of_range.unsafeGetTensorImpl()->set_storage_offset(3);
@@ -183,10 +184,12 @@ void test_compute_range_rejects_before_descriptor_setup() {
     const VkBuffer buffer =
         pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto platform = pytorch_vulkan::platform();
+    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
     const std::size_t before = platform->compute_dispatch_count();
     expect_error(
         [&] {
             platform->compute().linear(buffer, buffer, buffer, buffer,
+                                       layout, layout, layout, layout,
                                        std::numeric_limits<uint32_t>::max(), 1, 1);
         },
         "invalid range");
@@ -199,10 +202,12 @@ void test_linear_output_count_overflow_rejects_before_dispatch() {
     const VkBuffer buffer =
         pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto platform = pytorch_vulkan::platform();
+    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
     const std::size_t before = platform->compute_dispatch_count();
     expect_error(
         [&] {
             platform->compute().linear(buffer, buffer, buffer, buffer,
+                                       layout, layout, layout, layout,
                                        std::numeric_limits<uint32_t>::max(), 1, 2);
         },
         "linear output count overflow");
@@ -223,7 +228,7 @@ void test_convolution_rejects_undersized_allocation_before_dispatch() {
             (void)pytorch_vulkan::convolution(input, weight, bias, {1, 1}, {1, 1},
                                               {1, 1}, false, {0, 0}, 1);
         },
-        "allocation is undersized");
+        "outside its Vulkan allocation");
     expect(platform->compute_dispatch_count() == before,
            "undersized Conv2d allocation submitted a compute dispatch");
 }
@@ -235,7 +240,7 @@ void test_pooling_rejects_undersized_allocation_before_dispatch() {
     const auto platform = pytorch_vulkan::platform();
     const std::size_t before = platform->compute_dispatch_count();
     expect_error([&] { (void)pytorch_vulkan::adaptive_avg_pool2d(input, {1, 1}); },
-                 "allocation is undersized");
+                 "outside its Vulkan allocation");
     expect(platform->compute_dispatch_count() == before,
            "undersized pooling allocation submitted a compute dispatch");
 }
@@ -245,10 +250,11 @@ void test_pooling_rejects_dimension_product_overflow_before_dispatch() {
     const VkBuffer buffer =
         pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto platform = pytorch_vulkan::platform();
+    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
     const std::size_t before = platform->compute_dispatch_count();
     expect_error(
         [&] {
-            platform->compute().pooling(buffer, buffer,
+            platform->compute().pooling(buffer, buffer, layout, layout,
                                         std::numeric_limits<uint32_t>::max(), 2, 2, 2);
         },
         "truncation");
@@ -256,7 +262,7 @@ void test_pooling_rejects_dimension_product_overflow_before_dispatch() {
            "overflowing pooling metadata submitted a compute dispatch");
 }
 
-void test_nonzero_storage_offset_is_rejected() {
+void test_nonzero_storage_offset_is_supported() {
     auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
     const std::vector<int64_t> sizes{4};
     const std::vector<int64_t> strides{1};
@@ -266,8 +272,10 @@ void test_nonzero_storage_offset_is_rejected() {
     destination.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
     expect(destination.is_contiguous() && destination.storage_offset() != 0,
            "destination test tensor is not a contiguous offset view");
-    expect_error([&] { pytorch_vulkan::copy_tensor(destination, source, false); },
-                 "storage_offset");
+    pytorch_vulkan::copy_tensor(destination, source, false);
+    auto destination_result = at::empty({4}, source.options());
+    pytorch_vulkan::copy_tensor(destination_result, destination, false);
+    expect(destination_result.equal(source), "offset destination copy changed values");
 
     auto source_base = at::empty({5}, source.options().device(kDevice));
     pytorch_vulkan::copy_tensor(source_base, at::ones({5}, source.options()), false);
@@ -298,6 +306,54 @@ void test_zero_tensor_copy_is_noop() {
         auto repeated = at::empty({0}, source.options().device(kDevice));
         expect(repeated.numel() == 0, "repeated empty Vulkan tensor is non-empty");
     }
+}
+
+void test_strided_copy_reads_and_writes_logical_indices() {
+    auto source = at::arange(12, at::TensorOptions().dtype(at::kFloat))
+                      .reshape({3, 4})
+                      .transpose(0, 1)
+                      .narrow(1, 1, 2);
+    auto destination = at::empty_strided({4, 2}, {1, 4},
+                                         source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(destination, source, false);
+    auto result = at::empty({4, 2}, source.options());
+    pytorch_vulkan::copy_tensor(result, destination, false);
+    expect(result.equal(source), "strided Vulkan copy changed logical values");
+}
+
+void test_strided_copy_rejects_unsafe_overlap() {
+    auto source = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto destination = at::empty_strided({2, 2}, {0, 1}, source.options().device(kDevice));
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->compute_dispatch_count();
+    expect_error([&] { pytorch_vulkan::copy_tensor(destination, source, false); },
+                 "internal overlap");
+    expect(platform->compute_dispatch_count() == before,
+           "overlapping transfer submitted compute work");
+
+    auto storage = at::empty({5}, source.options().device(kDevice));
+    auto source_view = at::as_strided(storage, {3}, {1}, 0);
+    auto destination_view = at::as_strided(storage, {3}, {1}, 1);
+    expect_error([&] { pytorch_vulkan::copy_tensor(destination_view, source_view, false); },
+                 "partially overlap");
+}
+
+void test_identical_vulkan_copy_is_a_noop() {
+    auto tensor = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    const auto platform = pytorch_vulkan::platform();
+    const std::size_t before = platform->pending_transfer_count();
+    pytorch_vulkan::copy_tensor(tensor, tensor, false);
+    expect(platform->pending_transfer_count() == before,
+           "identical Vulkan copy left pending transfer resources");
+}
+
+void test_strided_copy_zero_elements_is_noop() {
+    auto source = at::empty_strided({0, 3}, {3, 1},
+                                    at::TensorOptions().dtype(at::kFloat));
+    auto destination = at::empty_strided({0, 3}, {1, 1},
+                                         source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(destination, source, false);
+    expect(destination.numel() == 0, "strided zero-element copy changed size");
 }
 
 void test_zero_allocator_payload() {
@@ -385,6 +441,13 @@ void test_vulkan_layout_inspection() {
                 "layout test");
         },
         "overflow");
+    expect_error(
+        [&] {
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(
+                offset_base, {1}, {0}, std::numeric_limits<int64_t>::max(),
+                "layout test");
+        },
+        "overflow");
 }
 
 void test_vulkan_layout_descriptor_and_index_mapping() {
@@ -413,6 +476,24 @@ void test_vulkan_layout_descriptor_and_index_mapping() {
                  "coordinate");
     expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, 6); },
                  "linear index");
+}
+
+void test_vulkan_layout_address_rejects_storage_offset_overflow() {
+    const pytorch_vulkan::VulkanTensorLayout layout{
+        1,
+        {2},
+        {1},
+        static_cast<int>(at::kBool),
+        1,
+        std::numeric_limits<int64_t>::max(),
+        2,
+        static_cast<VkDeviceSize>(std::numeric_limits<int64_t>::max()),
+        2,
+        std::numeric_limits<VkDeviceSize>::max(),
+        pytorch_vulkan::VulkanOverlap::No};
+    expect_error(
+        [&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {1}); },
+        "address exceeds int64 range");
 }
 
 void test_metadata_only_views() {
@@ -598,9 +679,10 @@ void test_formatter_comparison_dispatch_is_counted() {
            "formatter comparison did not submit exactly one dispatch");
 }
 
-void test_scalar_pointwise_offset_is_rejected() {
-    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+void test_scalar_pointwise_offset_is_supported() {
+    auto source = at::tensor({2.0F, 3.0F, 4.0F, 5.0F});
     auto base = at::empty({5}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(base, at::tensor({0.0F, 2.0F, 3.0F, 4.0F, 5.0F}), false);
     auto offset = base;
     const std::vector<int64_t> sizes{4};
     const std::vector<int64_t> strides{1};
@@ -609,28 +691,14 @@ void test_scalar_pointwise_offset_is_rejected() {
     expect(offset.is_contiguous() && offset.storage_offset() != 0,
            "scalar offset test tensor is not a contiguous offset view");
 
-    const auto expect_offset_or_unwired = [](const std::function<void()> &operation,
-                                             const char *unwired_error) {
-        try {
-            operation();
-        } catch (const c10::Error &error) {
-            const std::string message(error.what());
-            if (message.find("storage_offset") != std::string::npos) {
-                return;
-            }
-            expect(message.find(unwired_error) != std::string::npos,
-                   "scalar offset rejected for an unexpected reason");
-            return;
-        }
-        throw std::runtime_error("scalar offset was accepted");
-    };
-
-    expect_offset_or_unwired([&] { (void)at::add(offset, at::Scalar(1.0F)); },
-                             "Vulkan add does not support a scalar operand");
-    expect_offset_or_unwired([&] { (void)at::sub(offset, at::Scalar(1.0F)); },
-                             "Could not run 'aten::sub.out'");
-    expect_offset_or_unwired([&] { (void)at::mul(offset, at::Scalar(1.0F)); },
-                             "Could not run 'aten::mul.out'");
+    for (const auto &[result, expected] : std::vector<std::pair<at::Tensor, at::Tensor>>{
+             {at::add(offset, at::Scalar(1.0F)), at::tensor({3.0F, 4.0F, 5.0F, 6.0F})},
+             {at::sub(offset, at::Scalar(1.0F)), at::tensor({1.0F, 2.0F, 3.0F, 4.0F})},
+             {at::mul(offset, at::Scalar(2.0F)), at::tensor({4.0F, 6.0F, 8.0F, 10.0F})}}) {
+        auto cpu_result = at::empty_like(expected);
+        pytorch_vulkan::copy_tensor(cpu_result, result, false);
+        expect(cpu_result.equal(expected), "scalar offset pointwise changed values");
+    }
 }
 
 void test_concurrent_add_dispatches_are_serialized() {
@@ -671,16 +739,10 @@ void test_concurrent_add_dispatches_are_serialized() {
 }
 
 void test_add_invalid_input_cleans_up() {
-    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
-    auto base = at::empty({5}, source.options().device(kDevice));
-    auto offset = base;
-    offset.unsafeGetTensorImpl()->set_storage_offset(1);
-    const std::vector<int64_t> sizes{4};
-    const std::vector<int64_t> strides{1};
-    offset.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
-    auto rhs = at::empty({4}, source.options().device(kDevice));
-    expect_error([&] { (void)pytorch_vulkan::add_tensor(offset, rhs, 1.0F); },
-                 "storage_offset");
+    const std::vector<int64_t> rank_nine(9, 1);
+    auto lhs = at::empty(rank_nine, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto rhs = at::empty_like(lhs);
+    expect_error([&] { (void)pytorch_vulkan::add_tensor(lhs, rhs, 1.0F); }, "ranks up to 8");
     expect(pytorch_vulkan::platform()->pending_transfer_count() == 0,
            "invalid Vulkan add left pending transfer resources");
 }
@@ -705,9 +767,10 @@ void test_repeated_unary_dispatch_and_input_readability() {
     expect(input_result.equal(source), "Vulkan unary changed its input");
 }
 
-void test_unary_nonzero_storage_offset_is_rejected() {
-    auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+void test_unary_nonzero_storage_offset_is_supported() {
+    auto source = at::tensor({2.0F, 3.0F, 4.0F, 5.0F});
     auto base = at::empty({5}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(base, at::tensor({0.0F, 2.0F, 3.0F, 4.0F, 5.0F}), false);
     auto offset = base;
     const std::vector<int64_t> sizes{4};
     const std::vector<int64_t> strides{1};
@@ -716,7 +779,11 @@ void test_unary_nonzero_storage_offset_is_rejected() {
     expect(offset.is_contiguous() && offset.storage_offset() != 0,
            "unary offset test tensor is not a contiguous offset view");
 
-    expect_error([&] { (void)at::neg(offset); }, "storage_offset");
+    auto result = at::neg(offset);
+    auto cpu_result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(cpu_result, result, false);
+    expect(cpu_result.equal(at::tensor({-2.0F, -3.0F, -4.0F, -5.0F})),
+           "unary offset dispatch changed values");
 }
 
 void test_shared_out_dispatch_helpers() {
@@ -782,32 +849,14 @@ void test_shared_out_rejects_offset_and_noncontiguous_output() {
     const std::vector<int64_t> offset_sizes{3};
     const std::vector<int64_t> offset_strides{1};
     offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
-    expect_error(
-        [&] {
-            pytorch_vulkan::dispatch_unary_out(
-                input, offset, pytorch_vulkan::PointwiseOperation::Neg, "neg");
-        },
-        "storage_offset");
-
-    auto partial = offset;
-    expect_error(
-        [&] {
-            pytorch_vulkan::dispatch_tensor_tensor_out(
-                input, input, at::Scalar(1.0F), partial,
-                pytorch_vulkan::PointwiseOperation::Add, "add");
-        },
-        "storage_offset");
+    pytorch_vulkan::dispatch_unary_out(
+        input, offset, pytorch_vulkan::PointwiseOperation::Neg, "neg");
 
     auto noncontiguous =
         at::empty_strided({3, 2}, {1, 3}, source.options().device(kDevice));
     auto matrix_input = at::empty({3, 2}, source.options().device(kDevice));
-    expect_error(
-        [&] {
-            pytorch_vulkan::dispatch_unary_out(matrix_input, noncontiguous,
-                                               pytorch_vulkan::PointwiseOperation::Neg,
-                                               "neg");
-        },
-        "contiguous");
+    pytorch_vulkan::dispatch_unary_out(matrix_input, noncontiguous,
+                                       pytorch_vulkan::PointwiseOperation::Neg, "neg");
 
     auto alias = input;
     auto &alias_result = pytorch_vulkan::dispatch_unary_out(
@@ -958,8 +1007,9 @@ void test_shared_out_exact_aliases_preserve_values_and_lifecycles() {
     pytorch_vulkan::copy_tensor(lhs, lhs_source, false);
     platform->compute().unary_alias(
         pytorch_vulkan::allocation_buffer(lhs.storage().data_ptr()).buffer(),
+        pytorch_vulkan::inspect_vulkan_tensor_layout(lhs, "direct unary input"),
         pytorch_vulkan::allocation_buffer(lhs.storage().data_ptr()).buffer(),
-        static_cast<VkDeviceSize>(lhs.numel() * sizeof(float)),
+        pytorch_vulkan::inspect_vulkan_tensor_layout(lhs, "direct unary output"),
         static_cast<uint32_t>(pytorch_vulkan::PointwiseOperation::Neg));
     auto direct_alias_result = at::empty_like(lhs_source);
     pytorch_vulkan::copy_tensor(direct_alias_result, lhs, false);
@@ -983,6 +1033,39 @@ void test_platform_destruction_is_nothrow() {
                   "Vulkan cleanup must not throw during ownership quarantine");
 }
 
+void test_reduction_indexing_reject_malformed_metadata() {
+    auto input = at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto output = at::empty({2, 1}, input.options());
+    const auto input_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, "test input");
+    const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, "test output");
+    auto input_buffer = pytorch_vulkan::allocation_buffer(input.storage().data_ptr()).buffer();
+    auto output_buffer = pytorch_vulkan::allocation_buffer(output.storage().data_ptr()).buffer();
+    auto platform = pytorch_vulkan::platform();
+
+    auto missing_sizes = input_layout;
+    missing_sizes.sizes.pop_back();
+    expect_error([&] {
+        platform->compute().reduction(input_buffer, missing_sizes, output_buffer, output_layout,
+                                      2U, 3U, 2U, false);
+    }, "metadata lengths");
+
+    auto rank_nine = input_layout;
+    rank_nine.rank = 9;
+    rank_nine.sizes.resize(9, 1);
+    rank_nine.strides.resize(9, 1);
+    expect_error([&] {
+        platform->compute().argmax(input_buffer, rank_nine, output_buffer, output_layout,
+                                   0U, 1U, 1U);
+    }, "ranks up to 8");
+
+    auto missing_output = output_layout;
+    missing_output.strides.pop_back();
+    expect_error([&] {
+        platform->compute().broadcast(input_buffer, input_layout, output_buffer, missing_output,
+                                      2U, 1.0F);
+    }, "output metadata lengths");
+}
+
 } // namespace
 
 int main() {
@@ -1000,24 +1083,29 @@ int main() {
         test_convolution_rejects_undersized_allocation_before_dispatch();
         test_pooling_rejects_undersized_allocation_before_dispatch();
         test_pooling_rejects_dimension_product_overflow_before_dispatch();
-        test_nonzero_storage_offset_is_rejected();
+        test_nonzero_storage_offset_is_supported();
         test_zero_tensor_copy_is_noop();
+        test_strided_copy_reads_and_writes_logical_indices();
+        test_strided_copy_rejects_unsafe_overlap();
+        test_identical_vulkan_copy_is_a_noop();
+        test_strided_copy_zero_elements_is_noop();
         test_zero_allocator_payload();
         test_foreign_payload_rejected();
         test_vulkan_layout_inspection();
         test_vulkan_layout_descriptor_and_index_mapping();
+        test_vulkan_layout_address_rejects_storage_offset_overflow();
         test_metadata_only_views();
         test_repeated_add_dispatch_and_retained_output();
         test_tensor_tensor_sub_and_mul_dispatch();
         test_zero_element_add_does_not_dispatch();
-        test_scalar_pointwise_offset_is_rejected();
+        test_scalar_pointwise_offset_is_supported();
         test_scalar_add_dispatch_modes_and_lifecycle();
         test_zero_element_scalar_add_does_not_dispatch();
         test_formatter_comparison_dispatch_is_counted();
         test_concurrent_add_dispatches_are_serialized();
         test_add_invalid_input_cleans_up();
         test_repeated_unary_dispatch_and_input_readability();
-        test_unary_nonzero_storage_offset_is_rejected();
+        test_unary_nonzero_storage_offset_is_supported();
         test_shared_out_dispatch_helpers();
         test_shared_out_empty_path_does_not_dispatch();
         test_shared_out_rejects_offset_and_noncontiguous_output();
@@ -1026,6 +1114,7 @@ int main() {
         test_shared_out_exact_aliases_preserve_values_and_lifecycles();
         test_shared_out_device_index_is_rejected_by_native_allocator();
         test_platform_destruction_is_nothrow();
+        test_reduction_indexing_reject_malformed_metadata();
         std::cout << "Vulkan tensor transfer tests passed\n";
         return 0;
     } catch (const VulkanUnavailable &error) {

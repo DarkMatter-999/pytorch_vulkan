@@ -3,6 +3,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
+#include "vulkan_layout.h"
 #include "vulkan_platform.h"
 #include <c10/util/Exception.h>
 #include <limits>
@@ -27,10 +28,8 @@ void validate(const at::Tensor &tensor, const char *name) {
                 " requires rank 4 NCHW input");
     TORCH_CHECK(tensor.numel() > 0, "Vulkan pooling ", name,
                 " requires a nonempty tensor");
-    TORCH_CHECK(tensor.scalar_type() == at::kFloat && tensor.layout() == at::kStrided &&
-                    tensor.is_contiguous() && tensor.storage_offset() == 0,
-                "Vulkan pooling ", name,
-                " requires contiguous float32 with zero offset");
+    TORCH_CHECK(tensor.scalar_type() == at::kFloat && tensor.layout() == at::kStrided,
+                "Vulkan pooling ", name, " requires a strided float32 tensor");
     TORCH_CHECK(tensor.size(0) <= std::numeric_limits<uint32_t>::max() &&
                     tensor.size(1) <= std::numeric_limits<uint32_t>::max() &&
                     tensor.size(2) <= std::numeric_limits<uint32_t>::max() &&
@@ -44,14 +43,22 @@ void validate_output_size(at::IntArrayRef output_size) {
 at::Tensor dispatch(const at::Tensor &input, const at::Tensor &grad,
                     uint32_t operation) {
     validate(input, "input");
+    const auto input_layout = inspect_vulkan_tensor_layout(input, "pooling input");
+    TORCH_CHECK(input_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan pooling rejects overlapping input layouts");
+    VulkanTensorLayout grad_layout = input_layout;
     if (operation == 1) {
         validate(grad, "grad_output");
+        grad_layout = inspect_vulkan_tensor_layout(grad, "pooling grad_output");
+        TORCH_CHECK(grad_layout.internal_overlap == VulkanOverlap::No,
+                    "Vulkan pooling rejects overlapping grad_output layouts");
         TORCH_CHECK(grad.sizes().equals({input.size(0), input.size(1), 1, 1}),
                     "Vulkan pooling grad_output has unsupported shape");
     }
     at::Tensor output = operation == 0 ? at::empty({input.size(0), input.size(1), 1, 1},
                                                    input.options())
                                        : at::empty(input.sizes(), input.options());
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "pooling output");
     const auto &input_data = input.storage().data_ptr();
     const auto &grad_data = grad.defined() ? grad.storage().data_ptr() : input_data;
     const auto &output_data = output.storage().data_ptr();
@@ -66,7 +73,8 @@ at::Tensor dispatch(const at::Tensor &input, const at::Tensor &grad,
     validate_allocation(output_data, bytes(output, "output"), "pooling output");
     platform.compute().pooling(
         allocation_buffer(operation == 0 ? input_data : grad_data).buffer(),
-        allocation_buffer(output_data).buffer(), static_cast<uint32_t>(input.size(0)),
+        allocation_buffer(output_data).buffer(), operation == 0 ? input_layout : grad_layout,
+        output_layout, static_cast<uint32_t>(input.size(0)),
         static_cast<uint32_t>(input.size(1)), static_cast<uint32_t>(input.size(2)),
         static_cast<uint32_t>(input.size(3)), operation);
     return output;

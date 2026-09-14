@@ -236,10 +236,12 @@ def test_scalar_tensor_operand_is_rejected(vulkan_backend, operation, scalar_lef
         operation(*operands)
 
 
-def test_zero_dim_tensor_add_operand_is_rejected(vulkan_backend):
-    lhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    rhs = torch.empty((), dtype=torch.float32, device=vulkan_backend)
-    _assert_add_rejected(lambda: torch.add(lhs, rhs), "zero-dimensional")
+def test_zero_dim_tensor_add_operands_are_supported(vulkan_backend):
+    lhs = torch.tensor(2.0, dtype=torch.float32, device=vulkan_backend)
+    rhs = torch.tensor(3.0, dtype=torch.float32, device=vulkan_backend)
+    result = torch.add(lhs, rhs)
+    assert result.dim() == 0
+    torch.testing.assert_close(result.cpu(), torch.tensor(5.0))
 
 
 def test_broadcasting_add_is_rejected(vulkan_backend):
@@ -260,13 +262,45 @@ def test_non_default_alpha_is_rejected(vulkan_backend):
     _assert_add_rejected(lambda: torch.add(lhs, rhs, alpha=2), "alpha")
 
 
-def test_non_contiguous_add_operand_is_rejected(vulkan_backend):
-    lhs = torch.empty_strided(
-        (3, 2), (1, 3), dtype=torch.float32, device=vulkan_backend
+@pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
+def test_non_contiguous_pointwise_operands_match_cpu(vulkan_backend, operation):
+    lhs_cpu = torch.tensor(
+        [[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]], dtype=torch.float32
     )
-    rhs = torch.empty((3, 2), dtype=torch.float32, device=vulkan_backend)
-    assert not lhs.is_contiguous()
-    _assert_add_rejected(lambda: torch.add(lhs, rhs), "contiguous")
+    rhs_cpu = torch.tensor(
+        [[2.0, 3.0, 4.0], [-1.0, 2.0, 5.0]], dtype=torch.float32
+    )
+    lhs_base = lhs_cpu.to(vulkan_backend)
+    rhs_base = rhs_cpu.to(vulkan_backend)
+    cpu_views = [
+        (lhs_cpu.transpose(0, 1), rhs_cpu.transpose(0, 1)),
+        (lhs_cpu[:, 1:], rhs_cpu[:, 1:]),
+        (
+            torch.as_strided(lhs_cpu, (2, 3), (0, 1)),
+            torch.as_strided(rhs_cpu, (2, 3), (0, 1)),
+        ),
+    ]
+
+    vk_views = [
+        (lhs_base.transpose(0, 1), rhs_base.transpose(0, 1)),
+        (lhs_base[:, 1:], rhs_base[:, 1:]),
+        (
+            torch.as_strided(lhs_base, (2, 3), (0, 1)),
+            torch.as_strided(rhs_base, (2, 3), (0, 1)),
+        ),
+    ]
+    for (lhs_cpu_view, rhs_cpu_view), (lhs, rhs) in zip(cpu_views, vk_views):
+        result = operation(lhs, rhs)
+        torch.testing.assert_close(
+            result.cpu(), operation(lhs_cpu_view, rhs_cpu_view), rtol=0, atol=0
+        )
+
+
+def test_pointwise_rejects_rank_above_eight_before_dispatch(vulkan_backend):
+    lhs = torch.empty((1,) * 9, dtype=torch.float32, device=vulkan_backend)
+    rhs = torch.empty_like(lhs)
+
+    _assert_add_rejected(lambda: torch.add(lhs, rhs), "rank.*8")
 
 
 def test_non_float32_add_operand_is_rejected(vulkan_backend):
@@ -341,10 +375,8 @@ def test_invalid_scalar_tensor_metadata_is_rejected(vulkan_backend, operation):
     non_contiguous = torch.empty_strided(
         (3, 2), (1, 3), dtype=torch.float32, device=vulkan_backend
     )
-    with pytest.raises(
-        RuntimeError, match=_scalar_rejection_pattern(operation, r"scalar operand")
-    ):
-        operation(non_contiguous, 1.0)
+    result = operation(non_contiguous, 1.0)
+    assert result.shape == non_contiguous.shape
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_scalar_vulkan_operand_on_wrong_device_is_rejected(vulkan_backend, operation):
