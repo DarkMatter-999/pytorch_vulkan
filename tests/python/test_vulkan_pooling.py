@@ -111,12 +111,12 @@ def test_adaptive_avg_pool2d_rejects_unsupported_view_rank(vulkan_backend):
         torch.ops.aten._adaptive_avg_pool2d.default(value, [1, 1])
 
 
-def test_adaptive_avg_pool2d_preserves_deferred_formatter_and_fill_contract(vulkan_backend):
+def test_adaptive_avg_pool2d_preserves_formatter_and_fill_contract(vulkan_backend):
     value = _pool_input(vulkan_backend)
     with pytest.raises(RuntimeError, match="Double"):
         torch.arange(4, dtype=torch.float64).to(vulkan_backend)
-    with pytest.raises((RuntimeError, TypeError), match="fill|unsupported|Vulkan"):
-        value.fill_(1.0)
+    value.fill_(1.0)
+    torch.testing.assert_close(value.cpu(), torch.ones_like(value.cpu()))
 
 
 def test_adaptive_avg_pool2d_rejects_unsupported_overload(vulkan_backend):

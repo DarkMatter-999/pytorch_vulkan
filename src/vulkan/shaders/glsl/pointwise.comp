@@ -15,7 +15,11 @@ layout(local_size_x = 256) in;
 #define POINTWISE_MODE 0
 #endif
 
-#if POINTWISE_MODE == 0
+#if POINTWISE_MODE == 4 || POINTWISE_MODE == 5
+layout(set = 0, binding = 0, std430) readonly buffer Self { float self[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Tensor1 { float tensor1[]; };
+layout(set = 0, binding = 2, std430) readonly buffer Tensor2 { float tensor2[]; };
+#elif POINTWISE_MODE == 0
 #ifdef POINTWISE_BOOL
 layout(set = 0, binding = 0, std430) readonly buffer Lhs { uint8_t lhs[]; };
 layout(set = 0, binding = 1, std430) readonly buffer Rhs { uint8_t rhs[]; };
@@ -33,7 +37,9 @@ layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[];
 #error Unsupported pointwise mode
 #endif
 
-#if defined(POINTWISE_BOOL) || defined(POINTWISE_BOOL_OUTPUT)
+#if POINTWISE_MODE == 4 || POINTWISE_MODE == 5
+layout(set = 0, binding = 3, std430) writeonly buffer Out { float out_data[]; };
+#elif defined(POINTWISE_BOOL) || defined(POINTWISE_BOOL_OUTPUT)
 layout(set = 0, binding = 2, std430) writeonly buffer Out { uint8_t out_data[]; };
 #else
 layout(set = 0, binding = 2, std430) writeonly buffer Out { float out_data[]; };
@@ -47,7 +53,11 @@ struct TensorMetadata {
   uint padding[2];
 };
 
+#if POINTWISE_MODE == 4 || POINTWISE_MODE == 5
+layout(set = 0, binding = 4, std430) readonly buffer Metadata { uint values[]; } metadata;
+#else
 layout(set = 0, binding = 3, std430) readonly buffer Metadata { uint values[]; } metadata;
+#endif
 
 layout(push_constant) uniform Params {
   float scalar;
@@ -72,6 +82,10 @@ float apply_operation(float lhs_value, float rhs_value) {
     return lhs_value - rhs_value;
   if (params.operation == 2u)
     return lhs_value * rhs_value;
+  if (params.operation == 12u)
+    return lhs_value + params.scalar * (rhs_value - lhs_value);
+  if (params.operation == 14u)
+    return lhs_value / rhs_value;
   return 0.0;
 }
 
@@ -89,6 +103,10 @@ float apply_unary(float value) {
     return value > 0.0 ? 1.0 : 0.0;
   if (params.operation == 10u)
     return ceil(value);
+  if (params.operation == 13u)
+    return sqrt(value);
+  if (params.operation == 11u)
+    return params.scalar;
   return 0.0;
 }
 
@@ -107,7 +125,19 @@ void main() {
   uint index = gl_GlobalInvocationID.x;
   if (index >= params.element_count)
     return;
-#if POINTWISE_MODE == 0
+#if POINTWISE_MODE == 4 || POINTWISE_MODE == 5
+  uint self_offset = logical_offset(0u, index);
+  uint tensor1_offset = logical_offset(20u, index);
+  uint tensor2_offset = logical_offset(40u, index);
+  uint output_offset = logical_offset(60u, index);
+#if POINTWISE_MODE == 4
+  out_data[output_offset] = self[self_offset] + params.scalar *
+      (tensor1[tensor1_offset] * tensor2[tensor2_offset]);
+#else
+  out_data[output_offset] = self[self_offset] + params.scalar *
+      (tensor1[tensor1_offset] / tensor2[tensor2_offset]);
+#endif
+#elif POINTWISE_MODE == 0
   uint lhs_offset = logical_offset(0u, index);
   uint rhs_offset = logical_offset(20u, index);
   uint output_offset = logical_offset(40u, index);
@@ -120,7 +150,12 @@ void main() {
    out_data[output_offset] = uint8_t(uint(params.operation == 10u ? lhs[lhs_offset] != rhs[rhs_offset]
                                                                   : lhs[lhs_offset] == rhs[rhs_offset]));
 #else
-  out_data[output_offset] = apply_operation(lhs[lhs_offset], rhs[rhs_offset]);
+  float rhs_value = rhs[rhs_offset];
+  if (params.operation == 0u)
+    rhs_value *= params.scalar;
+  else if (params.operation == 1u)
+    rhs_value *= params.scalar;
+  out_data[output_offset] = apply_operation(lhs[lhs_offset], rhs_value);
 #endif
 #elif POINTWISE_MODE == 1
   uint input_offset = logical_offset(0u, index);

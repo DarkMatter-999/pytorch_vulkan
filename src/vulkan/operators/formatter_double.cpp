@@ -7,6 +7,7 @@
 #include "vulkan_layout.h"
 #include "vulkan_transfer.h"
 #include "unary.h"
+#include "binary.h"
 
 #include <c10/util/Exception.h>
 #include <torch/library.h>
@@ -92,6 +93,8 @@ at::Tensor formatter_double_max(const at::Tensor &input) {
     return dispatch(input, kMax, "max", false, 0.0, 1, true);
 }
 at::Tensor formatter_double_div(const at::Tensor &input, const at::Tensor &other) {
+    if (input.scalar_type() == at::kFloat)
+        return pytorch_vulkan::div_tensor(input, other);
     validate(input, "div.Tensor");
     validate(other, "div.Tensor");
     TORCH_CHECK(other.dim() == 0 && other.device() == input.device() &&

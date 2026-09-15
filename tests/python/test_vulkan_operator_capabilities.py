@@ -22,10 +22,7 @@ SOURCE_SCHEMA_ALIASES = {
 }
 
 EXPLICIT_REJECTED_SOURCE_SCHEMAS = frozenset({
-    "aten::abs_.default", "aten::add_.Scalar", "aten::add_.Tensor",
-    "aten::mul_.Scalar", "aten::mul_.Tensor",
-    "aten::neg_.default", "aten::relu_.default", "aten::sub_.Scalar",
-    "aten::sub_.Tensor",
+    "aten::abs_.default", "aten::neg_.default", "aten::relu_.default",
 })
 
 
@@ -186,6 +183,15 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
         "aten::_reshape_alias.default": "`aten::_reshape_alias`",
         "aten::reshape.default": "`aten::reshape`",
         "aten::masked_select.default": "`torch.masked_select`",
+        "aten::div.Tensor": "`div.Tensor`",
+        "aten::lerp.Scalar_out": "`lerp.Scalar_out`",
+        "aten::lerp_.Scalar": "`lerp_.Scalar`",
+        "aten::sqrt.out": "`sqrt.out`",
+        "aten::add_.Tensor": "`add_.Tensor`",
+        "aten::mul_.Scalar": "`mul_.Scalar`",
+        "aten::addcmul_.default": "`addcmul_`",
+        "aten::addcdiv_.default": "`addcdiv_`",
+        "aten::zero_.default": "`zero_`",
     }
     assert set(matrix_declarations) == matrix_rows
     assert all(declaration in matrix for declaration in matrix_declarations.values())

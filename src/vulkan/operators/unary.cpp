@@ -128,6 +128,10 @@ at::Tensor &relu_out(const at::Tensor &input, at::Tensor &out) {
     return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Relu, "relu");
 }
 
+at::Tensor &sqrt_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Sqrt, "sqrt");
+}
+
 at::Tensor &reject_neg_inplace(at::Tensor &self) {
     TORCH_CHECK(false, "Vulkan neg in-place variants are unsupported");
     return self;
@@ -153,6 +157,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("neg.out", &pytorch_vulkan::neg_out);
     m.impl("abs.out", &pytorch_vulkan::abs_out);
     m.impl("relu.out", &pytorch_vulkan::relu_out);
+    m.impl("sqrt.out", &pytorch_vulkan::sqrt_out);
     m.impl("neg_", &pytorch_vulkan::reject_neg_inplace);
     m.impl("abs_", &pytorch_vulkan::reject_abs_inplace);
     m.impl("relu_", &pytorch_vulkan::reject_relu_inplace);

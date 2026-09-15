@@ -15,11 +15,15 @@ enum class PointwiseOperation : uint32_t {
     Relu = 5,
     AbsBackward = 6,
     ReluBackward = 7,
+    Lerp = 12,
+    Sqrt = 13,
+    Div = 14,
     Ceil = 10,
 };
 
 at::Tensor add_tensor(const at::Tensor &lhs, const at::Tensor &rhs,
                       const at::Scalar &alpha);
+at::Tensor div_tensor(const at::Tensor &lhs, const at::Tensor &rhs);
 
 at::Tensor add_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
                       const at::Scalar &alpha);

@@ -127,6 +127,29 @@ void validate_zero_allocation(const at::Tensor &tensor, const char *name) {
                 "Vulkan ", name, " has invalid Vulkan storage provenance");
 }
 
+VulkanTensorLayout validate_alias_input(const at::Tensor &tensor, const char *name) {
+    TORCH_CHECK(is_vulkan_device(tensor.device()), "Vulkan ", name,
+                " requires a Vulkan tensor");
+    TORCH_CHECK(tensor.device().index() == 0, "Vulkan ", name,
+                " supports only Vulkan device index 0");
+    TORCH_CHECK(tensor.layout() == at::kStrided && tensor.scalar_type() == at::kFloat,
+                "Vulkan ", name, " requires a strided float32 tensor");
+    TORCH_CHECK(at::has_internal_overlap(tensor) == at::MemOverlap::No,
+                "Vulkan ", name, " tensor has internal overlap");
+    auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, name);
+    TORCH_CHECK(layout.rank <= 8 && layout.numel <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan ", name, " tensor layout exceeds supported range");
+    return layout;
+}
+
+void validate_exact_alias(const at::Tensor &self, const at::Tensor &out, const char *name) {
+    TORCH_CHECK(self.device() == out.device() && self.scalar_type() == out.scalar_type() &&
+                    self.sizes().equals(out.sizes()) && self.strides().equals(out.strides()) &&
+                    self.storage_offset() == out.storage_offset() &&
+                    self.data_ptr() == out.data_ptr(),
+                "Vulkan ", name, " requires an exact full-tensor alias");
+}
+
 at::MemOverlapStatus classify_overlap(const at::Tensor &input,
                                       const at::Tensor &out,
                                       const char *name) {
@@ -245,7 +268,8 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
                 " requires equal devices");
     TORCH_CHECK(lhs.sizes().equals(rhs.sizes()), "Vulkan ", name,
                 " requires equal tensor sizes");
-    TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan ", name, " supports only alpha == 1");
+    TORCH_CHECK(operation == PointwiseOperation::Lerp || alpha.toDouble() == 1.0,
+                "Vulkan ", name, " supports only alpha == 1");
     validate_output_metadata(out, operation, name);
     TORCH_CHECK(out.scalar_type() == lhs.scalar_type(), "Vulkan ", name,
                 " requires matching input and output dtypes");
@@ -277,12 +301,14 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
         platform.compute().tensor_tensor_alias(
             lhs_buffer, lhs_layout, rhs_buffer, rhs_layout, output_buffer, output_layout,
             static_cast<uint32_t>(operation),
-            pointwise_uses_bool(lhs.scalar_type(), operation));
+            pointwise_uses_bool(lhs.scalar_type(), operation),
+            scalar_to_float(alpha, name));
     } else {
         platform.compute().tensor_tensor(
             lhs_buffer, lhs_layout, rhs_buffer, rhs_layout, output_buffer, output_layout,
             static_cast<uint32_t>(operation),
-            pointwise_uses_bool(lhs.scalar_type(), operation));
+            pointwise_uses_bool(lhs.scalar_type(), operation),
+            scalar_to_float(alpha, name));
     }
     return out;
 }
@@ -332,6 +358,78 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor, const at::Scala
             static_cast<uint32_t>(operation));
     }
     return out;
+}
+
+at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &other,
+                                         const at::Scalar &alpha,
+                                         PointwiseOperation operation, const char *name) {
+    const auto self_layout = validate_alias_input(self, name);
+    const bool wrapped_scalar = other.device().is_cpu() && other.dim() == 0 &&
+                                other.unsafeGetTensorImpl()->is_wrapped_number();
+    if (wrapped_scalar) {
+        const float scalar = scalar_to_float(other.item(), name) * scalar_to_float(alpha, name);
+        return dispatch_tensor_scalar_alias(self, at::Scalar(scalar), operation, name);
+    }
+    const auto other_layout = validate_alias_input(other, name);
+    TORCH_CHECK(self.device() == other.device() && self.sizes().equals(other.sizes()) &&
+                    self.scalar_type() == other.scalar_type(),
+                "Vulkan ", name, " requires matching Vulkan tensor operands");
+    const float scale = scalar_to_float(alpha, name);
+    const auto overlap = at::get_overlap_status(other, self);
+    validate_overlap_status(overlap, other, self, name);
+    if (self_layout.numel == 0) {
+        validate_zero_allocation(self, name);
+        validate_zero_allocation(other, name);
+        return self;
+    }
+    const auto bytes = static_cast<std::size_t>(self_layout.byte_range);
+    const VulkanPlatform &platform = validate_allocations(&self, &other, self, bytes, name);
+    platform.compute().tensor_tensor_alias(
+        allocation_buffer(self.storage().data_ptr()).buffer(), self_layout,
+        allocation_buffer(other.storage().data_ptr()).buffer(), other_layout,
+        allocation_buffer(self.storage().data_ptr()).buffer(), self_layout,
+        static_cast<uint32_t>(operation), false, scale);
+    return self;
+}
+
+at::Tensor &dispatch_tensor_scalar_alias(at::Tensor &self, const at::Scalar &scalar,
+                                         PointwiseOperation operation, const char *name) {
+    const auto layout = validate_alias_input(self, name);
+    const float value = scalar_to_float(scalar, name);
+    if (layout.numel == 0) {
+        validate_zero_allocation(self, name);
+        return self;
+    }
+    const VulkanPlatform &platform = validate_allocations(&self, nullptr, self,
+                                                           static_cast<std::size_t>(layout.byte_range), name);
+    platform.compute().tensor_scalar_alias(
+        allocation_buffer(self.storage().data_ptr()).buffer(), layout,
+        allocation_buffer(self.storage().data_ptr()).buffer(), layout, value,
+        static_cast<uint32_t>(operation));
+    return self;
+}
+
+at::Tensor &dispatch_fill_impl(at::Tensor &self, const at::Scalar &value, const char *name) {
+    const auto layout = validate_alias_input(self, name);
+    const float scalar = scalar_to_float(value, name);
+    if (layout.numel == 0) {
+        validate_zero_allocation(self, name);
+        return self;
+    }
+    const VulkanPlatform &platform = validate_allocations(&self, nullptr, self,
+                                                           static_cast<std::size_t>(layout.byte_range), name);
+    platform.compute().fill_alias(
+        allocation_buffer(self.storage().data_ptr()).buffer(), layout,
+        allocation_buffer(self.storage().data_ptr()).buffer(), layout, scalar);
+    return self;
+}
+
+at::Tensor &dispatch_zero(at::Tensor &self) {
+    return dispatch_fill_impl(self, at::Scalar(0.0), "zero_");
+}
+
+at::Tensor &dispatch_fill(at::Tensor &self, const at::Scalar &value) {
+    return dispatch_fill_impl(self, value, "fill_");
 }
 
 } // namespace pytorch_vulkan

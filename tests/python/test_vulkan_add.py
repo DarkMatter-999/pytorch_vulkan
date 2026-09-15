@@ -256,10 +256,13 @@ def test_shape_mismatch_add_is_rejected(vulkan_backend):
     _assert_add_rejected(lambda: torch.add(lhs, rhs), "size")
 
 
-def test_non_default_alpha_is_rejected(vulkan_backend):
-    lhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    rhs = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    _assert_add_rejected(lambda: torch.add(lhs, rhs, alpha=2), "alpha")
+def test_non_default_alpha_matches_cpu(vulkan_backend):
+    cpu_lhs = torch.tensor([1.0, -2.0])
+    cpu_rhs = torch.tensor([0.5, 3.0])
+    lhs = cpu_lhs.to(vulkan_backend)
+    rhs = cpu_rhs.to(vulkan_backend)
+    expected = torch.add(cpu_lhs, cpu_rhs, alpha=2)
+    torch.testing.assert_close(torch.add(lhs, rhs, alpha=2).cpu(), expected)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -328,12 +331,15 @@ def test_add_out_is_supported(vulkan_backend):
     assert torch.add(lhs, rhs, out=output) is output
 
 
-def test_inplace_add_is_rejected(vulkan_backend):
+def test_inplace_add_matches_cpu_and_preserves_identity(vulkan_backend):
     lhs = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
     rhs = torch.tensor([3.0, 4.0], dtype=torch.float32, device=vulkan_backend)
-    before = lhs.cpu()
-    _assert_add_rejected(lambda: lhs.add_(rhs), "in-place")
-    torch.testing.assert_close(lhs.cpu(), before)
+    expected = torch.tensor([1.0, 2.0])
+    before = lhs.data_ptr()
+    result = lhs.add_(rhs)
+    expected.add_(torch.tensor([3.0, 4.0]))
+    assert result.data_ptr() == before
+    torch.testing.assert_close(lhs.cpu(), expected)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -406,17 +412,16 @@ def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
-def test_scalar_out_and_inplace_variants_are_rejected(vulkan_backend, operation):
-    tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+def test_scalar_out_and_inplace_variants_match_cpu(vulkan_backend, operation):
+    tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
     assert operation(tensor, 1.0, out=output) is output
-    before = tensor.cpu()
-    with pytest.raises(
-        (RuntimeError, NotImplementedError),
-        match=_scalar_rejection_pattern(operation, r"in-place"),
-    ):
-        getattr(tensor, operation.__name__ + "_")(1.0)
-    torch.testing.assert_close(tensor.cpu(), before)
+    before = tensor.data_ptr()
+    expected = torch.ones(2)
+    result = getattr(tensor, operation.__name__ + "_")(1.0)
+    getattr(expected, operation.__name__ + "_")(1.0)
+    assert result.data_ptr() == before
+    torch.testing.assert_close(tensor.cpu(), expected)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.mul])
@@ -486,5 +491,5 @@ def test_bool_inplace_operation_is_rejected(vulkan_backend, operation):
     tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
     other = torch.tensor([False, True], dtype=torch.bool, device=vulkan_backend)
 
-    with pytest.raises(RuntimeError, match="in-place"):
+    with pytest.raises(RuntimeError, match="in-place|float32"):
         getattr(tensor, operation.__name__ + "_")(other)

@@ -24,7 +24,8 @@ class VulkanCompute final {
     void tensor_tensor(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
                        VkBuffer rhs, const VulkanTensorLayout &rhs_layout,
                        VkBuffer output, const VulkanTensorLayout &output_layout,
-                       uint32_t operation = 0, bool bool_dtype = false) const;
+                       uint32_t operation = 0, bool bool_dtype = false,
+                       float alpha = 1.0F) const;
     void tensor_scalar(VkBuffer tensor, const VulkanTensorLayout &tensor_layout,
                        VkBuffer output, const VulkanTensorLayout &output_layout,
                        float scalar, uint32_t operation = 0,
@@ -42,7 +43,10 @@ class VulkanCompute final {
                bool bool_dtype = false) const;
     void unary_alias(VkBuffer input, const VulkanTensorLayout &input_layout,
                      VkBuffer output, const VulkanTensorLayout &output_layout,
-                     uint32_t operation, bool bool_dtype = false) const;
+                      uint32_t operation, bool bool_dtype = false) const;
+    void fill_alias(VkBuffer input, const VulkanTensorLayout &input_layout,
+                    VkBuffer output, const VulkanTensorLayout &output_layout,
+                    float scalar) const;
     void comparison_scalar(VkBuffer input, const VulkanTensorLayout &input_layout,
                            VkBuffer output, const VulkanTensorLayout &output_layout,
                            float scalar) const;
@@ -60,11 +64,17 @@ class VulkanCompute final {
     void tensor_tensor_alias(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
                              VkBuffer rhs, const VulkanTensorLayout &rhs_layout,
                              VkBuffer output, const VulkanTensorLayout &output_layout,
-                             uint32_t operation = 0, bool bool_dtype = false) const;
+                             uint32_t operation = 0, bool bool_dtype = false,
+                             float alpha = 1.0F) const;
     void tensor_scalar_alias(VkBuffer tensor, const VulkanTensorLayout &tensor_layout,
                              VkBuffer output, const VulkanTensorLayout &output_layout,
-                             float scalar, uint32_t operation = 0,
-                             bool bool_dtype = false) const;
+                              float scalar, uint32_t operation = 0,
+                              bool bool_dtype = false) const;
+    void compound_tensor_tensor_alias(
+        VkBuffer self, const VulkanTensorLayout &self_layout, VkBuffer tensor1,
+        const VulkanTensorLayout &tensor1_layout, VkBuffer tensor2,
+        const VulkanTensorLayout &tensor2_layout, VkBuffer output,
+        const VulkanTensorLayout &output_layout, float value, uint32_t operation) const;
     void reduction(VkBuffer input, const VulkanTensorLayout &input_layout,
                    VkBuffer output, const VulkanTensorLayout &output_layout,
                    uint32_t reduce_mask, uint32_t reduce_numel,
@@ -110,7 +120,12 @@ class VulkanCompute final {
                   const VulkanTensorLayout &output_layout, float scalar,
                   uint32_t operation,
                   bool exact_alias, bool bool_dtype, bool bool_output = false,
-                  VkDeviceSize lhs_offset = 0, VkDeviceSize output_offset = 0) const;
+                   VkDeviceSize lhs_offset = 0, VkDeviceSize output_offset = 0) const;
+    void dispatch_compound(VkBuffer self, const VulkanTensorLayout &self_layout,
+                           VkBuffer tensor1, const VulkanTensorLayout &tensor1_layout,
+                           VkBuffer tensor2, const VulkanTensorLayout &tensor2_layout,
+                           VkBuffer output, const VulkanTensorLayout &output_layout,
+                           float value, uint32_t operation) const;
     void dispatch_extra(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
                         VkDeviceSize output_bytes, VkPipeline pipeline,
                          VkPipelineLayout pipeline_layout,
@@ -140,10 +155,14 @@ class VulkanCompute final {
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descriptor_set_layouts_[8]{};
-    VkPipelineLayout pipeline_layouts_[8]{};
-    VkShaderModule shader_modules_[8]{};
-    VkPipeline pipelines_[8]{};
+    VkDescriptorSetLayout descriptor_set_layouts_[10]{};
+    VkPipelineLayout pipeline_layouts_[10]{};
+    VkShaderModule shader_modules_[10]{};
+    VkPipeline pipelines_[10]{};
+    VkDescriptorSetLayout compound_descriptor_layouts_[2]{};
+    VkPipelineLayout compound_pipeline_layouts_[2]{};
+    VkShaderModule compound_shader_modules_[2]{};
+    VkPipeline compound_pipelines_[2]{};
     VkDescriptorSetLayout reduction_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout reduction_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule reduction_shader_ = VK_NULL_HANDLE;

@@ -46,7 +46,7 @@ struct Params {
     uint32_t padding;
 };
 struct PointwiseMetadata {
-    uint32_t data[60];
+    uint32_t data[80];
 };
 
 struct ReductionParams {
@@ -239,7 +239,19 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         const VkShaderModuleCreateInfo bool_output_tensor_tensor_shader{
             VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
             vulkan_pointwise_shader::kBoolOutputTensorTensorCodeSize,
-            vulkan_pointwise_shader::kBoolOutputTensorTensorCode};
+             vulkan_pointwise_shader::kBoolOutputTensorTensorCode};
+        const VkDescriptorSetLayoutBinding compound_bindings[] = {
+            lhs_binding, rhs_binding, output_binding,
+            {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        const VkShaderModuleCreateInfo compound_mul_shader{
+            VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+            vulkan_pointwise_shader::kCompoundMulCodeSize,
+            vulkan_pointwise_shader::kCompoundMulCode};
+        const VkShaderModuleCreateInfo compound_div_shader{
+            VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+            vulkan_pointwise_shader::kCompoundDivCodeSize,
+            vulkan_pointwise_shader::kCompoundDivCode};
 
         const auto create_mode = [&](uint32_t mode,
                                      const VkDescriptorSetLayoutBinding *bindings,
@@ -300,6 +312,42 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             create_pipeline(6);
             create_pipeline(7);
         }
+        const auto create_compound = [&](uint32_t index,
+                                         const VkShaderModuleCreateInfo &shader_info) {
+            VkDescriptorSetLayoutCreateInfo layout{
+                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            layout.bindingCount = 5;
+            layout.pBindings = compound_bindings;
+            check_result(vkCreateDescriptorSetLayout(device_, &layout, nullptr,
+                                                      &compound_descriptor_layouts_[index]),
+                         "could not create compound descriptor-set layout");
+            check_result(vkCreateShaderModule(device_, &shader_info, nullptr,
+                                              &compound_shader_modules_[index]),
+                         "could not create compound shader module");
+            VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
+            VkPipelineLayoutCreateInfo pipeline_layout{
+                VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            pipeline_layout.setLayoutCount = 1;
+            pipeline_layout.pSetLayouts = &compound_descriptor_layouts_[index];
+            pipeline_layout.pushConstantRangeCount = 1;
+            pipeline_layout.pPushConstantRanges = &push;
+            check_result(vkCreatePipelineLayout(device_, &pipeline_layout, nullptr,
+                                                &compound_pipeline_layouts_[index]),
+                         "could not create compound pipeline layout");
+            VkPipelineShaderStageCreateInfo stage{
+                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            stage.module = compound_shader_modules_[index];
+            stage.pName = "main";
+            VkComputePipelineCreateInfo pipeline{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            pipeline.stage = stage;
+            pipeline.layout = compound_pipeline_layouts_[index];
+            check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipeline,
+                                                  nullptr, &compound_pipelines_[index]),
+                         "could not create compound compute pipeline");
+        };
+        create_compound(0, compound_mul_shader);
+        create_compound(1, compound_div_shader);
         const VkDescriptorSetLayoutBinding reduction_bindings[] = {
             lhs_binding,
             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -560,6 +608,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                 vkDestroyPipeline(device_, pipeline, nullptr);
             }
         }
+        for (auto pipeline : compound_pipelines_) {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device_, pipeline, nullptr);
+        }
         if (reduction_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, reduction_pipeline_, nullptr);
         if (indexing_pipeline_ != VK_NULL_HANDLE)
@@ -580,6 +632,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             if (module != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(device_, module, nullptr);
             }
+        }
+        for (auto module : compound_shader_modules_) {
+            if (module != VK_NULL_HANDLE)
+                vkDestroyShaderModule(device_, module, nullptr);
         }
         if (reduction_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, reduction_shader_, nullptr);
@@ -602,6 +658,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                 vkDestroyPipelineLayout(device_, layout, nullptr);
             }
         }
+        for (auto layout : compound_pipeline_layouts_) {
+            if (layout != VK_NULL_HANDLE)
+                vkDestroyPipelineLayout(device_, layout, nullptr);
+        }
         if (reduction_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, reduction_pipeline_layout_, nullptr);
         if (indexing_pipeline_layout_ != VK_NULL_HANDLE)
@@ -622,6 +682,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             if (layout != VK_NULL_HANDLE) {
                 vkDestroyDescriptorSetLayout(device_, layout, nullptr);
             }
+        }
+        for (auto layout : compound_descriptor_layouts_) {
+            if (layout != VK_NULL_HANDLE)
+                vkDestroyDescriptorSetLayout(device_, layout, nullptr);
         }
         if (reduction_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, reduction_descriptor_layout_,
@@ -654,6 +718,10 @@ VulkanCompute::~VulkanCompute() {
             vkDestroyPipeline(device_, pipeline, nullptr);
         }
     }
+    for (auto pipeline : compound_pipelines_) {
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, pipeline, nullptr);
+    }
     if (reduction_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, reduction_pipeline_, nullptr);
     if (indexing_pipeline_ != VK_NULL_HANDLE)
@@ -678,6 +746,10 @@ VulkanCompute::~VulkanCompute() {
         if (module != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device_, module, nullptr);
         }
+    }
+    for (auto module : compound_shader_modules_) {
+        if (module != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, module, nullptr);
     }
     if (reduction_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, reduction_shader_, nullptr);
@@ -704,6 +776,10 @@ VulkanCompute::~VulkanCompute() {
             vkDestroyPipelineLayout(device_, layout, nullptr);
         }
     }
+    for (auto layout : compound_pipeline_layouts_) {
+        if (layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, layout, nullptr);
+    }
     if (reduction_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, reduction_pipeline_layout_, nullptr);
     if (indexing_pipeline_layout_ != VK_NULL_HANDLE)
@@ -728,6 +804,10 @@ VulkanCompute::~VulkanCompute() {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device_, layout, nullptr);
         }
+    }
+    for (auto layout : compound_descriptor_layouts_) {
+        if (layout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, layout, nullptr);
     }
     if (reduction_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, reduction_descriptor_layout_, nullptr);
@@ -762,8 +842,8 @@ void VulkanCompute::tensor_tensor(VkBuffer lhs, const VulkanTensorLayout &lhs_la
                                   VkBuffer rhs, const VulkanTensorLayout &rhs_layout,
                                   VkBuffer output, const VulkanTensorLayout &output_layout,
                                   uint32_t operation,
-                                  bool bool_dtype) const {
-    dispatch(0, lhs, &lhs_layout, rhs, &rhs_layout, output, output_layout, 0.0F,
+                                  bool bool_dtype, float alpha) const {
+    dispatch(0, lhs, &lhs_layout, rhs, &rhs_layout, output, output_layout, alpha,
              operation, false, bool_dtype);
 }
 
@@ -771,8 +851,8 @@ void VulkanCompute::tensor_tensor_alias(VkBuffer lhs, const VulkanTensorLayout &
                                         VkBuffer rhs, const VulkanTensorLayout &rhs_layout,
                                         VkBuffer output, const VulkanTensorLayout &output_layout,
                                         uint32_t operation,
-                                        bool bool_dtype) const {
-    dispatch(0, lhs, &lhs_layout, rhs, &rhs_layout, output, output_layout, 0.0F,
+                                         bool bool_dtype, float alpha) const {
+    dispatch(0, lhs, &lhs_layout, rhs, &rhs_layout, output, output_layout, alpha,
              operation, true, bool_dtype);
 }
 
@@ -791,6 +871,15 @@ void VulkanCompute::tensor_scalar_alias(VkBuffer tensor,
                                         uint32_t operation, bool bool_dtype) const {
     dispatch(1, tensor, &tensor_layout, VK_NULL_HANDLE, nullptr, output, output_layout,
              scalar, operation, true, bool_dtype);
+}
+
+void VulkanCompute::compound_tensor_tensor_alias(
+    VkBuffer self, const VulkanTensorLayout &self_layout, VkBuffer tensor1,
+    const VulkanTensorLayout &tensor1_layout, VkBuffer tensor2,
+    const VulkanTensorLayout &tensor2_layout, VkBuffer output,
+    const VulkanTensorLayout &output_layout, float value, uint32_t operation) const {
+    dispatch_compound(self, self_layout, tensor1, tensor1_layout, tensor2, tensor2_layout,
+                      output, output_layout, value, operation);
 }
 
 void VulkanCompute::scalar_tensor(float scalar, VkBuffer tensor,
@@ -823,6 +912,13 @@ void VulkanCompute::unary_alias(VkBuffer input, const VulkanTensorLayout &input_
                                 uint32_t operation, bool bool_dtype) const {
     dispatch(3, input, &input_layout, VK_NULL_HANDLE, nullptr, output, output_layout,
              0.0F, operation, true, bool_dtype);
+}
+
+void VulkanCompute::fill_alias(VkBuffer input, const VulkanTensorLayout &input_layout,
+                               VkBuffer output, const VulkanTensorLayout &output_layout,
+                               float scalar) const {
+    dispatch(3, input, &input_layout, VK_NULL_HANDLE, nullptr, output, output_layout,
+             scalar, 11, true, false);
 }
 
 void VulkanCompute::comparison_scalar(VkBuffer input, const VulkanTensorLayout &input_layout,
@@ -1643,6 +1739,133 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
         }
         cleanup();
         throw contextual_error("dispatch failed", error);
+    }
+}
+
+void VulkanCompute::dispatch_compound(
+    VkBuffer self, const VulkanTensorLayout &self_layout, VkBuffer tensor1,
+    const VulkanTensorLayout &tensor1_layout, VkBuffer tensor2,
+    const VulkanTensorLayout &tensor2_layout, VkBuffer output,
+    const VulkanTensorLayout &output_layout, float value, uint32_t operation) const {
+    if ((operation > 1) || self == VK_NULL_HANDLE || tensor1 == VK_NULL_HANDLE ||
+        tensor2 == VK_NULL_HANDLE || output == VK_NULL_HANDLE)
+        throw std::invalid_argument("Vulkan compute compound requires valid buffers");
+    if (output != self)
+        throw std::invalid_argument("Vulkan compute compound requires an exact alias");
+    const uint64_t element_count = static_cast<uint64_t>(output_layout.numel);
+    if (element_count == 0 || element_count > std::numeric_limits<uint32_t>::max() ||
+        output_layout.rank > kMaxPointwiseRank || self_layout.numel != output_layout.numel ||
+        tensor1_layout.numel != output_layout.numel || tensor2_layout.numel != output_layout.numel)
+        throw std::invalid_argument("Vulkan compute compound has invalid layout metadata");
+    PointwiseMetadata metadata{};
+    const auto write_metadata = [&](uint32_t tensor, const VulkanTensorLayout &layout) {
+        const TensorMetadata values = pointwise_metadata(layout);
+        const uint32_t base = tensor * 20;
+        metadata.data[base] = values.rank;
+        for (uint32_t dim = 0; dim < 8; ++dim) {
+            metadata.data[base + 1 + dim] = values.sizes[dim];
+            metadata.data[base + 9 + dim] = values.strides[dim];
+        }
+        metadata.data[base + 17] = values.storage_offset;
+    };
+    write_metadata(0, self_layout);
+    write_metadata(1, tensor1_layout);
+    write_metadata(2, tensor2_layout);
+    write_metadata(3, output_layout);
+    const VkDeviceSize bytes = checked_bytes(element_count, "compound");
+    if (bytes > max_storage_buffer_range_ || self_layout.allocation_bytes > max_storage_buffer_range_ ||
+        tensor1_layout.allocation_bytes > max_storage_buffer_range_ ||
+        tensor2_layout.allocation_bytes > max_storage_buffer_range_ ||
+        output_layout.allocation_bytes > max_storage_buffer_range_)
+        throw std::invalid_argument("Vulkan compute compound has an invalid byte range");
+    const uint32_t elements = static_cast<uint32_t>(element_count);
+    const uint32_t groups = (elements + kWorkgroupSize - 1) / kWorkgroupSize;
+    if (groups > max_compute_workgroup_count_x_)
+        throw std::invalid_argument("Vulkan compute compound exceeds workgroup limit");
+
+    std::scoped_lock lock(platform_.queue_mutex());
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    bool submitted = false;
+    VulkanBuffer metadata_buffer(platform_, sizeof(metadata),
+                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    metadata_buffer.write(&metadata, sizeof(metadata));
+    const auto cleanup = [&] {
+        if (fence != VK_NULL_HANDLE) vkDestroyFence(device_, fence, nullptr);
+        if (cmd != VK_NULL_HANDLE) vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
+        if (pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device_, pool, nullptr);
+    };
+    try {
+        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
+        VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = 1;
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
+                     "could not create compound descriptor pool");
+        VkDescriptorSetAllocateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        set_info.descriptorPool = pool;
+        set_info.descriptorSetCount = 1;
+        set_info.pSetLayouts = &compound_descriptor_layouts_[operation];
+        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
+                     "could not allocate compound descriptor set");
+        VkDescriptorBufferInfo buffers[] = {{self, 0, self_layout.allocation_bytes},
+                                            {tensor1, 0, tensor1_layout.allocation_bytes},
+                                            {tensor2, 0, tensor2_layout.allocation_bytes},
+                                            {output, 0, output_layout.allocation_bytes},
+                                            {metadata_buffer.buffer(), 0, sizeof(metadata)}};
+        VkWriteDescriptorSet writes[5]{};
+        for (uint32_t i = 0; i < 5; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &buffers[i];
+        }
+        vkUpdateDescriptorSets(device_, 5, writes, 0, nullptr);
+        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        allocation.commandPool = command_pool_;
+        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocation.commandBufferCount = 1;
+        check_result(vkAllocateCommandBuffers(device_, &allocation, &cmd),
+                     "could not allocate compound command buffer");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_result(vkBeginCommandBuffer(cmd, &begin), "could not begin compound command buffer");
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compound_pipelines_[operation]);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                compound_pipeline_layouts_[operation], 0, 1, &set, 0, nullptr);
+        Params params{value, elements, operation, 0};
+        vkCmdPushConstants(cmd, compound_pipeline_layouts_[operation],
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
+        vkCmdDispatch(cmd, groups, 1, 1);
+        check_result(vkEndCommandBuffer(cmd), "could not end compound command buffer");
+        VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
+                     "could not create compound fence");
+        platform_.reserve_compute_resources();
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        check_result(vkQueueSubmit(queue_, 1, &submit, fence), "could not submit compound dispatch");
+        submitted = true;
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+        check_result(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX),
+                     "could not wait for compound dispatch");
+        cleanup();
+    } catch (const std::exception &error) {
+        VkResult recovery = submitted ? vkQueueWaitIdle(queue_) : VK_SUCCESS;
+        if (recovery != VK_SUCCESS) {
+            platform_.defer_compute_resources(pool, cmd, fence);
+            throw std::runtime_error(std::string("Vulkan compound dispatch failed: ") +
+                                     error.what() + "; could not confirm cleanup completion");
+        }
+        cleanup();
+        throw contextual_error("compound dispatch failed", error);
     }
 }
 

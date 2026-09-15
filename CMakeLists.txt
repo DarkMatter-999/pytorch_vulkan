@@ -116,7 +116,7 @@ if(BUILD_PYTHON_EXTENSION)
         src/vulkan/operators/add.cpp
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
          src/vulkan/operators/autograd.h src/vulkan/operators/binary.h
-         src/vulkan/operators/out.cpp
+         src/vulkan/operators/out.cpp src/vulkan/operators/optimizer.cpp
           src/vulkan/operators/out.h src/vulkan/operators/capability.h
           src/vulkan/operators/unary.cpp
          src/vulkan/operators/unary.h src/vulkan/operators/view.cpp
@@ -126,7 +126,8 @@ if(BUILD_PYTHON_EXTENSION)
            src/vulkan/operators/linear.h src/vulkan/operators/convolution.cpp
            src/vulkan/operators/convolution.h src/vulkan/operators/pooling.cpp
              src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
-              src/vulkan/operators/comparison.h src/vulkan/operators/f32_to_double.cpp
+              src/vulkan/operators/comparison.h src/vulkan/operators/optimizer.h
+               src/vulkan/operators/f32_to_double.cpp
               src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})

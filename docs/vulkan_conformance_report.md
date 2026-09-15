@@ -69,8 +69,8 @@ compaction consume Vulkan payloads with no CPU fallback.
 | `convolution.shape.rejected` | convolution | `aten::convolution.default` |
 | `unary.neg_.unsupported-overload.rejected` | unary | `aten::neg_.default` |
 
-The machine-readable matrix also declares `aten::div.Tensor` as deferred. The
-source audit separately covers all deferred registrations and explicit
+The machine-readable matrix declares supported optimizer arithmetic separately
+from the deferred set. The source audit separately covers all deferred registrations and explicit
 `reject_*` registrations; the registry IDs are required to be contained in
 the union of those matrix sets, while supported and conformance-rejected sets
 must match in both directions.
@@ -108,6 +108,58 @@ parameters, variable model shapes, and higher-order/forward-mode AD. These are
 explicit rejection contracts, not fallback; masked-select value views use the
 declared Vulkan-resident materialization path.
 
-Follow-up gaps are optimizer/model stress, accumulated-leaf and implicit `fill_`
-paths, broader training graphs, and performance optimization. They are outside
-the current conformance report.
+Optimizer safety stress, including repeated queue updates and small-to-large-to-
+small allocator transitions, is covered by the optimizer safety gate below. Remaining
+follow-up gaps are accumulated-leaf and implicit `fill_` paths, broader training
+graphs and MNIST coverage, and performance optimization; these are not implied
+by the optimizer safety result.
+
+## Optimizer Safety Gate
+
+The Task 6 safety gate extends the basic optimizer tests with repeated queue and
+allocator lifetime coverage. For both supported scalar optimizers, the test
+performs 32 updates on a two-element contiguous F32 parameter, then updates a
+separate 257-element allocation, and finally returns to another two-element
+allocation. Each Vulkan update recorded compute dispatches greater than zero
+and zero explicit transfers. CPU/Vulkan parameter and optimizer-state parity
+comparisons occur only after those counter assertions and use explicit `.cpu()`
+presentation boundaries.
+
+The exact supported baseline remains PyTorch 2.4 scalar, non-capturable SGD and
+Adam over contiguous F32 parameters and gradients on `vk:0`. SGD permits
+momentum, dampening, and coupled weight decay with Nesterov, maximize, foreach,
+and differentiable disabled. Adam permits coupled weight decay with AMSGrad,
+maximize, foreach, capturable, differentiable, and fused disabled. Optimizer
+parity uses `rtol=1e-5` and `atol=1e-8`; momentum and Adam moving-average state
+remain Vulkan-resident, while Adam's scalar `step` metadata remains
+host-resident. Nesterov, AMSGrad, maximize, decoupled weight decay, foreach,
+fused, differentiable, float16, bfloat16, integer, mixed-dtype, and other
+unsupported forms remain outside this branch.
+
+Verification commands and results:
+
+```text
+cmake --build build -j2 --target pytorch_vulkan_python       PASS
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/python/test_vulkan_optimizer.py
+                                                            105 passed, 1 skipped
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
+                                                            689 passed, 38 skipped
+ctest --test-dir build --output-on-failure                   13/13 passed
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ctest --test-dir build --output-on-failure
+                                                            13/13 passed
+for verifier in tools/verify_*_spv.py; do .venv/bin/python "$verifier"; done
+                                                            PASS
+git diff --check                                         PASS
+```
+
+The first native CTest invocation found the configured
+`vulkan_device_probe` executable missing from `build`; building the existing
+target with `cmake --build build -j2 --target vulkan_device_probe` restored the
+expected test artifact. The mandated native and validation-layer invocations
+then passed without a hang, device reset, allocator lifetime failure, or
+synchronization error. Python emitted 73 existing warnings, including Vulkan
+manual-seed and fork deprecation warnings; no test failed because of them.
+
+This gate does not claim end-to-end MNIST readiness. Real MNIST shapes, labels,
+loss, BatchNorm and broader training graphs are subsequent work. No performance 
+or benchmark claim is made.

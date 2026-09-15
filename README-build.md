@@ -208,7 +208,8 @@ CPU/Vulkan tensors, ordinary CPU scalar tensors (including zero-dimensional
 user tensors) in either position, zero-dimensional Vulkan tensors, broadcasting
 or unequal shapes, non-contiguous tensors and non-zero storage offsets for
 operators whose contracts reject them,
-non-`float32` dtypes, non-`vk:0` devices, non-unit `alpha`, and
+non-`float32` dtypes, non-`vk:0` devices, non-unit `alpha` for operators whose
+contract limits it, and
 in-place variants are rejected explicitly. Complex, non-finite, float32-range
 overflowing, and float32-underflowing Python scalar values are also rejected.
 
@@ -216,6 +217,47 @@ Broadcasting, dtype promotion, scalar-tensor semantics, scalar buffers,
 asynchronous execution, multi-device support, and advanced operators remain
 deferred; only the
 documented Python-number forms are supported.
+
+## Vulkan basic optimizers
+
+The basic optimizer contract covers scalar, non-capturable `torch.optim.SGD`
+and `torch.optim.Adam` over contiguous F32 parameters and gradients on `vk:0`.
+SGD's `momentum_buffer` and Adam's `exp_avg` and `exp_avg_sq` remain Vulkan
+resident. Adam's non-capturable scalar `step` metadata remains host-resident.
+The contract rejects Nesterov, AMSGrad, maximize, fused, foreach,
+differentiable, capturable, non-F32, non-`vk:0`, unsupported layouts, and
+mixed-device or non-contiguous optimizer tensors before Vulkan dispatch. No
+implicit CPU payload transfer or fallback is used by an optimizer update.
+
+The exact supported baseline is PyTorch 2.4 scalar, non-capturable SGD and
+Adam with contiguous `float32` parameters and gradients on `vk:0`. Supported
+SGD options are the scalar defaults used by `torch.optim.SGD` plus momentum,
+dampening, and coupled weight decay with `nesterov=False`, `maximize=False`,
+`foreach=False`, and `differentiable=False`. Supported Adam options are the
+scalar defaults used by `torch.optim.Adam` plus coupled weight decay with
+`amsgrad=False`, `maximize=False`, `foreach=False`, `capturable=False`,
+`differentiable=False`, and `fused=False`. Parity uses PyTorch's default
+floating-point comparison tolerances (`rtol=1e-5`, `atol=1e-8`). Each Vulkan
+update must record at least one compute dispatch and zero explicit transfers;
+the final `.cpu()` state comparison is an explicit presentation transfer after
+those counter assertions.
+
+Run the complete optimizer safety gate from a built extension with:
+
+```bash
+cmake --build build -j2 --target pytorch_vulkan_python
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/python/test_vulkan_optimizer.py
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
+ctest --test-dir build --output-on-failure
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ctest --test-dir build --output-on-failure
+for verifier in tools/verify_*_spv.py; do .venv/bin/python "$verifier"; done
+git diff --check
+```
+
+The optimizer stress case performs 32 updates on a two-element parameter,
+updates a separate 257-element allocation, and returns to another two-element
+allocation. This is allocator and queue lifetime coverage only; it is not a
+performance claim and does not establish MNIST readiness.
 
 ## Vulkan masked select
 

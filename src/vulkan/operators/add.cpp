@@ -90,8 +90,6 @@ void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &al
                                            operation, operation_name);
     TORCH_CHECK(lhs.sizes().equals(rhs.sizes()),
                 "Vulkan ", operation_name, " requires equal tensor sizes; broadcasting is unsupported");
-    TORCH_CHECK(alpha.toDouble() == 1.0,
-                "Vulkan ", operation_name, " supports only alpha == 1");
     (void)validate_binary_layout(lhs, operation_name);
     (void)validate_binary_layout(rhs, operation_name);
 }
@@ -158,8 +156,6 @@ namespace pytorch_vulkan {
 at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rhs,
                                      const at::Scalar &alpha, PointwiseOperation operation,
                                      const char *operation_name) {
-    TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan ", operation_name,
-                " supports only alpha == 1");
     const bool lhs_wrapped_number = lhs.device().is_cpu() && lhs.dim() == 0 &&
                                     lhs.unsafeGetTensorImpl()->is_wrapped_number();
     const bool rhs_wrapped_number = rhs.device().is_cpu() && rhs.dim() == 0 &&
@@ -199,7 +195,8 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
                                              rhs_buffer.buffer(), rhs_layout,
                                              output_buffer.buffer(), output_layout,
                                              static_cast<uint32_t>(operation),
-                                             pointwise_uses_bool(lhs.scalar_type(), operation));
+                                              pointwise_uses_bool(lhs.scalar_type(), operation),
+                                              scalar_to_float(alpha, operation_name));
         return output;
     }
     TORCH_CHECK(lhs_wrapped_number != rhs_wrapped_number,
@@ -214,6 +211,12 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
 at::Tensor add_tensor(const at::Tensor &lhs, const at::Tensor &rhs,
                       const at::Scalar &alpha) {
     return pointwise_tensor_operands(lhs, rhs, alpha, PointwiseOperation::Add, "add");
+}
+
+at::Tensor div_tensor(const at::Tensor &lhs, const at::Tensor &rhs) {
+    TORCH_CHECK(rhs.device().is_cpu() && rhs.dim() == 0,
+                "Vulkan div supports only a Python scalar denominator");
+    return pointwise_tensor_scalar(lhs, rhs.item(), PointwiseOperation::Div, false, "div");
 }
 
 at::Tensor pointwise_tensor_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
@@ -241,16 +244,32 @@ at::Tensor &add_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
         tensor, scalar, alpha, out, pytorch_vulkan::PointwiseOperation::Add, "add");
 }
 
-at::Tensor &reject_add_inplace_tensor(at::Tensor &self, const at::Tensor &other,
-                                      const at::Scalar &alpha) {
-    TORCH_CHECK(false, "Vulkan add in-place variants are unsupported");
-    return self;
+at::Tensor &add_inplace_tensor(at::Tensor &self, const at::Tensor &other,
+                               const at::Scalar &alpha) {
+    return pytorch_vulkan::dispatch_tensor_tensor_alias(
+        self, other, alpha, pytorch_vulkan::PointwiseOperation::Add, "add_");
 }
 
-at::Tensor &reject_add_inplace_scalar(at::Tensor &self, const at::Scalar &other,
-                                      const at::Scalar &alpha) {
-    TORCH_CHECK(false, "Vulkan add in-place variants are unsupported");
-    return self;
+at::Tensor &add_inplace_scalar(at::Tensor &self, const at::Scalar &other,
+                               const at::Scalar &alpha) {
+    TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan add_ scalar supports only alpha == 1");
+    return pytorch_vulkan::dispatch_tensor_scalar_alias(
+        self, other, pytorch_vulkan::PointwiseOperation::Add, "add_");
+}
+
+} // namespace pytorch_vulkan
+
+namespace pytorch_vulkan {
+
+at::Tensor &lerp_scalar_out(const at::Tensor &self, const at::Tensor &end,
+                            const at::Scalar &weight, at::Tensor &out) {
+    return dispatch_tensor_tensor_out(self, end, weight, out, PointwiseOperation::Lerp,
+                                      "lerp");
+}
+
+at::Tensor &lerp_scalar_inplace(at::Tensor &self, const at::Tensor &end,
+                                const at::Scalar &weight) {
+    return lerp_scalar_out(self, end, weight, self);
 }
 
 } // namespace pytorch_vulkan
@@ -260,8 +279,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("add.Scalar", &pytorch_vulkan::add_scalar);
     m.impl("add.out", &pytorch_vulkan::add_out);
     m.impl("add.Scalar_out", &pytorch_vulkan::add_scalar_out);
-    m.impl("add_.Tensor", &pytorch_vulkan::reject_add_inplace_tensor);
-    m.impl("add_.Scalar", &pytorch_vulkan::reject_add_inplace_scalar);
+    m.impl("add_.Tensor", &pytorch_vulkan::add_inplace_tensor);
+    m.impl("add_.Scalar", &pytorch_vulkan::add_inplace_scalar);
+    m.impl("zero_", &pytorch_vulkan::dispatch_zero);
+    m.impl("fill_.Scalar", &pytorch_vulkan::dispatch_fill);
+    m.impl("lerp.Scalar_out", &pytorch_vulkan::lerp_scalar_out);
+    m.impl("lerp_.Scalar", &pytorch_vulkan::lerp_scalar_inplace);
 }
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {

@@ -21,6 +21,9 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::sub.Tensor", "aten::mul.Tensor", "aten::as_strided.default",
     "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
     "aten::masked_select.default",
+    "aten::div.Tensor", "aten::lerp.Scalar_out", "aten::lerp_.Scalar",
+    "aten::sqrt.out", "aten::add_.Tensor", "aten::mul_.Scalar",
+    "aten::addcmul_.default", "aten::addcdiv_.default", "aten::zero_.default",
 })
 
 
@@ -63,6 +66,8 @@ def vulkan_backend() -> str:
 def to_vulkan_inputs(value: Any, device: str = "vk:0") -> Any:
     """Move tensor operands recursively, leaving scalar metadata untouched."""
     if isinstance(value, torch.Tensor):
+        if value.dim() == 0:
+            return value
         converted = value.to(device)
         if (tuple(value.stride()) != tuple(converted.stride()) or
                 value.storage_offset() != converted.storage_offset()):
@@ -91,7 +96,10 @@ def run_case(case: ConformanceCase, device: str = "vk:0") -> Any:
 def run_and_compare(case: ConformanceCase, device: str = "vk:0") -> tuple[Any, Any]:
     """Compute the CPU reference and Vulkan result with counters scoped to execution."""
     cpu_inputs = case.inputs()
-    cpu_result = case.cpu_reference(*cpu_inputs, *case.args, **(case.kwargs or {}))
+    reference_inputs = tuple(
+        value.clone() if isinstance(value, torch.Tensor) else value for value in cpu_inputs
+    )
+    cpu_result = case.cpu_reference(*reference_inputs, *case.args, **(case.kwargs or {}))
     inputs = to_vulkan_inputs(cpu_inputs, device)
     pytorch_vulkan._C.reset_execution_counters()
     result = case.operation(*inputs, *case.args, **(case.kwargs or {}))
@@ -282,6 +290,26 @@ def _broadcast_binary(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tenso
             torch.ones((1, 2), dtype=torch.float32))
 
 
+def _optimizer_pair(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
+    return (torch.tensor([1.0, 2.0], dtype=torch.float32),
+            torch.tensor(2.0, dtype=torch.float32))
+
+
+def _optimizer_single(*, requires_grad=False) -> tuple[torch.Tensor]:
+    return (torch.tensor([1.0, 2.0], dtype=torch.float32),)
+
+
+def _optimizer_triple(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return (torch.tensor([1.0, 2.0], dtype=torch.float32),
+            torch.tensor([0.5, 1.5], dtype=torch.float32),
+            torch.tensor([2.0, 3.0], dtype=torch.float32))
+
+
+def _optimizer_value_pair(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
+    return (torch.tensor([1.0, 2.0], dtype=torch.float32),
+            torch.tensor([3.0, 4.0], dtype=torch.float32))
+
+
 def _wrong_offset(*, requires_grad=False) -> tuple[torch.Tensor]:
     base = torch.ones(3, dtype=torch.float32)
     return (base[1:], torch.tensor(2.0, dtype=torch.float32))
@@ -338,6 +366,49 @@ def _cpu_neg(value):
 
 def _cpu_add(lhs, rhs):
     return torch.add(lhs, rhs)
+
+
+def _cpu_lerp(lhs, rhs):
+    return torch.lerp(lhs, rhs, 0.25)
+
+
+def _lerp_out(lhs, rhs):
+    out = torch.empty_like(lhs)
+    return torch.ops.aten.lerp.Scalar_out(lhs, rhs, 0.25, out=out)
+
+
+def _lerp_inplace(lhs, rhs):
+    return torch.ops.aten.lerp_.Scalar(lhs, rhs, 0.25)
+
+
+def _addcmul_inplace(lhs, tensor1, tensor2):
+    return torch.ops.aten.addcmul_.default(lhs, tensor1, tensor2, value=0.25)
+
+
+def _addcdiv_inplace(lhs, tensor1, tensor2):
+    return torch.ops.aten.addcdiv_.default(lhs, tensor1, tensor2, value=0.25)
+
+
+def _add_inplace(lhs, rhs):
+    return torch.ops.aten.add_.Tensor(lhs, rhs, alpha=1.0)
+
+
+def _mul_scalar_inplace(lhs):
+    return torch.ops.aten.mul_.Scalar(lhs, 2.0)
+
+
+def _zero_inplace(lhs):
+    return torch.ops.aten.zero_.default(lhs)
+
+
+def _sqrt_out(lhs):
+    out = torch.empty_like(lhs)
+    return torch.ops.aten.sqrt.out(lhs, out=out)
+
+
+def _sqrt_out(lhs):
+    out = torch.empty_like(lhs)
+    return torch.ops.aten.sqrt.out(lhs, out=out)
 
 
 def _cpu_sum(value, dim, keepdim=False):
@@ -408,6 +479,15 @@ DECLARATION_ID_BY_CASE = {
     "pooling.max.rejected": "aten::max_pool2d_with_indices.default",
     "masked-select.bool-mask": "aten::masked_select.default",
     "masked-select.strided-value-view": "aten::masked_select.default",
+    "optimizer.div.scalar": "aten::div.Tensor",
+    "optimizer.lerp.out": "aten::lerp.Scalar_out",
+    "optimizer.lerp.inplace": "aten::lerp_.Scalar",
+    "optimizer.sqrt.out": "aten::sqrt.out",
+    "optimizer.add.inplace": "aten::add_.Tensor",
+    "optimizer.mul.scalar.inplace": "aten::mul_.Scalar",
+    "optimizer.addcmul.inplace": "aten::addcmul_.default",
+    "optimizer.addcdiv.inplace": "aten::addcdiv_.default",
+    "optimizer.zero.inplace": "aten::zero_.default",
     "aten._adaptive_avg_pool2d.global": "aten::_adaptive_avg_pool2d.default",
     "aten._adaptive_avg_pool2d.global.strided": "aten::_adaptive_avg_pool2d.default",
     "unary.neg.bool.rejected": "aten::neg.default",
@@ -506,10 +586,32 @@ ALL_CASES = (
     _case("masked-select.bool-mask", "masked-select", torch.masked_select, _masked_select,
           cpu_reference=_cpu_masked_select, expected_shape=(2,),
           autograd_supported=False, autograd_error_type=NotImplementedError,
-           autograd_error_pattern=r"aten::zero_", requires_grad_inputs=True),
+           autograd_error_pattern=r"aten::(zero_|masked_scatter_)", requires_grad_inputs=True),
     _case("masked-select.strided-value-view", "masked-select", torch.masked_select,
            _masked_select_view, cpu_reference=_cpu_masked_select, expected_shape=(3,),
            execution_mode="copy"),
+    _case("optimizer.div.scalar", "optimizer", torch.ops.aten.div.Tensor,
+           _optimizer_pair, cpu_reference=torch.div, expected_shape=(2,)),
+    _case("optimizer.lerp.out", "optimizer", _lerp_out, _optimizer_value_pair,
+           cpu_reference=_cpu_lerp, expected_shape=(2,)),
+    _case("optimizer.lerp.inplace", "optimizer", _lerp_inplace, _optimizer_value_pair,
+           cpu_reference=_cpu_lerp, expected_shape=(2,)),
+    _case("optimizer.sqrt.out", "optimizer", _sqrt_out, _optimizer_single,
+           cpu_reference=torch.sqrt, expected_shape=(2,)),
+    _case("optimizer.add.inplace", "optimizer", _add_inplace, _optimizer_value_pair,
+           cpu_reference=torch.add, expected_shape=(2,)),
+    _case("optimizer.mul.scalar.inplace", "optimizer", _mul_scalar_inplace,
+           _optimizer_single, cpu_reference=lambda value: value * 2,
+           expected_shape=(2,)),
+    _case("optimizer.addcmul.inplace", "optimizer", _addcmul_inplace,
+           _optimizer_triple, cpu_reference=lambda lhs, a, b: torch.addcmul(
+               lhs, a, b, value=0.25), expected_shape=(2,)),
+    _case("optimizer.addcdiv.inplace", "optimizer", _addcdiv_inplace,
+           _optimizer_triple, cpu_reference=lambda lhs, a, b: torch.addcdiv(
+               lhs, a, b, value=0.25), expected_shape=(2,)),
+    _case("optimizer.zero.inplace", "optimizer", _zero_inplace,
+           _optimizer_single, cpu_reference=lambda value: value.zero_(),
+           expected_shape=(2,)),
     _case("aten._adaptive_avg_pool2d.global", "pooling",
           torch.ops.aten._adaptive_avg_pool2d.default, _adaptive_pool,
           args=((1, 1),), cpu_reference=_cpu_adaptive_pool, expected_shape=(2, 4, 1, 1),

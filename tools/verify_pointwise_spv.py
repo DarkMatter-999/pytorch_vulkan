@@ -36,7 +36,9 @@ def main():
              ("kBoolTensorTensorCode", 0, True, False),
              ("kBoolOutputTensorScalarCode", 1, False, True),
              ("kBoolOutputUnaryCode", 3, False, True),
-             ("kBoolOutputTensorTensorCode", 0, False, True)]
+             ("kBoolOutputTensorTensorCode", 0, False, True),
+             ("kCompoundMulCode", 4, False, False),
+             ("kCompoundDivCode", 5, False, False)]
     with tempfile.TemporaryDirectory() as directory:
         binaries = []
         for _, mode, bool_dtype, bool_output in names:

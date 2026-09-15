@@ -36,16 +36,17 @@ at::Tensor &rsub_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
         tensor, scalar, alpha, out, pytorch_vulkan::PointwiseOperation::Sub, "rsub", true);
 }
 
-at::Tensor &reject_sub_inplace_tensor(at::Tensor &self, const at::Tensor &other,
-                                      const at::Scalar &alpha) {
-    TORCH_CHECK(false, "Vulkan sub in-place variants are unsupported");
-    return self;
+at::Tensor &sub_inplace_tensor(at::Tensor &self, const at::Tensor &other,
+                               const at::Scalar &alpha) {
+    return pytorch_vulkan::dispatch_tensor_tensor_alias(
+        self, other, alpha, pytorch_vulkan::PointwiseOperation::Sub, "sub_");
 }
 
-at::Tensor &reject_sub_inplace_scalar(at::Tensor &self, const at::Scalar &other,
-                                      const at::Scalar &alpha) {
-    TORCH_CHECK(false, "Vulkan sub in-place variants are unsupported");
-    return self;
+at::Tensor &sub_inplace_scalar(at::Tensor &self, const at::Scalar &other,
+                               const at::Scalar &alpha) {
+    TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan sub_ scalar supports only alpha == 1");
+    return pytorch_vulkan::dispatch_tensor_scalar_alias(
+        self, other, pytorch_vulkan::PointwiseOperation::Sub, "sub_");
 }
 
 at::Tensor rsub_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
@@ -63,8 +64,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("sub.out", &sub_out);
     m.impl("sub.Scalar_out", &sub_scalar_out);
     m.impl("rsub.Scalar_out", &rsub_scalar_out);
-    m.impl("sub_.Tensor", &reject_sub_inplace_tensor);
-    m.impl("sub_.Scalar", &reject_sub_inplace_scalar);
+    m.impl("sub_.Tensor", &sub_inplace_tensor);
+    m.impl("sub_.Scalar", &sub_inplace_scalar);
 }
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {

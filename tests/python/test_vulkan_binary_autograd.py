@@ -100,8 +100,10 @@ def test_binary_rejections_remain_explicit(vulkan_backend):
 
     equal_lhs = torch.empty((2,), device=vulkan_backend)
     equal_rhs = torch.empty((2,), device=vulkan_backend)
-    with pytest.raises(RuntimeError, match="alpha"):
-        torch.add(equal_lhs, equal_rhs, alpha=2)
+    torch.testing.assert_close(
+        torch.add(equal_lhs, equal_rhs, alpha=2).cpu(),
+        torch.add(equal_lhs.cpu(), equal_rhs.cpu(), alpha=2),
+    )
 
     grad_lhs = equal_lhs.detach().requires_grad_()
     grad_rhs = equal_rhs.detach().requires_grad_()
@@ -109,11 +111,15 @@ def test_binary_rejections_remain_explicit(vulkan_backend):
         torch.mul(grad_lhs, grad_rhs, out=torch.empty_like(equal_lhs))
 
 
-def test_binary_inplace_rejection_remains_explicit(vulkan_backend):
+def test_binary_inplace_matches_cpu_and_preserves_identity(vulkan_backend):
     tensor = _vk([1.0, 2.0], vulkan_backend)
     other = _vk([3.0, 4.0], vulkan_backend)
-    with pytest.raises((RuntimeError, NotImplementedError), match="in-place|Could not run"):
-        tensor.mul_(other)
+    expected = torch.tensor([1.0, 2.0])
+    before = tensor.data_ptr()
+    result = tensor.mul_(other)
+    expected.mul_(torch.tensor([3.0, 4.0]))
+    assert result.data_ptr() == before
+    torch.testing.assert_close(tensor.cpu(), expected)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.mul])
