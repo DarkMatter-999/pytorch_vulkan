@@ -102,6 +102,7 @@ class VulkanCompute final {
                           uint32_t operation, double scalar, uint32_t output_numel,
                           bool bool_output = false) const;
     std::size_t dispatch_count() const;
+    void reset_dispatch_count() const;
 
   private:
     void dispatch(uint32_t mode, VkBuffer lhs, const VulkanTensorLayout *lhs_layout,

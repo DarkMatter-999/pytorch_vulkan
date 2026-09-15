@@ -206,7 +206,8 @@ registrations cannot intercept CPU dispatch. “No CPU fallback” means an
 operation involving Vulkan tensors never silently stages through CPU. Mixed
 CPU/Vulkan tensors, ordinary CPU scalar tensors (including zero-dimensional
 user tensors) in either position, zero-dimensional Vulkan tensors, broadcasting
-or unequal shapes, non-contiguous tensors, non-zero storage offsets,
+or unequal shapes, non-contiguous tensors and non-zero storage offsets for
+operators whose contracts reject them,
 non-`float32` dtypes, non-`vk:0` devices, non-unit `alpha`, and
 in-place variants are rejected explicitly. Complex, non-finite, float32-range
 overflowing, and float32-underflowing Python scalar values are also rejected.
@@ -218,11 +219,9 @@ documented Python-number forms are supported.
 
 ## Vulkan masked select
 
-`torch.masked_select` supports contiguous, zero-offset F32 inputs and same-shaped
-contiguous, zero-offset Vulkan bool masks on `vk:0`. It runs a Vulkan count pass,
+`torch.masked_select` supports contiguous or positive-stride/non-zero-offset F32 value views. These value views are materialized via a Vulkan-resident copy before compaction; the operation requires same-shaped contiguous, zero-offset Vulkan bool masks on `vk:0`. It runs a Vulkan count pass,
 reads only a host-visible coherent four-byte count, allocates exact-size F32
-output, and runs an ordered Vulkan compaction pass. Tensor and mask payloads are
-never read back and unsupported dtypes, devices, layouts, offsets, broadcasts,
+output, and runs an ordered Vulkan compaction pass. Tensor and mask payloads are never read back and unsupported dtypes, devices, mask layouts/offsets, broadcasts,
 and allocation forms are rejected without CPU fallback.
 
 ## Vulkan autograd capability
@@ -331,3 +330,20 @@ PYTHONPATH=build/vulkan .venv/bin/python -m pytest -q tests/manual_python_extens
 
 The normal regression command uses the already-built extension and does not
 include this manual build check.
+
+### Vulkan Conformance Gate
+
+Run the complete executable conformance suite after building the extension:
+
+```bash
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
+```
+
+The conformance cases reset and read one grouped snapshot of three execution
+counters around each single-threaded Vulkan operation: the compute dispatch count,
+Vulkan copy count, and explicit transfer count. Reset and snapshot share the
+Vulkan queue lock, so the snapshot is coherent for that scoped operation; these
+counters are not authoritative observations of unrelated concurrent work. The
+final `.cpu()` comparison is an explicit presentation transfer, not fallback;
+it is performed after the operation counters are checked and is not counted as
+hidden CPU execution.

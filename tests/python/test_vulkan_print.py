@@ -133,6 +133,35 @@ def test_masked_select_rejects_cpu_mask(vulkan_backend):
         torch.masked_select(values, torch.ones(4, dtype=torch.bool))
 
 
+@pytest.mark.parametrize(
+    "case, message",
+    [
+        ("overlapping-values", "internal overlap"),
+        ("mask-layout", "contiguous"),
+        ("mask-offset", "storage_offset"),
+        ("mask-device", "vk:0"),
+    ],
+)
+def test_masked_select_rejects_before_vulkan_side_effects(vulkan_backend, case, message):
+    values = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
+    valid_mask = torch.ones(values.shape, dtype=torch.bool).to(vulkan_backend)
+    if case == "overlapping-values":
+        values = torch.as_strided(values, (2, 2), (0, 1))
+        mask = valid_mask.reshape(2, 2)
+    elif case == "mask-layout":
+        mask = torch.as_strided(valid_mask, (2, 2), (1, 2))
+        values = values.reshape(2, 2)
+    elif case == "mask-offset":
+        mask = torch.as_strided(torch.ones(5, dtype=torch.bool).to(vulkan_backend),
+                                (4,), (1,), 1)
+    else:
+        mask = torch.ones(4, dtype=torch.bool)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match=message):
+        torch.masked_select(values, mask)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0)
+
+
 @pytest.mark.parametrize("values_factory, expected", [
     (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (2, 2), (1, 2)),
      torch.tensor([0.0, 2.0, 1.0, 3.0])),
@@ -142,7 +171,10 @@ def test_masked_select_rejects_cpu_mask(vulkan_backend):
 def test_masked_select_accepts_positive_stride_and_offset_values(vulkan_backend, values_factory, expected):
     values = values_factory(vulkan_backend)
     mask = torch.ones(values.shape, dtype=torch.bool).to(vulkan_backend)
-    torch.testing.assert_close(torch.masked_select(values, mask).cpu(), expected)
+    pytorch_vulkan._C.reset_execution_counters()
+    result = torch.masked_select(values, mask)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (2, 1, 0)
+    torch.testing.assert_close(result.cpu(), expected)
 
 
 def test_masked_select_preserves_global_double_rejection(vulkan_backend):

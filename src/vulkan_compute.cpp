@@ -1649,3 +1649,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
 std::size_t VulkanCompute::dispatch_count() const {
     return dispatch_count_.load(std::memory_order_relaxed);
 }
+
+void VulkanCompute::reset_dispatch_count() const {
+    dispatch_count_.store(0, std::memory_order_relaxed);
+}

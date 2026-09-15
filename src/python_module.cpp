@@ -16,6 +16,23 @@ PYBIND11_MODULE(_C, module) {
     module.def("formatter_double_supported", [] {
         return pytorch_vulkan::formatter_double_supported();
     });
+    module.def("reset_execution_counters", [] {
+        pytorch_vulkan::platform()->reset_execution_counters();
+    });
+    module.def("compute_dispatch_count", [] {
+        return pytorch_vulkan::platform()->compute_dispatch_count();
+    });
+    module.def("execution_counter_snapshot", [] {
+        const auto snapshot = pytorch_vulkan::platform()->execution_counter_snapshot();
+        return py::make_tuple(snapshot.dispatches, snapshot.vulkan_copies,
+                              snapshot.explicit_transfers);
+    });
+    module.def("explicit_transfer_count", [] {
+        return pytorch_vulkan::platform()->explicit_transfer_count();
+    });
+    module.def("vulkan_copy_count", [] {
+        return pytorch_vulkan::platform()->vulkan_copy_count();
+    });
     py::module_::import("atexit").attr("register")(
         py::cpp_function(&pytorch_vulkan::shutdown_platform));
 }

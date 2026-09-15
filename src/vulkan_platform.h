@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -19,6 +20,12 @@ class VulkanCompute;
 struct VulkanDeviceInfo {
     std::string name;
     uint32_t compute_queue_family = 0;
+};
+
+struct VulkanExecutionCounterSnapshot {
+    std::size_t dispatches = 0;
+    std::size_t vulkan_copies = 0;
+    std::size_t explicit_transfers = 0;
 };
 
 class VulkanPlatform {
@@ -44,6 +51,12 @@ class VulkanPlatform {
     // Exposes the lifecycle invariant to native transfer tests only.
     std::size_t pending_transfer_count() const;
     std::size_t compute_dispatch_count() const;
+    VulkanExecutionCounterSnapshot execution_counter_snapshot() const;
+    void reset_execution_counters() const;
+    std::size_t explicit_transfer_count() const;
+    void record_explicit_transfer() const;
+    std::size_t vulkan_copy_count() const;
+    void record_vulkan_copy() const;
     void copy_buffer_sync(VkBuffer source, VkBuffer destination,
                           VkDeviceSize size, VkDeviceSize source_offset = 0,
                           VkDeviceSize destination_offset = 0) const;
@@ -88,6 +101,8 @@ class VulkanPlatform {
     mutable std::vector<PendingTransferResources> pending_transfer_resources_;
     mutable std::vector<PendingComputeResources> pending_compute_resources_;
     mutable std::mutex queue_mutex_;
+    mutable std::atomic<std::size_t> explicit_transfer_count_{0};
+    mutable std::atomic<std::size_t> vulkan_copy_count_{0};
 };
 
 namespace pytorch_vulkan {

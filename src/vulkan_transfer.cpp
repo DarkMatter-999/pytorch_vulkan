@@ -226,6 +226,7 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
     const VulkanPlatform &platform = allocation_platform(source_data);
     TORCH_CHECK(&platform == &allocation_platform(destination_data),
                 "Vulkan reshape copy requires tensors on the same Vulkan device");
+    platform.record_vulkan_copy();
 
     for (int64_t index = 0; index < source_layout.numel; ++index) {
         const auto source_element = vulkan_storage_offset(source_layout, index);
@@ -283,12 +284,16 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     }
     if (host_visible || vulkan_to_vulkan)
         platform.wait_for_transfer();
+    if (vulkan_to_vulkan)
+        platform.record_vulkan_copy();
 
     const auto *cpu_source = source.device().is_cpu()
         ? static_cast<const char *>(source.data_ptr()) : nullptr;
     auto *cpu_destination = destination.device().is_cpu()
         ? static_cast<char *>(destination.data_ptr()) : nullptr;
     const auto element_size = static_cast<VkDeviceSize>(destination_layout.element_bytes);
+    if (!vulkan_to_vulkan)
+        platform.record_explicit_transfer();
     for (int64_t index = 0; index < destination_layout.numel; ++index) {
         const VkDeviceSize destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
             static_cast<int64_t>(logical_offset(destination_layout, index)),
@@ -354,6 +359,7 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
     const VkDeviceSize size = static_cast<VkDeviceSize>(bytes);
     TORCH_CHECK(offset <= buffer.size() && size <= buffer.size() - offset,
                 "Vulkan formatter presentation source range exceeds allocation");
+    platform.record_explicit_transfer();
 
     if ((buffer.memory_properties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
         platform.wait_for_transfer();

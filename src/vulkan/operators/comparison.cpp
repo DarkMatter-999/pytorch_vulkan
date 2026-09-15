@@ -12,6 +12,7 @@
 #include <torch/library.h>
 
 #include <cmath>
+#include <algorithm>
 #include <limits>
 #include <memory>
 
@@ -205,11 +206,6 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
 
 at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     validate_input(self, "masked_select");
-    // The masked-select shader consumes a densely packed logical sequence.
-    // Materialize positive-stride and offset value views while retaining the
-    // existing strict mask contract.
-    at::Tensor values = self.contiguous();
-    if (values.storage_offset() != 0) values = values.clone();
     TORCH_CHECK(mask.device() == self.device(),
                 "Vulkan masked_select requires mask and input on the same vk:0 device");
     TORCH_CHECK(mask.scalar_type() == at::kBool,
@@ -219,16 +215,33 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     TORCH_CHECK(
         mask.storage_offset() == 0,
         "Vulkan masked_select does not support non-zero storage_offset() on the mask");
-    TORCH_CHECK(mask.sizes().equals(values.sizes()),
+    const auto value_layout = inspect_vulkan_tensor_layout(self, "masked_select values");
+    const auto mask_layout = inspect_vulkan_tensor_layout(mask, "masked_select mask");
+    TORCH_CHECK(value_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan masked_select values have internal overlap");
+    TORCH_CHECK(std::all_of(value_layout.strides.begin(), value_layout.strides.end(),
+                            [](int64_t stride) { return stride > 0; }),
+                "Vulkan masked_select requires positive-stride value views");
+    TORCH_CHECK(mask_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan masked_select mask has internal overlap");
+    TORCH_CHECK(mask.sizes().equals(self.sizes()),
                 "Vulkan masked_select requires equal shapes");
-    const auto &input_data = values.storage().data_ptr();
+    const auto &self_data = self.storage().data_ptr();
     const auto &mask_data = mask.storage().data_ptr();
-    TORCH_CHECK(is_vulkan_allocation(input_data) && is_vulkan_allocation(mask_data),
+    TORCH_CHECK(is_vulkan_allocation(self_data) && is_vulkan_allocation(mask_data),
                 "Vulkan masked_select requires Vulkan allocation provenance");
-    const auto &platform = allocation_platform(input_data);
+    const auto &platform = allocation_platform(self_data);
     TORCH_CHECK(&platform == &allocation_platform(mask_data) &&
                     platform.supports_bool_pointwise(),
                 "Vulkan masked_select requires bool pointwise Vulkan capability");
+    // The shader consumes a densely packed logical sequence.  Validation above
+    // must remain side-effect free; only then may a supported value view be
+    // materialized on Vulkan.
+    const bool materializes_values = !self.is_contiguous() || self.storage_offset() != 0;
+    at::Tensor values = materializes_values ? self.contiguous() : self;
+    if (values.storage_offset() != 0)
+        values = values.clone();
+    const auto &input_data = values.storage().data_ptr();
     TORCH_CHECK(static_cast<uint64_t>(values.numel()) <=
                     std::numeric_limits<uint32_t>::max(),
                 "Vulkan masked_select exceeds the supported element count");

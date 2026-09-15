@@ -73,6 +73,55 @@ void test_copy_returns_without_pending_transfer_resources() {
            "synchronous tensor copy left pending transfer resources");
 }
 
+void test_execution_counters_reset_and_read_stably() {
+    const auto platform = pytorch_vulkan::platform();
+    platform->reset_execution_counters();
+    expect(platform->compute_dispatch_count() == 0,
+           "reset did not clear compute dispatch count");
+    expect(platform->explicit_transfer_count() == 0,
+           "reset did not clear explicit transfer count");
+
+    auto source = at::tensor({1.0F, -2.0F, 3.0F});
+    auto input = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    const auto transfer_after_first = platform->explicit_transfer_count();
+    expect(transfer_after_first == 1,
+           "CPU-to-Vulkan copy did not increment explicit transfer count");
+    auto first = at::neg(input);
+    const auto dispatch_after_first = platform->compute_dispatch_count();
+    expect(dispatch_after_first > 0, "unary operation did not increment dispatch count");
+
+    auto second = at::neg(input);
+    expect(platform->compute_dispatch_count() > dispatch_after_first,
+           "second execution did not increment dispatch count");
+    expect(platform->explicit_transfer_count() == transfer_after_first,
+           "Vulkan-only execution changed explicit transfer count");
+    auto result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(result, second, false);
+    expect(platform->explicit_transfer_count() == transfer_after_first + 1,
+           "Vulkan-to-CPU copy did not increment explicit transfer count");
+    (void)first;
+}
+
+void test_vulkan_to_vulkan_copy_is_counted_once() {
+    auto source = at::tensor({1.0F, 2.0F, 3.0F, 4.0F});
+    auto input = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, source, false);
+    auto view = at::as_strided(input, {2}, {1}, 1);
+    auto output = at::empty({2}, source.options().device(kDevice));
+    const auto platform = pytorch_vulkan::platform();
+    platform->reset_execution_counters();
+    pytorch_vulkan::copy_tensor(output, view, false);
+    expect(platform->vulkan_copy_count() == 1,
+           "generic Vulkan-to-Vulkan copy was not counted exactly once");
+    expect(platform->explicit_transfer_count() == 0,
+           "Vulkan-to-Vulkan copy was counted as an explicit transfer");
+    auto result = at::empty({2}, source.options());
+    pytorch_vulkan::copy_tensor(result, output, false);
+    expect(platform->vulkan_copy_count() == 1,
+           "Vulkan-to-CPU presentation changed Vulkan copy count");
+}
+
 void test_formatter_presentation_copy_reads_exact_range_and_waits() {
     auto source = at::tensor({10.0F, 20.0F, 30.0F, 40.0F, 50.0F});
     auto device_tensor = at::empty({5}, source.options().device(kDevice));
@@ -1155,6 +1204,8 @@ int main() {
         (void)pytorch_vulkan::platform();
         test_copy_round_trip();
         test_copy_returns_without_pending_transfer_resources();
+        test_execution_counters_reset_and_read_stably();
+        test_vulkan_to_vulkan_copy_is_counted_once();
         test_formatter_presentation_copy_reads_exact_range_and_waits();
         test_formatter_presentation_copy_preserves_double_and_rejects_general_readback();
         test_formatter_presentation_copy_rejects_malformed_sources();

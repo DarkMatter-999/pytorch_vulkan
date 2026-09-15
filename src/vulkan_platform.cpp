@@ -428,7 +428,44 @@ std::size_t VulkanPlatform::pending_transfer_count() const {
 }
 
 std::size_t VulkanPlatform::compute_dispatch_count() const {
+    std::scoped_lock lock(queue_mutex_);
     return compute_ == nullptr ? 0 : compute_->dispatch_count();
+}
+
+void VulkanPlatform::reset_execution_counters() const {
+    std::scoped_lock lock(queue_mutex_);
+    explicit_transfer_count_.store(0, std::memory_order_relaxed);
+    vulkan_copy_count_.store(0, std::memory_order_relaxed);
+    if (compute_ != nullptr) {
+        compute_->reset_dispatch_count();
+    }
+}
+
+VulkanExecutionCounterSnapshot VulkanPlatform::execution_counter_snapshot() const {
+    std::scoped_lock lock(queue_mutex_);
+    return {compute_ == nullptr ? 0 : compute_->dispatch_count(),
+            vulkan_copy_count_.load(std::memory_order_relaxed),
+            explicit_transfer_count_.load(std::memory_order_relaxed)};
+}
+
+std::size_t VulkanPlatform::explicit_transfer_count() const {
+    std::scoped_lock lock(queue_mutex_);
+    return explicit_transfer_count_.load(std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_explicit_transfer() const {
+    std::scoped_lock lock(queue_mutex_);
+    explicit_transfer_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::vulkan_copy_count() const {
+    std::scoped_lock lock(queue_mutex_);
+    return vulkan_copy_count_.load(std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_vulkan_copy() const {
+    std::scoped_lock lock(queue_mutex_);
+    vulkan_copy_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
