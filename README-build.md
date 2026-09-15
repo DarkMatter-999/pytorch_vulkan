@@ -158,6 +158,40 @@ Host autograd orchestration does not imply CPU execution of backward payloads;
 only explicit test comparisons call `.cpu()` after dispatch and transfer
 counters have been checked.
 
+### Phase 5 training contracts
+
+The verified fixed MLP contract is a `torch.nn.Sequential` containing
+`Linear(8, 16)`, `ReLU`, and `Linear(16, 4)`. Inputs and targets are contiguous
+F32 tensors on `vk:0` with shapes `(batch, 8)` and `(batch, 4)`. Its loss is the
+scalar sum of elementwise squared error, `((output - target) ** 2).sum()`.
+
+The verified flattened MNIST-shaped contract is a `Sequential` containing
+`Flatten(start_dim=1)`, `Linear(784, 32)`, `ReLU`, and `Linear(32, 10)`.
+Inputs are contiguous F32 `(batch, 1, 28, 28)` tensors and targets are
+contiguous F32 tensors with shape `(batch, 10)`. Runtime validation accepts any
+same-shaped F32 target for the scalar summed squared-error loss; the synthetic
+fixture generates and asserts one-hot targets. This is a synthetic
+MNIST-shaped contract, not real-dataset MNIST support.
+
+Both contracts require GPU execution for forward and first-order backward:
+model parameters, inputs, targets, outputs, loss, gradients, and optimizer
+tensor state remain resident on `vk:0`. Adam's scalar non-capturable `step`
+metadata remains host-resident. Each training step resets counters, requires at
+least one Vulkan compute dispatch and zero explicit CPU/Vulkan transfers, then
+permits `.cpu()` only as an explicit comparison transfer. The counter snapshot
+proves the scoped operation did not silently fall back to CPU; it is not an
+observation of unrelated concurrent work.
+
+The fixed MLP is compared with CPU for four optimizer steps. The flattened
+MNIST-shaped parity gate intentionally compares exactly two SGD or Adam steps,
+using `rtol=1e-4` and `atol=1e-4`; this two-step bound is not a claim of
+long-run training convergence or performance.
+
+These contracts explicitly exclude real-dataset MNIST readiness, cross-entropy,
+Long labels, convolutional or BatchNorm training, arbitrary model shapes,
+higher-order or forward-mode AD, unsupported optimizer options, and performance
+support or benchmarks.
+
 Float16, unsupported model variants, higher-order gradients, and implicit
 `fill_`/accumulated-leaf paths remain explicitly rejected or deferred.
 Formatter-compatible Double is limited to the

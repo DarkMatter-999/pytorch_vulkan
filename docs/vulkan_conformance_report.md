@@ -163,3 +163,46 @@ manual-seed and fork deprecation warnings; no test failed because of them.
 This gate does not claim end-to-end MNIST readiness. Real MNIST shapes, labels,
 loss, BatchNorm and broader training graphs are subsequent work. No performance 
 or benchmark claim is made.
+
+## Training Validation
+
+The verified fixed MLP training contract is `Sequential(Linear(8,16), ReLU,
+Linear(16,4))`, with contiguous F32 `(batch,8)` inputs and `(batch,4)` targets.
+The loss is the scalar summed squared error `((output - target) ** 2).sum()`.
+The verified flattened MNIST-shaped contract is
+`Sequential(Flatten(start_dim=1), Linear(784,32), ReLU, Linear(32,10))`, with
+contiguous F32 `(batch,1,28,28)` inputs and same-shaped contiguous F32
+`(batch,10)` targets. Runtime accepts arbitrary same-shaped F32 targets for the
+summed squared-error loss; the synthetic fixture generates and asserts one-hot
+targets, without runtime one-hot semantic validation. Both contracts use only
+scalar SGD or Adam.
+
+Training requires GPU forward and first-order backward execution. Parameters,
+inputs, targets, outputs, loss, gradients, and optimizer tensor state remain
+resident on `vk:0`; Adam's non-capturable scalar `step` metadata remains on the
+host. Counters are reset per operation/step. Training requires compute
+dispatches > 0 and explicit transfers = 0. A final `.cpu()` is an explicit
+presentation transfer after the counter assertion, not fallback. The
+flattened MNIST-shaped parity check is exactly two optimizer steps at
+`rtol=1e-4`, `atol=1e-4`; it is not a long-run convergence or performance claim.
+
+Explicit exclusions are real-dataset MNIST readiness, cross-entropy, Long
+labels, convolutional training, BatchNorm, arbitrary shapes or model graphs,
+higher-order and forward-mode AD, unsupported optimizer options, and benchmark
+or performance support.
+
+Task 5 verification commands and results:
+
+```text
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
+                                                               719 passed, 38 skipped, 97 warnings
+ctest --test-dir build --output-on-failure                    13/13 passed
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ctest --test-dir build --output-on-failure
+                                                               13/13 passed
+for verifier in tools/verify_*_spv.py; do .venv/bin/python "$verifier"; done
+                                                               PASS (all shader verifiers)
+git diff --check                                               PASS
+```
+
+The warnings are existing Vulkan manual-seed and fork deprecation warnings;
+none caused a failure. No test file fix was required by the full gate.

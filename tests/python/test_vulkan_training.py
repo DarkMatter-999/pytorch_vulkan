@@ -13,6 +13,26 @@ def _make_mlp(device, seed):
     ).to(device=device, dtype=torch.float32)
 
 
+def _make_mnist_classifier(device, seed):
+    torch.manual_seed(seed)
+    return torch.nn.Sequential(
+        torch.nn.Flatten(start_dim=1),
+        torch.nn.Linear(784, 32),
+        torch.nn.ReLU(),
+        torch.nn.Linear(32, 10),
+    ).to(device=device, dtype=torch.float32)
+
+
+def _make_mnist_batch(seed, batch_size):
+    torch.manual_seed(seed)
+    inputs = torch.randn(batch_size, 1, 28, 28, dtype=torch.float32)
+    labels = torch.randint(10, (batch_size,), dtype=torch.int64)
+    targets = torch.nn.functional.one_hot(labels, num_classes=10).to(dtype=torch.float32)
+    assert torch.all(targets.eq(1).sum(dim=1).eq(1))
+    assert torch.all(targets.eq(0).sum(dim=1).eq(9))
+    return inputs, targets
+
+
 def _squared_error_loss(output, target):
     error = output - target
     return error.mul(error).sum()
@@ -22,6 +42,81 @@ def _assert_vk_f32_contiguous(tensor):
     assert tensor.device == torch.device("vk:0")
     assert tensor.dtype is torch.float32
     assert tensor.is_contiguous()
+
+
+def _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn):
+    parameters = list(model.parameters())
+    if not parameters:
+        raise RuntimeError("MNIST training model must have parameters on vk:0")
+    model_device = parameters[0].device
+    if model_device != torch.device("vk:0"):
+        raise RuntimeError("MNIST training model must be on vk:0")
+    if inputs.dtype is not torch.float32 or targets.dtype is not torch.float32:
+        raise RuntimeError("MNIST training inputs and targets must be float32")
+    if inputs.device != model_device or targets.device != model_device:
+        raise RuntimeError("MNIST training inputs and targets must be on vk:0")
+    if not inputs.is_contiguous() or not targets.is_contiguous():
+        raise RuntimeError("MNIST training inputs and targets must be contiguous")
+    if inputs.ndim != 4 or tuple(inputs.shape[1:]) != (1, 28, 28):
+        raise RuntimeError("MNIST training inputs must have shape (batch, 1, 28, 28)")
+    if targets.ndim != 2 or tuple(targets.shape) != (inputs.shape[0], 10):
+        raise RuntimeError("MNIST training targets must have shape (batch, 10)")
+    modules = list(model.children())
+    if not isinstance(model, torch.nn.Sequential) or [type(module) for module in modules] != [
+        torch.nn.Flatten,
+        torch.nn.Linear,
+        torch.nn.ReLU,
+        torch.nn.Linear,
+    ]:
+        raise RuntimeError("MNIST training model must be Flatten->Linear->ReLU->Linear")
+    if (
+        modules[0].start_dim != 1
+        or modules[1].in_features != 784
+        or modules[1].out_features != 32
+        or modules[3].in_features != 32
+        or modules[3].out_features != 10
+    ):
+        raise RuntimeError("MNIST training model must be Flatten->Linear(784,32)->ReLU->Linear(32,10)")
+    if loss_fn is not _squared_error_loss:
+        raise RuntimeError("MNIST training supports only float32 squared-error loss")
+    for parameter in parameters:
+        _assert_vk_f32_contiguous(parameter)
+    if not isinstance(optimizer, (torch.optim.SGD, torch.optim.Adam)):
+        raise RuntimeError("MNIST training supports only SGD and Adam")
+    optimizer_parameters = [
+        parameter
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    ]
+    if optimizer_parameters != parameters:
+        raise RuntimeError("MNIST optimizer parameters must match the training model")
+    unsupported = (
+        ("nesterov", torch.optim.SGD),
+        ("maximize", (torch.optim.SGD, torch.optim.Adam)),
+        ("foreach", (torch.optim.SGD, torch.optim.Adam)),
+        ("differentiable", (torch.optim.SGD, torch.optim.Adam)),
+        ("fused", (torch.optim.SGD, torch.optim.Adam)),
+        ("amsgrad", torch.optim.Adam),
+        ("capturable", torch.optim.Adam),
+    )
+    for option, optimizer_type in unsupported:
+        if isinstance(optimizer, optimizer_type) and optimizer.defaults.get(option, False):
+            raise RuntimeError(f"MNIST training does not support optimizer option {option}")
+
+
+def run_mnist_training_step(model, optimizer, inputs, targets, loss_fn=_squared_error_loss):
+    _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn)
+    optimizer.zero_grad(set_to_none=False)
+    output = model(inputs)
+    loss = loss_fn(output, targets)
+    loss.backward()
+    _assert_vk_f32_contiguous(output)
+    _assert_vk_f32_contiguous(loss)
+    _assert_vk_f32_contiguous(inputs.grad)
+    for parameter in model.parameters():
+        _assert_vk_f32_contiguous(parameter.grad)
+    optimizer.step()
+    return loss
 
 
 def _execution_counters():
@@ -83,6 +178,44 @@ def test_mlp_fixture_seed_is_deterministic():
 
     for first_parameter, second_parameter in zip(first.parameters(), second.parameters()):
         torch.testing.assert_close(first_parameter, second_parameter)
+
+
+def test_mnist_batch_seed_is_deterministic():
+    first_inputs, first_targets = _make_mnist_batch(seed=23, batch_size=3)
+    second_inputs, second_targets = _make_mnist_batch(seed=23, batch_size=3)
+
+    torch.testing.assert_close(first_inputs, second_inputs)
+    torch.testing.assert_close(first_targets, second_targets)
+
+
+def test_mnist_forward_matches_cpu_at_explicit_readback(vulkan_backend):
+    cpu_model = _make_mnist_classifier("cpu", seed=71)
+    vk_model = _make_mnist_classifier(vulkan_backend, seed=71)
+    vk_model.load_state_dict(
+        {
+            name: parameter.detach().clone().to(vulkan_backend)
+            for name, parameter in cpu_model.state_dict().items()
+        }
+    )
+    cpu_input, cpu_target = _make_mnist_batch(seed=73, batch_size=3)
+    vk_input = cpu_input.to(vulkan_backend)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output = vk_model(vk_input)
+
+    assert vk_output.shape == (3, 10)
+    _assert_vk_f32_contiguous(vk_output)
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+
+    cpu_output = cpu_model(cpu_input)
+    torch.testing.assert_close(
+        _readback_with_counter_assertion(vk_output, expected_transfer_count=0),
+        cpu_output,
+    )
+    assert cpu_target.shape == (3, 10)
+    assert cpu_target.dtype is torch.float32
+    assert cpu_target.is_contiguous()
 
 
 def test_squared_error_loss_uses_scalar_sum():
@@ -442,3 +575,270 @@ def test_run_training_step_rejects_wrong_fixed_mlp_dimensions_without_side_effec
         run_training_step(model, optimizer, inputs, targets)
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
+
+
+def _mnist_training_pairs(device, seed=79):
+    cpu_model = _make_mnist_classifier("cpu", seed)
+    cpu_inputs, cpu_targets = _make_mnist_batch(seed + 1, batch_size=3)
+    vk_model = _make_mnist_classifier(device, seed)
+    vk_model.load_state_dict(
+        {name: value.detach().clone().to(device) for name, value in cpu_model.state_dict().items()}
+    )
+    return (
+        cpu_model,
+        vk_model,
+        cpu_inputs,
+        cpu_inputs.detach().clone().to(device).requires_grad_(),
+        cpu_targets,
+        cpu_targets.to(device),
+    )
+
+
+def test_mnist_shaped_training_runs_forward_and_backward_on_vulkan(vulkan_backend):
+    _, vk_model, _, vk_inputs, _, vk_targets = _mnist_training_pairs(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    loss = run_mnist_training_step(vk_model, _make_sgd(vk_model.parameters()), vk_inputs, vk_targets)
+
+    _assert_vk_f32_contiguous(loss)
+    _assert_vk_f32_contiguous(vk_inputs.grad)
+    for parameter in vk_model.parameters():
+        _assert_vk_f32_contiguous(parameter.grad)
+    dispatches, transfers = _execution_counters()
+    assert dispatches > 0
+    assert transfers == 0
+
+
+def test_mnist_training_accepts_arbitrary_float32_targets_before_readback(vulkan_backend):
+    _, vk_model, _, vk_inputs, _, _ = _mnist_training_pairs(vulkan_backend)
+    cpu_targets = torch.linspace(-1.0, 1.0, steps=30, dtype=torch.float32).reshape(3, 10)
+    vk_targets = cpu_targets.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    loss = run_mnist_training_step(
+        vk_model, _make_sgd(vk_model.parameters()), vk_inputs, vk_targets
+    )
+
+    assert _execution_counters()[0] > 0
+    assert _execution_counters()[1] == 0
+    assert loss.cpu().shape == ()
+    assert pytorch_vulkan._C.explicit_transfer_count() == 1
+
+
+def _run_mnist_training(device, optimizer_factory, inputs, targets, steps=4):
+    model = _make_mnist_classifier(device, seed=79)
+    optimizer = optimizer_factory(model.parameters())
+    losses = []
+    counters = []
+    for _ in range(steps):
+        pytorch_vulkan._C.reset_execution_counters()
+        losses.append(run_mnist_training_step(model, optimizer, inputs, targets).detach())
+        counters.append(_execution_counters())
+        _assert_optimizer_state_vulkan(optimizer)
+    return model, optimizer, losses, counters
+
+
+@pytest.mark.parametrize("optimizer_factory", [_make_sgd, _make_adam])
+def test_mnist_shaped_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
+    cpu_model, _, cpu_inputs, vk_inputs, cpu_targets, vk_targets = _mnist_training_pairs(
+        vulkan_backend
+    )
+    cpu_optimizer = optimizer_factory(cpu_model.parameters())
+    cpu_losses = []
+    for _ in range(2):
+        cpu_optimizer.zero_grad(set_to_none=False)
+        cpu_loss = _squared_error_loss(cpu_model(cpu_inputs), cpu_targets)
+        cpu_loss.backward()
+        cpu_optimizer.step()
+        cpu_losses.append(cpu_loss.detach())
+    vk_model, vk_optimizer, vk_losses, counters = _run_mnist_training(
+        vulkan_backend, optimizer_factory, vk_inputs, vk_targets, steps=2
+    )
+
+    assert all(dispatches > 0 and transfers == 0 for dispatches, transfers in counters)
+    transfer_count = 0
+    for vk_loss, cpu_loss in zip(vk_losses, cpu_losses):
+        torch.testing.assert_close(
+            _readback_with_counter_assertion(vk_loss, transfer_count),
+            cpu_loss.detach(),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+        transfer_count += 1
+    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+        torch.testing.assert_close(
+            _readback_with_counter_assertion(vk_parameter, transfer_count),
+            cpu_parameter,
+            rtol=1e-4,
+            atol=1e-4,
+        )
+        transfer_count += 1
+    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+        for name, value in vk_optimizer.state[vk_parameter].items():
+            expected = cpu_optimizer.state[cpu_parameter][name]
+            if isinstance(value, torch.Tensor) and value.device.type == "vk":
+                torch.testing.assert_close(
+                    _readback_with_counter_assertion(value, transfer_count),
+                    expected,
+                    rtol=1e-4,
+                    atol=1e-4,
+                )
+                transfer_count += 1
+            elif isinstance(value, torch.Tensor):
+                torch.testing.assert_close(value, expected)
+            else:
+                assert value == expected
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "cross_entropy",
+        "long_labels",
+        "convolution",
+        "batch_norm",
+        "float64",
+        "cpu_input",
+        "unsupported_optimizer",
+        "noncontiguous_targets",
+    ],
+)
+def test_mnist_unsupported_boundaries_reject_without_side_effects(case, vulkan_backend):
+    _, vk_model, _, vk_inputs, _, vk_targets = _mnist_training_pairs(vulkan_backend)
+    rejected_model = vk_model
+    if case == "cross_entropy":
+        action = lambda: run_mnist_training_step(
+            vk_model, optimizer, vk_inputs, vk_targets, torch.nn.CrossEntropyLoss()
+        )
+        message = "squared-error"
+    elif case == "long_labels":
+        long_labels = torch.zeros(3, dtype=torch.int64)
+        action = lambda: run_mnist_training_step(
+            vk_model, optimizer, vk_inputs, long_labels
+        )
+        message = "float32"
+    elif case == "convolution":
+        convolution_model = torch.nn.Sequential(torch.nn.Conv2d(1, 4, 3)).to(vulkan_backend)
+        rejected_model = convolution_model
+        action = lambda: run_mnist_training_step(
+            convolution_model, optimizer, vk_inputs, vk_targets
+        )
+        message = "Flatten"
+    elif case == "batch_norm":
+        batch_norm_model = torch.nn.Sequential(
+            torch.nn.BatchNorm2d(1, track_running_stats=False)
+        ).to(vulkan_backend)
+        rejected_model = batch_norm_model
+        action = lambda: run_mnist_training_step(
+            batch_norm_model, optimizer, vk_inputs, vk_targets
+        )
+        message = "Flatten"
+    elif case == "float64":
+        float64_inputs = vk_inputs.to(dtype=torch.float64)
+        action = lambda: run_mnist_training_step(
+            vk_model, optimizer, float64_inputs, vk_targets
+        )
+        message = "float32"
+    elif case == "cpu_input":
+        cpu_inputs = vk_inputs.cpu()
+        action = lambda: run_mnist_training_step(vk_model, optimizer, cpu_inputs, vk_targets)
+        message = "vk:0"
+    else:
+        action = None
+        message = "nesterov"
+
+    if case == "noncontiguous_targets":
+        noncontiguous_targets = torch.ones(3, 20).to(vulkan_backend)[:, ::2]
+        action = lambda: run_mnist_training_step(
+            vk_model, optimizer, vk_inputs, noncontiguous_targets
+        )
+        message = "contiguous"
+
+    rejected_model.register_buffer(
+        "rejection_sentinel", torch.tensor([3.0], dtype=torch.float32).to(vulkan_backend)
+    )
+    optimizer = _make_sgd(rejected_model.parameters())
+    for parameter in rejected_model.parameters():
+        optimizer.state[parameter]["momentum_buffer"] = torch.ones_like(parameter)
+    if case == "unsupported_optimizer":
+        optimizer.defaults["nesterov"] = True
+        action = lambda: run_mnist_training_step(
+            rejected_model, optimizer, vk_inputs, vk_targets
+        )
+
+    def snapshot_tensor(tensor):
+        return {
+            "value": tensor.detach().cpu().clone(),
+            "version": tensor._version,
+            "device": tensor.device,
+            "dtype": tensor.dtype,
+            "shape": tuple(tensor.shape),
+            "contiguous": tensor.is_contiguous(),
+        }
+
+    def snapshot_state():
+        return {
+            parameter: {
+                name: snapshot_tensor(value) if isinstance(value, torch.Tensor) else value
+                for name, value in state.items()
+            }
+            for parameter, state in optimizer.state.items()
+        }
+
+    before_parameters = {
+        parameter: snapshot_tensor(parameter) for parameter in rejected_model.parameters()
+    }
+    before_buffers = {
+        name: snapshot_tensor(value) for name, value in rejected_model.named_buffers()
+    }
+    before_inputs = snapshot_tensor(vk_inputs if case != "cpu_input" else cpu_inputs)
+    before_targets = snapshot_tensor(
+        noncontiguous_targets
+        if case == "noncontiguous_targets"
+        else vk_targets
+        if case != "long_labels"
+        else long_labels
+    )
+    before_state = snapshot_state()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises((RuntimeError, TypeError), match=message):
+        action()
+    assert _execution_counters() == (0, 0)
+    for parameter, expected in before_parameters.items():
+        actual = snapshot_tensor(parameter)
+        assert actual["version"] == expected["version"]
+        assert actual["device"] == expected["device"]
+        assert actual["dtype"] == expected["dtype"]
+        assert actual["shape"] == expected["shape"]
+        assert actual["contiguous"] == expected["contiguous"]
+        torch.testing.assert_close(actual["value"], expected["value"])
+    for name, expected in before_buffers.items():
+        actual = snapshot_tensor(dict(rejected_model.named_buffers())[name])
+        assert actual["version"] == expected["version"]
+        assert actual["device"] == expected["device"]
+        torch.testing.assert_close(actual["value"], expected["value"])
+    actual_inputs = snapshot_tensor(vk_inputs if case != "cpu_input" else cpu_inputs)
+    actual_targets = snapshot_tensor(
+        noncontiguous_targets
+        if case == "noncontiguous_targets"
+        else vk_targets
+        if case != "long_labels"
+        else long_labels
+    )
+    assert actual_inputs["version"] == before_inputs["version"]
+    assert actual_targets["version"] == before_targets["version"]
+    torch.testing.assert_close(actual_inputs["value"], before_inputs["value"])
+    torch.testing.assert_close(actual_targets["value"], before_targets["value"])
+    assert optimizer.state.keys() == before_state.keys()
+    for parameter, expected_state in before_state.items():
+        actual_state = optimizer.state[parameter]
+        assert actual_state.keys() == expected_state.keys()
+        for name, expected in expected_state.items():
+            actual = actual_state[name]
+            if isinstance(expected, dict):
+                snapshot = snapshot_tensor(actual)
+                assert snapshot["version"] == expected["version"]
+                assert snapshot["device"] == expected["device"]
+                assert snapshot["dtype"] == expected["dtype"]
+                torch.testing.assert_close(snapshot["value"], expected["value"])
+            else:
+                assert actual == expected
