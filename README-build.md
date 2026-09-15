@@ -151,6 +151,13 @@ use CPU fallback, payload readback, or `dlprimitives`. CPU transfers in model
 tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4
 semantics and compare with the existing floating-point test tolerances.
 
+The fixed MLP training contract runs the forward pass, squared-error loss,
+first-order backward pass, and supported SGD or Adam updates with the model,
+inputs, targets, gradients, and optimizer tensor state resident on `vk:0`.
+Host autograd orchestration does not imply CPU execution of backward payloads;
+only explicit test comparisons call `.cpu()` after dispatch and transfer
+counters have been checked.
+
 Float16, unsupported model variants, higher-order gradients, and implicit
 `fill_`/accumulated-leaf paths remain explicitly rejected or deferred.
 Formatter-compatible Double is limited to the
