@@ -1,0 +1,259 @@
+#include "vulkan_buffer.h"
+#include "vulkan_compute.h"
+#include "vulkan_execution.h"
+#include "vulkan_tensor_layout.h"
+#include "vulkan_platform.h"
+
+#include <cstdint>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+
+namespace {
+
+void expect(bool condition, const char *message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
+template <typename Function>
+void expect_rejected(Function &&function, const char *message) {
+    bool rejected = false;
+    try {
+        function();
+    } catch (const std::exception &) {
+        rejected = true;
+    }
+    expect(rejected, message);
+}
+
+void test_invalid_states(VulkanExecutionContext &context) {
+    expect(!context.recording(), "new context is recording");
+    expect_rejected([&] { (void)context.command_buffer(); },
+                    "inactive command_buffer was accepted");
+    expect_rejected([&] { context.submit(); }, "inactive submit was accepted");
+    expect_rejected([&] { context.defer_destruction([] {}); },
+                    "inactive deferred callback was accepted");
+    context.wait();
+    context.synchronize();
+    context.begin();
+    expect(context.recording(), "begin did not start recording");
+    expect_rejected([&] { context.begin(); }, "nested begin was accepted");
+    context.submit();
+    context.begin();
+    expect(context.recording(), "begin did not acquire reusable slot");
+    context.cancel();
+    expect(!context.recording(), "wait left context recording");
+}
+
+void test_deferred_callback(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    bool called = false;
+    context.begin();
+    context.defer_destruction([&] { called = true; });
+    context.submit();
+    context.synchronize();
+    expect(called, "deferred callback was not retired by synchronize");
+}
+
+void test_abandoned_callback(VulkanPlatform &platform) {
+    bool called = false;
+    {
+        VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                       platform.command_pool());
+        context.begin();
+        context.defer_destruction([&] { called = true; });
+    }
+    expect(called, "abandoned recording callback was discarded");
+}
+
+void test_cancelled_callback(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    bool called = false;
+    context.begin();
+    context.defer_destruction([&] { called = true; });
+    context.cancel();
+    expect(called, "cancelled recording callback was not invoked");
+    expect(!context.recording(), "cancel left context recording");
+    context.begin();
+    context.cancel();
+}
+
+void test_fill(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    VulkanBuffer buffer(platform, 64,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    context.begin();
+    vkCmdFillBuffer(context.command_buffer(), buffer.buffer(), 0, 64, 0x12345678U);
+    context.submit();
+    context.wait();
+
+    uint32_t values[16]{};
+    buffer.read(values, sizeof(values));
+    for (uint32_t value : values) {
+        expect(value == 0x12345678U, "vkCmdFillBuffer produced the wrong pattern");
+    }
+}
+
+void test_retained_descriptor_pool(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo layout_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layout_info.bindingCount = 1;
+    layout_info.pBindings = &binding;
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    expect(vkCreateDescriptorSetLayout(platform.device(), &layout_info, nullptr, &layout) ==
+               VK_SUCCESS,
+           "could not create retained descriptor layout");
+    VkPipelineLayoutCreateInfo pipeline_layout_info{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &layout;
+    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+    expect(vkCreatePipelineLayout(platform.device(), &pipeline_layout_info, nullptr,
+                                  &pipeline_layout) == VK_SUCCESS,
+           "could not create retained pipeline layout");
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    expect(vkCreateDescriptorPool(platform.device(), &pool_info, nullptr, &pool) ==
+               VK_SUCCESS,
+           "could not create retained descriptor pool");
+    auto buffer = std::make_shared<VulkanBuffer>(
+        platform, 64, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDescriptorSetAllocateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    set_info.descriptorPool = pool;
+    set_info.descriptorSetCount = 1;
+    set_info.pSetLayouts = &layout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    expect(vkAllocateDescriptorSets(platform.device(), &set_info, &set) == VK_SUCCESS,
+           "could not allocate retained descriptor set");
+    VkDescriptorBufferInfo buffer_info{buffer->buffer(), 0, 64};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &buffer_info;
+    vkUpdateDescriptorSets(platform.device(), 1, &write, 0, nullptr);
+    context.begin();
+    context.retain(pool);
+    pool = VK_NULL_HANDLE;
+    vkCmdBindDescriptorSets(context.command_buffer(), VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipeline_layout, 0, 1, &set, 0, nullptr);
+    vkCmdFillBuffer(context.command_buffer(), buffer->buffer(), 0, 64, 0xdeadbeefU);
+    context.defer_destruction([owner = std::move(buffer)] {});
+    expect(buffer == nullptr, "recorded buffer owner was not released before submit");
+    context.submit();
+    expect(context.pending_count() == 1, "retained submission was not pending");
+    context.wait();
+    expect(context.pending_count() == 0, "retained submission was not retired");
+    vkDestroyPipelineLayout(platform.device(), pipeline_layout, nullptr);
+    vkDestroyDescriptorSetLayout(platform.device(), layout, nullptr);
+
+    VulkanBuffer ring_buffer(platform, 64,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    context.begin();
+    vkCmdFillBuffer(context.command_buffer(), ring_buffer.buffer(), 0, 64, 0xcafebabeU);
+    context.submit();
+    expect(context.pending_count() == 1, "ring reuse left an incorrect pending count");
+    context.begin();
+    vkCmdFillBuffer(context.command_buffer(), ring_buffer.buffer(), 0, 64, 0xfeedfaceU);
+    context.submit();
+    expect(context.pending_count() == 2, "ring did not retain both bounded submissions");
+    context.begin();
+    expect(context.pending_count() == 2,
+           "ring reuse did not retire the reused submission before recording");
+    context.cancel();
+    expect(context.pending_count() == 1,
+           "ring reuse lost the remaining submitted slot");
+    context.wait();
+    VkDescriptorPool replacement = VK_NULL_HANDLE;
+    expect(vkCreateDescriptorPool(platform.device(), &pool_info, nullptr, &replacement) ==
+               VK_SUCCESS,
+           "descriptor pool could not be reused after retirement");
+    vkDestroyDescriptorPool(platform.device(), replacement, nullptr);
+}
+
+void test_platform_pending_compute_count(VulkanPlatform &platform) {
+    VulkanBuffer lhs(platform, 64,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer rhs(platform, 64,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer output(platform, 64,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    const pytorch_vulkan::VulkanTensorLayout layout{
+        1, {16}, {1}, 0, sizeof(float), 0, 16, 0, 64, 64,
+        pytorch_vulkan::VulkanOverlap::No};
+    expect(platform.pending_compute_count() == 0,
+           "platform reported pending compute work before training step");
+    platform.compute().begin_training_step();
+    platform.compute().add(lhs.buffer(), layout, rhs.buffer(), layout, output.buffer(),
+                           layout);
+    expect(platform.pending_compute_count() == 1,
+           "platform did not report the active compute recording");
+    platform.compute().end_training_step();
+    expect(platform.pending_compute_count() == 0,
+           "platform retained compute work after training step completion");
+}
+
+void test_execution_counters_and_timing(VulkanPlatform &platform) {
+    platform.reset_execution_counters();
+    platform.reset_timing();
+    VulkanExecutionContext &context = platform.execution_context();
+    context.begin();
+    context.submit();
+    expect(platform.compute_submitted_count() == 1,
+           "successful submit was not counted independently");
+    expect(platform.compute_completed_count() == 0,
+           "submission was counted as completed before wait");
+    context.wait();
+    expect(platform.compute_completed_count() == 1,
+           "successful wait was not counted as completion");
+    const auto timing = platform.timing_snapshot();
+    expect(timing.allocation > 0.0, "execution allocation timing was not recorded");
+    expect(timing.recording > 0.0, "execution recording timing was not recorded");
+    expect(timing.submit_wait > 0.0, "execution submit/wait timing was not recorded");
+    expect(timing.compute > 0.0, "execution compute timing was not recorded");
+}
+
+} // namespace
+
+int main() {
+    try {
+        VulkanPlatform platform;
+        VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                       platform.command_pool());
+        test_invalid_states(context);
+        test_deferred_callback(platform);
+        test_abandoned_callback(platform);
+        test_cancelled_callback(platform);
+        test_fill(platform);
+        test_retained_descriptor_pool(platform);
+        test_platform_pending_compute_count(platform);
+        test_execution_counters_and_timing(platform);
+        std::cout << "Vulkan execution lifecycle tests passed\n";
+        return 0;
+    } catch (const VulkanUnavailable &) {
+        return 77;
+    } catch (const std::exception &error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

@@ -15,7 +15,7 @@ endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   if(NOT TARGET vulkan_platform)
-    add_library(vulkan_platform STATIC src/vulkan_platform.cpp
+    add_library(vulkan_platform STATIC src/vulkan_platform.cpp src/vulkan_execution.cpp
                    src/vulkan_compute.cpp src/vulkan/shaders/generated/pointwise_spv.h
                    src/vulkan/shaders/generated/reduction_indexing_spv.h
                    src/vulkan/shaders/generated/reduction_indexing_spv.sha256
@@ -72,6 +72,14 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     if(BUILD_TESTING)
         add_test(NAME vulkan_transfer_test COMMAND vulkan_transfer_test)
         set_tests_properties(vulkan_transfer_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(vulkan_execution_test tests/cpp/vulkan_execution_test.cpp)
+    target_compile_features(vulkan_execution_test PRIVATE cxx_std_17)
+    target_link_libraries(vulkan_execution_test PRIVATE vulkan_buffer vulkan_platform)
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_execution_test COMMAND vulkan_execution_test)
+        set_tests_properties(vulkan_execution_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()
 

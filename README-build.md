@@ -173,24 +173,47 @@ same-shaped F32 target for the scalar summed squared-error loss; the synthetic
 fixture generates and asserts one-hot targets. This is a synthetic
 MNIST-shaped contract, not real-dataset MNIST support.
 
-Both contracts require GPU execution for forward and first-order backward:
+Both contracts require GPU execution for forward and first-order backward. The
+Python orchestration brackets each complete training step with the internal
+`begin_training_step()`/`end_training_step()` scope:
 model parameters, inputs, targets, outputs, loss, gradients, and optimizer
 tensor state remain resident on `vk:0`. Adam's scalar non-capturable `step`
 metadata remains host-resident. Each training step resets counters, requires at
-least one Vulkan compute dispatch and zero explicit CPU/Vulkan transfers, then
-permits `.cpu()` only as an explicit comparison transfer. The counter snapshot
-proves the scoped operation did not silently fall back to CPU; it is not an
-observation of unrelated concurrent work.
+least one Vulkan compute dispatch, exactly one completed submit/wait boundary,
+and zero explicit CPU/Vulkan transfers. Work is recorded into one command
+buffer and retained resources are retired only after completion; `.cpu()` is
+permitted only as an explicit comparison transfer after those assertions. The
+counter snapshot proves the scoped operation did not silently fall back to CPU;
+it is not an observation of unrelated concurrent work. Standalone Vulkan
+operators retain their synchronous one-submit behavior.
 
 The fixed MLP is compared with CPU for four optimizer steps. The flattened
 MNIST-shaped parity gate intentionally compares exactly two SGD or Adam steps,
 using `rtol=1e-4` and `atol=1e-4`; this two-step bound is not a claim of
 long-run training convergence or performance.
 
-These contracts explicitly exclude real-dataset MNIST readiness, cross-entropy,
+Phase 6A keeps the training scope internal: Python receives no future, stream,
+or asynchronous tensor, and the public API remains synchronous. Fusion, graph
+capture, and multi-queue execution are deferred. These contracts explicitly
+exclude real-dataset MNIST readiness, cross-entropy,
 Long labels, convolutional or BatchNorm training, arbitrary model shapes,
 higher-order or forward-mode AD, unsupported optimizer options, and performance
-support or benchmarks.
+ support or benchmarks.
+
+### Phase 6A resident benchmark
+
+Run the fixed resident MLP and synthetic MNIST-shaped workloads in both modes:
+
+```bash
+PYTHONPATH=build .venv/bin/python tools/vulkan_training_benchmark.py \
+  --workload both --mode both
+```
+
+Inputs and targets are uploaded before the timed loop. Each JSON result reports
+timing categories, dispatches, Vulkan copies, explicit transfers, independently
+counted submissions, completions, waits, and final loss; results without those
+counters are invalid. Defaults are
+100 MLP steps and 10 MNIST-shaped steps at batch size 512.
 
 Float16, unsupported model variants, higher-order gradients, and implicit
 `fill_`/accumulated-leaf paths remain explicitly rejected or deferred.
@@ -286,7 +309,7 @@ those counter assertions.
 Run the complete optimizer safety gate from a built extension with:
 
 ```bash
-cmake --build build -j2 --target pytorch_vulkan_python
+cmake --build build -j10 --target pytorch_vulkan_python
 PYTHONPATH=build .venv/bin/python -m pytest -q tests/python/test_vulkan_optimizer.py
 PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
 ctest --test-dir build --output-on-failure

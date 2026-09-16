@@ -136,7 +136,8 @@ host-resident. Nesterov, AMSGrad, maximize, decoupled weight decay, foreach,
 fused, differentiable, float16, bfloat16, integer, mixed-dtype, and other
 unsupported forms remain outside this branch.
 
-Verification commands and results:
+Historical verification commands and results from the original optimizer gate
+(not the current branch state):
 
 ```text
 cmake --build build -j2 --target pytorch_vulkan_python       PASS
@@ -152,17 +153,39 @@ for verifier in tools/verify_*_spv.py; do .venv/bin/python "$verifier"; done
 git diff --check                                         PASS
 ```
 
-The first native CTest invocation found the configured
+For that original gate, the first native CTest invocation found the configured
 `vulkan_device_probe` executable missing from `build`; building the existing
 target with `cmake --build build -j2 --target vulkan_device_probe` restored the
 expected test artifact. The mandated native and validation-layer invocations
 then passed without a hang, device reset, allocator lifetime failure, or
 synchronization error. Python emitted 73 existing warnings, including Vulkan
-manual-seed and fork deprecation warnings; no test failed because of them.
+manual-seed and fork deprecation warnings. These results are historical and do
+not claim that the current full Python suite is green; current Task 5 results
+are recorded below.
 
 This gate does not claim end-to-end MNIST readiness. Real MNIST shapes, labels,
 loss, BatchNorm and broader training graphs are subsequent work. No performance 
 or benchmark claim is made.
+
+## Phase 6A Benchmark and Validation
+
+The resident benchmark compares the existing synchronous path with the internal
+step-scoped path for the fixed MLP (batch 3, 100 SGD steps) and synthetic
+MNIST-shaped MLP (batch 512, 10 SGD steps). Inputs and one-hot targets are
+uploaded before timing. Both modes recorded zero timed explicit transfers and
+zero Vulkan copies; step scope recorded one submitted/completed/waited command
+per step (100 and 10), while synchronous mode recorded one per dispatch (3292
+and 322). The measured run showed lower wall time in step scope, and the
+instrumented allocation, recording, submit/wait, and compute categories were
+nonzero. The MNIST-shaped loss became `NaN`; this is a diagnostic observation,
+not a performance, convergence, or real-MNIST claim.
+
+The complete Phase 6A validation matrix was run. Native CTest and
+validation-layer CTest passed, shader verifiers passed, and `git diff --check`
+produced no output. The full Python suite is explicitly not green: 14 known
+standalone in-place contract conflicts fail because those operations are
+intentionally rejected outside the training scope. These tests were neither
+masked nor rewritten.
 
 ## Training Validation
 
@@ -180,29 +203,44 @@ scalar SGD or Adam.
 Training requires GPU forward and first-order backward execution. Parameters,
 inputs, targets, outputs, loss, gradients, and optimizer tensor state remain
 resident on `vk:0`; Adam's non-capturable scalar `step` metadata remains on the
-host. Counters are reset per operation/step. Training requires compute
-dispatches > 0 and explicit transfers = 0. A final `.cpu()` is an explicit
+host. Each Python training step uses the internal
+`begin_training_step()`/`end_training_step()` scope, records all supported
+forward, backward, and optimizer work into one command buffer, and completes
+exactly one submit/wait boundary. Counters are reset per operation/step.
+Training requires compute dispatches > 0, one completed submission, and
+explicit transfers = 0. Retained descriptor pools and metadata allocations
+are retired after completion; a failure closes/cancels the recording scope so
+the context cannot remain recording. A final `.cpu()` is an explicit
 presentation transfer after the counter assertion, not fallback. The
 flattened MNIST-shaped parity check is exactly two optimizer steps at
 `rtol=1e-4`, `atol=1e-4`; it is not a long-run convergence or performance claim.
+
+Phase 6A does not expose a future, stream, or asynchronous tensor to Python.
+Fusion, graph capture, and multi-queue execution remain deferred. Timing is
+categorized as allocation, command recording, submit/wait, compute, and total
+elapsed time; these measurements are diagnostic only and make no performance
+claim.
 
 Explicit exclusions are real-dataset MNIST readiness, cross-entropy, Long
 labels, convolutional training, BatchNorm, arbitrary shapes or model graphs,
 higher-order and forward-mode AD, unsupported optimizer options, and benchmark
 or performance support.
 
-Task 5 verification commands and results:
+Task 6 verification commands and results:
 
 ```text
 PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
-                                                               719 passed, 38 skipped, 97 warnings
-ctest --test-dir build --output-on-failure                    13/13 passed
+                                                               714 passed, 14 failed, 38 skipped, 103 warnings
+ctest --test-dir build --output-on-failure                    14/14 passed
 VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ctest --test-dir build --output-on-failure
-                                                               13/13 passed
+                                                               14/14 passed
 for verifier in tools/verify_*_spv.py; do .venv/bin/python "$verifier"; done
                                                                PASS (all shader verifiers)
 git diff --check                                               PASS
 ```
 
-The warnings are existing Vulkan manual-seed and fork deprecation warnings;
-none caused a failure. No test file fix was required by the full gate.
+The full Python suite is not green. The separate 14-test standalone in-place
+contract conflict exercises operations intentionally rejected outside the
+training scope; those failures are distinct from the passing Phase 6A training
+module and parity coverage. The warnings are existing Vulkan manual-seed,
+fork-deprecation, and related runtime warnings; none caused a test failure.

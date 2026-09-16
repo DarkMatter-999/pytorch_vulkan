@@ -48,6 +48,21 @@ def test_linear_forward_without_bias_matches_cpu(vulkan_backend):
     torch.testing.assert_close(result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight))
 
 
+def test_standalone_linear_is_complete_before_return(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
+    result = torch.nn.functional.linear(
+        cpu_input.to(vulkan_backend),
+        cpu_weight.to(vulkan_backend),
+        cpu_bias.to(vulkan_backend),
+    )
+
+    # No explicit Vulkan synchronization is needed between dispatch return and
+    # consuming the result on the host.
+    torch.testing.assert_close(
+        result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)
+    )
+
+
 def test_linear_backward_matches_cpu_with_explicit_vulkan_gradient(vulkan_backend):
     torch.manual_seed(31)
     cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")

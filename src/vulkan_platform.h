@@ -16,6 +16,8 @@ class VulkanUnavailable : public std::runtime_error {
 };
 
 class VulkanCompute;
+class VulkanExecutionContext;
+class VulkanBuffer;
 
 struct VulkanDeviceInfo {
     std::string name;
@@ -27,6 +29,16 @@ struct VulkanExecutionCounterSnapshot {
     std::size_t vulkan_copies = 0;
     std::size_t explicit_transfers = 0;
 };
+
+struct VulkanTimingSnapshot {
+    double allocation = 0.0;
+    double recording = 0.0;
+    double submit_wait = 0.0;
+    double compute = 0.0;
+    double total = 0.0;
+};
+
+enum class VulkanTimingCategory { Allocation, Recording, SubmitWait, Compute };
 
 class VulkanPlatform {
   public:
@@ -47,25 +59,42 @@ class VulkanPlatform {
     VulkanCompute &compute() const;
     // Serializes every use of the shared compute queue and command pool.
     std::mutex &queue_mutex() const;
+    // Serializes synchronous transfers that may reuse the shared staging buffer.
+    std::mutex &transfer_mutex() const;
     void wait_for_transfer() const;
-    // Exposes the lifecycle invariant to native transfer tests only.
+    // Exposes lifecycle invariants to native tests.
     std::size_t pending_transfer_count() const;
+    std::size_t pending_compute_count() const;
     std::size_t compute_dispatch_count() const;
+    std::size_t compute_submitted_count() const;
+    std::size_t compute_completed_count() const;
+    std::size_t compute_wait_count() const;
+    void record_compute_submitted() const;
+    void record_compute_completed() const;
+    void record_compute_wait() const;
     VulkanExecutionCounterSnapshot execution_counter_snapshot() const;
     void reset_execution_counters() const;
     std::size_t explicit_transfer_count() const;
     void record_explicit_transfer() const;
     std::size_t vulkan_copy_count() const;
     void record_vulkan_copy() const;
+     // Counts recorded vkCmdCopyBuffer commands, distinct from logical transfers.
+     std::size_t copy_command_count() const;
+     void record_copy_command() const;
     void copy_buffer_sync(VkBuffer source, VkBuffer destination,
                           VkDeviceSize size, VkDeviceSize source_offset = 0,
                           VkDeviceSize destination_offset = 0) const;
     void fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
                           uint32_t data) const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
+    VulkanBuffer &staging_buffer(VkDeviceSize size) const;
+    VulkanTimingSnapshot timing_snapshot() const;
+    void reset_timing() const;
+    void record_timing(VulkanTimingCategory category, double seconds) const;
     bool validation_enabled() const;
     bool supports_bool_pointwise() const;
     bool supports_formatter_double() const;
+    VulkanExecutionContext &execution_context() const;
 
   private:
     struct PendingTransferResources {
@@ -73,21 +102,12 @@ class VulkanPlatform {
         VkFence fence = VK_NULL_HANDLE;
     };
 
-    struct PendingComputeResources {
-        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-        VkFence fence = VK_NULL_HANDLE;
-    };
-
     void cleanup() noexcept;
-    void defer_compute_resources(VkDescriptorPool descriptor_pool,
-                                 VkCommandBuffer command_buffer,
-                                 VkFence fence) const noexcept;
-    void reserve_compute_resources() const;
     friend class VulkanCompute;
 
     VkInstance instance_ = VK_NULL_HANDLE;
     mutable std::unique_ptr<VulkanCompute> compute_;
+    mutable std::unique_ptr<VulkanExecutionContext> execution_;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue compute_queue_ = VK_NULL_HANDLE;
@@ -99,10 +119,16 @@ class VulkanPlatform {
     VulkanDeviceInfo device_info_;
     uint32_t api_version_ = VK_API_VERSION_1_1;
     mutable std::vector<PendingTransferResources> pending_transfer_resources_;
-    mutable std::vector<PendingComputeResources> pending_compute_resources_;
     mutable std::mutex queue_mutex_;
+    mutable std::mutex transfer_mutex_;
     mutable std::atomic<std::size_t> explicit_transfer_count_{0};
     mutable std::atomic<std::size_t> vulkan_copy_count_{0};
+    mutable std::atomic<std::size_t> copy_command_count_{0};
+    mutable std::atomic<std::size_t> compute_submitted_count_{0};
+    mutable std::atomic<std::size_t> compute_completed_count_{0};
+    mutable std::atomic<std::size_t> compute_wait_count_{0};
+    mutable std::unique_ptr<VulkanBuffer> staging_buffer_;
+    mutable VulkanTimingSnapshot timing_;
 };
 
 namespace pytorch_vulkan {

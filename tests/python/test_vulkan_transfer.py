@@ -40,6 +40,24 @@ def test_cpu_vk_cpu_round_trip(vulkan_backend):
     torch.testing.assert_close(source, source_before, rtol=0, atol=0)
 
 
+def test_contiguous_float32_bulk_copy_is_exact_and_synchronous(vulkan_backend):
+    source = torch.linspace(-17.0, 23.0, steps=4096, dtype=torch.float32)
+    device_tensor = source.to(vulkan_backend)
+    result = device_tensor.to("cpu")
+
+    assert result.device.type == "cpu"
+    assert result.is_contiguous()
+    torch.testing.assert_close(result, source, rtol=0, atol=0)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    destination = torch.empty_like(device_tensor)
+    assert destination.copy_(device_tensor) is destination
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert counters[1] == 1
+    torch.testing.assert_close(destination.to("cpu"), source, rtol=0, atol=0)
+
+
+
 def _tensor_metadata(tensor):
     return (
         tensor.device,

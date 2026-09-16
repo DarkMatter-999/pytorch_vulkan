@@ -1,9 +1,11 @@
 #include "vulkan_platform.h"
 
 #include "vulkan_compute.h"
+#include "vulkan_execution.h"
+#include "vulkan_buffer.h"
 
-#include <iostream>
 #include <atomic>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #if defined(__unix__) || defined(__APPLE__)
@@ -14,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <chrono>
 
 namespace {
 
@@ -25,6 +28,7 @@ constexpr const char *kValidationLayer = "VK_LAYER_KHRONOS_validation";
 // state is unknown.
 struct QuarantinedVulkanResources {
     std::unique_ptr<VulkanCompute> compute;
+    std::unique_ptr<VulkanExecutionContext> execution;
     VkInstance instance = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkCommandPool command_pool = VK_NULL_HANDLE;
@@ -35,7 +39,10 @@ struct QuarantinedVulkanResources {
     // pending command/fence/pool handle values remain live under this device;
     // their vector metadata does not own or release Vulkan handles.
     // The slot intentionally never destroys compute: completion is unknown.
-    ~QuarantinedVulkanResources() { compute.release(); }
+    ~QuarantinedVulkanResources() {
+        execution.release();
+        compute.release();
+    }
 };
 
 // Quarantine bookkeeping must not allocate while cleanup is noexcept.  A
@@ -101,7 +108,9 @@ namespace {
 
 std::atomic<bool> forked_child{false};
 
-void mark_forked_child() noexcept { forked_child.store(true, std::memory_order_relaxed); }
+void mark_forked_child() noexcept {
+    forked_child.store(true, std::memory_order_relaxed);
+}
 
 } // namespace
 
@@ -123,7 +132,8 @@ void register_fork_state_handler() {
 void ensure_process_local_vulkan() {
     if (inherited_fork_state()) {
         throw std::runtime_error(
-            "Vulkan cannot be used after fork because the child inherited parent Vulkan "
+            "Vulkan cannot be used after fork because the child inherited parent "
+            "Vulkan "
             "state; use multiprocessing spawn or materialize tensors on CPU");
     }
 }
@@ -235,23 +245,27 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                     queue_info.pQueuePriorities = &queue_priority;
 
                     VkPhysicalDeviceFeatures2 available_features{};
-                    available_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    available_features.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                     VkPhysicalDevice8BitStorageFeatures available_8bit{};
-                    available_8bit.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+                    available_8bit.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
                     available_features.pNext = &available_8bit;
                     VkPhysicalDeviceShaderFloat16Int8Features available_int8{};
                     available_int8.sType =
                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
                     available_8bit.pNext = &available_int8;
-                     vkGetPhysicalDeviceFeatures2(device, &available_features);
-                     const bool formatter_double_supported = available_features.features.shaderFloat64;
+                    vkGetPhysicalDeviceFeatures2(device, &available_features);
+                    const bool formatter_double_supported =
+                        available_features.features.shaderFloat64;
                     const bool bool_pointwise_supported =
                         VK_VERSION_MINOR(properties.apiVersion) >= 2 &&
                         available_int8.shaderInt8 &&
                         available_8bit.storageBuffer8BitAccess;
 
                     VkPhysicalDevice8BitStorageFeatures enabled_8bit{};
-                    enabled_8bit.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+                    enabled_8bit.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
                     enabled_8bit.storageBuffer8BitAccess = bool_pointwise_supported;
                     VkPhysicalDeviceShaderFloat16Int8Features enabled_int8{};
                     enabled_int8.sType =
@@ -262,16 +276,17 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
                     device_info.queueCreateInfoCount = 1;
                     device_info.pQueueCreateInfos = &queue_info;
-                     VkPhysicalDeviceFeatures enabled_features{};
-                     enabled_features.shaderFloat64 = formatter_double_supported;
-                     device_info.pEnabledFeatures = &enabled_features;
-                    device_info.pNext = bool_pointwise_supported ? &enabled_8bit : nullptr;
+                    VkPhysicalDeviceFeatures enabled_features{};
+                    enabled_features.shaderFloat64 = formatter_double_supported;
+                    device_info.pEnabledFeatures = &enabled_features;
+                    device_info.pNext =
+                        bool_pointwise_supported ? &enabled_8bit : nullptr;
                     check_result(
                         vkCreateDevice(device, &device_info, nullptr, &device_),
                         "Could not create Vulkan logical device");
                     physical_device_ = device;
-                     bool_pointwise_supported_ = bool_pointwise_supported;
-                     formatter_double_supported_ = formatter_double_supported;
+                    bool_pointwise_supported_ = bool_pointwise_supported;
+                    formatter_double_supported_ = formatter_double_supported;
                     vkGetDeviceQueue(device_, family, 0, &compute_queue_);
                     VkCommandPoolCreateInfo command_pool_info{};
                     command_pool_info.sType =
@@ -284,6 +299,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                         throw std::runtime_error(
                             "Could not create Vulkan command pool");
                     }
+                    execution_ = std::make_unique<VulkanExecutionContext>(
+                         device_, compute_queue_, command_pool_, this);
                     compute_ = std::make_unique<VulkanCompute>(*this);
                     return;
                 }
@@ -303,6 +320,7 @@ void VulkanPlatform::cleanup() noexcept {
     if (pytorch_vulkan::inherited_fork_state()) {
         // Do not invoke Vulkan teardown on handles inherited across fork.
         compute_.release();
+        execution_.release();
         return;
     }
     std::scoped_lock lock(queue_mutex_);
@@ -313,17 +331,17 @@ void VulkanPlatform::cleanup() noexcept {
                 QuarantinedVulkanResources &resources =
                     quarantined_resources[quarantined_resource_count++];
                 resources.compute = std::move(compute_);
+                resources.execution = std::move(execution_);
                 resources.instance = instance_;
                 resources.device = device_;
                 resources.command_pool = command_pool_;
                 resources.debug_messenger = debug_messenger_;
-                pending_compute_resources_.clear();
                 pending_transfer_resources_.clear();
             } else {
                 // No allocation-free owner remains.  Leak every handle and
                 // the compute object rather than destroying unknown work.
                 compute_.release();
-                pending_compute_resources_.clear();
+                execution_.release();
                 pending_transfer_resources_.clear();
             }
             instance_ = VK_NULL_HANDLE;
@@ -336,19 +354,9 @@ void VulkanPlatform::cleanup() noexcept {
         }
     }
     // Compute owns device objects; wait for all queue work before destroying them.
+    execution_.reset();
     compute_.reset();
-    for (const PendingComputeResources &resources : pending_compute_resources_) {
-        if (resources.fence != VK_NULL_HANDLE) {
-            vkDestroyFence(device_, resources.fence, nullptr);
-        }
-        if (resources.command_buffer != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(device_, command_pool_, 1, &resources.command_buffer);
-        }
-        if (resources.descriptor_pool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(device_, resources.descriptor_pool, nullptr);
-        }
-    }
-    pending_compute_resources_.clear();
+    staging_buffer_.reset();
     for (const PendingTransferResources &resources : pending_transfer_resources_) {
         if (resources.fence != VK_NULL_HANDLE) {
             vkDestroyFence(device_, resources.fence, nullptr);
@@ -403,28 +411,23 @@ VkQueue VulkanPlatform::compute_queue() const { return compute_queue_; }
 
 VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
 
+VulkanExecutionContext &VulkanPlatform::execution_context() const {
+    return *execution_;
+}
+
 VulkanCompute &VulkanPlatform::compute() const { return *compute_; }
 
 std::mutex &VulkanPlatform::queue_mutex() const { return queue_mutex_; }
 
-void VulkanPlatform::defer_compute_resources(VkDescriptorPool descriptor_pool,
-                                              VkCommandBuffer command_buffer,
-                                              VkFence fence) const noexcept {
-    if (pending_compute_resources_.size() < pending_compute_resources_.capacity()) {
-        pending_compute_resources_.push_back({descriptor_pool, command_buffer, fence});
-        return;
-    }
-    // This is a defensive fail-safe for allocator/container anomalies.  The
-    // submitted resources are intentionally leaked, never destroyed while
-    // completion is unknown.
-}
-
-void VulkanPlatform::reserve_compute_resources() const {
-    pending_compute_resources_.reserve(pending_compute_resources_.size() + 1);
-}
+std::mutex &VulkanPlatform::transfer_mutex() const { return transfer_mutex_; }
 
 std::size_t VulkanPlatform::pending_transfer_count() const {
     return pending_transfer_resources_.size();
+}
+
+std::size_t VulkanPlatform::pending_compute_count() const {
+    std::scoped_lock lock(queue_mutex_);
+    return execution_ == nullptr ? 0 : execution_->pending_count();
 }
 
 std::size_t VulkanPlatform::compute_dispatch_count() const {
@@ -436,9 +439,38 @@ void VulkanPlatform::reset_execution_counters() const {
     std::scoped_lock lock(queue_mutex_);
     explicit_transfer_count_.store(0, std::memory_order_relaxed);
     vulkan_copy_count_.store(0, std::memory_order_relaxed);
+    copy_command_count_.store(0, std::memory_order_relaxed);
+    compute_submitted_count_.store(0, std::memory_order_relaxed);
+    compute_completed_count_.store(0, std::memory_order_relaxed);
+    compute_wait_count_.store(0, std::memory_order_relaxed);
     if (compute_ != nullptr) {
         compute_->reset_dispatch_count();
+        compute_->reset_submission_count();
     }
+}
+
+std::size_t VulkanPlatform::compute_submitted_count() const {
+    return compute_submitted_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::compute_completed_count() const {
+    return compute_completed_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::compute_wait_count() const {
+    return compute_wait_count_.load(std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_compute_submitted() const {
+    compute_submitted_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_compute_completed() const {
+    compute_completed_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_compute_wait() const {
+    compute_wait_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 VulkanExecutionCounterSnapshot VulkanPlatform::execution_counter_snapshot() const {
@@ -468,6 +500,15 @@ void VulkanPlatform::record_vulkan_copy() const {
     vulkan_copy_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
+std::size_t VulkanPlatform::copy_command_count() const {
+    std::scoped_lock lock(queue_mutex_);
+    return copy_command_count_.load(std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_copy_command() const {
+    copy_command_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
 
 bool VulkanPlatform::supports_bool_pointwise() const {
@@ -479,22 +520,26 @@ bool VulkanPlatform::supports_formatter_double() const {
 }
 
 void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
-                                       VkDeviceSize size, VkDeviceSize source_offset,
-                                       VkDeviceSize destination_offset) const {
+                                      VkDeviceSize size, VkDeviceSize source_offset,
+                                      VkDeviceSize destination_offset) const {
     if (source == VK_NULL_HANDLE || destination == VK_NULL_HANDLE || size == 0) {
         throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
     }
 
     std::scoped_lock lock(queue_mutex_);
 
+    const auto total_start = std::chrono::steady_clock::now();
     VkCommandBufferAllocateInfo allocation_info{};
     allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocation_info.commandPool = command_pool_;
     allocation_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocation_info.commandBufferCount = 1;
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    const auto allocation_start = std::chrono::steady_clock::now();
     check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
                  "Could not allocate Vulkan command buffer");
+    timing_.allocation += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - allocation_start).count();
 
     VkFence fence = VK_NULL_HANDLE;
     bool submission_may_be_pending = false;
@@ -509,7 +554,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         }
     };
     const auto defer_resources = [&]() {
-        if (pending_transfer_resources_.size() < pending_transfer_resources_.capacity()) {
+        if (pending_transfer_resources_.size() <
+            pending_transfer_resources_.capacity()) {
             pending_transfer_resources_.push_back({command_buffer, fence});
         }
         // If bookkeeping capacity is unexpectedly unavailable, intentionally
@@ -519,6 +565,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         fence = VK_NULL_HANDLE;
     };
     try {
+        const auto recording_start = std::chrono::steady_clock::now();
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -530,8 +577,11 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         copy_region.dstOffset = destination_offset;
         copy_region.size = size;
         vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
+        copy_command_count_.fetch_add(1, std::memory_order_relaxed);
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan command buffer");
+        timing_.recording += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - recording_start).count();
 
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -544,6 +594,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         // Ensure deferred ownership cannot allocate after submission starts.
         pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
         submission_may_be_pending = true;
+        const auto submit_wait_start = std::chrono::steady_clock::now();
         check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, fence),
                      "Could not submit Vulkan command buffer");
         const VkResult wait_result =
@@ -555,15 +606,18 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
             } else {
                 defer_resources();
                 std::ostringstream message;
-                message << "Could not wait for Vulkan transfer fence failed with VkResult "
-                        << static_cast<int>(wait_result)
-                        << "; could not confirm Vulkan transfer completion failed with "
-                           "VkResult "
-                        << static_cast<int>(recovery_result);
+                message
+                    << "Could not wait for Vulkan transfer fence failed with VkResult "
+                    << static_cast<int>(wait_result)
+                    << "; could not confirm Vulkan transfer completion failed with "
+                       "VkResult "
+                    << static_cast<int>(recovery_result);
                 throw std::runtime_error(message.str());
             }
             check_result(wait_result, "Could not wait for Vulkan transfer fence");
         }
+        timing_.submit_wait += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - submit_wait_start).count();
     } catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
             throw;
@@ -594,6 +648,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     }
 
     release_resources();
+    timing_.total += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - total_start).count();
 }
 
 void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
@@ -634,7 +690,8 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
                      "Could not wait for Vulkan fill fence");
     } catch (...) {
         vkQueueWaitIdle(compute_queue_);
-        if (fence != VK_NULL_HANDLE) vkDestroyFence(device_, fence, nullptr);
+        if (fence != VK_NULL_HANDLE)
+            vkDestroyFence(device_, fence, nullptr);
         vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
         throw;
     }
@@ -646,12 +703,56 @@ void VulkanPlatform::wait_for_transfer() const {
     std::scoped_lock lock(queue_mutex_);
     const VkResult result = vkQueueWaitIdle(compute_queue_);
     if (result != VK_SUCCESS) {
-        throw std::runtime_error("Could not wait for Vulkan transfer queue with VkResult " +
-                                 std::to_string(static_cast<int>(result)));
+        throw std::runtime_error(
+            "Could not wait for Vulkan transfer queue with VkResult " +
+            std::to_string(static_cast<int>(result)));
     }
 }
 
 void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
-                                  VkDeviceSize size) const {
+                                 VkDeviceSize size) const {
     copy_buffer_sync(source, destination, size);
+}
+
+VulkanBuffer &VulkanPlatform::staging_buffer(VkDeviceSize size) const {
+    if (size == 0)
+        throw std::invalid_argument("Vulkan staging buffer size must be greater than zero");
+    std::scoped_lock lock(queue_mutex_);
+    const auto start = std::chrono::steady_clock::now();
+    if (staging_buffer_ == nullptr || staging_buffer_->size() < size) {
+        staging_buffer_ = std::make_unique<VulkanBuffer>(
+            *this, size, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    const auto end = std::chrono::steady_clock::now();
+    timing_.allocation += std::chrono::duration<double>(end - start).count();
+    return *staging_buffer_;
+}
+
+VulkanTimingSnapshot VulkanPlatform::timing_snapshot() const {
+    std::scoped_lock lock(queue_mutex_);
+    return timing_;
+}
+
+void VulkanPlatform::reset_timing() const {
+    std::scoped_lock lock(queue_mutex_);
+    timing_ = {};
+}
+
+void VulkanPlatform::record_timing(VulkanTimingCategory category, double seconds) const {
+    timing_.total += seconds;
+    switch (category) {
+    case VulkanTimingCategory::Allocation:
+        timing_.allocation += seconds;
+        break;
+    case VulkanTimingCategory::Recording:
+        timing_.recording += seconds;
+        break;
+    case VulkanTimingCategory::SubmitWait:
+        timing_.submit_wait += seconds;
+        break;
+    case VulkanTimingCategory::Compute:
+        timing_.compute += seconds;
+        break;
+    }
 }

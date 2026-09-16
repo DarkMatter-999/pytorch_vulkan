@@ -73,6 +73,24 @@ void test_copy_returns_without_pending_transfer_resources() {
            "synchronous tensor copy left pending transfer resources");
 }
 
+void test_contiguous_reshape_copy_is_bulk() {
+    auto source = at::tensor({1.0F, 2.0F, 3.0F, 4.0F});
+    auto device_source = at::empty_like(source, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device_source, source, false);
+    const auto platform = pytorch_vulkan::platform();
+    platform->reset_execution_counters();
+
+    auto result = pytorch_vulkan::vulkan_contiguous_copy(device_source);
+
+    expect(platform->vulkan_copy_count() == 1,
+           "contiguous reshape transfer was not counted once");
+    expect(platform->copy_command_count() == 1,
+           "contiguous reshape did not record one Vulkan copy command");
+    auto cpu_result = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(cpu_result, result, false);
+    expect(cpu_result.equal(source), "contiguous reshape bulk copy changed data");
+}
+
 void test_execution_counters_reset_and_read_stably() {
     const auto platform = pytorch_vulkan::platform();
     platform->reset_execution_counters();
@@ -1204,6 +1222,7 @@ int main() {
         (void)pytorch_vulkan::platform();
         test_copy_round_trip();
         test_copy_returns_without_pending_transfer_resources();
+        test_contiguous_reshape_copy_is_bulk();
         test_execution_counters_reset_and_read_stably();
         test_vulkan_to_vulkan_copy_is_counted_once();
         test_formatter_presentation_copy_reads_exact_range_and_waits();

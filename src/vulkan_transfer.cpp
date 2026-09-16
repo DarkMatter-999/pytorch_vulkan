@@ -2,6 +2,7 @@
 
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
+#include "vulkan_execution.h"
 #include "vulkan_layout.h"
 
 #include <c10/util/Exception.h>
@@ -10,6 +11,7 @@
 
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -187,6 +189,27 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
     (void)checked_bytes(destination, source);
 }
 
+void record_vulkan_copy(const VulkanPlatform &platform, VkBuffer source,
+                        VkBuffer destination, VkDeviceSize size,
+                        VkDeviceSize source_offset, VkDeviceSize destination_offset) {
+    VkCommandBuffer command_buffer = platform.execution_context().command_buffer();
+    const VkMemoryBarrier before_copy{
+        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0,
+                         nullptr, 0, nullptr);
+    const VkBufferCopy copy_region{source_offset, destination_offset, size};
+    vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
+    platform.record_copy_command();
+    const VkMemoryBarrier after_copy{
+        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
+                         nullptr, 0, nullptr);
+}
+
 } // namespace
 
 namespace pytorch_vulkan {
@@ -227,6 +250,21 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
     TORCH_CHECK(&platform == &allocation_platform(destination_data),
                 "Vulkan reshape copy requires tensors on the same Vulkan device");
     platform.record_vulkan_copy();
+
+    const bool source_contiguous = at::geometry_is_contiguous(
+        source_layout.sizes, source_layout.strides);
+    if (source_contiguous) {
+        if (platform.execution_context().recording()) {
+            record_vulkan_copy(platform, source_buffer.buffer(), destination_buffer.buffer(),
+                               static_cast<VkDeviceSize>(source_layout.byte_range),
+                               source_layout.byte_offset, destination_layout.byte_offset);
+        } else {
+            platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
+                                       static_cast<VkDeviceSize>(source_layout.byte_range),
+                                       source_layout.byte_offset, destination_layout.byte_offset);
+        }
+        return destination;
+    }
 
     for (int64_t index = 0; index < source_layout.numel; ++index) {
         const auto source_element = vulkan_storage_offset(source_layout, index);
@@ -276,11 +314,12 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     const VulkanPlatform &platform = allocation_platform(vulkan_data);
     const bool host_visible = (vulkan_buffer.memory_properties() &
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
-    std::unique_ptr<VulkanBuffer> staging;
+    std::unique_lock<std::mutex> transfer_lock;
+    if (!vulkan_to_vulkan && !host_visible)
+        transfer_lock = std::unique_lock<std::mutex>(platform.transfer_mutex());
+    VulkanBuffer *staging = nullptr;
     if (!vulkan_to_vulkan && !host_visible) {
-        staging = std::make_unique<VulkanBuffer>(
-            platform, destination_layout.element_bytes,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        staging = &platform.staging_buffer(bytes);
     }
     if (host_visible || vulkan_to_vulkan)
         platform.wait_for_transfer();
@@ -294,6 +333,46 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     const auto element_size = static_cast<VkDeviceSize>(destination_layout.element_bytes);
     if (!vulkan_to_vulkan)
         platform.record_explicit_transfer();
+
+    const bool bulk_contiguous = source.scalar_type() == at::kFloat &&
+        destination.scalar_type() == at::kFloat && source.is_contiguous() &&
+        destination.is_contiguous();
+    if (bulk_contiguous) {
+        const VkDeviceSize source_offset = static_cast<VkDeviceSize>(checked_byte_offset(
+            static_cast<int64_t>(logical_offset(source_layout, 0)),
+            source_layout.element_bytes, "source"));
+        const VkDeviceSize destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
+            static_cast<int64_t>(logical_offset(destination_layout, 0)),
+            destination_layout.element_bytes, "destination"));
+        if (cpu_to_vulkan) {
+            if (host_visible) {
+                vulkan_buffer.write(cpu_source, bytes, destination_offset);
+            } else {
+                staging->write(cpu_source, bytes);
+                platform.copy_buffer_sync(staging->buffer(), vulkan_buffer.buffer(),
+                                           bytes, 0, destination_offset);
+            }
+        } else if (vulkan_to_vulkan) {
+            const auto &source_buffer = allocation_buffer(source.storage().data_ptr());
+            auto &destination_buffer = allocation_buffer(destination.storage().data_ptr());
+            if (platform.execution_context().recording()) {
+                record_vulkan_copy(platform, source_buffer.buffer(), destination_buffer.buffer(),
+                                   bytes, source_offset, destination_offset);
+            } else {
+                platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
+                                           bytes, source_offset, destination_offset);
+            }
+        } else {
+            if (host_visible) {
+                vulkan_buffer.read(cpu_destination, bytes, source_offset);
+            } else {
+                platform.copy_buffer_sync(vulkan_buffer.buffer(), staging->buffer(),
+                                           bytes, source_offset, 0);
+                staging->read(cpu_destination, bytes);
+            }
+        }
+        return destination;
+    }
     for (int64_t index = 0; index < destination_layout.numel; ++index) {
         const VkDeviceSize destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
             static_cast<int64_t>(logical_offset(destination_layout, index)),

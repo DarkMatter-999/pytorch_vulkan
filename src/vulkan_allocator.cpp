@@ -2,6 +2,7 @@
 
 #include "vulkan_buffer.h"
 #include "vulkan_device_guard.h"
+#include "vulkan_execution.h"
 #include "vulkan_platform.h"
 #include "vulkan_transfer.h"
 
@@ -52,7 +53,20 @@ void check_device(c10::Device device) {
 }
 
 void delete_allocation(void *context) noexcept {
-    delete static_cast<VulkanAllocation *>(context);
+    auto *allocation = static_cast<VulkanAllocation *>(context);
+    if (allocation->platform != nullptr) {
+        try {
+            auto &execution = allocation->platform->execution_context();
+            if (execution.recording()) {
+                execution.defer_destruction([allocation] { delete allocation; });
+                return;
+            }
+        } catch (...) {
+            // Destruction must remain noexcept; the normal delete below is the
+            // safe fallback when recording state cannot be queried.
+        }
+    }
+    delete allocation;
 }
 
 VulkanAllocator allocator;
