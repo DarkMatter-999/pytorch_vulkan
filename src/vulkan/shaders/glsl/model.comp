@@ -17,11 +17,13 @@ layout(push_constant) uniform Params {
 params;
 void main() {
   uint index = gl_GlobalInvocationID.x;
-  uint count = params.rows * params.outputs;
+  uint count = params.operation == 5u ? params.features * params.outputs
+                                     : (params.operation == 6u ? params.outputs
+                                                               : params.rows * params.outputs);
   if (index >= count)
     return;
-  uint row = index / params.outputs;
-  uint column = index % params.outputs;
+  uint row = params.operation == 5u ? index / params.features : index / params.outputs;
+  uint column = params.operation == 5u ? index % params.features : index % params.outputs;
   TensorMetadata input_meta = metadata.tensors[0];
   TensorMetadata weight_meta = metadata.tensors[1];
   TensorMetadata bias_meta = metadata.tensors[2];
@@ -31,21 +33,51 @@ void main() {
   uint bias_index = bias_meta.storage_offset + column * bias_meta.strides[0];
   uint output_index = output_meta.storage_offset + row * output_meta.strides[0] + column * output_meta.strides[1];
   float value = params.has_bias != 0u ? bias[bias_index] : 0.0;
+  if (params.operation == 5u) {
+    value = 0.0;
+    for (uint batch = 0; batch < params.rows; ++batch) {
+      uint go = input_meta.storage_offset + batch * input_meta.strides[0] + row * input_meta.strides[1];
+      uint x = weight_meta.storage_offset + batch * weight_meta.strides[0] + column * weight_meta.strides[1];
+      uint a = bias_meta.storage_offset + batch * bias_meta.strides[0] + row * bias_meta.strides[1];
+      value += values[go] * (bias[a] > 0.0 ? weight[x] : 0.0);
+    }
+    results[output_index] = value;
+    return;
+  }
+  // params.features is output_features and params.outputs is
+  // input_features, so the dispatch covers [rows, input_features].
+  if (params.operation == 6u) {
+    value = 0.0;
+    for (uint batch = 0; batch < params.rows; ++batch) {
+      uint go = input_meta.storage_offset + batch * input_meta.strides[0] + column * input_meta.strides[1];
+      uint a = weight_meta.storage_offset + batch * weight_meta.strides[0] + column * weight_meta.strides[1];
+      value += values[go] * (weight[a] > 0.0 ? 1.0 : 0.0);
+    }
+    results[output_index] = value;
+    return;
+  }
   for (uint i = 0; i < params.features; ++i) {
     input_index = input_meta.storage_offset + row * input_meta.strides[0] + i * input_meta.strides[1];
-    if (params.operation == 0u) {
+    if (params.operation == 0u || params.operation == 3u) {
       weight_index = weight_meta.storage_offset + (params.transposed_weight != 0u
           ? i * weight_meta.strides[0] + column * weight_meta.strides[1]
           : column * weight_meta.strides[0] + i * weight_meta.strides[1]);
-      value += values[input_index] * weight[weight_index];
-    } else if (params.operation == 1u) {
+      value += values[input_index] * weight[weight_index] *
+          (params.operation == 4u
+               ? (bias[bias_meta.storage_offset + row * bias_meta.strides[0] + i * bias_meta.strides[1]] > 0.0 ? 1.0 : 0.0)
+               : 1.0);
+    } else if (params.operation == 1u || params.operation == 4u) {
       weight_index = weight_meta.storage_offset + i * weight_meta.strides[0] + column * weight_meta.strides[1];
-      value += values[input_index] * weight[weight_index];
+      value += values[input_index] * weight[weight_index] *
+          (params.operation == 4u
+               ? (bias[bias_meta.storage_offset + row * bias_meta.strides[0] + i * bias_meta.strides[1]] > 0.0 ? 1.0 : 0.0)
+               : 1.0);
     } else {
       input_index = input_meta.storage_offset + i * input_meta.strides[0] + row * input_meta.strides[1];
       weight_index = weight_meta.storage_offset + i * weight_meta.strides[0] + column * weight_meta.strides[1];
       value += values[input_index] * weight[weight_index];
     }
   }
+  if (params.operation == 3u) value = max(value, 0.0);
   results[output_index] = value;
 }

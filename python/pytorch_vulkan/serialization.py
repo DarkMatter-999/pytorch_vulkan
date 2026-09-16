@@ -82,6 +82,15 @@ def _checked_layout(tensor, storage_elements, label):
         tensor.storage_offset(), storage_elements, label)
 
 
+def _validate_vulkan_tensor_metadata(tensor, label):
+    if not _is_vk(tensor):
+        raise ValueError(f"{label}: expected a vk:0 tensor, got {tensor.device}")
+    if tensor.device.index not in (None, 0):
+        raise ValueError(f"{label}: Vulkan serialization supports only vk:0, got {tensor.device}")
+    storage_elements = int(tensor.untyped_storage().nbytes()) // tensor.element_size()
+    return _checked_layout(tensor, storage_elements, label)
+
+
 def _storage_owner(tensor):
     owner = tensor
     while isinstance(getattr(owner, "_base", None), torch.Tensor):
@@ -119,8 +128,7 @@ def save(obj, file):
                 if value.device.type != "cpu":
                     raise TypeError(f"unsupported tensor device {value.device}")
                 return value
-            if value.device.index not in (None, 0):
-                raise ValueError(f"Vulkan serialization supports only vk:0, got {value.device}")
+            _validate_vulkan_tensor_metadata(value, "Vulkan tensor")
             storage_id = value.untyped_storage()._cdata
             if storage_id not in storage_ids:
                 owner = _storage_owner(value)

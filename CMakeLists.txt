@@ -226,9 +226,15 @@ if(BUILD_PYTHON_EXTENSION)
                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
       endif()
     configure_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
-        "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
-         COPYONLY)
+         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
+         "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
+          COPYONLY)
+     configure_file(
+         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler.py"
+         "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler.py" COPYONLY)
+     configure_file(
+         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler_metadata.py"
+         "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler_metadata.py" COPYONLY)
 
     add_executable(vulkan_allocator_test tests/cpp/vulkan_allocator_test.cpp)
     target_compile_features(vulkan_allocator_test PRIVATE cxx_std_17)

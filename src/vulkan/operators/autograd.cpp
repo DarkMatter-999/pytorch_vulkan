@@ -76,6 +76,28 @@ class LinearAutogradFunction final
                                                      : at::Tensor()};
     }
 };
+class LinearReluAutogradFunction final
+    : public torch::autograd::Function<LinearReluAutogradFunction> {
+  public:
+    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
+                              const at::Tensor &input, const at::Tensor &weight,
+                              const at::Tensor &bias) {
+        at::AutoDispatchBelowAutograd guard;
+        auto output = pytorch_vulkan::linear_relu(input, weight, bias);
+        ctx->save_for_backward({input, weight, output});
+        return output;
+    }
+    static torch::autograd::variable_list backward(
+        torch::autograd::AutogradContext *ctx,
+        torch::autograd::variable_list grads) {
+        at::AutoDispatchBelowAutograd guard;
+        if (!grads[0].defined()) return {at::Tensor(), at::Tensor(), at::Tensor()};
+        auto saved = ctx->get_saved_variables();
+        return {linear_relu_backward_input(grads[0], saved[1], saved[2]),
+                linear_relu_backward_weight(grads[0], saved[0], saved[2]),
+                linear_relu_backward_bias(grads[0], saved[2])};
+    }
+};
 class AdaptiveAvgPoolAutogradFunction final
     : public torch::autograd::Function<AdaptiveAvgPoolAutogradFunction> {
   public:
@@ -101,6 +123,11 @@ class AdaptiveAvgPoolAutogradFunction final
 at::Tensor autograd_linear(const at::Tensor &input, const at::Tensor &weight,
                            const c10::optional<at::Tensor> &bias) {
     return LinearAutogradFunction::apply(input, weight, bias);
+}
+
+at::Tensor autograd_linear_relu(const at::Tensor &input, const at::Tensor &weight,
+                                const at::Tensor &bias) {
+    return LinearReluAutogradFunction::apply(input, weight, bias);
 }
 
 at::Tensor autograd_convolution(const at::Tensor &input, const at::Tensor &weight,

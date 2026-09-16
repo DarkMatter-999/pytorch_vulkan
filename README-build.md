@@ -215,10 +215,47 @@ counted submissions, completions, waits, and final loss; results without those
 counters are invalid. Defaults are
 100 MLP steps and 10 MNIST-shaped steps at batch size 512.
 
+### Static `torch.compile` Vulkan backend
+
+The narrow compiler entry point is `pytorch_vulkan.vulkan_backend`. It accepts
+static `torch.compile(..., fullgraph=True)` graphs containing the fixed MLP
+`Linear`/`ReLU` subset and the flattened MNIST-shaped
+`Flatten`/`Linear`/`ReLU` subset. Lowering replays the captured FX graph through
+the existing Vulkan-dispatched ATen operators; it does not copy payloads to the
+CPU or provide CPU fallback. Other FX nodes, non-`vk:0` inputs, symbolic tensor
+metadata, and unsupported layouts fail with `VulkanCompilerError` or the
+compiler metadata error. `pytorch_vulkan.compiler_stats()` reports node count,
+setup time, replay time, and per-call dispatch/submission/completion/wait and
+transfer deltas.
+
+The C++ FakeTensor redispatch branches in the supported operator files are
+required because PyTorch 2.4 Dynamo executes PrivateUse1 kernels on FakeTensors
+before calling the backend. They are limited to the actual zero-payload
+FakeTensor predicate and Meta redispatch; real Vulkan allocations still use the
+normal validation and execution paths.
+
 Float16, unsupported model variants, higher-order gradients, and implicit
 `fill_`/accumulated-leaf paths remain explicitly rejected or deferred.
 Formatter-compatible Double is limited to the
 separate formatter contract documented below; it is not general Double support.
+
+### Task 5 compiler benchmark
+
+Run the reproducible fixed-MLP and stable 1,000-step synthetic MNIST-shaped
+comparison across eager, compiler-unfused, and compiler-fused modes:
+
+```bash
+PYTHONPATH=build .venv/bin/python tools/vulkan_compiler_benchmark.py \
+  --workload both --steps 1000 --json-out /tmp/vulkan_compiler_benchmark.json
+```
+
+The JSON records time per step, dispatches, Vulkan copies, explicit transfers,
+submission/completion/wait counters, CPU parity, finite loss, compiler stats,
+and separate `rocm-smi` output. Compilation and first execution are warmed
+outside timing. The expansion gate requires CPU-fallback-free lowering, a
+stable fused end-to-end improvement, and green parity/resource-lifetime gates.
+The decision record is
+`.superpowers/sdd/vulkan-metadata-compiler-fusion/task-5-report.md`.
 
 ## Vulkan pointwise scalar operations
 

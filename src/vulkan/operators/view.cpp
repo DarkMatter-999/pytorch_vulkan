@@ -1,4 +1,5 @@
 #include "view.h"
+#include "fake_tensor.h"
 
 #include "vulkan_layout.h"
 
@@ -7,6 +8,7 @@
 #include <ATen/TensorGeometry.h>
 #include <ATen/TensorUtils.h>
 #include <ATen/ops/alias.h>
+#include <ATen/ops/as_strided.h>
 #include <c10/util/Exception.h>
 #include <torch/autograd.h>
 #include <torch/library.h>
@@ -34,6 +36,21 @@ at::Tensor metadata_only_view(const at::Tensor &self, at::IntArrayRef sizes,
                               at::IntArrayRef strides,
                               std::optional<int64_t> storage_offset,
                               const char *name, bool require_view_compatibility) {
+    if (pytorch_vulkan::is_fake_tensor(self)) {
+        std::vector<c10::SymInt> symbolic_sizes;
+        std::vector<c10::SymInt> symbolic_strides;
+        symbolic_sizes.reserve(sizes.size());
+        symbolic_strides.reserve(strides.size());
+        for (const auto size : sizes)
+            symbolic_sizes.emplace_back(size);
+        for (const auto stride : strides)
+            symbolic_strides.emplace_back(stride);
+        return at::_ops::as_strided::redispatch(
+            c10::DispatchKeySet(c10::DispatchKey::Meta), self, symbolic_sizes,
+            symbolic_strides,
+            storage_offset.has_value() ? std::optional<c10::SymInt>(storage_offset.value())
+                                       : std::nullopt);
+    }
     const auto source_layout =
         pytorch_vulkan::inspect_vulkan_tensor_layout(self, name);
     TORCH_CHECK(sizes.size() == strides.size(), "Vulkan ", name,

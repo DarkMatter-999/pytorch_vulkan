@@ -10,9 +10,13 @@
 #include "vulkan_platform.h"
 #include "vulkan_layout.h"
 #include "formatter_double.h"
+#include "fake_tensor.h"
 
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
+#include <ATen/ops/relu.h>
+#include <ATen/ops/abs.h>
+#include <ATen/ops/neg.h>
 #include <torch/library.h>
 
 #include <limits>
@@ -58,6 +62,19 @@ std::size_t checked_bytes(const at::Tensor &input, const char *operation_name) {
 at::Tensor dispatch_unary(const at::Tensor &input,
                           pytorch_vulkan::PointwiseOperation operation,
                           const char *operation_name) {
+    if (pytorch_vulkan::is_fake_tensor(input)) {
+        const auto dispatch = c10::DispatchKeySet(c10::DispatchKey::Meta);
+        switch (operation) {
+        case pytorch_vulkan::PointwiseOperation::Neg:
+            return at::_ops::neg::redispatch(dispatch, input);
+        case pytorch_vulkan::PointwiseOperation::Abs:
+            return at::_ops::abs::redispatch(dispatch, input);
+        case pytorch_vulkan::PointwiseOperation::Relu:
+            return at::_ops::relu::redispatch(dispatch, input);
+        default:
+            TORCH_CHECK(false, "Vulkan compiler does not support fake unary operation");
+        }
+    }
     const auto input_layout = validate_input(input, operation, operation_name);
     at::Tensor output =
         at::empty(input.sizes(), input.options().device(input.device()));

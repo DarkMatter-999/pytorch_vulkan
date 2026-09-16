@@ -2,17 +2,21 @@
 
 #include "autograd.h"
 #include "capability.h"
+#include "fake_tensor.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_layout.h"
+#include "unary.h"
 #include "vulkan_platform.h"
 
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
+#include <ATen/ops/linear.h>
 #include <torch/library.h>
 
 #include <limits>
+#include <vector>
 
 namespace pytorch_vulkan {
 namespace {
@@ -44,7 +48,12 @@ bool layouts_overlap(const at::Tensor &lhs, const VulkanTensorLayout &lhs_layout
 
 at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
                         const c10::optional<at::Tensor> &bias,
-                        bool transposed_weight = false, at::Tensor *out = nullptr) {
+                        bool transposed_weight = false, at::Tensor *out = nullptr,
+                        uint32_t operation = 0) {
+    if (pytorch_vulkan::is_fake_tensor(input)) {
+        return at::_ops::linear::redispatch(
+            c10::DispatchKeySet(c10::DispatchKey::Meta), input, weight, bias);
+    }
     TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
                     input.device().index() == 0,
                 "Vulkan linear requires Vulkan device index 0");
@@ -109,13 +118,19 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
         input_layout, weight_layout, bias_layout, output_layout,
         static_cast<uint32_t>(input.size(0)), static_cast<uint32_t>(input.size(1)),
         static_cast<uint32_t>(outputs), transposed_weight,
-        bias.has_value());
+        bias.has_value(), operation);
     return output;
 }
 
 at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
                   const c10::optional<at::Tensor> &bias) {
     return lower_linear(input, weight, bias);
+}
+
+at::Tensor linear_relu(const at::Tensor &input, const at::Tensor &weight,
+                       const at::Tensor &bias) {
+    TORCH_CHECK(bias.defined(), "Vulkan fused linear_relu requires a bias");
+    return lower_linear(input, weight, c10::optional<at::Tensor>(bias), false, nullptr, 3);
 }
 
 namespace {
@@ -172,6 +187,52 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
         static_cast<uint32_t>(outputs), false, false, operation);
     return output;
 }
+
+at::Tensor fused_gradient(const at::Tensor &grad_output, const at::Tensor &rhs,
+                          const at::Tensor &activation, std::vector<int64_t> shape,
+                          uint32_t operation) {
+    validate_gradient_tensor(grad_output, "fused gradient output");
+    validate_gradient_tensor(rhs, "fused gradient operand");
+    validate_gradient_tensor(activation, "fused activation");
+    auto go_layout = inspect_vulkan_tensor_layout(grad_output, "fused gradient output");
+    auto rhs_layout = inspect_vulkan_tensor_layout(rhs, "fused gradient operand");
+    auto activation_layout = inspect_vulkan_tensor_layout(activation, "fused activation");
+    at::Tensor output = at::empty(shape, grad_output.options());
+    auto output_layout = inspect_vulkan_tensor_layout(output, "fused gradient result");
+    const auto &go_data = grad_output.storage().data_ptr();
+    const auto &rhs_data = rhs.storage().data_ptr();
+    const auto &activation_data = activation.storage().data_ptr();
+    const auto &output_data = output.storage().data_ptr();
+    auto &platform = allocation_platform(go_data);
+    TORCH_CHECK(&platform == &allocation_platform(rhs_data) &&
+                    &platform == &allocation_platform(activation_data) &&
+                    &platform == &allocation_platform(output_data),
+                "Vulkan fused gradients require one Vulkan platform");
+    validate_allocation(go_data, go_layout.allocation_bytes, "fused gradient output");
+    validate_allocation(rhs_data, rhs_layout.allocation_bytes, "fused gradient operand");
+    validate_allocation(activation_data, activation_layout.allocation_bytes, "fused activation");
+    validate_allocation(output_data, output_layout.allocation_bytes, "fused gradient result");
+    const uint32_t rows = static_cast<uint32_t>(grad_output.size(0));
+    if (operation == 4) {
+        platform.compute().linear_relu_backward_input(
+            allocation_buffer(go_data).buffer(), allocation_buffer(rhs_data).buffer(),
+            allocation_buffer(activation_data).buffer(), allocation_buffer(output_data).buffer(),
+            go_layout, rhs_layout, activation_layout, output_layout, rows,
+            static_cast<uint32_t>(grad_output.size(1)), static_cast<uint32_t>(rhs.size(1)));
+    } else if (operation == 5) {
+        platform.compute().linear_relu_backward_weight(
+            allocation_buffer(go_data).buffer(), allocation_buffer(rhs_data).buffer(),
+            allocation_buffer(activation_data).buffer(), allocation_buffer(output_data).buffer(),
+            go_layout, rhs_layout, activation_layout, output_layout, rows,
+            static_cast<uint32_t>(rhs.size(1)), static_cast<uint32_t>(grad_output.size(1)));
+    } else {
+        platform.compute().linear_relu_backward_bias(
+            allocation_buffer(go_data).buffer(), allocation_buffer(activation_data).buffer(),
+            allocation_buffer(output_data).buffer(), go_layout, activation_layout,
+            output_layout, rows, static_cast<uint32_t>(grad_output.size(1)));
+    }
+    return output;
+}
 } // namespace
 
 at::Tensor linear_backward_input(const at::Tensor &grad_output,
@@ -189,6 +250,24 @@ at::Tensor linear_backward_weight(const at::Tensor &grad_output,
 
 at::Tensor linear_backward_bias(const at::Tensor &grad_output) {
     return at::sum(grad_output, {0});
+}
+
+at::Tensor linear_relu_backward_input(const at::Tensor &grad_output,
+                                      const at::Tensor &weight,
+                                      const at::Tensor &activation) {
+    return fused_gradient(grad_output, weight, activation,
+                          {grad_output.size(0), weight.size(1)}, 4);
+}
+at::Tensor linear_relu_backward_weight(const at::Tensor &grad_output,
+                                       const at::Tensor &input,
+                                       const at::Tensor &activation) {
+    return fused_gradient(grad_output, input, activation,
+                          {grad_output.size(1), input.size(1)}, 5);
+}
+at::Tensor linear_relu_backward_bias(const at::Tensor &grad_output,
+                                     const at::Tensor &activation) {
+    auto masked = relu_backward_tensor(activation, grad_output);
+    return at::sum(masked, {0});
 }
 
 at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tensor &mat2,
@@ -219,4 +298,16 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     m.impl("linear", &pytorch_vulkan::autograd_linear);
+}
+
+TORCH_LIBRARY(pytorch_vulkan, m) {
+    m.def("linear_relu(Tensor input, Tensor weight, Tensor bias) -> Tensor");
+}
+
+TORCH_LIBRARY_IMPL(pytorch_vulkan, PrivateUse1, m) {
+    m.impl("linear_relu", &pytorch_vulkan::linear_relu);
+}
+
+TORCH_LIBRARY_IMPL(pytorch_vulkan, AutogradPrivateUse1, m) {
+    m.impl("linear_relu", &pytorch_vulkan::autograd_linear_relu);
 }

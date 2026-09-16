@@ -43,6 +43,8 @@ PYBIND11_MODULE(_C, module) {
                [] { pytorch_vulkan::platform()->compute().cancel_training_step(); });
     module.def("explicit_transfer_count",
                [] { return pytorch_vulkan::platform()->explicit_transfer_count(); });
+    module.def("pending_compute_count",
+               [] { return pytorch_vulkan::platform()->pending_compute_count(); });
     module.def("vulkan_copy_count",
                [] { return pytorch_vulkan::platform()->vulkan_copy_count(); });
     module.def("copy_command_count",

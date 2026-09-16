@@ -339,6 +339,26 @@ def test_fixed_mlp_forward_backward_runs_on_vulkan(vulkan_backend):
     assert transfers == 0
 
 
+def test_fused_linear_relu_training_scope_retires_resources(vulkan_backend):
+    torch.manual_seed(107)
+    inputs = torch.randn(3, 8).to(vulkan_backend).requires_grad_()
+    weight = torch.randn(16, 8).to(vulkan_backend).requires_grad_()
+    bias = torch.randn(16).to(vulkan_backend).requires_grad_()
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        output = torch.ops.pytorch_vulkan.linear_relu(inputs, weight, bias)
+        loss = output.mul(output).sum()
+        loss.backward()
+        assert pytorch_vulkan._C.compute_submitted_count() == 0
+        assert pytorch_vulkan._C.compute_completed_count() == 0
+    finally:
+        pytorch_vulkan._C.end_training_step()
+    assert pytorch_vulkan._C.compute_submission_count() == 1
+    assert pytorch_vulkan._C.pending_compute_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+
+
 def test_user_facing_vulkan_inplace_add_remains_rejected(vulkan_backend):
     value = torch.randn(2, 8).to(vulkan_backend)
     with pytest.raises(RuntimeError, match="in-place operations are unsupported"):

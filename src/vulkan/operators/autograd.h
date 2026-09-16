@@ -202,6 +202,7 @@ at::Tensor autograd_rsub_scalar(const at::Tensor &, const at::Scalar &,
 at::Tensor autograd_mul_scalar(const at::Tensor &, const at::Scalar &);
 at::Tensor autograd_linear(const at::Tensor &, const at::Tensor &,
                            const c10::optional<at::Tensor> &);
+at::Tensor autograd_linear_relu(const at::Tensor &, const at::Tensor &, const at::Tensor &);
 at::Tensor autograd_convolution(const at::Tensor &, const at::Tensor &,
                                 const c10::optional<at::Tensor> &, at::IntArrayRef,
                                 at::IntArrayRef, at::IntArrayRef, bool, at::IntArrayRef,

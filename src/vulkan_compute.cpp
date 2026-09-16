@@ -1068,17 +1068,27 @@ void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
     if (outputs64 != 0 && rows64 > std::numeric_limits<uint64_t>::max() / outputs64)
         throw std::invalid_argument(
             "Vulkan linear output count multiplication overflows uint64");
-    const uint64_t output_numel64 = rows64 * outputs64;
+    const uint64_t output_numel64 = operation == 5
+                                        ? static_cast<uint64_t>(features) * outputs64
+                                        : operation == 6 ? outputs64 : rows64 * outputs64;
     if (output_numel64 > std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("Vulkan linear output count overflow");
     const uint64_t input_numel64 = rows64 * static_cast<uint64_t>(features);
     const uint64_t weight_numel64 = static_cast<uint64_t>(features) * outputs64;
     const uint64_t bias_numel64 = has_bias ? outputs64 : 1;
     const uint64_t expected_input_numel =
-        operation == 2 ? static_cast<uint64_t>(features) * rows64 : input_numel64;
+        operation == 2 ? static_cast<uint64_t>(features) * rows64
+        : operation == 4 ? rows64 * static_cast<uint64_t>(features)
+        : operation == 5 ? rows64 * outputs64 : input_numel64;
+    const uint64_t expected_weight_numel =
+        operation == 5 || operation == 6 ? rows64 * static_cast<uint64_t>(features)
+                                         : weight_numel64;
+    const uint64_t expected_bias_numel =
+        operation == 4 ? rows64 * static_cast<uint64_t>(features)
+        : operation == 5 || operation == 6 ? rows64 * outputs64 : bias_numel64;
     if (input_layout.numel != static_cast<int64_t>(expected_input_numel) ||
-        weight_layout.numel != static_cast<int64_t>(weight_numel64) ||
-        bias_layout.numel != static_cast<int64_t>(bias_numel64) ||
+        weight_layout.numel != static_cast<int64_t>(expected_weight_numel) ||
+        bias_layout.numel != static_cast<int64_t>(expected_bias_numel) ||
         output_layout.numel != static_cast<int64_t>(output_numel64))
         throw std::invalid_argument(
             "Vulkan linear metadata does not match dimensions; invalid range");
@@ -1094,6 +1104,32 @@ void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
                    output_layout.allocation_bytes, &params, sizeof(params),
                    static_cast<uint32_t>(output_numel64), VK_NULL_HANDLE,
                    VK_NULL_HANDLE, VK_NULL_HANDLE, &metadata, sizeof(metadata));
+}
+
+void VulkanCompute::linear_relu_backward_input(
+    VkBuffer grad_output, VkBuffer weight, VkBuffer activation, VkBuffer output,
+    const VulkanTensorLayout &go, const VulkanTensorLayout &w,
+    const VulkanTensorLayout &a, const VulkanTensorLayout &out,
+    uint32_t rows, uint32_t output_features, uint32_t input_features) const {
+    linear(grad_output, weight, activation, output, go, w, a, out, rows,
+           output_features, input_features, false, false, 4);
+}
+
+void VulkanCompute::linear_relu_backward_weight(
+    VkBuffer grad_output, VkBuffer input, VkBuffer activation, VkBuffer output,
+    const VulkanTensorLayout &go, const VulkanTensorLayout &x,
+    const VulkanTensorLayout &a, const VulkanTensorLayout &out,
+    uint32_t rows, uint32_t features, uint32_t outputs) const {
+    linear(grad_output, input, activation, output, go, x, a, out, rows, features,
+           outputs, false, false, 5);
+}
+
+void VulkanCompute::linear_relu_backward_bias(
+    VkBuffer grad_output, VkBuffer activation, VkBuffer output,
+    const VulkanTensorLayout &go, const VulkanTensorLayout &a,
+    const VulkanTensorLayout &out, uint32_t rows, uint32_t outputs) const {
+    linear(grad_output, activation, activation, output, go, a, a, out, rows, outputs,
+           outputs, false, false, 6);
 }
 
 void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,

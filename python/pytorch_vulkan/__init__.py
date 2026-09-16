@@ -2,6 +2,8 @@ import torch
 import inspect
 
 from ._C import current_device, device_count, formatter_double_supported, is_available, set_device
+from .compiler import compiler_stats, vulkan_backend
+from .compiler_metadata import validate_compiler_tensor_metadata
 from .serialization import load, save
 
 
@@ -135,4 +137,5 @@ class _VulkanValidatedAdam(torch.optim.Adam):
 torch.optim.SGD = _VulkanValidatedSGD
 torch.optim.Adam = _VulkanValidatedAdam
 
-__all__ = ["device_count", "formatter_double_supported", "is_available", "load", "save"]
+__all__ = ["compiler_stats", "device_count", "formatter_double_supported", "is_available", "load",
+           "save", "validate_compiler_tensor_metadata", "vulkan_backend"]

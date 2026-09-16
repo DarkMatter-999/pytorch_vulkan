@@ -88,9 +88,20 @@ class VulkanCompute final {
                 const VulkanTensorLayout &input_layout,
                 const VulkanTensorLayout &weight_layout,
                 const VulkanTensorLayout &bias_layout,
-                const VulkanTensorLayout &output_layout, uint32_t rows,
-                uint32_t features, uint32_t outputs, bool transposed_weight = false,
-                bool has_bias = true, uint32_t operation = 0) const;
+                 const VulkanTensorLayout &output_layout, uint32_t rows,
+                 uint32_t features, uint32_t outputs, bool transposed_weight = false,
+                 bool has_bias = true, uint32_t operation = 0) const;
+    void linear_relu_backward_input(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
+                                    const VulkanTensorLayout &, const VulkanTensorLayout &,
+                                    const VulkanTensorLayout &, const VulkanTensorLayout &,
+                                    uint32_t, uint32_t, uint32_t) const;
+    void linear_relu_backward_weight(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
+                                     const VulkanTensorLayout &, const VulkanTensorLayout &,
+                                     const VulkanTensorLayout &, const VulkanTensorLayout &,
+                                     uint32_t, uint32_t, uint32_t) const;
+    void linear_relu_backward_bias(VkBuffer, VkBuffer, VkBuffer,
+                                   const VulkanTensorLayout &, const VulkanTensorLayout &,
+                                   const VulkanTensorLayout &, uint32_t, uint32_t) const;
     void convolution(VkBuffer input, VkBuffer weight, VkBuffer bias, VkBuffer output,
                      const VulkanTensorLayout &input_layout,
                      const VulkanTensorLayout &weight_layout,
