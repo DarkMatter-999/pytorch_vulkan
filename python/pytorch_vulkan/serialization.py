@@ -48,6 +48,31 @@ def _checked_layout_values(dtype, layout, sizes, strides, offset,
         reachable = offset + sum((size - 1) * stride for size, stride in zip(sizes, strides))
         if reachable >= storage_elements:
             raise ValueError(f"{label}: view reaches outside the serialized storage")
+        dimensions = sorted((stride, size) for size, stride in zip(sizes, strides)
+                            if size > 1)
+        span = 0
+        for stride, size in dimensions:
+            if stride <= span:
+                if any(stride == 0 for stride, _ in dimensions):
+                    raise ValueError(f"{label}: overlapping view metadata is unsupported")
+                element_count = 1
+                for value in sizes:
+                    element_count *= value
+                if element_count > 1 << 20:
+                    raise ValueError(f"{label}: overlap classification is unsupported")
+                addresses = set()
+                for linear in range(element_count):
+                    remaining = linear
+                    address = 0
+                    for size, item_stride in reversed(tuple(zip(sizes, strides))):
+                        coordinate = remaining % size
+                        remaining //= size
+                        address += coordinate * item_stride
+                    if address in addresses:
+                        raise ValueError(f"{label}: overlapping view metadata is unsupported")
+                    addresses.add(address)
+                break
+            span += (size - 1) * stride
     return tuple(sizes), tuple(strides), offset
 
 
