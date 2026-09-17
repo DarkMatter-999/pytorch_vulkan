@@ -1,0 +1,107 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer GradOutput { float grad_output[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Input { float input_values[]; };
+layout(set = 0, binding = 2, std430) readonly buffer Weight { float weight_values[]; };
+layout(set = 0, binding = 3, std430) readonly buffer Activation { float activation_values[]; };
+layout(set = 0, binding = 4, std430) writeonly buffer DInput { float dInput[]; };
+layout(set = 0, binding = 5, std430) writeonly buffer DWeight { float dWeight[]; };
+layout(set = 0, binding = 6, std430) writeonly buffer DBias { float dBias[]; };
+
+struct TensorMetadata {
+  uint rank;
+  uint sizes[8];
+  uint strides[8];
+  uint storage_offset;
+  uint padding[2];
+};
+layout(set = 0, binding = 7, std430) readonly buffer Metadata {
+  TensorMetadata tensors[7];
+} metadata;
+
+layout(push_constant) uniform Params {
+  uint rows;
+  uint input_features;
+  uint output_features;
+  uint input_region_offset;
+  uint input_region_count;
+  uint weight_region_offset;
+  uint weight_region_count;
+  uint bias_region_offset;
+  uint bias_region_count;
+} params;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  TensorMetadata grad_meta = metadata.tensors[0];
+  TensorMetadata input_meta = metadata.tensors[1];
+  TensorMetadata weight_meta = metadata.tensors[2];
+  TensorMetadata activation_meta = metadata.tensors[3];
+  TensorMetadata d_input_meta = metadata.tensors[4];
+  TensorMetadata d_weight_meta = metadata.tensors[5];
+  TensorMetadata d_bias_meta = metadata.tensors[6];
+
+  if (index >= params.input_region_offset &&
+      index < params.input_region_offset + params.input_region_count) {
+    uint local = index - params.input_region_offset;
+    uint row = local / params.input_features;
+    uint input_feature = local % params.input_features;
+    float value = 0.0;
+    for (uint output_feature = 0u; output_feature < params.output_features; ++output_feature) {
+      uint go_index = grad_meta.storage_offset + row * grad_meta.strides[0] +
+          output_feature * grad_meta.strides[1];
+      uint activation_index = activation_meta.storage_offset +
+          row * activation_meta.strides[0] + output_feature * activation_meta.strides[1];
+      uint weight_index = weight_meta.storage_offset +
+          output_feature * weight_meta.strides[0] + input_feature * weight_meta.strides[1];
+      float activation_value = activation_values[activation_index];
+      value += grad_output[go_index] * weight_values[weight_index] *
+          (activation_value > 0.0 ? 1.0 : 0.0);
+    }
+    uint output_index = d_input_meta.storage_offset +
+        row * d_input_meta.strides[0] + input_feature * d_input_meta.strides[1];
+    dInput[output_index] = value;
+    return;
+  }
+
+  if (index >= params.weight_region_offset &&
+      index < params.weight_region_offset + params.weight_region_count) {
+    uint local = index - params.weight_region_offset;
+    uint output_feature = local / params.input_features;
+    uint input_feature = local % params.input_features;
+    float value = 0.0;
+    for (uint row = 0u; row < params.rows; ++row) {
+      uint go_index = grad_meta.storage_offset + row * grad_meta.strides[0] +
+          output_feature * grad_meta.strides[1];
+      uint input_index = input_meta.storage_offset + row * input_meta.strides[0] +
+          input_feature * input_meta.strides[1];
+      uint activation_index = activation_meta.storage_offset +
+          row * activation_meta.strides[0] + output_feature * activation_meta.strides[1];
+      float activation_value = activation_values[activation_index];
+      value += grad_output[go_index] * input_values[input_index] *
+          (activation_value > 0.0 ? 1.0 : 0.0);
+    }
+    uint output_index = d_weight_meta.storage_offset +
+        output_feature * d_weight_meta.strides[0] + input_feature * d_weight_meta.strides[1];
+    dWeight[output_index] = value;
+    return;
+  }
+
+  if (index >= params.bias_region_offset &&
+      index < params.bias_region_offset + params.bias_region_count) {
+    uint output_feature = index - params.bias_region_offset;
+    float value = 0.0;
+    for (uint row = 0u; row < params.rows; ++row) {
+      uint go_index = grad_meta.storage_offset + row * grad_meta.strides[0] +
+          output_feature * grad_meta.strides[1];
+      uint activation_index = activation_meta.storage_offset +
+          row * activation_meta.strides[0] + output_feature * activation_meta.strides[1];
+      float activation_value = activation_values[activation_index];
+      value += grad_output[go_index] * (activation_value > 0.0 ? 1.0 : 0.0);
+    }
+    uint output_index = d_bias_meta.storage_offset + output_feature * d_bias_meta.strides[0];
+    dBias[output_index] = value;
+  }
+}

@@ -9,9 +9,22 @@
 
 #include <torch/library.h>
 
+#include <cstdlib>
+#include <cstring>
+
 namespace pytorch_vulkan {
 
 namespace {
+bool disable_multi_output_backward() {
+    const char *value = std::getenv("PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+bool supports_multi_output_backward(const at::Tensor &tensor) {
+    return tensor.scalar_type() == at::kFloat && tensor.dim() == 2 &&
+           tensor.is_contiguous();
+}
+
 class ConvolutionAutogradFunction final
     : public torch::autograd::Function<ConvolutionAutogradFunction> {
   public:
@@ -93,9 +106,17 @@ class LinearReluAutogradFunction final
         at::AutoDispatchBelowAutograd guard;
         if (!grads[0].defined()) return {at::Tensor(), at::Tensor(), at::Tensor()};
         auto saved = ctx->get_saved_variables();
-        return {linear_relu_backward_input(grads[0], saved[1], saved[2]),
-                linear_relu_backward_weight(grads[0], saved[0], saved[2]),
-                linear_relu_backward_bias(grads[0], saved[2])};
+        if (disable_multi_output_backward() ||
+            !supports_multi_output_backward(grads[0]) ||
+            !supports_multi_output_backward(saved[0]) ||
+            !supports_multi_output_backward(saved[1]) ||
+            !supports_multi_output_backward(saved[2]))
+            return {linear_relu_backward_input(grads[0], saved[1], saved[2]),
+                    linear_relu_backward_weight(grads[0], saved[0], saved[2]),
+                    linear_relu_backward_bias(grads[0], saved[2])};
+        auto gradients = linear_relu_backward(grads[0], saved[0], saved[1], saved[2]);
+        return {std::get<0>(gradients), std::get<1>(gradients),
+                std::get<2>(gradients)};
     }
 };
 class AdaptiveAvgPoolAutogradFunction final

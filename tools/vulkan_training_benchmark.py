@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import time
 
 import torch
@@ -60,8 +61,12 @@ def train_step(model, optimizer, inputs, targets, scoped):
     return loss
 
 
-def run(kind, mode, steps, batch_size, seed):
+def run(kind, mode, backward_mode, steps, batch_size, seed):
     device = "vk:0"
+    if backward_mode == "unfused":
+        os.environ["PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD"] = "1"
+    else:
+        os.environ.pop("PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD", None)
     model = make_mlp(device, seed) if kind == "mlp" else make_mnist(device, seed)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     cpu_inputs, cpu_targets = make_data(kind, seed + 1, batch_size)
@@ -85,6 +90,7 @@ def run(kind, mode, steps, batch_size, seed):
     result = {
         "workload": kind,
         "mode": mode,
+        "backward_mode": backward_mode,
         "batch_size": batch_size,
         "steps": steps,
         "seed": seed,
@@ -113,6 +119,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workload", choices=("mlp", "mnist", "both"), default="both")
     parser.add_argument("--mode", choices=("sync", "step", "both"), default="both")
+    parser.add_argument("--backward-mode", choices=("fused", "unfused"), default="fused")
     parser.add_argument("--mlp-steps", type=int, default=100)
     parser.add_argument("--mnist-steps", type=int, default=10)
     parser.add_argument("--mnist-batch-size", type=int, default=512)
@@ -124,7 +131,8 @@ def main():
     modes = ("sync", "step") if args.mode == "both" else (args.mode,)
     for kind in workloads:
         for mode in modes:
-            run(kind, mode, args.mlp_steps if kind == "mlp" else args.mnist_steps,
+            run(kind, mode, args.backward_mode,
+                args.mlp_steps if kind == "mlp" else args.mnist_steps,
                 3 if kind == "mlp" else args.mnist_batch_size, 17)
     return 0
 

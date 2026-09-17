@@ -3,6 +3,7 @@
 #include "vulkan/shaders/generated/convolution_spv.h"
 #include "vulkan/shaders/generated/f32_to_double_spv.h"
 #include "vulkan/shaders/generated/formatter_double_spv.h"
+#include "vulkan/shaders/generated/linear_relu_backward_spv.h"
 #include "vulkan/shaders/generated/masked_select_spv.h"
 #include "vulkan/shaders/generated/model_spv.h"
 #include "vulkan/shaders/generated/pointwise_spv.h"
@@ -13,6 +14,8 @@
 #include "vulkan_platform.h"
 
 #include <cstdint>
+#include <algorithm>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -81,8 +84,17 @@ struct BroadcastMetadata {
 struct LinearParams {
     uint32_t rows, features, outputs, transposed_weight, has_bias, operation;
 };
+struct MultiOutputParams {
+    uint32_t rows, input_features, output_features;
+    uint32_t input_region_offset, input_region_count;
+    uint32_t weight_region_offset, weight_region_count;
+    uint32_t bias_region_offset, bias_region_count;
+};
 struct ModelMetadata {
     TensorMetadata tensors[4];
+};
+struct MultiOutputMetadata {
+    TensorMetadata tensors[7];
 };
 struct PoolingMetadata {
     TensorMetadata tensors[2];
@@ -109,6 +121,16 @@ struct FormatterDoubleParams {
 constexpr uint32_t kAdd = 0;
 constexpr uint32_t kWorkgroupSize = 256;
 constexpr uint32_t kMaxPointwiseRank = 8;
+
+bool ranges_overlap(VkBuffer lhs_buffer, const VulkanTensorLayout &lhs,
+                    VkBuffer rhs_buffer, const VulkanTensorLayout &rhs) {
+    if (lhs_buffer != rhs_buffer || lhs.byte_range == 0 || rhs.byte_range == 0)
+        return false;
+    const uint64_t lhs_end = static_cast<uint64_t>(lhs.byte_offset) + lhs.byte_range;
+    const uint64_t rhs_end = static_cast<uint64_t>(rhs.byte_offset) + rhs.byte_range;
+    return static_cast<uint64_t>(lhs.byte_offset) < rhs_end &&
+           static_cast<uint64_t>(rhs.byte_offset) < lhs_end;
+}
 
 template <typename Params>
 void fill_layout_metadata(Params &params, const VulkanTensorLayout &layout,
@@ -196,9 +218,16 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         vkGetPhysicalDeviceProperties(platform.physical_device(), &properties);
         max_storage_buffer_range_ = properties.limits.maxStorageBufferRange;
         max_compute_workgroup_count_x_ = properties.limits.maxComputeWorkGroupCount[0];
+        max_push_constants_size_ = properties.limits.maxPushConstantsSize;
         if (properties.limits.maxPushConstantsSize < sizeof(Params))
             throw std::runtime_error(
                 "device maxPushConstantsSize is smaller than pointwise ABI");
+        if (properties.limits.maxPushConstantsSize < sizeof(LinearParams))
+            throw std::runtime_error(
+                "device maxPushConstantsSize is smaller than linear ABI");
+        if (properties.limits.maxPushConstantsSize < sizeof(MultiOutputParams))
+            throw std::runtime_error(
+                "device maxPushConstantsSize is smaller than backward ABI");
 
         const VkDescriptorSetLayoutBinding lhs_binding = {
             0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -533,6 +562,51 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                               &model_pipeline_info, nullptr,
                                               &model_pipeline_),
                      "could not create model pipeline");
+        // This layout is deliberately independent of model_descriptor_layout_.
+        VkDescriptorSetLayoutBinding backward_bindings[8]{};
+        for (uint32_t binding = 0; binding < 8; ++binding) {
+            backward_bindings[binding] = {
+                binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        }
+        VkDescriptorSetLayoutCreateInfo backward_layout{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        backward_layout.bindingCount = 8;
+        backward_layout.pBindings = backward_bindings;
+        check_result(vkCreateDescriptorSetLayout(device_, &backward_layout, nullptr,
+                                                 &backward_descriptor_layout_),
+                     "could not create backward descriptor-set layout");
+        VkShaderModuleCreateInfo backward_shader_info{
+            VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+            vulkan_backward_shader::kCodeSize, vulkan_backward_shader::kCode};
+        check_result(vkCreateShaderModule(device_, &backward_shader_info, nullptr,
+                                          &backward_shader_),
+                     "could not create backward shader module");
+        VkPushConstantRange backward_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                           sizeof(MultiOutputParams)};
+        VkPipelineLayoutCreateInfo backward_pipeline_layout_info{
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        backward_pipeline_layout_info.setLayoutCount = 1;
+        backward_pipeline_layout_info.pSetLayouts = &backward_descriptor_layout_;
+        backward_pipeline_layout_info.pushConstantRangeCount = 1;
+        backward_pipeline_layout_info.pPushConstantRanges = &backward_push;
+        check_result(vkCreatePipelineLayout(
+                         device_, &backward_pipeline_layout_info, nullptr,
+                          &backward_pipeline_layout_),
+                     "could not create backward pipeline layout");
+        VkPipelineShaderStageCreateInfo backward_stage{
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        backward_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        backward_stage.module = backward_shader_;
+        backward_stage.pName = "main";
+        VkComputePipelineCreateInfo backward_pipeline_info{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        backward_pipeline_info.stage = backward_stage;
+        backward_pipeline_info.layout = backward_pipeline_layout_;
+        check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
+                                              &backward_pipeline_info, nullptr,
+                                              &backward_pipeline_),
+                     "could not create backward compute pipeline");
         VkDescriptorSetLayoutCreateInfo convolution_layout{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         convolution_layout.bindingCount = 5;
@@ -644,6 +718,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipeline(device_, broadcast_pipeline_, nullptr);
         if (model_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, model_pipeline_, nullptr);
+        if (backward_pipeline_ != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, backward_pipeline_, nullptr);
         if (convolution_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, convolution_pipeline_, nullptr);
         if (pooling_pipeline_ != VK_NULL_HANDLE)
@@ -669,6 +745,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, broadcast_shader_, nullptr);
         if (model_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, model_shader_, nullptr);
+        if (backward_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, backward_shader_, nullptr);
         if (convolution_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, convolution_shader_, nullptr);
         if (pooling_shader_ != VK_NULL_HANDLE)
@@ -694,6 +772,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipelineLayout(device_, broadcast_pipeline_layout_, nullptr);
         if (model_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, model_pipeline_layout_, nullptr);
+        if (backward_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, backward_pipeline_layout_, nullptr);
         if (convolution_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, convolution_pipeline_layout_, nullptr);
         if (pooling_pipeline_layout_ != VK_NULL_HANDLE)
@@ -721,6 +801,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                          nullptr);
         if (model_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, model_descriptor_layout_, nullptr);
+        if (backward_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, backward_descriptor_layout_, nullptr);
         if (convolution_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, convolution_descriptor_layout_,
                                          nullptr);
@@ -754,6 +836,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, broadcast_pipeline_, nullptr);
     if (model_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, model_pipeline_, nullptr);
+    if (backward_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, backward_pipeline_, nullptr);
     if (convolution_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, convolution_pipeline_, nullptr);
     if (pooling_pipeline_ != VK_NULL_HANDLE)
@@ -783,6 +867,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, broadcast_shader_, nullptr);
     if (model_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, model_shader_, nullptr);
+    if (backward_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, backward_shader_, nullptr);
     if (convolution_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, convolution_shader_, nullptr);
     if (pooling_shader_ != VK_NULL_HANDLE)
@@ -812,6 +898,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, broadcast_pipeline_layout_, nullptr);
     if (model_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, model_pipeline_layout_, nullptr);
+    if (backward_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, backward_pipeline_layout_, nullptr);
     if (convolution_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, convolution_pipeline_layout_, nullptr);
     if (pooling_pipeline_layout_ != VK_NULL_HANDLE)
@@ -841,6 +929,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyDescriptorSetLayout(device_, broadcast_descriptor_layout_, nullptr);
     if (model_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, model_descriptor_layout_, nullptr);
+    if (backward_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, backward_descriptor_layout_, nullptr);
     if (convolution_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, convolution_descriptor_layout_, nullptr);
     if (pooling_descriptor_layout_ != VK_NULL_HANDLE)
@@ -1132,6 +1222,84 @@ void VulkanCompute::linear_relu_backward_bias(
            outputs, false, false, 6);
 }
 
+void VulkanCompute::linear_relu_backward(
+    const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
+    const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+    const VulkanBuffer *weight, const VulkanTensorLayout &weight_layout,
+    const VulkanBuffer *activation, const VulkanTensorLayout &activation_layout,
+    const VulkanBuffer *d_input, const VulkanTensorLayout &d_input_layout,
+    const VulkanBuffer *d_weight, const VulkanTensorLayout &d_weight_layout,
+    const VulkanBuffer *d_bias, const VulkanTensorLayout &d_bias_layout,
+    uint32_t rows, uint32_t features, uint32_t outputs) const {
+    const uint64_t input_numel = checked_product(rows, features, "backward input");
+    const uint64_t weight_numel = checked_product(features, outputs, "backward weight");
+    const uint64_t gradient_numel = checked_product(rows, outputs, "backward gradient");
+    const uint64_t bias_offset = input_numel + weight_numel;
+    const uint64_t invocation_count = bias_offset + outputs;
+    if (input_numel > std::numeric_limits<uint32_t>::max() ||
+        weight_numel > std::numeric_limits<uint32_t>::max() ||
+        bias_offset > std::numeric_limits<uint32_t>::max() ||
+        invocation_count > std::numeric_limits<uint32_t>::max() ||
+        gradient_numel > std::numeric_limits<int64_t>::max() || outputs == 0 ||
+        grad_output_layout.numel != static_cast<int64_t>(gradient_numel) ||
+        input_layout.numel != static_cast<int64_t>(input_numel) ||
+        weight_layout.numel != static_cast<int64_t>(weight_numel) ||
+        activation_layout.numel != static_cast<int64_t>(gradient_numel) ||
+        d_input_layout.numel != static_cast<int64_t>(input_numel) ||
+        d_weight_layout.numel != static_cast<int64_t>(weight_numel) ||
+        d_bias_layout.numel != static_cast<int64_t>(outputs))
+        throw std::invalid_argument(
+            "Vulkan multi-output backward metadata does not match dimensions");
+    const auto has_shape = [](const VulkanTensorLayout &layout, uint32_t rank,
+                              std::initializer_list<uint32_t> shape) {
+        if (layout.rank != static_cast<int64_t>(rank) ||
+            layout.sizes.size() != rank || layout.strides.size() != rank)
+            return false;
+        uint32_t index = 0;
+        for (uint32_t size : shape)
+            if (layout.sizes[index++] != static_cast<int64_t>(size))
+                return false;
+        return true;
+    };
+    if (!has_shape(grad_output_layout, 2, {rows, outputs}) ||
+        !has_shape(input_layout, 2, {rows, features}) ||
+        !has_shape(weight_layout, 2, {outputs, features}) ||
+        !has_shape(activation_layout, 2, {rows, outputs}) ||
+        !has_shape(d_input_layout, 2, {rows, features}) ||
+        !has_shape(d_weight_layout, 2, {outputs, features}) ||
+        !has_shape(d_bias_layout, 1, {outputs}))
+        throw std::invalid_argument(
+            "Vulkan multi-output backward tensor shapes do not match dimensions");
+
+    MultiOutputMetadata metadata{};
+    const VulkanTensorLayout *layouts[] = {
+        &grad_output_layout, &input_layout, &weight_layout, &activation_layout,
+        &d_input_layout,     &d_weight_layout, &d_bias_layout};
+    for (uint32_t i = 0; i < 7; ++i)
+        fill_layout_metadata(metadata.tensors[i], *layouts[i], "backward tensor");
+    MultiOutputParams params{
+        rows,
+        features,
+        outputs,
+        0,
+        static_cast<uint32_t>(input_numel),
+        static_cast<uint32_t>(input_numel),
+        static_cast<uint32_t>(weight_numel),
+        static_cast<uint32_t>(bias_offset),
+        outputs,
+    };
+    const VulkanBuffer *inputs[] = {grad_output, input, weight, activation};
+    const VulkanTensorLayout *input_layouts[] = {
+        &grad_output_layout, &input_layout, &weight_layout, &activation_layout};
+    const VulkanBuffer *outputs_buffers[] = {d_input, d_weight, d_bias};
+    const VulkanTensorLayout *output_layouts[] = {
+        &d_input_layout, &d_weight_layout, &d_bias_layout};
+    dispatch_multi_output(inputs, input_layouts, outputs_buffers, output_layouts, &params,
+                          sizeof(params), &metadata, sizeof(metadata), backward_pipeline_,
+                          backward_pipeline_layout_, backward_descriptor_layout_,
+                          static_cast<uint32_t>(invocation_count));
+}
+
 void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
                                 VkBuffer output, const VulkanTensorLayout &input_layout,
                                 const VulkanTensorLayout &weight_layout,
@@ -1293,6 +1461,127 @@ void VulkanCompute::dispatch_model(
             platform_.execution_context().cancel();
         cleanup();
         throw contextual_error("model dispatch failed", error);
+    }
+}
+
+void VulkanCompute::dispatch_multi_output(
+    const VulkanBuffer *const *inputs, const VulkanTensorLayout *const *input_layouts,
+    const VulkanBuffer *const *outputs,
+    const VulkanTensorLayout *const *output_layouts,
+    const void *params, uint32_t params_size, const void *metadata,
+    VkDeviceSize metadata_size, VkPipeline pipeline,
+    VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_layout,
+    uint32_t invocation_count) const {
+    if (inputs == nullptr || input_layouts == nullptr || outputs == nullptr ||
+        output_layouts == nullptr ||
+        params == nullptr || params_size == 0 ||
+        params_size > max_push_constants_size_ || metadata == nullptr ||
+        metadata_size != sizeof(MultiOutputMetadata) ||
+        metadata_size > max_storage_buffer_range_ || pipeline == VK_NULL_HANDLE ||
+        pipeline_layout == VK_NULL_HANDLE || descriptor_layout == VK_NULL_HANDLE ||
+        invocation_count == 0)
+        throw std::invalid_argument("Vulkan multi-output backward has invalid metadata");
+
+    const auto validate = [&](const VulkanBuffer *buffer,
+                              const VulkanTensorLayout *layout) {
+        if (buffer == nullptr || layout == nullptr || buffer->platform() != &platform_ ||
+            buffer->buffer() == VK_NULL_HANDLE ||
+            layout->allocation_bytes == 0 ||
+            layout->allocation_bytes > max_storage_buffer_range_ ||
+            layout->byte_range == 0 || layout->byte_offset > layout->allocation_bytes ||
+            layout->byte_range > layout->allocation_bytes - layout->byte_offset ||
+            layout->internal_overlap != pytorch_vulkan::VulkanOverlap::No)
+            throw std::invalid_argument("Vulkan multi-output backward has an invalid range");
+    };
+    for (uint32_t i = 0; i < 4; ++i)
+        validate(inputs[i], input_layouts[i]);
+    for (uint32_t i = 0; i < 3; ++i)
+        validate(outputs[i], output_layouts[i]);
+    for (uint32_t output = 0; output < 3; ++output) {
+        for (uint32_t other = output + 1; other < 3; ++other) {
+            if (ranges_overlap(outputs[output]->buffer(), *output_layouts[output],
+                               outputs[other]->buffer(),
+                               *output_layouts[other]))
+                throw std::invalid_argument(
+                    "Vulkan multi-output backward outputs overlap");
+        }
+        for (uint32_t input = 0; input < 4; ++input) {
+            if (ranges_overlap(outputs[output]->buffer(), *output_layouts[output],
+                               inputs[input]->buffer(),
+                               *input_layouts[input]))
+                throw std::invalid_argument(
+                    "Vulkan multi-output backward output aliases input");
+        }
+    }
+    const uint64_t dispatch_groups = checked_dispatch_groups(invocation_count);
+    if (dispatch_groups == 0 || dispatch_groups > max_compute_workgroup_count_x_)
+        throw std::invalid_argument("Vulkan multi-output backward dispatch count overflows");
+
+    std::scoped_lock lock(platform_.queue_mutex());
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::shared_ptr<VulkanBuffer> metadata_holder;
+    const auto cleanup = [&] {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device_, pool, nullptr);
+    };
+    try {
+        record_dispatch();
+        VkCommandBuffer cmd = platform_.execution_context().command_buffer();
+        metadata_holder = std::make_shared<VulkanBuffer>(
+            platform_, metadata_size,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        constexpr uint32_t descriptor_count = 8;
+        const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                             descriptor_count};
+        VkDescriptorPoolCreateInfo pool_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = 1;
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
+                     "could not create multi-output descriptor pool");
+        VkDescriptorSetAllocateInfo set_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        set_info.descriptorPool = pool;
+        set_info.descriptorSetCount = 1;
+        set_info.pSetLayouts = &descriptor_layout;
+        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
+                     "could not allocate multi-output descriptor set");
+        metadata_holder->write(metadata, metadata_size);
+        VkDescriptorBufferInfo infos[descriptor_count]{};
+        for (uint32_t i = 0; i < 4; ++i)
+            infos[i] = {inputs[i]->buffer(), 0, input_layouts[i]->allocation_bytes};
+        for (uint32_t i = 0; i < 3; ++i)
+            infos[4 + i] = {outputs[i]->buffer(), 0,
+                            output_layouts[i]->allocation_bytes};
+        infos[7] = {metadata_holder->buffer(), 0, metadata_size};
+        VkWriteDescriptorSet writes[descriptor_count]{};
+        for (uint32_t i = 0; i < descriptor_count; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &infos[i];
+        }
+        vkUpdateDescriptorSets(device_, descriptor_count, writes, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0,
+                                1, &set, 0, nullptr);
+        vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           params_size, params);
+        vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
+        platform_.execution_context().defer_destruction([metadata_holder] {});
+        platform_.execution_context().retain(pool);
+        pool = VK_NULL_HANDLE;
+        finish_dispatch();
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::exception &error) {
+        if (platform_.execution_context().recording())
+            platform_.execution_context().cancel();
+        cleanup();
+        throw contextual_error("multi-output dispatch failed", error);
     }
 }
 

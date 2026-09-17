@@ -6,6 +6,7 @@
 #include <cstddef>
 
 class VulkanPlatform;
+class VulkanBuffer;
 #include "vulkan_tensor_layout.h"
 
 using pytorch_vulkan::VulkanTensorLayout;
@@ -102,6 +103,17 @@ class VulkanCompute final {
     void linear_relu_backward_bias(VkBuffer, VkBuffer, VkBuffer,
                                    const VulkanTensorLayout &, const VulkanTensorLayout &,
                                    const VulkanTensorLayout &, uint32_t, uint32_t) const;
+    // Records the shared multi-output backward invocation.  The shader and
+    // operator integration are intentionally supplied by a later task.
+    void linear_relu_backward(
+        const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
+        const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+        const VulkanBuffer *weight, const VulkanTensorLayout &weight_layout,
+        const VulkanBuffer *activation, const VulkanTensorLayout &activation_layout,
+        const VulkanBuffer *d_input, const VulkanTensorLayout &d_input_layout,
+        const VulkanBuffer *d_weight, const VulkanTensorLayout &d_weight_layout,
+        const VulkanBuffer *d_bias, const VulkanTensorLayout &d_bias_layout,
+        uint32_t rows, uint32_t features, uint32_t outputs) const;
     void convolution(VkBuffer input, VkBuffer weight, VkBuffer bias, VkBuffer output,
                      const VulkanTensorLayout &input_layout,
                      const VulkanTensorLayout &weight_layout,
@@ -160,8 +172,17 @@ class VulkanCompute final {
                         VkPipeline pipeline = VK_NULL_HANDLE,
                         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE,
                         VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE,
-                        const void *metadata = nullptr,
-                        VkDeviceSize metadata_size = 0) const;
+                         const void *metadata = nullptr,
+                         VkDeviceSize metadata_size = 0) const;
+    void dispatch_multi_output(
+        const VulkanBuffer *const *inputs,
+        const VulkanTensorLayout *const *input_layouts,
+        const VulkanBuffer *const *outputs,
+        const VulkanTensorLayout *const *output_layouts,
+        const void *params, uint32_t params_size, const void *metadata,
+        VkDeviceSize metadata_size, VkPipeline pipeline,
+        VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_layout,
+        uint32_t invocation_count) const;
     void dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer output,
                          VkBuffer counter, uint32_t element_count,
                          VkDeviceSize output_bytes, VkPipeline pipeline,
@@ -198,6 +219,11 @@ class VulkanCompute final {
     VkPipelineLayout model_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule model_shader_ = VK_NULL_HANDLE;
     VkPipeline model_pipeline_ = VK_NULL_HANDLE;
+    // Kept separate from model_* to preserve the existing five-binding ABI.
+    VkDescriptorSetLayout backward_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout backward_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule backward_shader_ = VK_NULL_HANDLE;
+    VkPipeline backward_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout convolution_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout convolution_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule convolution_shader_ = VK_NULL_HANDLE;
@@ -223,6 +249,7 @@ class VulkanCompute final {
     VkShaderModule formatter_double_shader_ = VK_NULL_HANDLE;
     VkPipeline formatter_double_pipeline_ = VK_NULL_HANDLE;
     VkDeviceSize max_storage_buffer_range_ = 0;
+    uint32_t max_push_constants_size_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
     mutable std::atomic<std::size_t> submission_count_{0};

@@ -265,9 +265,75 @@ at::Tensor linear_relu_backward_weight(const at::Tensor &grad_output,
                           {grad_output.size(1), input.size(1)}, 5);
 }
 at::Tensor linear_relu_backward_bias(const at::Tensor &grad_output,
-                                     const at::Tensor &activation) {
+                                      const at::Tensor &activation) {
     auto masked = relu_backward_tensor(activation, grad_output);
     return at::sum(masked, {0});
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> linear_relu_backward(
+    const at::Tensor &grad_output, const at::Tensor &input,
+    const at::Tensor &weight, const at::Tensor &activation) {
+    validate_gradient_tensor(grad_output, "backward gradient output");
+    validate_gradient_tensor(input, "backward input");
+    validate_gradient_tensor(weight, "backward weight");
+    validate_gradient_tensor(activation, "backward activation");
+    TORCH_CHECK(grad_output.is_contiguous() && input.is_contiguous() &&
+                    weight.is_contiguous() && activation.is_contiguous(),
+                "Vulkan fused backward requires contiguous float32 tensors");
+    TORCH_CHECK(grad_output.sizes().equals(activation.sizes()) &&
+                    input.dim() == 2 && weight.dim() == 2 &&
+                    grad_output.size(0) == input.size(0) &&
+                    grad_output.size(1) == weight.size(0) &&
+                    input.size(1) == weight.size(1),
+                "Vulkan fused backward dimensions do not match");
+    const int64_t rows = input.size(0);
+    const int64_t features = input.size(1);
+    const int64_t outputs = weight.size(0);
+    TORCH_CHECK(rows <= std::numeric_limits<uint32_t>::max() &&
+                    features <= std::numeric_limits<uint32_t>::max() &&
+                    outputs <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan fused backward dimensions exceed dispatch limits");
+    at::Tensor d_input = at::empty({rows, features}, input.options());
+    at::Tensor d_weight = at::empty({outputs, features}, input.options());
+    at::Tensor d_bias = at::empty({outputs}, input.options());
+    const auto go_layout = inspect_vulkan_tensor_layout(grad_output, "backward gradient output");
+    const auto input_layout = inspect_vulkan_tensor_layout(input, "backward input");
+    const auto weight_layout = inspect_vulkan_tensor_layout(weight, "backward weight");
+    const auto activation_layout = inspect_vulkan_tensor_layout(activation, "backward activation");
+    const auto d_input_layout = inspect_vulkan_tensor_layout(d_input, "backward dInput");
+    const auto d_weight_layout = inspect_vulkan_tensor_layout(d_weight, "backward dWeight");
+    const auto d_bias_layout = inspect_vulkan_tensor_layout(d_bias, "backward dBias");
+    const auto &go_data = grad_output.storage().data_ptr();
+    const auto &input_data = input.storage().data_ptr();
+    const auto &weight_data = weight.storage().data_ptr();
+    const auto &activation_data = activation.storage().data_ptr();
+    const auto &d_input_data = d_input.storage().data_ptr();
+    const auto &d_weight_data = d_weight.storage().data_ptr();
+    const auto &d_bias_data = d_bias.storage().data_ptr();
+    const auto &platform = allocation_platform(go_data);
+    TORCH_CHECK(&platform == &allocation_platform(input_data) &&
+                    &platform == &allocation_platform(weight_data) &&
+                    &platform == &allocation_platform(activation_data) &&
+                    &platform == &allocation_platform(d_input_data) &&
+                    &platform == &allocation_platform(d_weight_data) &&
+                    &platform == &allocation_platform(d_bias_data),
+                "Vulkan fused backward requires one Vulkan platform");
+    validate_allocation(go_data, go_layout.allocation_bytes, "backward gradient output");
+    validate_allocation(input_data, input_layout.allocation_bytes, "backward input");
+    validate_allocation(weight_data, weight_layout.allocation_bytes, "backward weight");
+    validate_allocation(activation_data, activation_layout.allocation_bytes, "backward activation");
+    validate_allocation(d_input_data, d_input_layout.allocation_bytes, "backward dInput");
+    validate_allocation(d_weight_data, d_weight_layout.allocation_bytes, "backward dWeight");
+    validate_allocation(d_bias_data, d_bias_layout.allocation_bytes, "backward dBias");
+    auto &compute = platform.compute();
+    compute.linear_relu_backward(
+        &allocation_buffer(go_data), go_layout, &allocation_buffer(input_data), input_layout,
+        &allocation_buffer(weight_data), weight_layout, &allocation_buffer(activation_data),
+        activation_layout, &allocation_buffer(d_input_data), d_input_layout,
+        &allocation_buffer(d_weight_data), d_weight_layout, &allocation_buffer(d_bias_data),
+        d_bias_layout, static_cast<uint32_t>(rows), static_cast<uint32_t>(features),
+        static_cast<uint32_t>(outputs));
+    return {d_input, d_weight, d_bias};
 }
 
 at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tensor &mat2,

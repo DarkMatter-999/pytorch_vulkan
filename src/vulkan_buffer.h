@@ -13,6 +13,7 @@ class VulkanBuffer {
     VulkanBuffer &operator=(const VulkanBuffer &) = delete;
 
     VkBuffer buffer() const;
+    const VulkanPlatform *platform() const;
     VkDeviceMemory memory() const;
     VkDeviceSize size() const;
     VkMemoryPropertyFlags memory_properties() const;
@@ -20,6 +21,7 @@ class VulkanBuffer {
     void read(void *data, VkDeviceSize size, VkDeviceSize offset = 0) const;
 
   private:
+    const VulkanPlatform *platform_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;

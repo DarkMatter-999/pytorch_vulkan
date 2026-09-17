@@ -27,7 +27,9 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/generated/convolution_spv.sha256
                      src/vulkan/shaders/generated/pooling_spv.h
                      src/vulkan/shaders/generated/pooling_spv.sha256
-                     src/vulkan/shaders/generated/f32_to_double_spv.h
+                    src/vulkan/shaders/generated/f32_to_double_spv.h
+                    src/vulkan/shaders/generated/linear_relu_backward_spv.h
+                    src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
                      src/vulkan/shaders/generated/formatter_double_spv.h
                      src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
@@ -35,7 +37,25 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/glsl/broadcast.comp
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp
-                      src/vulkan/shaders/glsl/pooling.comp)
+                       src/vulkan/shaders/glsl/pooling.comp)
+        add_custom_target(vulkan_linear_relu_backward_shader_integrity
+                          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
+                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/linear_relu_backward.comp)
+        add_custom_command(
+          OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
+                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
+          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
+          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
+                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/linear_relu_backward.comp
+          VERBATIM)
+        add_custom_target(vulkan_linear_relu_backward_shader_generate DEPENDS
+                          ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
+                          ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256)
+        add_dependencies(vulkan_platform vulkan_linear_relu_backward_shader_generate)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -80,6 +100,22 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     if(BUILD_TESTING)
         add_test(NAME vulkan_execution_test COMMAND vulkan_execution_test)
         set_tests_properties(vulkan_execution_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
+    add_executable(vulkan_multi_output_backward_test
+                   tests/cpp/vulkan_multi_output_backward_test.cpp)
+    target_compile_features(vulkan_multi_output_backward_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_multi_output_backward_test PRIVATE
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(vulkan_multi_output_backward_test PRIVATE vulkan_buffer
+                          vulkan_platform)
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_multi_output_backward_test
+                 COMMAND vulkan_multi_output_backward_test)
+        set_tests_properties(vulkan_multi_output_backward_test PROPERTIES
+                             SKIP_RETURN_CODE 77)
     endif()
 endif()
 
@@ -222,8 +258,10 @@ if(BUILD_PYTHON_EXTENSION)
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
            add_test(NAME vulkan_formatter_double_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
-           add_test(NAME vulkan_pointwise_shader_integrity
-                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
+            add_test(NAME vulkan_pointwise_shader_integrity
+                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
+            add_test(NAME vulkan_linear_relu_backward_shader_integrity
+                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
       endif()
     configure_file(
          "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"

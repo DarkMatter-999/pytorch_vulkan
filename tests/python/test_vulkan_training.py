@@ -359,6 +359,46 @@ def test_fused_linear_relu_training_scope_retires_resources(vulkan_backend):
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
 
 
+def test_fused_linear_relu_optimizer_state_matches_cpu_for_mnist_shape(vulkan_backend):
+    torch.manual_seed(127)
+    cpu_input = torch.randn(1, 784, requires_grad=True)
+    cpu_weight = torch.randn(32, 784, requires_grad=True)
+    cpu_bias = torch.randn(32, requires_grad=True)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+    vk_bias = cpu_bias.detach().to(vulkan_backend).requires_grad_()
+    cpu_optimizer = torch.optim.SGD([cpu_weight, cpu_bias], lr=0.01, momentum=0.9)
+    vk_optimizer = torch.optim.SGD([vk_weight, vk_bias], lr=0.01, momentum=0.9)
+
+    cpu_output = torch.relu(torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias))
+    cpu_loss = cpu_output.mul(cpu_output).sum()
+    cpu_loss.backward()
+    cpu_optimizer.step()
+
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output = torch.ops.pytorch_vulkan.linear_relu(vk_input, vk_weight, vk_bias)
+    vk_output.mul(vk_output).sum().backward()
+    vk_optimizer.step()
+
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    for vk_gradient, cpu_gradient in zip(
+        (vk_input.grad, vk_weight.grad, vk_bias.grad),
+        (cpu_input.grad, cpu_weight.grad, cpu_bias.grad),
+    ):
+        torch.testing.assert_close(vk_gradient.cpu(), cpu_gradient, rtol=2e-4, atol=2e-4)
+    for vk_parameter, cpu_parameter in zip(
+        (vk_weight, vk_bias), (cpu_weight, cpu_bias)
+    ):
+        torch.testing.assert_close(vk_parameter.cpu(), cpu_parameter, rtol=2e-4, atol=2e-4)
+    for vk_parameter, cpu_parameter in zip((vk_weight, vk_bias), (cpu_weight, cpu_bias)):
+        torch.testing.assert_close(
+            vk_optimizer.state[vk_parameter]["momentum_buffer"].cpu(),
+            cpu_optimizer.state[cpu_parameter]["momentum_buffer"],
+            rtol=2e-4,
+            atol=2e-4,
+        )
+
+
 def test_user_facing_vulkan_inplace_add_remains_rejected(vulkan_backend):
     value = torch.randn(2, 8).to(vulkan_backend)
     with pytest.raises(RuntimeError, match="in-place operations are unsupported"):

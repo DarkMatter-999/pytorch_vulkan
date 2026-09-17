@@ -37,7 +37,8 @@ uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type_filter
 
 VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
                            VkMemoryPropertyFlags memory_properties)
-    : device_(platform.device()), size_(size), memory_properties_(memory_properties) {
+    : platform_(&platform), device_(platform.device()), size_(size),
+      memory_properties_(memory_properties) {
     if (size == 0) {
         throw std::invalid_argument("Vulkan buffer size must be greater than zero");
     }
@@ -102,6 +103,8 @@ VulkanBuffer::~VulkanBuffer() {
 }
 
 VkBuffer VulkanBuffer::buffer() const { return buffer_; }
+
+const VulkanPlatform *VulkanBuffer::platform() const { return platform_; }
 
 VkDeviceMemory VulkanBuffer::memory() const { return memory_; }
 

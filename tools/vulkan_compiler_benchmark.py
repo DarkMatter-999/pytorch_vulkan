@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 import time
 
@@ -112,7 +113,11 @@ def cpu_reference(kind, steps, batch_size, seed, learning_rate):
     return model, float(loss)
 
 
-def run_workload(kind, mode, steps, batch_size, seed, learning_rate):
+def run_workload(kind, mode, backward_mode, steps, batch_size, seed, learning_rate):
+    if backward_mode == "unfused":
+        os.environ["PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD"] = "1"
+    else:
+        os.environ.pop("PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD", None)
     initial_model = make_model(kind, "cpu", seed)
     cpu_model, cpu_loss = cpu_reference(kind, steps, batch_size, seed, learning_rate)
     model = make_model(kind, "vk:0", seed)
@@ -152,10 +157,11 @@ def run_workload(kind, mode, steps, batch_size, seed, learning_rate):
     measured_counters = counters()
     measured_timing = _C.timing_snapshot()
     if mode == "compiler-fused" and kind == "mlp":
-        # The first measured step initializes the four Vulkan optimizer state
-        # tensors without dispatching them; steady-state fused work is 32 per
-        # step thereafter.
-        expected_dispatches = 32 * steps - 8
+        # The first measured step initializes optimizer state. The combined
+        # backward path uses 28 steady-state dispatches; the separate path
+        # retains the historical 32-dispatch count.
+        expected_dispatches = (28 * steps - 8 if backward_mode == "fused"
+                               else 32 * steps - 8)
         if measured_counters["dispatches"] != expected_dispatches:
             raise RuntimeError(
                 f"MLP fusion dispatch gate failed: expected {expected_dispatches}, "
@@ -180,6 +186,7 @@ def run_workload(kind, mode, steps, batch_size, seed, learning_rate):
     return {
         "workload": kind,
         "mode": mode,
+        "backward_mode": backward_mode,
         "steps": steps,
         "batch_size": batch_size,
         "seed": seed,
@@ -225,6 +232,7 @@ def main():
     parser.add_argument("--mnist-batch-size", type=int, default=512)
     parser.add_argument("--mlp-lr", type=float, default=1e-5)
     parser.add_argument("--mnist-lr", type=float, default=1e-7)
+    parser.add_argument("--backward-mode", choices=("fused", "unfused"), default="fused")
     parser.add_argument("--json-out", type=str)
     args = parser.parse_args()
     if not pytorch_vulkan.is_available():
@@ -236,7 +244,8 @@ def main():
         batch_size = args.mlp_batch_size if kind == "mlp" else args.mnist_batch_size
         learning_rate = args.mlp_lr if kind == "mlp" else args.mnist_lr
         for mode in MODES:
-            row = run_workload(kind, mode, args.steps, batch_size, 17, learning_rate)
+            row = run_workload(kind, mode, args.backward_mode, args.steps, batch_size, 17,
+                               learning_rate)
             rows.append(row)
     report = {"schema": 1, "device": "vk:0", "rows": rows, "rocm_smi": telemetry()}
     encoded = json.dumps(report, allow_nan=False, indent=2, sort_keys=True)
