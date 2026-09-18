@@ -15,6 +15,7 @@ universal operator support.
 | `aten::_softmax.out` / `aten::_log_softmax.out` | F32 | F32 | strided, non-overlapping input; rank ≤ 8; one non-empty dimension; `half_to_float=False`, contiguous F32 `out=` | first-order reverse mode | empty reduced dimensions rejected |
 | `aten::_softmax_backward_data.out` / `aten::_log_softmax_backward_data.out` | F32 | F32 | contiguous F32 grad/output tensors; rank ≤ 8; one supported dimension | first-order backward kernel | unsupported higher-order forms rejected |
 | `aten::mse_loss` / `aten::mse_loss_backward` | F32 | F32 | matching, contiguous F32 input/target and Vulkan-resident outputs; reductions `none`, `sum`, and `mean` | first-order reverse mode | empty `sum` is zero, empty `mean` is NaN, empty `none` is empty |
+| `aten::sigmoid` / `aten::tanh` / `aten::gelu` | F32 | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; GELU requires `approximate="tanh"` and the standard `0.044715` polynomial; fresh Vulkan output | first-order reverse mode | empty output supported without dispatch |
 | `aten::linear` | F32 | F32 | 2-D strided input/weight with matching features; strided 1-D bias; non-overlapping output with no operand alias | first-order | explicit fixed-shape contract |
 | `aten::convolution` | F32 | F32 | fixed F32 shapes, strided operands, bias required; stride/padding/dilation/groups fixed and non-transposed | first-order | explicit fixed-shape contract |
 | `aten::_adaptive_avg_pool2d` | F32 | F32 | nonempty rank-4 NCHW strided, non-overlapping input; output size `(1, 1)` | first-order | explicitly rejected |
@@ -87,7 +88,7 @@ are removed from this inventory.
 | transfer/creation | `_copy_from_and_resize`, `_local_scalar_dense`, `resize_`, `set_` |
 | scalar and `out=` pointwise | `add.Scalar`, `add.Scalar_out`, `add.out`, `mul.Scalar`, `mul.Scalar_out`, `mul.out`, `rsub.Scalar`, `rsub.Scalar_out`, `sub.Scalar`, `sub.Scalar_out`, `sub.out` |
 | reductions/indexing | `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.out`, `prod.Dimname_out`, `sum.IntList_out`, `sum.default` |
-| sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input`, `sigmoid`, `sigmoid.out`, `sigmoid_`, `sigmoid_backward.grad_input`, `tanh`, `tanh.out`, `tanh_`, `tanh_backward.grad_input` |
+| sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input`, `sigmoid.out`, `sigmoid_`, `tanh.out`, `tanh_` |
 | convolution/pooling backward | `_adaptive_avg_pool2d_backward`, `avg_pool2d_backward.grad_input`, `convolution_backward_overrideable`, `max_pool2d_with_indices`, `upsample_bilinear2d_backward.grad_input`, `upsample_nearest2d_backward.grad_input`, `_upsample_nearest_exact2d_backward.grad_input` |
 | normalization | `native_batch_norm`, `native_batch_norm_backward`, `native_layer_norm`, `native_layer_norm_backward` |
 | cross-entropy/NLL | `nll_loss_forward.output`, `nll_loss_backward.grad_input` |
@@ -120,8 +121,10 @@ permits intentional Vulkan-to-Vulkan value-view materialization and forbids hidd
  aten::_softmax_backward_data.out,aten::_log_softmax_backward_data.out,
  aten::linear.default,
   aten::convolution.default,aten::_adaptive_avg_pool2d.default,aten::mse_loss.default,
-  aten::mse_loss_backward.default,aten::neg.default,
-aten::abs.default,aten::relu.default,aten::add.Tensor,aten::sub.Tensor,
+ aten::mse_loss_backward.default,aten::neg.default,
+ aten::abs.default,aten::relu.default,aten::sigmoid.default,aten::tanh.default,
+ aten::gelu.default,aten::sigmoid_backward.grad_input,aten::tanh_backward.grad_input,
+ aten::gelu_backward.grad_input,aten::add.Tensor,aten::sub.Tensor,
 aten::mul.Tensor,aten::as_strided.default,aten::view.default,
 aten::_reshape_alias.default,aten::reshape.default,aten::masked_select.default,
 aten::add.Scalar,aten::add.Scalar_out,aten::add.out,aten::sub.Scalar,
@@ -153,7 +156,7 @@ aten::bmm.out,aten::cat.out,aten::ceil.default,aten::ceil.out,aten::clamp.out,at
  aten::div.out,aten::dot.default,
 aten::add_.Scalar,aten::mul_.Tensor,aten::sub_.Scalar,aten::sub_.Tensor,
 aten::eq.Scalar_out,aten::eq.Tensor_out,aten::exp.out,aten::fill_.Scalar,aten::ge.Scalar_out,
-aten::ge.Tensor_out,aten::gelu.out,aten::gelu_backward.grad_input,aten::gt.Scalar,aten::gt.Scalar_out,
+ aten::ge.Tensor_out,aten::gelu.out,aten::gt.Scalar,aten::gt.Scalar_out,
 aten::gt.Tensor_out,aten::hardsigmoid.out,aten::hardsigmoid_backward.grad_input,aten::hardswish_.default,
 aten::hardswish_backward.default,aten::hardtanh.default,aten::hardtanh_.default,aten::hardtanh_backward.default,
 aten::isfinite.out,aten::le.Scalar_out,aten::le.Tensor_out,aten::leaky_relu.out,
@@ -168,10 +171,10 @@ aten::native_layer_norm_backward.default,aten::ne.Scalar_out,aten::ne.Tensor,ate
 aten::nll_loss_backward.grad_input,aten::nll_loss_forward.output,aten::normal_.default,
  aten::pow.Tensor_Scalar_out,aten::reciprocal.out,aten::relu.out,aten::resize_.default,
 aten::round.out,aten::set_.source_Storage,
-aten::set_.source_Storage_storage_offset,aten::sgn.out,aten::sigmoid.default,aten::sigmoid.out,
-aten::sigmoid_.default,aten::sigmoid_backward.grad_input,aten::silu.out,aten::silu_backward.grad_input,
+ aten::set_.source_Storage_storage_offset,aten::sgn.out,aten::sigmoid.out,
+ aten::sigmoid_.default,aten::silu.out,aten::silu_backward.grad_input,
 aten::sum.IntList_out,aten::sum.default,
-aten::tanh.default,aten::tanh.out,aten::tanh_.default,aten::tanh_backward.grad_input,
+ aten::tanh.out,aten::tanh_.default,
 aten::threshold_backward.grad_input,aten::uniform_.default,aten::upsample_bilinear2d.out,
 aten::upsample_bilinear2d_backward.grad_input,aten::upsample_nearest2d.out,
 aten::upsample_nearest2d_backward.grad_input -->

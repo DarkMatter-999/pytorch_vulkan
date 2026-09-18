@@ -12,6 +12,7 @@ def vulkan_backend():
 
 
 UNARY_OPERATIONS = [torch.neg, torch.abs, torch.relu]
+ACTIVATION_OPERATIONS = [torch.sigmoid, torch.tanh]
 
 
 @pytest.mark.parametrize(
@@ -189,3 +190,109 @@ def test_unary_bool_input_is_rejected_by_capability_matrix(vulkan_backend, opera
     tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
 
     _assert_unary_rejected(lambda: operation(tensor), "bool|float32|support")
+
+
+@pytest.mark.parametrize("operation", ACTIVATION_OPERATIONS)
+def test_activation_functional_values_stay_on_vulkan(vulkan_backend, operation):
+    values = torch.tensor([-3.5, -0.0, 0.0, 2.25], dtype=torch.float32)
+    tensor = values.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = operation(tensor)
+
+    assert result.device == tensor.device
+    assert result.dtype is torch.float32
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(result.cpu(), operation(values), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("operation", [torch.sigmoid, torch.tanh, torch.nn.functional.gelu])
+def test_activation_empty_result_is_vulkan_resident(vulkan_backend, operation):
+    tensor = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    if operation is torch.nn.functional.gelu:
+        result = operation(tensor, approximate="tanh")
+    else:
+        result = operation(tensor)
+
+    assert result.device == tensor.device
+    assert result.shape == (0, 3)
+    assert result.numel() == 0
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+def test_gelu_tanh_matches_cpu_and_rejects_exact_mode(vulkan_backend):
+    values = torch.tensor([-4.0, -1.5, 0.0, 1.5, 4.0], dtype=torch.float32)
+    tensor = values.to(vulkan_backend)
+
+    result = torch.nn.functional.gelu(tensor, approximate="tanh")
+    torch.testing.assert_close(
+        result.cpu(), torch.nn.functional.gelu(values, approximate="tanh"),
+        rtol=2e-5, atol=2e-6,
+    )
+
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="approximate.*tanh|GELU"):
+        torch.nn.functional.gelu(tensor, approximate="none")
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [torch.sigmoid, torch.tanh, torch.nn.functional.gelu],
+)
+def test_activation_unsupported_overloads_do_not_dispatch(vulkan_backend, operation):
+    tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
+    output = torch.empty_like(tensor)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises((RuntimeError, TypeError), match="Vulkan|Could not run|unsupported"):
+        if operation is torch.nn.functional.gelu:
+            operation(tensor, approximate="none", out=output)
+        else:
+            operation(tensor, out=output)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+@pytest.mark.parametrize("method", ["sigmoid_", "tanh_"])
+def test_activation_inplace_variant_is_rejected(vulkan_backend, method):
+    tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises((RuntimeError, TypeError), match="Vulkan|Could not run|unsupported"):
+        getattr(tensor, method)()
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+@pytest.mark.parametrize("operation", [torch.sigmoid, torch.tanh])
+def test_activation_rejects_bool_and_float16(vulkan_backend, operation):
+    bool_tensor = torch.tensor([True, False], dtype=torch.bool, device=vulkan_backend)
+    with pytest.raises(RuntimeError, match="float32|dtype|support"):
+        operation(bool_tensor)
+    if pytorch_vulkan.formatter_double_supported():
+        with pytest.raises(RuntimeError, match="float16|float32|dtype"):
+            float16_tensor = torch.empty(2, dtype=torch.float16, device=vulkan_backend)
+            operation(float16_tensor)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [torch.sigmoid, torch.tanh, lambda value: torch.nn.functional.gelu(value, approximate="tanh")],
+)
+def test_activation_rejects_device_and_rank_limits(vulkan_backend, operation):
+    with pytest.raises(RuntimeError, match="device index 0"):
+        operation(torch.empty((2,), dtype=torch.float32, device="vk:1"))
+    with pytest.raises(RuntimeError, match="rank.*8"):
+        operation(torch.empty((1,) * 9, dtype=torch.float32, device=vulkan_backend))

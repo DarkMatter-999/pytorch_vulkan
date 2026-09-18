@@ -18,6 +18,12 @@ enum class PointwiseOperation : uint32_t {
     Lerp = 12,
     Sqrt = 13,
     Div = 14,
+    Sigmoid = 15,
+    Tanh = 16,
+    GeluTanh = 17,
+    SigmoidBackward = 18,
+    TanhBackward = 19,
+    GeluTanhBackward = 20,
     Ceil = 10,
 };
 

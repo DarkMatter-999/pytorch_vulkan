@@ -26,6 +26,9 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
     "aten::masked_select.default",
     "aten::mse_loss.default", "aten::mse_loss_backward.default",
+    "aten::sigmoid.default", "aten::tanh.default", "aten::gelu.default",
+    "aten::sigmoid_backward.grad_input", "aten::tanh_backward.grad_input",
+    "aten::gelu_backward.grad_input",
     "aten::div.Tensor", "aten::lerp.Scalar_out", "aten::lerp_.Scalar",
     "aten::add.Scalar", "aten::add.Scalar_out", "aten::add.out",
     "aten::sub.Scalar", "aten::sub.Scalar_out", "aten::sub.out",
@@ -60,10 +63,8 @@ ROADMAP_OPERATION_FAMILIES = {
     }),
     "MSE loss": frozenset(),
     "sigmoid/tanh/GELU": frozenset({
-        "aten::gelu.out", "aten::gelu_backward.grad_input",
-        "aten::sigmoid.default", "aten::sigmoid.out", "aten::sigmoid_.default",
-        "aten::sigmoid_backward.grad_input", "aten::tanh.default",
-        "aten::tanh.out", "aten::tanh_.default", "aten::tanh_backward.grad_input",
+        "aten::gelu.out", "aten::sigmoid.out", "aten::sigmoid_.default",
+        "aten::tanh.out", "aten::tanh_.default",
     }),
     "convolution/pooling backward": frozenset({
         "aten::_adaptive_avg_pool2d_backward.default",
@@ -229,7 +230,8 @@ def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
         assert cpu_input.grad is not None
         assert vk_input.grad is not None
         assert vk_input.grad.device == torch.device(device)
-        torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad)
+        torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad,
+                                   rtol=case.rtol, atol=case.atol)
 
 
 def _unary(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -368,6 +370,47 @@ def _masked_select_view(*, requires_grad=False) -> tuple[torch.Tensor, torch.Ten
 
 def _empty_unary(*, requires_grad=False) -> tuple[torch.Tensor]:
     return (torch.empty((0, 3), dtype=torch.float32, requires_grad=requires_grad),)
+
+
+def _gelu_tanh(value):
+    return torch.nn.functional.gelu(value, approximate="tanh")
+
+
+def _activation_backward(*, requires_grad=False):
+    value = torch.tensor([-2.0, 0.5, 3.0], dtype=torch.float32)
+    return torch.ones_like(value), value
+
+
+def _sigmoid_backward_op(grad, output):
+    return torch.ops.aten.sigmoid_backward.grad_input(
+        grad, output, grad_input=torch.empty_like(output)
+    )
+
+
+def _tanh_backward_op(grad, output):
+    return torch.ops.aten.tanh_backward.grad_input(
+        grad, output, grad_input=torch.empty_like(output)
+    )
+
+
+def _gelu_backward_op(grad, input):
+    return torch.ops.aten.gelu_backward.grad_input(
+        grad, input, approximate="tanh", grad_input=torch.empty_like(input)
+    )
+
+
+def _sigmoid_backward_cpu(grad, output):
+    return grad * output * (1.0 - output)
+
+
+def _tanh_backward_cpu(grad, output):
+    return grad * (1.0 - output * output)
+
+
+def _gelu_backward_cpu(grad, input):
+    input = input.detach().requires_grad_()
+    result = torch.nn.functional.gelu(input, approximate="tanh")
+    return torch.autograd.grad(result, input, grad)[0]
 
 
 def _empty_binary(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
@@ -637,6 +680,13 @@ DECLARATION_ID_BY_CASE = {
     "unary.neg.float32.strided": "aten::neg.default",
     "unary.abs.float32": "aten::abs.default",
     "unary.relu.float32.empty": "aten::relu.default",
+    "unary.sigmoid.float32": "aten::sigmoid.default",
+    "unary.tanh.float32": "aten::tanh.default",
+    "unary.gelu.tanh.float32": "aten::gelu.default",
+    "unary.sigmoid.float32.empty": "aten::sigmoid.default",
+    "unary.sigmoid.backward": "aten::sigmoid_backward.grad_input",
+    "unary.tanh.backward": "aten::tanh_backward.grad_input",
+    "unary.gelu.tanh.backward": "aten::gelu_backward.grad_input",
     "binary.add.float32": "aten::add.Tensor",
     "binary.sub.float32.strided": "aten::sub.Tensor",
     "binary.mul.float32.empty": "aten::mul.Tensor",
@@ -817,7 +867,26 @@ ALL_CASES = (
     _case("unary.abs.float32", "unary", torch.abs, _unary,
           cpu_reference=torch.abs, expected_shape=(3,), check_gradients=True),
     _case("unary.relu.float32.empty", "unary", torch.relu, _empty_unary,
-          cpu_reference=torch.relu, expected_shape=(0, 3), execution_mode="empty"),
+           cpu_reference=torch.relu, expected_shape=(0, 3), execution_mode="empty"),
+    _case("unary.sigmoid.float32", "unary", torch.sigmoid, _unary,
+           cpu_reference=torch.sigmoid, expected_shape=(3,), check_gradients=True),
+    _case("unary.tanh.float32", "unary", torch.tanh, _unary,
+           cpu_reference=torch.tanh, expected_shape=(3,), check_gradients=True,
+           rtol=1e-4, atol=2e-5),
+    _case("unary.gelu.tanh.float32", "unary", _gelu_tanh, _unary,
+           cpu_reference=_gelu_tanh, expected_shape=(3,), check_gradients=True,
+           rtol=2e-5, atol=2e-6),
+    _case("unary.sigmoid.float32.empty", "unary", torch.sigmoid, _empty_unary,
+           cpu_reference=torch.sigmoid, expected_shape=(0, 3), execution_mode="empty"),
+    _case("unary.sigmoid.backward", "unary", _sigmoid_backward_op,
+           _activation_backward, cpu_reference=_sigmoid_backward_cpu,
+           expected_shape=(3,), execution_mode="copy"),
+    _case("unary.tanh.backward", "unary", _tanh_backward_op,
+           _activation_backward, cpu_reference=_tanh_backward_cpu,
+           expected_shape=(3,), execution_mode="copy", rtol=1e-4, atol=2e-5),
+    _case("unary.gelu.tanh.backward", "unary", _gelu_backward_op,
+           _activation_backward, cpu_reference=_gelu_backward_cpu,
+           expected_shape=(3,), execution_mode="copy", rtol=3e-4, atol=2e-5),
     _case("binary.add.float32", "binary", torch.add, _binary, cpu_reference=_cpu_add,
           expected_shape=(2,), check_gradients=True),
     _case("binary.sub.float32.strided", "binary", torch.sub, _binary_strided,

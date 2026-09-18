@@ -140,3 +140,45 @@ def test_migrated_linear_backward_accepts_a_view(vulkan_backend):
     assert vk_weight.grad is not None
     torch.testing.assert_close(vk_input.grad.cpu(), torch.ones_like(input_view) @ weight_view)
     torch.testing.assert_close(vk_weight.grad.cpu(), torch.ones_like(output.cpu()).t() @ input_view)
+
+
+@pytest.mark.parametrize(
+    ("operation", "cpu_operation"),
+    [
+        (torch.sigmoid, torch.sigmoid),
+        (torch.tanh, torch.tanh),
+        (
+            lambda value: torch.nn.functional.gelu(value, approximate="tanh"),
+            lambda value: torch.nn.functional.gelu(value, approximate="tanh"),
+        ),
+    ],
+)
+def test_vulkan_activation_backward_matches_cpu(vulkan_backend, operation, cpu_operation):
+    cpu = torch.tensor([-2.0, -0.25, 0.0, 0.5, 3.0], requires_grad=True)
+    vk = cpu.detach().clone().to(vulkan_backend).requires_grad_()
+    grad = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+
+    cpu_result = cpu_operation(cpu)
+    vk_result = operation(vk)
+    cpu_result.backward(grad)
+    vk_result.backward(grad.to(vulkan_backend))
+
+    assert vk.grad is not None
+    assert vk.grad.device == vk.device
+    torch.testing.assert_close(vk_result.cpu(), cpu_result.detach(), rtol=2e-5, atol=2e-6)
+    torch.testing.assert_close(vk.grad.cpu(), cpu.grad, rtol=3e-4, atol=2e-5)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        torch.sigmoid,
+        torch.tanh,
+        lambda value: torch.nn.functional.gelu(value, approximate="tanh"),
+    ],
+)
+def test_vulkan_activation_higher_order_backward_is_rejected(vulkan_backend, operation):
+    value = torch.tensor([-1.0, 0.5], dtype=torch.float32, device=vulkan_backend, requires_grad=True)
+    result = operation(value)
+    with pytest.raises(RuntimeError, match="higher-order"):
+        torch.autograd.grad(result.sum(), value, create_graph=True)

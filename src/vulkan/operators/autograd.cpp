@@ -310,4 +310,40 @@ at::Tensor autograd_relu(const at::Tensor &input) {
     return autograd_unary_saved_output<&relu_tensor, &relu_backward_tensor>(input);
 }
 
+at::Tensor autograd_sigmoid(const at::Tensor &input) {
+    return autograd_unary_saved_output<&sigmoid_tensor, &sigmoid_backward_tensor>(input);
+}
+
+at::Tensor autograd_tanh(const at::Tensor &input) {
+    return autograd_unary_saved_output<&tanh_tensor, &tanh_backward_tensor>(input);
+}
+
+namespace {
+class GeluAutogradFunction final : public torch::autograd::Function<GeluAutogradFunction> {
+  public:
+    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
+                              const at::Tensor &input, c10::string_view approximate) {
+        at::AutoDispatchBelowAutograd guard;
+        TORCH_CHECK(approximate == "tanh",
+                    "Vulkan gelu supports only approximate=\"tanh\"");
+        ctx->save_for_backward({input});
+        return gelu_tensor(input, approximate);
+    }
+    static torch::autograd::variable_list backward(
+        torch::autograd::AutogradContext *ctx,
+        torch::autograd::variable_list grads) {
+        at::AutoDispatchBelowAutograd guard;
+        TORCH_CHECK(!c10::GradMode::is_enabled(),
+                    "Vulkan gelu does not support higher-order gradients");
+        if (!grads[0].defined()) return {at::Tensor(), at::Tensor()};
+        return {gelu_backward_tensor(ctx->get_saved_variables()[0], grads[0], "tanh"),
+                at::Tensor()};
+    }
+};
+} // namespace
+
+at::Tensor autograd_gelu(const at::Tensor &input, c10::string_view approximate) {
+    return GeluAutogradFunction::apply(input, approximate);
+}
+
 } // namespace pytorch_vulkan

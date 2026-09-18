@@ -2,6 +2,7 @@
 
 #include <ATen/ATen.h>
 #include <torch/autograd.h>
+#include <c10/util/string_view.h>
 
 namespace pytorch_vulkan {
 
@@ -105,6 +106,9 @@ at::Tensor autograd_unary_no_save(const at::Tensor &input) {
 at::Tensor autograd_neg(const at::Tensor &input);
 at::Tensor autograd_abs(const at::Tensor &input);
 at::Tensor autograd_relu(const at::Tensor &input);
+at::Tensor autograd_sigmoid(const at::Tensor &input);
+at::Tensor autograd_tanh(const at::Tensor &input);
+at::Tensor autograd_gelu(const at::Tensor &input, c10::string_view approximate);
 at::Tensor neg_backward(const at::Tensor &grad);
 
 template <RawBinaryTensorForward Forward, RawBinaryTensorBackward BackwardLhs,

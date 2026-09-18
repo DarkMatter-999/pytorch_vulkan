@@ -13,6 +13,7 @@
 #include "fake_tensor.h"
 
 #include <c10/core/DeviceType.h>
+#include <c10/core/GradMode.h>
 #include <c10/util/Exception.h>
 #include <ATen/ops/relu.h>
 #include <ATen/ops/abs.h>
@@ -119,6 +120,19 @@ at::Tensor relu_tensor(const at::Tensor &input) {
     return dispatch_unary(input, PointwiseOperation::Relu, "relu");
 }
 
+at::Tensor sigmoid_tensor(const at::Tensor &input) {
+    return dispatch_unary(input, PointwiseOperation::Sigmoid, "sigmoid");
+}
+
+at::Tensor tanh_tensor(const at::Tensor &input) {
+    return dispatch_unary(input, PointwiseOperation::Tanh, "tanh");
+}
+
+at::Tensor gelu_tensor(const at::Tensor &input, c10::string_view approximate) {
+    TORCH_CHECK(approximate == "tanh", "Vulkan gelu supports only approximate=\"tanh\"");
+    return dispatch_unary(input, PointwiseOperation::GeluTanh, "gelu");
+}
+
 at::Tensor ceil_tensor(const at::Tensor &input) {
     if (input.scalar_type() == at::kDouble)
         return formatter_double_ceil(input);
@@ -131,6 +145,51 @@ at::Tensor abs_backward_tensor(const at::Tensor &input, const at::Tensor &grad) 
 
 at::Tensor relu_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
     return at::mul(dispatch_unary(output, PointwiseOperation::ReluBackward, "relu backward"), grad);
+}
+
+at::Tensor sigmoid_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
+    TORCH_CHECK(!c10::GradMode::is_enabled(),
+                "Vulkan sigmoid does not support higher-order gradients");
+    return at::mul(dispatch_unary(output, PointwiseOperation::SigmoidBackward,
+                                  "sigmoid backward"), grad);
+}
+
+at::Tensor tanh_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
+    TORCH_CHECK(!c10::GradMode::is_enabled(),
+                "Vulkan tanh does not support higher-order gradients");
+    return at::mul(dispatch_unary(output, PointwiseOperation::TanhBackward,
+                                  "tanh backward"), grad);
+}
+
+at::Tensor gelu_backward_tensor(const at::Tensor &input, const at::Tensor &grad,
+                                c10::string_view approximate) {
+    TORCH_CHECK(!c10::GradMode::is_enabled(),
+                "Vulkan gelu does not support higher-order gradients");
+    TORCH_CHECK(approximate == "tanh", "Vulkan gelu supports only approximate=\"tanh\"");
+    return at::mul(dispatch_unary(input, PointwiseOperation::GeluTanhBackward,
+                                  "gelu backward"), grad);
+}
+
+at::Tensor &sigmoid_backward_out(const at::Tensor &grad_output, const at::Tensor &output,
+                                  at::Tensor &grad_input) {
+    return grad_input.copy_(at::mul(
+        dispatch_unary(output, PointwiseOperation::SigmoidBackward, "sigmoid backward"),
+        grad_output));
+}
+
+at::Tensor &tanh_backward_out(const at::Tensor &grad_output, const at::Tensor &output,
+                              at::Tensor &grad_input) {
+    return grad_input.copy_(at::mul(
+        dispatch_unary(output, PointwiseOperation::TanhBackward, "tanh backward"),
+        grad_output));
+}
+
+at::Tensor &gelu_backward_out(const at::Tensor &grad_output, const at::Tensor &input,
+                              c10::string_view approximate, at::Tensor &grad_input) {
+    TORCH_CHECK(approximate == "tanh", "Vulkan gelu supports only approximate=\"tanh\"");
+    return grad_input.copy_(at::mul(
+        dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"),
+        grad_output));
 }
 
 at::Tensor &neg_out(const at::Tensor &input, at::Tensor &out) {
@@ -170,6 +229,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("neg", &pytorch_vulkan::neg_tensor);
     m.impl("abs", &pytorch_vulkan::abs_tensor);
     m.impl("relu", &pytorch_vulkan::relu_tensor);
+    m.impl("sigmoid", &pytorch_vulkan::sigmoid_tensor);
+    m.impl("tanh", &pytorch_vulkan::tanh_tensor);
+    m.impl("gelu", &pytorch_vulkan::gelu_tensor);
+    m.impl("sigmoid_backward.grad_input", &pytorch_vulkan::sigmoid_backward_out);
+    m.impl("tanh_backward.grad_input", &pytorch_vulkan::tanh_backward_out);
+    m.impl("gelu_backward.grad_input", &pytorch_vulkan::gelu_backward_out);
     m.impl("ceil", &pytorch_vulkan::ceil_tensor);
     m.impl("neg.out", &pytorch_vulkan::neg_out);
     m.impl("abs.out", &pytorch_vulkan::abs_out);
@@ -184,4 +249,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     m.impl("neg", &pytorch_vulkan::autograd_neg);
     m.impl("abs", &pytorch_vulkan::autograd_abs);
     m.impl("relu", &pytorch_vulkan::autograd_relu);
+    m.impl("sigmoid", &pytorch_vulkan::autograd_sigmoid);
+    m.impl("tanh", &pytorch_vulkan::autograd_tanh);
+    m.impl("gelu", &pytorch_vulkan::autograd_gelu);
 }

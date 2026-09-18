@@ -74,6 +74,12 @@ const uint ABS_BACKWARD = 6u;
 const uint RELU_BACKWARD = 7u;
 const uint NE_SCALAR = 8u;
 const uint ISFINITE = 9u;
+const uint SIGMOID = 15u;
+const uint TANH = 16u;
+const uint GELU_TANH = 17u;
+const uint SIGMOID_BACKWARD = 18u;
+const uint TANH_BACKWARD = 19u;
+const uint GELU_TANH_BACKWARD = 20u;
 
 float apply_operation(float lhs_value, float rhs_value) {
   if (params.operation == 0u)
@@ -105,6 +111,29 @@ float apply_unary(float value) {
     return ceil(value);
   if (params.operation == 13u)
     return sqrt(value);
+  if (params.operation == SIGMOID)
+    return 1.0 / (1.0 + exp(-value));
+  if (params.operation == TANH)
+    return 2.0 / (1.0 + exp(-2.0 * value)) - 1.0;
+  if (params.operation == GELU_TANH) {
+    const float inner = 0.7978845608028654 *
+        (value + 0.044715 * value * value * value);
+    return 0.5 * value * (1.0 +
+        (2.0 / (1.0 + exp(-2.0 * inner)) - 1.0));
+  }
+  if (params.operation == SIGMOID_BACKWARD)
+    return value * (1.0 - value);
+  if (params.operation == TANH_BACKWARD)
+    return 1.0 - value * value;
+  if (params.operation == GELU_TANH_BACKWARD) {
+    const float value_squared = value * value;
+    const float inner = 0.7978845608028654 *
+        (value + 0.044715 * value * value_squared);
+    const float inner_tanh = 2.0 / (1.0 + exp(-2.0 * inner)) - 1.0;
+    return 0.5 * (1.0 + inner_tanh) +
+        0.5 * value * (1.0 - inner_tanh * inner_tanh) *
+        0.7978845608028654 * (1.0 + 3.0 * 0.044715 * value_squared);
+  }
   if (params.operation == 11u)
     return params.scalar;
   return 0.0;
