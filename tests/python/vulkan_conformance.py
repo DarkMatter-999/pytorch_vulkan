@@ -24,6 +24,8 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::div.Tensor", "aten::lerp.Scalar_out", "aten::lerp_.Scalar",
     "aten::sqrt.out", "aten::add_.Tensor", "aten::mul_.Scalar",
     "aten::addcmul_.default", "aten::addcdiv_.default", "aten::zero_.default",
+    "aten::_copy_from.default", "aten::_to_copy.default", "aten::copy_.default",
+    "aten::empty.memory_format", "aten::empty_strided.default",
 })
 
 # Roadmap inventory only: these schemas are registered by the backend but remain
@@ -601,6 +603,11 @@ DECLARATION_ID_BY_CASE = {
     "pooling.parameters.rejected": "aten::_adaptive_avg_pool2d.default",
     "convolution.shape.rejected": "aten::convolution.default",
     "unary.neg_.unsupported-overload.rejected": "aten::neg_.default",
+    "transfer.copy_from.float32": "aten::_copy_from.default",
+    "transfer.to_copy.float32": "aten::_to_copy.default",
+    "transfer.copy.float32": "aten::copy_.default",
+    "transfer.empty.float32": "aten::empty.memory_format",
+    "transfer.empty_strided.float32": "aten::empty_strided.default",
 }
 
 
@@ -617,6 +624,38 @@ def _case(name, family, operation, factory, *, args=(), kwargs=None,
                            requires_grad_inputs, rtol, atol, execution_mode, convert_inputs,
                            setup_inputs)
     return case
+
+
+def _transfer_pair(*, requires_grad=False):
+    source = torch.arange(4, dtype=torch.float32, requires_grad=requires_grad)
+    destination = torch.empty_like(source)
+    return destination, source
+
+
+def _copy_from(destination, source):
+    return torch.ops.aten._copy_from.default(source, destination)
+
+
+def _copy_from_cpu_reference(destination, source):
+    return destination.copy_(source)
+
+
+def _copy_in_place(destination, source):
+    return torch.ops.aten.copy_.default(destination, source)
+
+
+def _empty_like_template(template):
+    return torch.empty_like(template, device=template.device)
+
+
+def _empty_strided_like_template(template):
+    return torch.empty_strided(
+        template.size(), template.stride(), dtype=template.dtype, device=template.device
+    )
+
+
+def _empty_strided_zero_template(*, requires_grad=False):
+    return (torch.empty_strided((0, 2), (1, 2), dtype=torch.float32),)
 
 
 ALL_CASES = (
@@ -758,6 +797,19 @@ ALL_CASES = (
     _case("unary.neg_.unsupported-overload.rejected", "unary", _unsupported_overload,
            _unary, supported=False, cpu_reference=_cpu_neg,
            error_pattern=r"Vulkan neg in-place variants are unsupported"),
+    _case("transfer.copy_from.float32", "transfer", _copy_from, _transfer_pair,
+           cpu_reference=_copy_from_cpu_reference, expected_shape=(4,),
+           execution_mode="copy"),
+    _case("transfer.to_copy.float32", "transfer", lambda value: value.to(
+        value.device, copy=True), _unary, cpu_reference=lambda value: value.to(
+        value.device, copy=True), expected_shape=(3,), execution_mode="copy"),
+    _case("transfer.copy.float32", "transfer", _copy_in_place, _transfer_pair,
+           cpu_reference=_copy_in_place, expected_shape=(4,), execution_mode="copy"),
+    _case("transfer.empty.float32", "transfer", _empty_like_template, _empty_unary,
+           cpu_reference=_empty_like_template, expected_shape=(0, 3), execution_mode="empty"),
+    _case("transfer.empty_strided.float32", "transfer", _empty_strided_like_template,
+           _empty_strided_zero_template, cpu_reference=_empty_strided_like_template,
+           expected_shape=(0, 2), execution_mode="empty"),
 )
 
 

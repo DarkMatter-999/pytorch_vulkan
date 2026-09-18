@@ -19,6 +19,7 @@ universal operator support.
 | `aten::view` | F32 | F32 | Requires PyTorch-compatible `computeStride` metadata, then validates the resulting sizes/strides and storage range/device/dtype contract before creating the metadata-only alias. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
 | `aten::_reshape_alias` | F32 | F32 | Accepts the ATen-supplied size/stride alias metadata after shared storage-range, device, and dtype validation; creates no copy or dispatch. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
 | `aten::reshape` | F32 | F32 | Aliases with the computed strides when PyTorch `computeStride` succeeds and preserves the input autograd relationship; otherwise uses a Vulkan-resident contiguous copy followed by a metadata view and explicit reshape-copy backward. No CPU fallback. | first-order reverse mode | metadata contract |
+| synchronous tensor plumbing (`copy_`, `empty`, `empty_strided`, `_to_copy`) | F32 | F32 | Explicitly declared synchronous CPU↔`vk:0` copies, same-dtype Vulkan-to-Vulkan copies, contiguous and non-negative-stride storage, valid storage ranges, and zero-sized tensors; `_to_copy` dtype conversion is limited to the formatter-compatible F32→Double path documented below. Unsupported devices, dtypes, overlap, nonblocking requests, and invalid ranges are rejected before Vulkan work or fallback. | not applicable | empty and zero-sized copies are no-ops |
 | `torch.masked_select` | F32 values, bool mask | F32 | contiguous or positive-stride/non-zero-offset F32 value views; positive-stride and non-zero-offset value views are materialized with a Vulkan-resident copy before compaction. The mask must remain same-shaped, contiguous, and zero-offset bool on `vk:0`; count and compaction consume Vulkan payloads with no CPU fallback | forward-only | empty output supported |
 | scalar `torch.optim.SGD` | F32 parameters, gradients, `momentum_buffer` | F32 | contiguous, non-overlapping tensors on `vk:0`; scalar `lr`, momentum, dampening, and weight decay; `nesterov=False`, `maximize=False`, `foreach=False`, `differentiable=False` | first-order gradients supplied by supported autograd | empty updates follow PyTorch optimizer semantics |
 | scalar `torch.optim.Adam` | F32 parameters, gradients, `exp_avg`, `exp_avg_sq` | F32 | contiguous, non-overlapping tensors on `vk:0`; scalar `lr`, betas, eps, and weight decay; `amsgrad=False`, `maximize=False`, `foreach=False`, `fused=False`, `capturable=False`, `differentiable=False`; tensor state stays Vulkan-resident and non-capturable `step` metadata stays host-resident | first-order gradients supplied by supported autograd | empty updates follow PyTorch optimizer semantics |
@@ -77,7 +78,7 @@ registrations or declare support, and the supported manifest above is unchanged.
 
 | Roadmap family | Deferred schemas |
 | --- | --- |
-| transfer/creation | `_copy_from`, `_copy_from_and_resize`, `_local_scalar_dense`, `_to_copy`, `copy_`, `empty`, `empty_strided`, `resize_`, `set_` |
+| transfer/creation | `_copy_from_and_resize`, `_local_scalar_dense`, `resize_`, `set_` |
 | scalar and `out=` pointwise | `abs.out`, `add.Scalar`, `add.Scalar_out`, `add.out`, `div.out`, `exp.out`, `fill_.Scalar`, `log.out`, `mul.Scalar`, `mul.Scalar_out`, `mul.out`, `sub.Scalar`, `sub.Scalar_out`, `sub.out` |
 | reductions/indexing | `amax.out`, `amin.out`, `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.int_out`, `sum.IntList_out`, `sum.default` |
 | MSE loss | `mse_loss`, `mse_loss_backward` |
@@ -103,14 +104,15 @@ limits. It avoids hidden CPU fallback; the masked-select value-view contract
 permits intentional Vulkan-to-Vulkan value-view materialization and forbids hidden CPU payload materialization or readback. The final `.cpu()` comparison is an explicit presentation transfer, not fallback.
 
 <!-- Vulkan conformance supported schemas:
-aten::sum.dim_IntList,aten::mean.dim,aten::argmax.default,aten::linear.default,
+ aten::sum.dim_IntList,aten::mean.dim,aten::argmax.default,aten::linear.default,
 aten::convolution.default,aten::_adaptive_avg_pool2d.default,aten::neg.default,
 aten::abs.default,aten::relu.default,aten::add.Tensor,aten::sub.Tensor,
 aten::mul.Tensor,aten::as_strided.default,aten::view.default,
 aten::_reshape_alias.default,aten::reshape.default,aten::masked_select.default,
 aten::div.Tensor,aten::lerp.Scalar_out,aten::lerp_.Scalar,aten::sqrt.out,
-aten::add_.Tensor,aten::mul_.Scalar,aten::addcmul_.default,aten::addcdiv_.default,
-aten::zero_.default -->
+ aten::add_.Tensor,aten::mul_.Scalar,aten::addcmul_.default,aten::addcdiv_.default,
+ aten::zero_.default,aten::_copy_from.default,aten::_to_copy.default,
+ aten::copy_.default,aten::empty.memory_format,aten::empty_strided.default -->
 
 <!-- Vulkan conformance rejected schemas:
 aten::max_pool2d_with_indices.default,aten::neg.out,aten::ne.Tensor,
@@ -118,10 +120,10 @@ aten::neg_.default,aten::neg.default,aten::add.Tensor,aten::sum.dim_IntList,
 aten::_adaptive_avg_pool2d.default,aten::convolution.default -->
 
 <!-- Vulkan conformance deferred schemas:
-aten::_adaptive_avg_pool2d_backward.default,aten::_cat.default,aten::_copy_from.default,aten::_copy_from_and_resize.default,
-aten::_local_scalar_dense.default,aten::_log_softmax.out,aten::_log_softmax_backward_data.out,
+ aten::_adaptive_avg_pool2d_backward.default,aten::_cat.default,aten::_copy_from_and_resize.default,
+ aten::_local_scalar_dense.default,aten::_log_softmax.out,aten::_log_softmax_backward_data.out,
 aten::_native_multi_head_attention.default,aten::_native_multi_head_attention.out,aten::_softmax.out,
-aten::_softmax_backward_data.out,aten::_to_copy.default,aten::_transform_bias_rescale_qkv.default,
+ aten::_softmax_backward_data.out,aten::_transform_bias_rescale_qkv.default,
 aten::_upsample_nearest_exact2d.out,aten::_upsample_nearest_exact2d_backward.grad_input,aten::abs.out,
 aten::add.Scalar,aten::add.Scalar_out,aten::add.out,aten::addcdiv.out,aten::addcmul.out,aten::addmm.default,
 aten::addmm.out,aten::amax.out,aten::amin.out,aten::arange.start_out,aten::argmax.out,aten::atan.out,
@@ -129,8 +131,8 @@ aten::avg_pool2d.out,aten::avg_pool2d_backward.grad_input,aten::bernoulli_.float
 aten::binary_cross_entropy_backward.default,aten::binary_cross_entropy_backward.grad_input,
 aten::bitwise_and.Tensor_out,aten::bitwise_not.out,aten::bitwise_or.Tensor_out,aten::bitwise_xor.Tensor_out,
 aten::bmm.out,aten::cat.out,aten::ceil.default,aten::ceil.out,aten::clamp.out,aten::clamp_min.out,
-aten::convolution_backward_overrideable.default,aten::convolution_overrideable.default,aten::copy_.default,
-aten::div.out,aten::dot.default,aten::empty.memory_format,aten::empty_strided.default,
+ aten::convolution_backward_overrideable.default,aten::convolution_overrideable.default,
+ aten::div.out,aten::dot.default,
 aten::add_.Scalar,aten::mul_.Tensor,aten::sub_.Scalar,aten::sub_.Tensor,
 aten::eq.Scalar_out,aten::eq.Tensor_out,aten::exp.out,aten::fill_.Scalar,aten::ge.Scalar_out,
 aten::ge.Tensor_out,aten::gelu.out,aten::gelu_backward.grad_input,aten::gt.Scalar,aten::gt.Scalar_out,

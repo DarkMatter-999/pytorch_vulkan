@@ -192,6 +192,11 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
         "aten::addcmul_.default": "`addcmul_`",
         "aten::addcdiv_.default": "`addcdiv_`",
         "aten::zero_.default": "`zero_`",
+        "aten::_copy_from.default": "synchronous tensor plumbing",
+        "aten::_to_copy.default": "synchronous tensor plumbing",
+        "aten::copy_.default": "synchronous tensor plumbing",
+        "aten::empty.memory_format": "synchronous tensor plumbing",
+        "aten::empty_strided.default": "synchronous tensor plumbing",
     }
     assert set(matrix_declarations) == matrix_rows
     assert all(declaration in matrix for declaration in matrix_declarations.values())

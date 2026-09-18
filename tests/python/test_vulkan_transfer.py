@@ -133,8 +133,54 @@ def test_broadcast_source_copy_is_supported(vulkan_backend):
 def test_vulkan_to_vulkan_copy_is_supported(vulkan_backend):
     source = torch.arange(2, dtype=torch.float32).to(vulkan_backend)
     destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     assert destination.copy_(source) is destination
+    assert destination.untyped_storage().data_ptr() != source.untyped_storage().data_ptr()
+    assert destination.storage_offset() == 0
+    assert destination.untyped_storage().nbytes() >= destination.nbytes
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 1, 0, 0)
     torch.testing.assert_close(destination.cpu(), source.cpu())
+
+
+def test_strided_vulkan_to_vulkan_copy_preserves_storage_range_and_cpu_parity(
+    vulkan_backend,
+):
+    source = torch.arange(8, dtype=torch.float32).reshape(2, 4).t().to(vulkan_backend)
+    destination = torch.empty_strided(source.shape, (1, 4), device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    assert destination.copy_(source) is destination
+    assert destination.storage_offset() == 0
+    assert destination.untyped_storage().nbytes() >= 8 * source.element_size()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 1, 0, 0)
+    torch.testing.assert_close(destination.cpu(), source.cpu())
+
+
+def test_zero_sized_vulkan_to_vulkan_copy_is_a_counter_free_noop(vulkan_backend):
+    source = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
+    destination = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    assert destination.copy_(source) is destination
+    assert destination.numel() == 0
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    torch.testing.assert_close(destination.cpu(), source.cpu())
+
+
+def test_vulkan_to_vulkan_to_copy_is_synchronous_and_allocates_new_storage(
+    vulkan_backend,
+):
+    source = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    copied = source.to(device=vulkan_backend, copy=True)
+
+    assert copied.device == torch.device("vk:0")
+    assert copied.dtype is torch.float32
+    assert copied.untyped_storage().data_ptr() != source.untyped_storage().data_ptr()
+    assert copied.storage_offset() == 0
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 1, 0, 0)
+    torch.testing.assert_close(copied.cpu(), source.cpu())
 
 
 def test_non_contiguous_cpu_destination_copy_is_supported(vulkan_backend):
@@ -223,6 +269,10 @@ def _assert_transfer_rejected(operation, message):
         operation()
 
 
+def _assert_no_vulkan_work():
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
 def test_float64_transfer_is_rejected(vulkan_backend):
     _assert_transfer_rejected(
         lambda: torch.ones((2,), dtype=torch.float64).to(vulkan_backend),
@@ -246,17 +296,21 @@ def test_non_contiguous_transfer_is_supported(vulkan_backend):
 
 def test_non_blocking_transfer_is_rejected(vulkan_backend):
     source = torch.ones((2,), dtype=torch.float32)
+    pytorch_vulkan._C.reset_execution_counters()
     _assert_transfer_rejected(
         lambda: source.to(vulkan_backend, non_blocking=True), "non_blocking"
     )
+    _assert_no_vulkan_work()
 
 
-def test_vulkan_to_vulkan_to_copy_remains_unsupported(vulkan_backend):
+def test_vulkan_to_vulkan_to_copy_rejects_non_blocking(vulkan_backend):
     def transfer():
         source = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-        source.to(vulkan_backend, copy=True)
+        source.to(vulkan_backend, copy=True, non_blocking=True)
 
-    _assert_transfer_rejected(transfer, "Vulkan-to-Vulkan")
+    pytorch_vulkan._C.reset_execution_counters()
+    _assert_transfer_rejected(transfer, "non_blocking")
+    _assert_no_vulkan_work()
 
 
 def test_mismatched_sizes_are_rejected(vulkan_backend):
@@ -269,7 +323,48 @@ def test_mismatched_sizes_are_rejected(vulkan_backend):
 
 
 def test_second_vulkan_device_is_rejected(vulkan_backend):
+    pytorch_vulkan._C.reset_execution_counters()
     _assert_transfer_rejected(
         lambda: torch.empty((2,), dtype=torch.float32, device="vk:1"),
         "only device index 0",
     )
+    _assert_no_vulkan_work()
+
+
+def test_empty_strided_negative_stride_is_canonicalized_before_vulkan_work(
+    vulkan_backend,
+):
+    pytorch_vulkan._C.reset_execution_counters()
+    tensor = torch.empty_strided(
+        (2,), (-1,), dtype=torch.float32, device=vulkan_backend
+    )
+
+    assert tensor.stride() == (1,)
+    assert tensor.device == torch.device("vk:0")
+    _assert_no_vulkan_work()
+
+
+def test_copy_rejects_storage_range_outside_vulkan_allocation(vulkan_backend):
+    source = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
+    destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    _assert_transfer_rejected(
+        lambda: torch.as_strided(source, (2,), (1,), storage_offset=2).copy_(
+            destination
+        ),
+        "outside its Vulkan allocation",
+    )
+    _assert_no_vulkan_work()
+
+
+def test_copy_rejects_overlapping_destination_before_vulkan_work(vulkan_backend):
+    source = torch.ones((2, 2), dtype=torch.float32, device=vulkan_backend)
+    destination_storage = torch.empty((2, 2), dtype=torch.float32, device=vulkan_backend)
+    destination = torch.as_strided(destination_storage, (2, 2), (0, 1))
+    pytorch_vulkan._C.reset_execution_counters()
+
+    _assert_transfer_rejected(
+        lambda: destination.copy_(source), "internal overlap"
+    )
+    _assert_no_vulkan_work()

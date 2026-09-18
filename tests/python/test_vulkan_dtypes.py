@@ -18,6 +18,10 @@ def _assert_rejected(operation, message):
         operation()
 
 
+def _assert_no_vulkan_work():
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
 FLOAT16_ALLOCATION_ERROR = (
     "Vulkan float16 support is deferred; allocation cannot use float16 until its "
     "storage, transfer, shader, promotion, and autograd contracts are implemented"
@@ -124,7 +128,9 @@ def test_float16_non_contiguous_allocation_is_rejected_before_materialization(vu
 
 def test_float16_cpu_to_vulkan_transfer_is_rejected_before_dispatch(vulkan_backend):
     source = torch.empty((2,), dtype=torch.float16)
+    pytorch_vulkan._C.reset_execution_counters()
     _assert_rejected(lambda: source.to(vulkan_backend), _exact_error(FLOAT16_ALLOCATION_ERROR))
+    _assert_no_vulkan_work()
 
 
 def test_float16_non_contiguous_cpu_to_vulkan_transfer_is_rejected(
@@ -147,17 +153,56 @@ def test_float16_vulkan_to_cpu_transfer_is_rejected_at_allocation_boundary(
 def test_float16_cpu_to_vulkan_copy_is_rejected_before_dispatch(vulkan_backend):
     destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     source = torch.empty((2,), dtype=torch.float16)
+    pytorch_vulkan._C.reset_execution_counters()
     _assert_rejected(
         lambda: destination.copy_(source), _exact_error(FLOAT16_STORAGE_ERROR)
     )
+    _assert_no_vulkan_work()
 
 
 def test_float16_vulkan_to_cpu_copy_is_rejected_before_dispatch(vulkan_backend):
     source = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     destination = torch.empty((2,), dtype=torch.float16)
+    pytorch_vulkan._C.reset_execution_counters()
     _assert_rejected(
         lambda: destination.copy_(source), _exact_error(FLOAT16_STORAGE_ERROR)
     )
+    _assert_no_vulkan_work()
+
+
+def test_integer_copy_to_vulkan_float32_is_rejected_before_dispatch(vulkan_backend):
+    destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    source = torch.ones((2,), dtype=torch.int64)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    _assert_rejected(lambda: destination.copy_(source), "dtype")
+    _assert_no_vulkan_work()
+
+
+def test_vulkan_float32_to_cpu_double_conversion_is_rejected_before_dispatch(
+    vulkan_backend,
+):
+    source = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    _assert_rejected(
+        lambda: source.to(device="cpu", dtype=torch.float64),
+        "requested dtype does not match source dtype",
+    )
+    _assert_no_vulkan_work()
+
+
+def test_cpu_float32_to_vulkan_bool_conversion_is_rejected_before_dispatch(
+    vulkan_backend,
+):
+    source = torch.ones((2,), dtype=torch.float32)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    _assert_rejected(
+        lambda: source.to(device=vulkan_backend, dtype=torch.bool),
+        "requested dtype does not match source dtype",
+    )
+    _assert_no_vulkan_work()
 
 
 @pytest.mark.parametrize(
