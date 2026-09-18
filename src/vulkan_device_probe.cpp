@@ -7,6 +7,12 @@
 
 int main(int argc, char **argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--candidate-self-test") {
+            if (!pytorch_vulkan::testing::candidate_selection_falls_back())
+                throw std::runtime_error("candidate selection self-test failed");
+            std::cout << "Candidate fallback: passed\n";
+            return EXIT_SUCCESS;
+        }
         const bool enable_validation =
             argc == 2 && std::string(argv[1]) == "--validation";
         const VulkanPlatform platform(enable_validation);
@@ -46,6 +52,15 @@ int main(int argc, char **argv) {
                   << (platform.validation_enabled() ? "enabled" : "disabled") << "\n";
         std::cout << "Vulkan device: " << device.name << "\n";
         std::cout << "Compute queue family: " << device.compute_queue_family << "\n";
+        std::cout << "Required capabilities: "
+                  << (device.required_capabilities ? "satisfied" : "missing") << "\n";
+        std::cout << "Storage/dispatch limits: "
+                  << (device.storage_dispatch_limits ? "satisfied" : "missing") << "\n";
+        std::cout << "Memory: "
+                  << (device.host_visible_memory ? "host-visible storage supported" : "missing")
+                  << "\n";
+        std::cout << "Shader capabilities: "
+                  << (device.shader_capabilities ? "satisfied" : "missing") << "\n";
         std::cout << "Logical device: "
                   << (platform.device() != VK_NULL_HANDLE ? "ready" : "missing")
                   << "\n";

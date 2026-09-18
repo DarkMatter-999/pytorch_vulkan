@@ -364,8 +364,7 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor, const at::Scala
 at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &other,
                                          const at::Scalar &alpha,
                                          PointwiseOperation operation, const char *name) {
-    const bool training_step = pytorch_vulkan::platform()->compute().training_step_active();
-    TORCH_CHECK(!at::GradMode::is_enabled() || training_step,
+    TORCH_CHECK(pytorch_vulkan::platform()->compute().training_step_active(),
                 "Vulkan ", name, " in-place operations are unsupported");
     const auto self_layout = validate_alias_input(self, name);
     const bool wrapped_scalar = other.device().is_cpu() && other.dim() == 0 &&
@@ -398,8 +397,7 @@ at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &oth
 
 at::Tensor &dispatch_tensor_scalar_alias(at::Tensor &self, const at::Scalar &scalar,
                                           PointwiseOperation operation, const char *name) {
-    const bool training_step = pytorch_vulkan::platform()->compute().training_step_active();
-    TORCH_CHECK(!at::GradMode::is_enabled() || training_step,
+    TORCH_CHECK(pytorch_vulkan::platform()->compute().training_step_active(),
                 "Vulkan ", name, " in-place operations are unsupported");
     const auto layout = validate_alias_input(self, name);
     const float value = scalar_to_float(scalar, name);

@@ -159,7 +159,7 @@ def test_masked_select_rejects_before_vulkan_side_effects(vulkan_backend, case, 
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=message):
         torch.masked_select(values, mask)
-    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 
 @pytest.mark.parametrize("values_factory, expected", [
@@ -173,7 +173,7 @@ def test_masked_select_accepts_positive_stride_and_offset_values(vulkan_backend,
     mask = torch.ones(values.shape, dtype=torch.bool).to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
     result = torch.masked_select(values, mask)
-    assert pytorch_vulkan._C.execution_counter_snapshot() == (2, 1, 0)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (2, 1, 0, 0)
     torch.testing.assert_close(result.cpu(), expected)
 
 

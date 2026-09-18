@@ -25,6 +25,16 @@ void check_result(VkResult result, const char *operation) {
         throw std::runtime_error(std::string(operation) + " failed with VkResult " +
                                  std::to_string(static_cast<int>(result)));
 }
+
+std::exception_ptr execute_callbacks(
+    std::vector<std::function<void()>> &callbacks) noexcept {
+    std::exception_ptr error;
+    for (auto &callback : callbacks) {
+        try { callback(); } catch (...) { if (!error) error = std::current_exception(); }
+    }
+    callbacks.clear();
+    return error;
+}
 } // namespace
 
 VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
@@ -79,7 +89,7 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
 }
 
 VulkanExecutionContext::~VulkanExecutionContext() noexcept {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (device_ == VK_NULL_HANDLE)
         return;
     if (vkQueueWaitIdle(queue_) != VK_SUCCESS) {
@@ -94,9 +104,14 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
                 slot.signal_semaphores[i] = ring_[i].signal_semaphore;
             }
             slot.callbacks = std::move(deferred_callbacks_);
-            for (const auto &record : ring_)
-                for (const auto &callback : record.callbacks)
-                    slot.callbacks.push_back(callback);
+            for (auto &record : ring_) {
+                for (auto &callback : record.callbacks)
+                    slot.callbacks.push_back(std::move(callback));
+                record.callbacks.clear();
+            }
+            for (auto &callback : completion_callbacks_)
+                slot.callbacks.push_back(std::move(callback));
+            completion_callbacks_.clear();
             for (auto &record : ring_) {
                 record.command_buffer = VK_NULL_HANDLE;
                 record.fence = VK_NULL_HANDLE;
@@ -108,11 +123,22 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
         // Completion is unknown and no allocation-free owner remains: leak safely.
         return;
     }
+    std::vector<std::function<void()>> callbacks;
     for (auto &record : ring_) {
-        for (auto &callback : record.callbacks) {
-            try { callback(); } catch (...) {}
-        }
+        for (auto &callback : record.callbacks)
+            callbacks.push_back(std::move(callback));
         record.callbacks.clear();
+    }
+    for (auto &callback : deferred_callbacks_)
+        callbacks.push_back(std::move(callback));
+    deferred_callbacks_.clear();
+    for (auto &callback : completion_callbacks_)
+        callbacks.push_back(std::move(callback));
+    completion_callbacks_.clear();
+    lock.unlock();
+    execute_callbacks(callbacks);
+    lock.lock();
+    for (auto &record : ring_) {
         if (record.fence != VK_NULL_HANDLE)
             vkDestroyFence(device_, record.fence, nullptr);
         if (record.signal_semaphore != VK_NULL_HANDLE)
@@ -120,18 +146,15 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
         if (record.command_buffer != VK_NULL_HANDLE)
             vkFreeCommandBuffers(device_, command_pool_, 1, &record.command_buffer);
     }
-    for (auto &callback : deferred_callbacks_) {
-        try { callback(); } catch (...) {}
-    }
 }
 
 void VulkanExecutionContext::begin() {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (recording_)
         throw std::logic_error("Vulkan execution context is already recording");
     active_slot_ = (active_slot_ + 1) % kRingSize;
     if (ring_[active_slot_].submitted)
-        wait_and_retire(ring_[active_slot_]);
+        wait_and_retire(ring_[active_slot_], lock);
     if (latest_signal_semaphore_ == ring_[active_slot_].signal_semaphore)
         recreate_signal_semaphore(ring_[active_slot_]);
     const auto allocation_start = std::chrono::steady_clock::now();
@@ -150,14 +173,14 @@ void VulkanExecutionContext::begin() {
 }
 
 VkCommandBuffer VulkanExecutionContext::command_buffer() const {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (!recording_)
         throw std::logic_error("Vulkan execution command buffer is not recording");
     return ring_[active_slot_].command_buffer;
 }
 
 void VulkanExecutionContext::submit() {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (!recording_)
         throw std::logic_error("Vulkan execution context is not recording");
     try {
@@ -198,19 +221,19 @@ void VulkanExecutionContext::submit() {
         latest_signal_semaphore_ = ring_[active_slot_].signal_semaphore;
         recording_ = false;
     } catch (...) {
-        abandon_recording(std::current_exception());
+        abandon_recording(std::current_exception(), lock);
     }
 }
 
 void VulkanExecutionContext::wait() {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (recording_)
         throw std::logic_error("Cannot wait while Vulkan execution is recording");
     bool found = false;
     for (auto &record : ring_) {
         if (record.submitted) {
             found = true;
-            wait_and_retire(record);
+            wait_and_retire(record, lock);
         }
     }
     (void)found;
@@ -219,27 +242,28 @@ void VulkanExecutionContext::wait() {
 void VulkanExecutionContext::synchronize() { wait(); }
 
 void VulkanExecutionContext::retire_completed() {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (recording_)
         throw std::logic_error("Cannot retire while Vulkan execution is recording");
     for (auto &record : ring_) {
         if (record.submitted && vkGetFenceStatus(device_, record.fence) == VK_SUCCESS) {
             if (platform_)
                 platform_->record_compute_completed();
-            retire(record);
+            retire(record, lock);
         }
     }
 }
 
 void VulkanExecutionContext::cancel() {
-    std::scoped_lock lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (!recording_)
         return;
     recording_ = false;
-    for (auto &callback : deferred_callbacks_) {
-        try { callback(); } catch (...) {}
-    }
-    deferred_callbacks_.clear();
+    std::vector<std::function<void()>> callbacks;
+    callbacks.swap(deferred_callbacks_);
+    lock.unlock();
+    execute_callbacks(callbacks);
+    lock.lock();
     try { reset_reusable_resources(ring_[active_slot_]); } catch (...) {}
 }
 
@@ -255,6 +279,28 @@ void VulkanExecutionContext::defer_destruction(std::function<void()> callback) {
     if (!recording_)
         throw std::logic_error("Vulkan execution context is not recording");
     deferred_callbacks_.push_back(std::move(callback));
+}
+
+bool VulkanExecutionContext::retain_until_completion(std::function<void()> callback) {
+    if (!callback)
+        throw std::invalid_argument("Vulkan execution callback is empty");
+    std::scoped_lock lock(mutex_);
+    if (recording_) {
+        deferred_callbacks_.push_back(std::move(callback));
+        return true;
+    }
+    bool submitted = false;
+    for (const auto &record : ring_) {
+        if (record.submitted) {
+            submitted = true;
+            break;
+        }
+    }
+    if (submitted) {
+        completion_callbacks_.push_back(std::move(callback));
+        return true;
+    }
+    return false;
 }
 
 void VulkanExecutionContext::retain(VkDescriptorPool descriptor_pool) {
@@ -278,13 +324,26 @@ std::size_t VulkanExecutionContext::pending_count() const {
     return count;
 }
 
-void VulkanExecutionContext::retire(InFlightRecord &record) {
-    std::exception_ptr error;
-    for (auto &callback : record.callbacks) {
-        try { callback(); } catch (...) { if (!error) error = std::current_exception(); }
-    }
-    record.callbacks.clear();
+void VulkanExecutionContext::retire(InFlightRecord &record,
+                                    std::unique_lock<std::mutex> &lock) {
+    std::vector<std::function<void()>> callbacks;
+    callbacks.swap(record.callbacks);
     record.submitted = false;
+    bool submitted = false;
+    for (const auto &pending : ring_)
+        submitted |= pending.submitted;
+    if (submitted) {
+        for (auto &callback : callbacks)
+            completion_callbacks_.push_back(std::move(callback));
+        callbacks.clear();
+        return;
+    }
+    for (auto &callback : completion_callbacks_)
+        callbacks.push_back(std::move(callback));
+    completion_callbacks_.clear();
+    lock.unlock();
+    std::exception_ptr error = execute_callbacks(callbacks);
+    lock.lock();
     if (error)
         std::rethrow_exception(error);
 }
@@ -308,7 +367,8 @@ void VulkanExecutionContext::reset_reusable_resources(InFlightRecord &record) {
                  "Could not reset Vulkan execution fence");
 }
 
-void VulkanExecutionContext::wait_and_retire(InFlightRecord &record) {
+void VulkanExecutionContext::wait_and_retire(
+    InFlightRecord &record, std::unique_lock<std::mutex> &lock) {
     const auto wait_start = std::chrono::steady_clock::now();
     const VkResult result = vkWaitForFences(device_, 1, &record.fence, VK_TRUE, UINT64_MAX);
     if (result != VK_SUCCESS) {
@@ -325,15 +385,17 @@ void VulkanExecutionContext::wait_and_retire(InFlightRecord &record) {
         platform_->record_timing(VulkanTimingCategory::SubmitWait, wait_seconds);
         platform_->record_timing(VulkanTimingCategory::Compute, wait_seconds);
     }
-    retire(record);
+    retire(record, lock);
 }
 
-[[noreturn]] void VulkanExecutionContext::abandon_recording(std::exception_ptr original) {
+[[noreturn]] void VulkanExecutionContext::abandon_recording(
+    std::exception_ptr original, std::unique_lock<std::mutex> &lock) {
     recording_ = false;
-    for (auto &callback : deferred_callbacks_) {
-        try { callback(); } catch (...) {}
-    }
-    deferred_callbacks_.clear();
+    std::vector<std::function<void()>> callbacks;
+    callbacks.swap(deferred_callbacks_);
+    lock.unlock();
+    execute_callbacks(callbacks);
+    lock.lock();
     try { reset_reusable_resources(ring_[active_slot_]); } catch (...) {}
     std::rethrow_exception(original);
 }

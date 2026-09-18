@@ -35,6 +35,8 @@ void test_invalid_states(VulkanExecutionContext &context) {
     expect_rejected([&] { context.submit(); }, "inactive submit was accepted");
     expect_rejected([&] { context.defer_destruction([] {}); },
                     "inactive deferred callback was accepted");
+    expect(!context.retain_until_completion([] {}),
+           "inactive completion retention was accepted");
     context.wait();
     context.synchronize();
     context.begin();
@@ -56,6 +58,53 @@ void test_deferred_callback(VulkanPlatform &platform) {
     context.submit();
     context.synchronize();
     expect(called, "deferred callback was not retired by synchronize");
+}
+
+void test_submitted_callback_retirement(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    int callback_count = 0;
+    context.begin();
+    context.retain_until_completion([&] { ++callback_count; });
+    context.submit();
+    expect(callback_count == 0, "submitted callback ran before completion");
+    expect(context.pending_count() == 1, "submitted callback was not retained");
+    context.retire_completed();
+    context.wait();
+    expect(callback_count == 1, "submitted callback did not run exactly once");
+    context.wait();
+    expect(callback_count == 1, "submitted callback ran more than once");
+}
+
+void test_stale_slot_callback_retirement(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    int callback_count = 0;
+    context.begin();
+    context.submit();
+    context.begin();
+    context.cancel();
+    context.retain_until_completion([&] { ++callback_count; });
+    expect(callback_count == 0, "stale-slot callback ran before completion");
+    context.wait();
+    expect(callback_count == 1, "stale-slot callback did not run after completion");
+    context.wait();
+    expect(callback_count == 1, "stale-slot callback ran more than once");
+}
+
+void test_callback_waits_for_all_submissions(VulkanPlatform &platform) {
+    VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                   platform.command_pool());
+    int callback_count = 0;
+    context.begin();
+    context.retain_until_completion([&] { ++callback_count; });
+    context.submit();
+    context.begin();
+    context.submit();
+    context.wait();
+    expect(callback_count == 1, "callback did not execute exactly once after all submissions");
+    context.wait();
+    expect(callback_count == 1, "callback executed more than once after all submissions");
 }
 
 void test_abandoned_callback(VulkanPlatform &platform) {
@@ -233,6 +282,19 @@ void test_execution_counters_and_timing(VulkanPlatform &platform) {
     expect(timing.compute > 0.0, "execution compute timing was not recorded");
 }
 
+void test_bounded_platform_lifetimes() {
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        VulkanPlatform platform;
+        VulkanExecutionContext context(platform.device(), platform.compute_queue(),
+                                       platform.command_pool());
+        context.begin();
+        context.submit();
+        context.wait();
+        expect(context.pending_count() == 0,
+               "repeated platform lifetime retained submitted work");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -242,12 +304,16 @@ int main() {
                                        platform.command_pool());
         test_invalid_states(context);
         test_deferred_callback(platform);
+        test_submitted_callback_retirement(platform);
+        test_stale_slot_callback_retirement(platform);
+        test_callback_waits_for_all_submissions(platform);
         test_abandoned_callback(platform);
         test_cancelled_callback(platform);
         test_fill(platform);
         test_retained_descriptor_pool(platform);
         test_platform_pending_compute_count(platform);
         test_execution_counters_and_timing(platform);
+        test_bounded_platform_lifetimes();
         std::cout << "Vulkan execution lifecycle tests passed\n";
         return 0;
     } catch (const VulkanUnavailable &) {

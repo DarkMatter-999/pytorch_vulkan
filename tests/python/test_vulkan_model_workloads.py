@@ -81,6 +81,29 @@ def test_fixed_mlp_forward(vulkan_backend):
     torch.testing.assert_close(vk_output.cpu(), cpu_output)
 
 
+def test_fixed_mlp_bounded_repeated_forward_parity(vulkan_backend):
+    for iteration in range(3):
+        torch.manual_seed(700 + iteration)
+        cpu_input = torch.randn(2, 8, dtype=torch.float32)
+        cpu_weight = torch.randn(16, 8, dtype=torch.float32)
+        cpu_bias = torch.randn(16, dtype=torch.float32)
+        cpu_weight2 = torch.randn(4, 16, dtype=torch.float32)
+        cpu_bias2 = torch.randn(4, dtype=torch.float32)
+        cpu_output = torch.nn.functional.linear(
+            torch.relu(torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)),
+            cpu_weight2,
+            cpu_bias2,
+        )
+        vk_input = cpu_input.to(vulkan_backend)
+        vk_output = torch.nn.functional.linear(
+            torch.relu(torch.nn.functional.linear(
+                vk_input, cpu_weight.to(vulkan_backend), cpu_bias.to(vulkan_backend)
+            )),
+            cpu_weight2.to(vulkan_backend), cpu_bias2.to(vulkan_backend),
+        )
+        torch.testing.assert_close(vk_output.cpu(), cpu_output)
+
+
 def test_fixed_cnn_forward_and_first_order_gradients(vulkan_backend):
     torch.manual_seed(11)
     cpu_input = torch.randn(2, 1, 8, 8, dtype=torch.float32, requires_grad=True)

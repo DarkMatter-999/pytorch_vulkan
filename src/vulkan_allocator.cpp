@@ -57,13 +57,17 @@ void delete_allocation(void *context) noexcept {
     if (allocation->platform != nullptr) {
         try {
             auto &execution = allocation->platform->execution_context();
-            if (execution.recording()) {
-                execution.defer_destruction([allocation] { delete allocation; });
+            if (execution.retain_until_completion([allocation] { delete allocation; }))
+                return;
+        } catch (...) {
+            try {
+                // If retention failed while work is pending, leaking is safer
+                // than destroying a resource referenced by submitted commands.
+                if (allocation->platform->execution_context().pending_count() != 0)
+                    return;
+            } catch (...) {
                 return;
             }
-        } catch (...) {
-            // Destruction must remain noexcept; the normal delete below is the
-            // safe fallback when recording state cannot be queried.
         }
     }
     delete allocation;

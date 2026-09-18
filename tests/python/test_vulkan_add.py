@@ -331,15 +331,11 @@ def test_add_out_is_supported(vulkan_backend):
     assert torch.add(lhs, rhs, out=output) is output
 
 
-def test_inplace_add_matches_cpu_and_preserves_identity(vulkan_backend):
+def test_inplace_add_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
     lhs = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
     rhs = torch.tensor([3.0, 4.0], dtype=torch.float32, device=vulkan_backend)
-    expected = torch.tensor([1.0, 2.0])
-    before = lhs.data_ptr()
-    result = lhs.add_(rhs)
-    expected.add_(torch.tensor([3.0, 4.0]))
-    assert result.data_ptr() == before
-    torch.testing.assert_close(lhs.cpu(), expected)
+    with pytest.raises(RuntimeError, match=r"Vulkan add_.*in-place operations are unsupported"):
+        lhs.add_(rhs)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -412,16 +408,15 @@ def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
-def test_scalar_out_and_inplace_variants_match_cpu(vulkan_backend, operation):
+def test_scalar_out_is_supported_but_inplace_variant_is_rejected(vulkan_backend, operation):
     tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
     assert operation(tensor, 1.0, out=output) is output
-    before = tensor.data_ptr()
-    expected = torch.ones(2)
-    result = getattr(tensor, operation.__name__ + "_")(1.0)
-    getattr(expected, operation.__name__ + "_")(1.0)
-    assert result.data_ptr() == before
-    torch.testing.assert_close(tensor.cpu(), expected)
+    with pytest.raises(
+        RuntimeError,
+        match=rf"Vulkan {operation.__name__}_ in-place operations are unsupported",
+    ):
+        getattr(tensor, operation.__name__ + "_")(1.0)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.mul])

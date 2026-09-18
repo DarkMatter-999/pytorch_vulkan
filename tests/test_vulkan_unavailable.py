@@ -44,4 +44,7 @@ def test_vulkan_probe_reports_unavailable_device(tmp_path):
     )
     if probe.returncode == 0:
         pytest.fail("probe unexpectedly found a Vulkan device")
-    assert "Could not create Vulkan instance" in probe.stderr
+    assert (
+        "Could not create Vulkan instance" in probe.stderr
+        or "No suitable Vulkan physical device" in probe.stderr
+    )

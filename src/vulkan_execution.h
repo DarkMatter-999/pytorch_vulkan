@@ -27,6 +27,8 @@ class VulkanExecutionContext final {
     void cancel();
     bool recording() const;
     void defer_destruction(std::function<void()> callback);
+    // Retains a callback through all currently submitted work; false means idle.
+    bool retain_until_completion(std::function<void()> callback);
     void retain(VkDescriptorPool descriptor_pool);
     std::size_t pending_count() const;
 
@@ -43,11 +45,12 @@ class VulkanExecutionContext final {
         std::vector<std::function<void()>> callbacks;
     };
 
-    void retire(InFlightRecord &record);
+    void retire(InFlightRecord &record, std::unique_lock<std::mutex> &lock);
     void recreate_signal_semaphore(InFlightRecord &record);
     void reset_reusable_resources(InFlightRecord &record);
-    void wait_and_retire(InFlightRecord &record);
-    [[noreturn]] void abandon_recording(std::exception_ptr original);
+    void wait_and_retire(InFlightRecord &record, std::unique_lock<std::mutex> &lock);
+    [[noreturn]] void abandon_recording(std::exception_ptr original,
+                                        std::unique_lock<std::mutex> &lock);
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
@@ -59,5 +62,6 @@ class VulkanExecutionContext final {
     std::size_t active_slot_ = 0;
     bool recording_ = false;
     std::vector<std::function<void()>> deferred_callbacks_;
+    std::vector<std::function<void()>> completion_callbacks_;
     mutable std::mutex mutex_;
 };

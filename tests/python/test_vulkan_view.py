@@ -15,6 +15,12 @@ def _source(vulkan_backend):
     return torch.arange(6, dtype=torch.float32).reshape(2, 3).to(vulkan_backend)
 
 
+def _assert_no_implicit_transfer_or_fallback():
+    snapshot = pytorch_vulkan._C.execution_counter_snapshot()
+    assert snapshot[2] == 0
+    assert snapshot[3] == 0
+
+
 @pytest.mark.parametrize(
     "make_view, expected_shape, expected_stride",
     [
@@ -222,3 +228,72 @@ def test_incompatible_reshape_copy_maps_nonuniform_gradient_like_cpu(vulkan_back
 
     assert source.grad is not None
     torch.testing.assert_close(source.grad.cpu(), cpu.grad, rtol=0, atol=0)
+
+
+def test_view_preserves_gradient(vulkan_backend):
+    cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3).requires_grad_()
+    vk = cpu.detach().clone().to(vulkan_backend).requires_grad_()
+    grad = torch.arange(1, 7, dtype=torch.float32)
+    vk_grad = grad.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    cpu_result = cpu.view(6)
+    vk_result = vk.view(6)
+    assert vk_result.untyped_storage().data_ptr() == vk.untyped_storage().data_ptr()
+    cpu_result.backward(grad)
+    vk_result.backward(vk_grad)
+
+    _assert_no_implicit_transfer_or_fallback()
+    torch.testing.assert_close(vk.grad.cpu(), cpu.grad, rtol=0, atol=0)
+
+
+def test_as_strided_preserves_gradient(vulkan_backend):
+    cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3).requires_grad_()
+    vk = cpu.detach().clone().to(vulkan_backend).requires_grad_()
+    grad = torch.arange(1, 5, dtype=torch.float32).reshape(2, 2)
+    vk_grad = grad.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    cpu_result = torch.as_strided(cpu, (2, 2), (2, 1), storage_offset=1)
+    vk_result = torch.as_strided(vk, (2, 2), (2, 1), storage_offset=1)
+    assert vk_result.untyped_storage().data_ptr() == vk.untyped_storage().data_ptr()
+    cpu_result.backward(grad)
+    vk_result.backward(vk_grad)
+
+    _assert_no_implicit_transfer_or_fallback()
+    torch.testing.assert_close(vk.grad.cpu(), cpu.grad, rtol=0, atol=0)
+
+
+def test_reshape_alias_preserves_gradient(vulkan_backend):
+    cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3).requires_grad_()
+    vk = cpu.detach().clone().to(vulkan_backend).requires_grad_()
+    grad = torch.arange(1, 7, dtype=torch.float32).reshape(3, 2)
+    vk_grad = grad.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    cpu_result = torch.ops.aten._reshape_alias.default(cpu, [3, 2], [2, 1])
+    vk_result = torch.ops.aten._reshape_alias.default(vk, [3, 2], [2, 1])
+    assert vk_result.untyped_storage().data_ptr() == vk.untyped_storage().data_ptr()
+    cpu_result.backward(grad)
+    vk_result.backward(vk_grad)
+
+    _assert_no_implicit_transfer_or_fallback()
+    torch.testing.assert_close(vk.grad.cpu(), cpu.grad, rtol=0, atol=0)
+
+
+def test_incompatible_reshape_preserves_gradient(vulkan_backend):
+    cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3).requires_grad_()
+    vk = cpu.detach().clone().to(vulkan_backend).requires_grad_()
+    grad = torch.arange(1, 7, dtype=torch.float32)
+    vk_grad = grad.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    cpu_result = cpu.transpose(0, 1).reshape(6)
+    vk_source = vk.transpose(0, 1)
+    vk_result = vk_source.reshape(6)
+    assert vk_result.untyped_storage().data_ptr() != vk_source.untyped_storage().data_ptr()
+    cpu_result.backward(grad)
+    vk_result.backward(vk_grad)
+
+    _assert_no_implicit_transfer_or_fallback()
+    torch.testing.assert_close(vk.grad.cpu(), cpu.grad, rtol=0, atol=0)

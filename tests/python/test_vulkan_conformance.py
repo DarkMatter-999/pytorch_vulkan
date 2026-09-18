@@ -10,6 +10,7 @@ from vulkan_conformance import (
     SUPPORTED_CASES,
     assert_gradients,
     assert_vulkan_result,
+    assert_no_vulkan_work,
     run_case,
     run_and_compare,
     to_vulkan_inputs,
@@ -62,6 +63,7 @@ def test_declared_autograd_rejection_is_explicit(vulkan_backend, case):
         assert pytorch_vulkan._C.compute_dispatch_count() == 0
     assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
 
 
 @pytest.mark.parametrize("case", SUPPORTED_CASES, ids=lambda case: case.name)
@@ -105,16 +107,12 @@ def test_rejected_case_matches_declared_pattern(vulkan_backend, case):
             inputs = case.setup_inputs(inputs, vulkan_backend)
     except RuntimeError as error:
         assert re.search(case.error_pattern, str(error))
-        assert pytorch_vulkan._C.compute_dispatch_count() == 0
-        assert pytorch_vulkan._C.vulkan_copy_count() == 0
-        assert pytorch_vulkan._C.explicit_transfer_count() == 0
+        assert_no_vulkan_work()
         return
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=case.error_pattern):
         case.operation(*inputs, *case.args, **(case.kwargs or {}))
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert_no_vulkan_work()
 
 
 def test_assert_vulkan_result_checks_device_and_dtype(vulkan_backend):
@@ -133,3 +131,53 @@ def test_execution_counters_count_dispatch_and_explicit_cpu_transfer(vulkan_back
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     result.cpu()
     assert pytorch_vulkan._C.explicit_transfer_count() == 1
+
+
+def test_execution_counter_snapshot_accounts_for_fallbacks(vulkan_backend):
+    source = torch.tensor([-2.0, 0.5, 3.0], dtype=torch.float32).to(vulkan_backend)
+    pytorch_vulkan._C.set_strict_mode(True)
+    try:
+        pytorch_vulkan._C.reset_execution_counters()
+        torch.neg(source)
+        assert pytorch_vulkan._C.execution_counter_snapshot() == (1, 0, 0, 0)
+    finally:
+        pytorch_vulkan._C.set_strict_mode(False)
+
+
+def test_unsupported_operation_does_not_fallback(vulkan_backend):
+    source = torch.ones(2, dtype=torch.float32).to(vulkan_backend)
+    pytorch_vulkan._C.set_strict_mode(True)
+    try:
+        pytorch_vulkan._C.reset_execution_counters()
+        with pytest.raises(RuntimeError, match="Vulkan"):
+            source.neg_()
+        assert_no_vulkan_work()
+    finally:
+        pytorch_vulkan._C.set_strict_mode(False)
+
+
+def test_optimizer_step_preserves_an_outer_training_scope(vulkan_backend):
+    parameter = torch.tensor([1.0, -2.0], device=vulkan_backend, requires_grad=True)
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    loss = (parameter * parameter).sum()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        loss.backward()
+        optimizer.step()
+        assert pytorch_vulkan._C.training_step_active()
+    finally:
+        pytorch_vulkan._C.cancel_training_step()
+
+
+@pytest.mark.parametrize("case_name", ["optimizer.add.inplace", "optimizer.mul.scalar.inplace"])
+def test_direct_optimizer_inplace_schema_preserves_an_outer_training_scope(
+    vulkan_backend, case_name
+):
+    case = next(case for case in ALL_CASES if case.name == case_name)
+    inputs = to_vulkan_inputs(case.inputs(), vulkan_backend)
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        case.operation(*inputs, *case.args, **(case.kwargs or {}))
+        assert pytorch_vulkan._C.training_step_active()
+    finally:
+        pytorch_vulkan._C.cancel_training_step()

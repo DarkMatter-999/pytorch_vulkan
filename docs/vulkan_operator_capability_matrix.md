@@ -15,10 +15,10 @@ universal operator support.
 | `aten::_adaptive_avg_pool2d` | F32 | F32 | nonempty rank-4 NCHW strided, non-overlapping input; output size `(1, 1)` | first-order | explicitly rejected |
 | unary `neg`/`abs`/`relu` | F32 (formatter Double exceptions documented below) | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; fresh output | first-order | empty output supported |
 | pointwise `add`/`sub`/`mul` | F32 | F32 | same-device strided tensors with equal shapes, or documented Python scalar forms; `add` accepts finite representable tensor-tensor `alpha`; unsupported overlap/broadcasting rejected | first-order | empty output supported |
-| `aten::as_strided` | F32 | F32 | Metadata-only on `vk:0`; requested sizes/strides must be non-negative and reference a valid in-allocation range. Non-zero offsets, non-contiguous layouts, overlap, and changed logical element counts are permitted. | chained first-order reverse mode | metadata contract |
-| `aten::view` | F32 | F32 | Requires PyTorch-compatible `computeStride` metadata, then validates the resulting sizes/strides and storage range/device/dtype contract before creating the metadata-only alias. | chained first-order reverse mode | metadata contract |
-| `aten::_reshape_alias` | F32 | F32 | Accepts the ATen-supplied size/stride alias metadata after shared storage-range, device, and dtype validation; creates no copy or dispatch. | chained first-order reverse mode | metadata contract |
-| `aten::reshape` | F32 | F32 | Aliases with the computed strides when PyTorch `computeStride` succeeds; otherwise uses a Vulkan-resident contiguous copy followed by a metadata view. No CPU fallback. | first-order reverse mode | metadata contract |
+| `aten::as_strided` | F32 | F32 | Metadata-only on `vk:0`; requested sizes/strides must be non-negative and reference a valid in-allocation range. Non-zero offsets, non-contiguous layouts, overlap, and changed logical element counts are permitted. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
+| `aten::view` | F32 | F32 | Requires PyTorch-compatible `computeStride` metadata, then validates the resulting sizes/strides and storage range/device/dtype contract before creating the metadata-only alias. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
+| `aten::_reshape_alias` | F32 | F32 | Accepts the ATen-supplied size/stride alias metadata after shared storage-range, device, and dtype validation; creates no copy or dispatch. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
+| `aten::reshape` | F32 | F32 | Aliases with the computed strides when PyTorch `computeStride` succeeds and preserves the input autograd relationship; otherwise uses a Vulkan-resident contiguous copy followed by a metadata view and explicit reshape-copy backward. No CPU fallback. | first-order reverse mode | metadata contract |
 | `torch.masked_select` | F32 values, bool mask | F32 | contiguous or positive-stride/non-zero-offset F32 value views; positive-stride and non-zero-offset value views are materialized with a Vulkan-resident copy before compaction. The mask must remain same-shaped, contiguous, and zero-offset bool on `vk:0`; count and compaction consume Vulkan payloads with no CPU fallback | forward-only | empty output supported |
 | scalar `torch.optim.SGD` | F32 parameters, gradients, `momentum_buffer` | F32 | contiguous, non-overlapping tensors on `vk:0`; scalar `lr`, momentum, dampening, and weight decay; `nesterov=False`, `maximize=False`, `foreach=False`, `differentiable=False` | first-order gradients supplied by supported autograd | empty updates follow PyTorch optimizer semantics |
 | scalar `torch.optim.Adam` | F32 parameters, gradients, `exp_avg`, `exp_avg_sq` | F32 | contiguous, non-overlapping tensors on `vk:0`; scalar `lr`, betas, eps, and weight decay; `amsgrad=False`, `maximize=False`, `foreach=False`, `fused=False`, `capturable=False`, `differentiable=False`; tensor state stays Vulkan-resident and non-capturable `step` metadata stays host-resident | first-order gradients supplied by supported autograd | empty updates follow PyTorch optimizer semantics |
@@ -63,6 +63,11 @@ implicitly transfer payloads to or from the CPU.
 The optimizer execution schemas are `div.Tensor`, `lerp.Scalar_out`,
 `lerp_.Scalar`, `sqrt.out`, `add_.Tensor`, `mul_.Scalar`, `addcmul_`,
 `addcdiv_`, and `zero_`.
+
+The generic public pointwise in-place forms (`add_`, `sub_`, and `mul_`) are
+rejected outside an active Vulkan optimizer/training step. The optimizer
+execution schemas above are an internal update path, not a declaration that
+generic user-facing in-place pointwise operations are supported.
 
 ## Serialization and multiprocessing
 

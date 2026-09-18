@@ -67,6 +67,7 @@ def counters():
         "dispatches": snapshot[0],
         "vulkan_copies": snapshot[1],
         "explicit_transfers": snapshot[2],
+        "fallbacks": snapshot[3],
         "submissions": _C.compute_submitted_count(),
         "completions": _C.compute_completed_count(),
         "waits": _C.compute_wait_count(),

@@ -110,8 +110,7 @@ namespace pytorch_vulkan {
 at::Tensor as_strided_tensor(const at::Tensor &self, at::IntArrayRef size,
                              at::IntArrayRef stride,
                              std::optional<int64_t> storage_offset) {
-    return metadata_only_view(self, size, stride, storage_offset, "as_strided", false)
-        .detach();
+    return metadata_only_view(self, size, stride, storage_offset, "as_strided", false);
 }
 
 at::Tensor view_tensor(const at::Tensor &self, at::IntArrayRef size) {

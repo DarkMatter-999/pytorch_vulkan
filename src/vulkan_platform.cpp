@@ -5,6 +5,7 @@
 #include "vulkan_buffer.h"
 
 #include <atomic>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -21,6 +22,167 @@
 namespace {
 
 constexpr const char *kValidationLayer = "VK_LAYER_KHRONOS_validation";
+constexpr uint32_t kMinimumPushConstantsSize = 36;
+constexpr uint32_t kMinimumWorkgroupSize = 256;
+constexpr VkDeviceSize kProbeStorageBufferSize = 4096;
+
+struct DeviceSuitability {
+    uint32_t compute_queue_family = 0;
+    bool formatter_double_supported = false;
+    bool bool_pointwise_supported = false;
+    bool required_capabilities = false;
+    bool storage_dispatch_limits = false;
+    bool host_visible_memory = false;
+    bool shader_capabilities = false;
+    bool uses_core_12_features = false;
+    bool has_8bit_storage_extension = false;
+    bool has_float16_int8_extension = false;
+    std::string reason;
+};
+
+template <typename Candidate, typename Suitable, typename Initialize>
+int select_candidate(const std::vector<Candidate> &candidates, Suitable suitable,
+                     Initialize initialize) {
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (suitable(candidates[index]) && initialize(candidates[index]))
+            return static_cast<int>(index);
+    }
+    return -1;
+}
+
+bool has_device_extension(VkPhysicalDevice device, const char *name) {
+    uint32_t count = 0;
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr) !=
+        VK_SUCCESS) {
+        return false;
+    }
+    std::vector<VkExtensionProperties> extensions(count);
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &count,
+                                             extensions.data()) != VK_SUCCESS) {
+        return false;
+    }
+    for (const auto &extension : extensions) {
+        if (std::string(extension.extensionName) == name)
+            return true;
+    }
+    return false;
+}
+
+bool has_storage_buffer_memory(VkPhysicalDevice physical_device, VkDevice device) {
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = kProbeStorageBufferSize;
+    buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    if (vkCreateBuffer(device, &buffer_info, nullptr, &buffer) != VK_SUCCESS)
+        return false;
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory);
+    bool suitable = false;
+    for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
+        if ((requirements.memoryTypeBits & (1U << i)) != 0 &&
+            (memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+            suitable = true;
+            break;
+        }
+    }
+    vkDestroyBuffer(device, buffer, nullptr);
+    return suitable;
+}
+
+bool has_required_workgroup_limits(const VkPhysicalDeviceLimits &limits) {
+    return limits.maxComputeWorkGroupCount[0] > 0 &&
+        limits.maxComputeWorkGroupCount[1] > 0 && limits.maxComputeWorkGroupCount[2] > 0 &&
+        limits.maxComputeWorkGroupSize[0] >= kMinimumWorkgroupSize &&
+        limits.maxComputeWorkGroupSize[1] >= 1 && limits.maxComputeWorkGroupSize[2] >= 1 &&
+        limits.maxComputeWorkGroupInvocations >= kMinimumWorkgroupSize;
+}
+
+DeviceSuitability assess_device(VkPhysicalDevice device, uint32_t negotiated_api_version) {
+    DeviceSuitability result;
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(device, &properties);
+
+    uint32_t queue_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, nullptr);
+    std::vector<VkQueueFamilyProperties> queues(queue_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, queues.data());
+    for (uint32_t family = 0; family < queue_count; ++family) {
+        if (queues[family].queueCount > 0 &&
+            (queues[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
+            result.compute_queue_family = family;
+            result.required_capabilities = true;
+            break;
+        }
+    }
+
+    // Storage-buffer-storage-class is core in Vulkan 1.1, but remains an
+    // explicit requirement for a 1.0 physical device.
+    const bool api_1_1 = VK_VERSION_MINOR(negotiated_api_version) >= 1 &&
+        VK_VERSION_MINOR(properties.apiVersion) >= 1;
+    const bool api_1_2 = VK_VERSION_MINOR(negotiated_api_version) >= 2 &&
+        VK_VERSION_MINOR(properties.apiVersion) >= 2;
+    const bool storage_extension =
+        api_1_2 || has_device_extension(device, VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
+    result.has_8bit_storage_extension =
+        has_device_extension(device, VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
+    result.has_float16_int8_extension =
+        has_device_extension(device, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    result.storage_dispatch_limits =
+        storage_extension && properties.limits.maxStorageBufferRange >= kProbeStorageBufferSize &&
+        has_required_workgroup_limits(properties.limits) &&
+        properties.limits.maxPushConstantsSize >= kMinimumPushConstantsSize;
+
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(device, &memory);
+    for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
+        if ((memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+            result.host_visible_memory = true;
+            break;
+        }
+    }
+
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    if (api_1_2) {
+        VkPhysicalDeviceVulkan12Features core12{};
+        core12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        features.pNext = &core12;
+        vkGetPhysicalDeviceFeatures2(device, &features);
+        result.formatter_double_supported = features.features.shaderFloat64;
+        result.bool_pointwise_supported = core12.shaderInt8 && core12.storageBuffer8BitAccess;
+        result.shader_capabilities = core12.storageBuffer8BitAccess &&
+            core12.uniformAndStorageBuffer8BitAccess;
+        result.uses_core_12_features = true;
+    } else {
+        VkPhysicalDevice8BitStorageFeatures storage8{};
+        storage8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+        VkPhysicalDeviceShaderFloat16Int8Features float16_int8{};
+        float16_int8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        features.pNext = &storage8;
+        storage8.pNext = &float16_int8;
+        vkGetPhysicalDeviceFeatures2(device, &features);
+        result.formatter_double_supported = features.features.shaderFloat64;
+        result.bool_pointwise_supported = result.has_float16_int8_extension &&
+            float16_int8.shaderInt8 && storage8.storageBuffer8BitAccess;
+        result.shader_capabilities = storage8.storageBuffer8BitAccess &&
+            storage8.uniformAndStorageBuffer8BitAccess;
+    }
+
+    if (!result.required_capabilities)
+        result.reason = "no compute queue";
+    else if (!result.storage_dispatch_limits)
+        result.reason = "required extensions or limits are unavailable";
+    else if (!result.host_visible_memory)
+        result.reason = "no host-visible memory is available";
+    else if (!result.shader_capabilities)
+        result.reason = "required shader capabilities are unavailable";
+    return result;
+}
 
 // If device-idle cannot be established, the Vulkan handles must remain owned
 // by a live object.  These records intentionally retain their handles for the
@@ -33,6 +195,8 @@ struct QuarantinedVulkanResources {
     VkDevice device = VK_NULL_HANDLE;
     VkCommandPool command_pool = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
+    std::unique_ptr<VulkanBuffer> staging_buffer;
+    std::vector<VulkanPendingTransferResources> pending_transfer_resources;
 
     // Completion is unknown, so retain the compute object's Vulkan handles
     // and parent device instead of invoking destruction during teardown. The
@@ -42,6 +206,7 @@ struct QuarantinedVulkanResources {
     ~QuarantinedVulkanResources() {
         execution.release();
         compute.release();
+        staging_buffer.release();
     }
 };
 
@@ -104,6 +269,52 @@ bool has_debug_utils_extension() {
 } // namespace
 
 namespace pytorch_vulkan {
+
+namespace testing {
+bool candidate_selection_falls_back() noexcept {
+    struct Candidate {
+        bool suitable;
+        bool initializes;
+        const char *reason;
+    };
+    const std::vector<Candidate> candidates{
+        {false, false, "missing compute queue"},
+        {true, false, "logical device creation failed"},
+        {true, true, ""}};
+    int attempts = 0;
+    std::vector<std::string> reasons;
+    VkPhysicalDeviceLimits limits{};
+    limits.maxComputeWorkGroupCount[0] = 1;
+    limits.maxComputeWorkGroupCount[1] = 1;
+    limits.maxComputeWorkGroupCount[2] = 1;
+    limits.maxComputeWorkGroupSize[0] = kMinimumWorkgroupSize;
+    limits.maxComputeWorkGroupSize[1] = 1;
+    limits.maxComputeWorkGroupSize[2] = 1;
+    limits.maxComputeWorkGroupInvocations = kMinimumWorkgroupSize;
+    const bool dimensions_pass = has_required_workgroup_limits(limits);
+    limits.maxComputeWorkGroupSize[1] = 0;
+    const bool y_rejected = !has_required_workgroup_limits(limits);
+    limits.maxComputeWorkGroupSize[1] = 1;
+    limits.maxComputeWorkGroupSize[2] = 0;
+    const bool z_rejected = !has_required_workgroup_limits(limits);
+    return dimensions_pass && y_rejected && z_rejected && select_candidate(
+               candidates, [&reasons](const Candidate &candidate) {
+                   if (!candidate.suitable)
+                       reasons.emplace_back(candidate.reason);
+                   return candidate.suitable;
+               },
+               [&attempts, &reasons](const Candidate &candidate) {
+                   ++attempts;
+                   if (!candidate.initializes)
+                       reasons.emplace_back(candidate.reason);
+                   return candidate.initializes;
+               }) == 2 && attempts == 2 && reasons.size() == 2 &&
+        reasons[0] == "missing compute queue" &&
+         reasons[1] == "logical device creation failed";
+}
+
+} // namespace testing
+
 namespace {
 
 std::atomic<bool> forked_child{false};
@@ -155,6 +366,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
             VK_VERSION_MINOR(loader_version) < 1) {
             throw VulkanUnavailable("Vulkan 1.1 loader support is required");
         }
+        api_version_ = VK_MAKE_VERSION(
+            1, std::min(VK_VERSION_MINOR(loader_version), uint32_t{2}), 0);
 
         VkApplicationInfo application_info{};
         application_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -222,92 +435,138 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
             throw VulkanUnavailable("Could not enumerate Vulkan physical devices");
         }
 
-        for (VkPhysicalDevice device : devices) {
-            VkPhysicalDeviceProperties properties{};
-            vkGetPhysicalDeviceProperties(device, &properties);
-
-            uint32_t queue_family_count = 0;
-            vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
-                                                     nullptr);
-            std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
-            vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
-                                                     queue_families.data());
-
-            for (uint32_t family = 0; family < queue_family_count; ++family) {
-                if ((queue_families[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
-                    device_info_.name = properties.deviceName;
-                    device_info_.compute_queue_family = family;
-                    float queue_priority = 1.0F;
-                    VkDeviceQueueCreateInfo queue_info{};
-                    queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-                    queue_info.queueFamilyIndex = family;
-                    queue_info.queueCount = 1;
-                    queue_info.pQueuePriorities = &queue_priority;
-
-                    VkPhysicalDeviceFeatures2 available_features{};
-                    available_features.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                    VkPhysicalDevice8BitStorageFeatures available_8bit{};
-                    available_8bit.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
-                    available_features.pNext = &available_8bit;
-                    VkPhysicalDeviceShaderFloat16Int8Features available_int8{};
-                    available_int8.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-                    available_8bit.pNext = &available_int8;
-                    vkGetPhysicalDeviceFeatures2(device, &available_features);
-                    const bool formatter_double_supported =
-                        available_features.features.shaderFloat64;
-                    const bool bool_pointwise_supported =
-                        VK_VERSION_MINOR(properties.apiVersion) >= 2 &&
-                        available_int8.shaderInt8 &&
-                        available_8bit.storageBuffer8BitAccess;
-
-                    VkPhysicalDevice8BitStorageFeatures enabled_8bit{};
-                    enabled_8bit.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
-                    enabled_8bit.storageBuffer8BitAccess = bool_pointwise_supported;
-                    VkPhysicalDeviceShaderFloat16Int8Features enabled_int8{};
+        std::string rejected_devices;
+        const auto cleanup_candidate = [&]() noexcept {
+            if (device_ != VK_NULL_HANDLE && vkDeviceWaitIdle(device_) != VK_SUCCESS) {
+                std::scoped_lock quarantine_lock(quarantine_mutex);
+                if (quarantined_resource_count < kQuarantineCapacity) {
+                    auto &resources = quarantined_resources[quarantined_resource_count++];
+                    resources.compute = std::move(compute_);
+                    resources.execution = std::move(execution_);
+                    resources.instance = instance_;
+                    resources.device = device_;
+                    resources.command_pool = command_pool_;
+                    resources.debug_messenger = debug_messenger_;
+                    resources.staging_buffer = std::move(staging_buffer_);
+                } else {
+                    compute_.release();
+                    execution_.release();
+                    staging_buffer_.release();
+                }
+                instance_ = VK_NULL_HANDLE;
+                command_pool_ = VK_NULL_HANDLE;
+                device_ = VK_NULL_HANDLE;
+                debug_messenger_ = VK_NULL_HANDLE;
+            } else {
+                compute_.reset();
+                execution_.reset();
+                if (command_pool_ != VK_NULL_HANDLE)
+                    vkDestroyCommandPool(device_, command_pool_, nullptr);
+                if (device_ != VK_NULL_HANDLE)
+                    vkDestroyDevice(device_, nullptr);
+                command_pool_ = VK_NULL_HANDLE;
+                device_ = VK_NULL_HANDLE;
+            }
+            physical_device_ = VK_NULL_HANDLE;
+            compute_queue_ = VK_NULL_HANDLE;
+        };
+        DeviceSuitability suitability;
+        VkPhysicalDeviceProperties properties{};
+        const int selected_candidate = select_candidate(
+            devices,
+            [&](VkPhysicalDevice device) {
+                vkGetPhysicalDeviceProperties(device, &properties);
+                suitability = assess_device(device, api_version_);
+                if (!suitability.reason.empty()) {
+                    if (!rejected_devices.empty()) rejected_devices += "; ";
+                    rejected_devices += std::string(properties.deviceName) + ": " + suitability.reason;
+                }
+                return suitability.reason.empty();
+            },
+            [&](VkPhysicalDevice device) {
+            try {
+                const uint32_t family = suitability.compute_queue_family;
+                device_info_.name = properties.deviceName;
+                device_info_.compute_queue_family = family;
+                device_info_.required_capabilities = suitability.required_capabilities;
+                device_info_.storage_dispatch_limits = suitability.storage_dispatch_limits;
+                device_info_.host_visible_memory = suitability.host_visible_memory;
+                device_info_.shader_capabilities = suitability.shader_capabilities;
+                float queue_priority = 1.0F;
+                VkDeviceQueueCreateInfo queue_info{};
+                queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+                queue_info.queueFamilyIndex = family;
+                queue_info.queueCount = 1;
+                queue_info.pQueuePriorities = &queue_priority;
+                VkPhysicalDeviceFeatures2 enabled_features2{};
+                enabled_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                enabled_features2.features.shaderFloat64 = suitability.formatter_double_supported;
+                VkDeviceCreateInfo device_info{};
+                device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+                device_info.queueCreateInfoCount = 1;
+                device_info.pQueueCreateInfos = &queue_info;
+                VkPhysicalDeviceVulkan12Features core12{};
+                VkPhysicalDevice8BitStorageFeatures enabled_8bit{};
+                VkPhysicalDeviceShaderFloat16Int8Features enabled_int8{};
+                const char *device_extensions[] = {
+                    VK_KHR_8BIT_STORAGE_EXTENSION_NAME,
+                    VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME};
+                if (suitability.uses_core_12_features) {
+                    core12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+                    core12.storageBuffer8BitAccess = VK_TRUE;
+                    core12.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+                    core12.shaderInt8 = suitability.bool_pointwise_supported;
+                    enabled_features2.pNext = &core12;
+                } else {
+                    enabled_8bit.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+                    enabled_8bit.storageBuffer8BitAccess = VK_TRUE;
+                    enabled_8bit.uniformAndStorageBuffer8BitAccess = VK_TRUE;
                     enabled_int8.sType =
                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-                    enabled_int8.shaderInt8 = bool_pointwise_supported;
-                    enabled_8bit.pNext = &enabled_int8;
-                    VkDeviceCreateInfo device_info{};
-                    device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-                    device_info.queueCreateInfoCount = 1;
-                    device_info.pQueueCreateInfos = &queue_info;
-                    VkPhysicalDeviceFeatures enabled_features{};
-                    enabled_features.shaderFloat64 = formatter_double_supported;
-                    device_info.pEnabledFeatures = &enabled_features;
-                    device_info.pNext =
-                        bool_pointwise_supported ? &enabled_8bit : nullptr;
-                    check_result(
-                        vkCreateDevice(device, &device_info, nullptr, &device_),
-                        "Could not create Vulkan logical device");
-                    physical_device_ = device;
-                    bool_pointwise_supported_ = bool_pointwise_supported;
-                    formatter_double_supported_ = formatter_double_supported;
-                    vkGetDeviceQueue(device_, family, 0, &compute_queue_);
-                    VkCommandPoolCreateInfo command_pool_info{};
-                    command_pool_info.sType =
-                        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-                    command_pool_info.flags =
-                        VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-                    command_pool_info.queueFamilyIndex = family;
-                    if (vkCreateCommandPool(device_, &command_pool_info, nullptr,
-                                            &command_pool_) != VK_SUCCESS) {
-                        throw std::runtime_error(
-                            "Could not create Vulkan command pool");
-                    }
-                    execution_ = std::make_unique<VulkanExecutionContext>(
-                         device_, compute_queue_, command_pool_, this);
-                    compute_ = std::make_unique<VulkanCompute>(*this);
-                    return;
+                    enabled_int8.shaderInt8 = suitability.bool_pointwise_supported;
+                    enabled_8bit.pNext = suitability.bool_pointwise_supported ? &enabled_int8 : nullptr;
+                    enabled_features2.pNext = &enabled_8bit;
+                    device_info.enabledExtensionCount =
+                        suitability.bool_pointwise_supported ? 2 : 1;
+                    device_info.ppEnabledExtensionNames = device_extensions;
                 }
+                device_info.pEnabledFeatures = nullptr;
+                device_info.pNext = &enabled_features2;
+                if (suitability.uses_core_12_features && suitability.has_8bit_storage_extension) {
+                    device_info.enabledExtensionCount = 1;
+                    device_info.ppEnabledExtensionNames = device_extensions;
+                }
+                check_result(vkCreateDevice(device, &device_info, nullptr, &device_),
+                             "Could not create Vulkan logical device");
+                if (!has_storage_buffer_memory(device, device_))
+                    throw VulkanUnavailable("storage buffer has no host-visible memory type");
+                physical_device_ = device;
+                bool_pointwise_supported_ = suitability.bool_pointwise_supported;
+                formatter_double_supported_ = suitability.formatter_double_supported;
+                vkGetDeviceQueue(device_, family, 0, &compute_queue_);
+                VkCommandPoolCreateInfo command_pool_info{};
+                command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+                command_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+                command_pool_info.queueFamilyIndex = family;
+                check_result(vkCreateCommandPool(device_, &command_pool_info, nullptr,
+                                                 &command_pool_),
+                             "Could not create Vulkan command pool");
+                execution_ = std::make_unique<VulkanExecutionContext>(
+                    device_, compute_queue_, command_pool_, this);
+                compute_ = std::make_unique<VulkanCompute>(*this);
+                return true;
+            } catch (const std::exception &error) {
+                if (!rejected_devices.empty()) rejected_devices += "; ";
+                rejected_devices += std::string(properties.deviceName) + ": " + error.what();
+                cleanup_candidate();
+                if (instance_ == VK_NULL_HANDLE)
+                    throw VulkanUnavailable("Could not safely clean up Vulkan candidate");
+                return false;
             }
-        }
+            });
 
-        throw VulkanUnavailable("No Vulkan physical device has a compute queue");
+        if (selected_candidate < 0)
+            throw VulkanUnavailable("No suitable Vulkan physical device: " + rejected_devices);
     } catch (...) {
         cleanup();
         throw;
@@ -335,14 +594,17 @@ void VulkanPlatform::cleanup() noexcept {
                 resources.instance = instance_;
                 resources.device = device_;
                 resources.command_pool = command_pool_;
-                resources.debug_messenger = debug_messenger_;
-                pending_transfer_resources_.clear();
+                    resources.debug_messenger = debug_messenger_;
+                    resources.staging_buffer = std::move(staging_buffer_);
+                    resources.pending_transfer_resources =
+                        std::move(pending_transfer_resources_);
             } else {
                 // No allocation-free owner remains.  Leak every handle and
                 // the compute object rather than destroying unknown work.
                 compute_.release();
-                execution_.release();
-                pending_transfer_resources_.clear();
+                    execution_.release();
+                    staging_buffer_.release();
+                    pending_transfer_resources_.clear();
             }
             instance_ = VK_NULL_HANDLE;
             device_ = VK_NULL_HANDLE;
@@ -439,6 +701,7 @@ void VulkanPlatform::reset_execution_counters() const {
     std::scoped_lock lock(queue_mutex_);
     explicit_transfer_count_.store(0, std::memory_order_relaxed);
     vulkan_copy_count_.store(0, std::memory_order_relaxed);
+    fallback_count_.store(0, std::memory_order_relaxed);
     copy_command_count_.store(0, std::memory_order_relaxed);
     compute_submitted_count_.store(0, std::memory_order_relaxed);
     compute_completed_count_.store(0, std::memory_order_relaxed);
@@ -477,7 +740,8 @@ VulkanExecutionCounterSnapshot VulkanPlatform::execution_counter_snapshot() cons
     std::scoped_lock lock(queue_mutex_);
     return {compute_ == nullptr ? 0 : compute_->dispatch_count(),
             vulkan_copy_count_.load(std::memory_order_relaxed),
-            explicit_transfer_count_.load(std::memory_order_relaxed)};
+            explicit_transfer_count_.load(std::memory_order_relaxed),
+            fallback_count_.load(std::memory_order_relaxed)};
 }
 
 std::size_t VulkanPlatform::explicit_transfer_count() const {
@@ -488,6 +752,22 @@ std::size_t VulkanPlatform::explicit_transfer_count() const {
 void VulkanPlatform::record_explicit_transfer() const {
     std::scoped_lock lock(queue_mutex_);
     explicit_transfer_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_fallback() const {
+    fallback_count_.fetch_add(1, std::memory_order_relaxed);
+    if (strict_mode_.load(std::memory_order_relaxed)) {
+        throw std::runtime_error(
+            "Vulkan strict fallback mode rejects implicit CPU fallback");
+    }
+}
+
+void VulkanPlatform::set_strict_mode(bool enabled) const {
+    strict_mode_.store(enabled, std::memory_order_relaxed);
+}
+
+bool VulkanPlatform::strict_mode() const {
+    return strict_mode_.load(std::memory_order_relaxed);
 }
 
 std::size_t VulkanPlatform::vulkan_copy_count() const {

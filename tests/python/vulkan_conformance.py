@@ -103,6 +103,17 @@ def run_and_compare(case: ConformanceCase, device: str = "vk:0") -> tuple[Any, A
     inputs = to_vulkan_inputs(cpu_inputs, device)
     pytorch_vulkan._C.reset_execution_counters()
     result = case.operation(*inputs, *case.args, **(case.kwargs or {}))
+    dispatches, vulkan_copies, explicit_transfers, fallbacks = (
+        pytorch_vulkan._C.execution_counter_snapshot()
+    )
+    if case.execution_mode == "compute":
+        assert dispatches > 0
+    elif case.execution_mode == "copy":
+        assert vulkan_copies > 0
+    else:
+        assert dispatches == 0 and vulkan_copies == 0
+    assert explicit_transfers == 0
+    assert fallbacks == 0
     return result, cpu_result
 
 
@@ -120,6 +131,16 @@ def assert_vulkan_result(result: torch.Tensor, case: ConformanceCase) -> None:
         assert tuple(result.shape) == case.expected_shape
 
 
+def assert_no_vulkan_work() -> None:
+    dispatches, vulkan_copies, explicit_transfers, fallbacks = (
+        pytorch_vulkan._C.execution_counter_snapshot()
+    )
+    assert dispatches == 0
+    assert vulkan_copies == 0
+    assert explicit_transfers == 0
+    assert fallbacks == 0
+
+
 def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
     cpu_inputs = case.inputs()
     vk_inputs = to_vulkan_inputs(cpu_inputs, device)
@@ -132,7 +153,7 @@ def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
     cpu_result.backward(gradient)
     pytorch_vulkan._C.reset_execution_counters()
     vk_result.backward(vk_gradient)
-    dispatches, vulkan_copies, explicit_transfers = (
+    dispatches, vulkan_copies, explicit_transfers, fallbacks = (
         pytorch_vulkan._C.execution_counter_snapshot()
     )
     assert case.execution_mode in {"compute", "copy"}
@@ -140,6 +161,7 @@ def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
         f"{case.name} backward performed neither Vulkan dispatch nor copy work"
     )
     assert explicit_transfers == 0, f"{case.name} backward transferred explicitly"
+    assert fallbacks == 0, f"{case.name} backward used implicit CPU fallback"
     for cpu_input, vk_input in zip(cpu_inputs, vk_inputs):
         if not isinstance(cpu_input, torch.Tensor) or not cpu_input.requires_grad:
             continue
@@ -390,11 +412,33 @@ def _addcdiv_inplace(lhs, tensor1, tensor2):
 
 
 def _add_inplace(lhs, rhs):
-    return torch.ops.aten.add_.Tensor(lhs, rhs, alpha=1.0)
+    owns_training_step = not pytorch_vulkan._C.training_step_active()
+    if owns_training_step:
+        pytorch_vulkan._C.begin_training_step()
+    try:
+        result = torch.ops.aten.add_.Tensor(lhs, rhs, alpha=1.0)
+        if owns_training_step:
+            pytorch_vulkan._C.end_training_step()
+        return result
+    except Exception:
+        if owns_training_step:
+            pytorch_vulkan._C.cancel_training_step()
+        raise
 
 
 def _mul_scalar_inplace(lhs):
-    return torch.ops.aten.mul_.Scalar(lhs, 2.0)
+    owns_training_step = not pytorch_vulkan._C.training_step_active()
+    if owns_training_step:
+        pytorch_vulkan._C.begin_training_step()
+    try:
+        result = torch.ops.aten.mul_.Scalar(lhs, 2.0)
+        if owns_training_step:
+            pytorch_vulkan._C.end_training_step()
+        return result
+    except Exception:
+        if owns_training_step:
+            pytorch_vulkan._C.cancel_training_step()
+        raise
 
 
 def _zero_inplace(lhs):

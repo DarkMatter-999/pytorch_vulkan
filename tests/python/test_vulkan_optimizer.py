@@ -96,7 +96,16 @@ def run_training_steps(device, optimizer_factory, steps):
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=False)
         loss = (parameter * parameter).sum()
-        loss.backward()
+        if device == "cpu":
+            loss.backward()
+        else:
+            pytorch_vulkan._C.begin_training_step()
+            try:
+                loss.backward()
+                pytorch_vulkan._C.end_training_step()
+            except Exception:
+                pytorch_vulkan._C.cancel_training_step()
+                raise
         pytorch_vulkan._C.reset_execution_counters() if device != "cpu" else None
         optimizer.step()
         if device != "cpu":
@@ -156,7 +165,17 @@ def test_optimizer_repeated_updates_survive_allocator_size_transitions(
         counters = []
         for _ in range(steps):
             optimizer.zero_grad(set_to_none=False)
-            (parameter * parameter).sum().backward()
+            loss = (parameter * parameter).sum()
+            if device == "cpu":
+                loss.backward()
+            else:
+                pytorch_vulkan._C.begin_training_step()
+                try:
+                    loss.backward()
+                    pytorch_vulkan._C.end_training_step()
+                except Exception:
+                    pytorch_vulkan._C.cancel_training_step()
+                    raise
             if device != "cpu":
                 pytorch_vulkan._C.reset_execution_counters()
             optimizer.step()
@@ -234,9 +253,16 @@ def test_repeated_backward_accumulates_vulkan_gradient(optimizer_factory, vulkan
     vk = cpu.detach().to(vulkan_backend).requires_grad_()
     cpu_optimizer = optimizer_factory([cpu])
     vk_optimizer = optimizer_factory([vk])
-    for parameter in (cpu, vk):
-        (parameter * parameter).sum().backward()
-        (parameter * parameter).sum().backward()
+    (cpu * cpu).sum().backward()
+    (cpu * cpu).sum().backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        (vk * vk).sum().backward()
+        (vk * vk).sum().backward()
+        pytorch_vulkan._C.end_training_step()
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
     torch.testing.assert_close(vk.grad.cpu(), cpu.grad)
     assert vk.grad.device == torch.device("vk:0")
     cpu_optimizer.step()
@@ -563,27 +589,26 @@ def test_nonzero_vulkan_device_index_rejects_before_dispatch(vulkan_backend):
 
 
 @pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])
-def test_inplace_pointwise_matches_cpu_and_preserves_identity(vulkan_backend, operation):
+def test_public_inplace_pointwise_is_rejected(vulkan_backend, operation):
     cpu = torch.tensor([1.0, -2.0, 3.0])
     vk = cpu.to(vulkan_backend)
-    other_cpu = torch.tensor([0.5, 2.0, -4.0])
-    other_vk = other_cpu.to(vulkan_backend)
-    before = vk.data_ptr()
-    getattr(cpu, operation)(other_cpu)
-    result = getattr(vk, operation)(other_vk)
-    assert result.data_ptr() == before
-    torch.testing.assert_close(vk.cpu(), cpu)
+    other_vk = torch.tensor([0.5, 2.0, -4.0], device=vulkan_backend)
+    with pytest.raises(
+        RuntimeError,
+        match=rf"Vulkan {operation}.*in-place operations are unsupported",
+    ):
+        getattr(vk, operation)(other_vk)
 
 
-def test_inplace_pointwise_scalar_matches_cpu_and_preserves_identity(vulkan_backend):
+def test_public_inplace_pointwise_scalar_is_rejected(vulkan_backend):
     for operation, value in (("add_", 0.5), ("sub_", 0.5), ("mul_", 2.5)):
         cpu = torch.tensor([1.0, -2.0, 3.0])
         vk = cpu.to(vulkan_backend)
-        before = vk.data_ptr()
-        getattr(cpu, operation)(value)
-        result = getattr(vk, operation)(value)
-        assert result.data_ptr() == before
-        torch.testing.assert_close(vk.cpu(), cpu)
+        with pytest.raises(
+            RuntimeError,
+            match=rf"Vulkan {operation}.*in-place operations are unsupported",
+        ):
+            getattr(vk, operation)(value)
 
 
 def test_zero_and_fill_mutate_vulkan_storage(vulkan_backend):
@@ -608,7 +633,7 @@ def test_inplace_pointwise_rejects_partial_overlap_before_dispatch(vulkan_backen
     version = self_vk._version
     pytorch_vulkan._C.reset_execution_counters()
 
-    with pytest.raises(RuntimeError, match="overlap|alias"):
+    with pytest.raises(RuntimeError, match="Vulkan add_.*in-place operations are unsupported"):
         self_vk.add_(other_vk)
 
     assert self_vk._version == version
@@ -617,21 +642,13 @@ def test_inplace_pointwise_rejects_partial_overlap_before_dispatch(vulkan_backen
 
 
 @pytest.mark.parametrize("view", [slice(1, 5)])
-def test_inplace_pointwise_supports_valid_view_layouts(vulkan_backend, view):
+def test_public_inplace_pointwise_rejects_valid_view_layouts(vulkan_backend, view):
     cpu = torch.arange(6.0)
     vk = cpu.to(vulkan_backend)
-    self_cpu = cpu[view]
     self_vk = vk[view]
-    other_cpu = torch.full_like(self_cpu, 2.0)
-    other_vk = other_cpu.to(vulkan_backend)
-    version = self_vk._version
-
-    result = self_vk.add_(other_vk)
-
-    assert result.data_ptr() == self_vk.data_ptr()
-    assert self_vk._version == version + 1
-    self_cpu.add_(other_cpu)
-    torch.testing.assert_close(vk.cpu(), cpu)
+    other_vk = torch.full_like(self_vk, 2.0)
+    with pytest.raises(RuntimeError, match="Vulkan add_.*in-place operations are unsupported"):
+        self_vk.add_(other_vk)
 
 
 def test_inplace_pointwise_rejects_uncertain_noncontiguous_view(vulkan_backend):
@@ -639,7 +656,7 @@ def test_inplace_pointwise_rejects_uncertain_noncontiguous_view(vulkan_backend):
     other = torch.ones(3, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
 
-    with pytest.raises(RuntimeError, match="overlap"):
+    with pytest.raises(RuntimeError, match="Vulkan add_.*in-place operations are unsupported"):
         vk.add_(other)
 
     assert pytorch_vulkan._C.compute_dispatch_count() == 0

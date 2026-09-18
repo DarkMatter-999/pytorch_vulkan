@@ -43,10 +43,14 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
         pytest.skip(probe.stderr.strip() or "no suitable Vulkan device")
 
     assert probe.returncode == 0, probe.stdout + probe.stderr
-    assert "Vulkan API: 1.1" in probe.stdout
+    assert "Vulkan API: 1." in probe.stdout
     assert "Availability: yes" in probe.stdout
     assert "Vulkan device:" in probe.stdout
     assert "Compute queue family:" in probe.stdout
+    assert "Required capabilities: satisfied" in probe.stdout
+    assert "Storage/dispatch limits: satisfied" in probe.stdout
+    assert "Memory: host-visible storage supported" in probe.stdout
+    assert "Shader capabilities: satisfied" in probe.stdout
     assert "Logical device: ready" in probe.stdout
     assert "Buffer: ready" in probe.stdout
     assert "Transfer: passed" in probe.stdout
@@ -67,3 +71,11 @@ def test_vulkan_probe_builds_and_discovers_compute_device(tmp_path):
         validation_probe.stdout + validation_probe.stderr
     )
     assert "Validation: enabled" in validation_probe.stdout
+
+    candidate_test = subprocess.run(
+        [str(executables[0]), "--candidate-self-test"],
+        capture_output=True,
+        text=True,
+    )
+    assert candidate_test.returncode == 0, candidate_test.stdout + candidate_test.stderr
+    assert "Candidate fallback: passed" in candidate_test.stdout

@@ -379,6 +379,38 @@ def test_model_matrix_declares_fixed_phase_6_slices():
         assert operation in matrix
 
 
+def test_matrix_separates_public_inplace_forms_from_optimizer_updates():
+    matrix = Path("docs/vulkan_operator_capability_matrix.md").read_text()
+    assert "generic public pointwise in-place forms (`add_`, `sub_`, and `mul_`)" in matrix
+    assert "rejected outside an active Vulkan optimizer/training step" in matrix
+    assert "internal update path" in matrix
+    assert "aten::add_.Tensor" in DECLARED_OPERATION_MANIFEST
+    assert "aten::mul_.Scalar" in DECLARED_OPERATION_MANIFEST
+
+
+@pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
+@pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])
+def test_public_inplace_pointwise_rejects_no_grad_and_inference_mode(
+    vulkan_backend, mode, operation
+):
+    tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
+    other = torch.full_like(tensor, 2.0)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with mode(), pytest.raises(
+        RuntimeError,
+        match=rf"Vulkan {operation}.*in-place operations are unsupported",
+    ):
+        if operation == "mul_":
+            getattr(tensor, operation)(2.0)
+        else:
+            getattr(tensor, operation)(other)
+
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+
+
 def test_formatter_double_matrix_declares_exact_surface_and_boundaries():
     matrix = open("docs/vulkan_operator_capability_matrix.md").read()
     for entry in (
@@ -461,6 +493,33 @@ def test_float16_operator_request_is_rejected_without_cpu_fallback(vulkan_backen
     )
     with pytest.raises(RuntimeError, match=re.escape(expected)):
         torch.neg(torch.empty((2,), dtype=torch.float16, device=vulkan_backend))
+
+
+def test_fallback_policy_seam_counts_attempt_and_strict_mode_rejects(vulkan_backend):
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.set_strict_mode(False)
+
+    pytorch_vulkan._C.test_inject_fallback()
+    assert pytorch_vulkan._C.fallback_count() == 1
+
+    pytorch_vulkan._C.set_strict_mode(True)
+    with pytest.raises(RuntimeError, match="strict fallback mode"):
+        pytorch_vulkan._C.test_inject_fallback()
+    assert pytorch_vulkan._C.fallback_count() == 2
+    pytorch_vulkan._C.set_strict_mode(False)
+
+
+def test_supported_and_rejected_operations_do_not_count_as_fallback(vulkan_backend):
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.set_strict_mode(False)
+    tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
+
+    torch.neg(tensor)
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+    with pytest.raises(RuntimeError, match="Vulkan"):
+        torch.neg(torch.empty((2,), dtype=torch.float16, device=vulkan_backend))
+    assert pytorch_vulkan._C.fallback_count() == 0
 
 
 @pytest.mark.parametrize("operation", [torch.neg, torch.abs, torch.relu, torch.sub])

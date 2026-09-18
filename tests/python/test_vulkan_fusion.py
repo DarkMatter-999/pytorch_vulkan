@@ -49,7 +49,13 @@ def test_linear_relu_backward_and_optimizer_match_cpu(vulkan_device):
     pytorch_vulkan._C.reset_execution_counters()
     vk_output = _fused(vk_input, vk_weight, vk_bias)
     vk_loss = vk_output.mul(vk_output).sum()
-    vk_loss.backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_loss.backward()
+        pytorch_vulkan._C.end_training_step()
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
     vk_optimizer.step()
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     assert pytorch_vulkan._C.compute_dispatch_count() > 0

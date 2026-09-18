@@ -111,15 +111,11 @@ def test_binary_rejections_remain_explicit(vulkan_backend):
         torch.mul(grad_lhs, grad_rhs, out=torch.empty_like(equal_lhs))
 
 
-def test_binary_inplace_matches_cpu_and_preserves_identity(vulkan_backend):
+def test_binary_inplace_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
     tensor = _vk([1.0, 2.0], vulkan_backend)
     other = _vk([3.0, 4.0], vulkan_backend)
-    expected = torch.tensor([1.0, 2.0])
-    before = tensor.data_ptr()
-    result = tensor.mul_(other)
-    expected.mul_(torch.tensor([3.0, 4.0]))
-    assert result.data_ptr() == before
-    torch.testing.assert_close(tensor.cpu(), expected)
+    with pytest.raises(RuntimeError, match=r"Vulkan mul_.*in-place operations are unsupported"):
+        tensor.mul_(other)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.mul])

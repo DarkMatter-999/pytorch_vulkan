@@ -1,5 +1,7 @@
 #include "vulkan_allocator.h"
+#include "vulkan_buffer.h"
 #include "vulkan_device_guard.h"
+#include "vulkan_execution.h"
 #include "vulkan_platform.h"
 
 #include <c10/core/Allocator.h>
@@ -89,6 +91,67 @@ void test_explicit_shutdown_preserves_live_allocation(c10::Allocator &allocator)
     data.clear();
 }
 
+void test_release_after_submission(c10::Allocator &allocator) {
+    auto &platform = *pytorch_vulkan::platform();
+    auto &context = platform.execution_context();
+    auto data = allocator.allocate(4096);
+    VulkanBuffer &buffer = pytorch_vulkan::allocation_buffer(data);
+    context.begin();
+    vkCmdFillBuffer(context.command_buffer(), buffer.buffer(), 0, 4096, 0x12345678U);
+    context.submit();
+    data.clear();
+    expect(context.pending_count() == 1,
+           "allocation release unexpectedly retired submitted work");
+    context.wait();
+    expect(context.pending_count() == 0,
+           "submitted allocation was not retired after synchronization");
+}
+
+void test_bounded_reuse_after_submission(c10::Allocator &allocator) {
+    auto &platform = *pytorch_vulkan::platform();
+    auto &context = platform.execution_context();
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        auto small = allocator.allocate(256);
+        VulkanBuffer &small_buffer = pytorch_vulkan::allocation_buffer(small);
+        context.begin();
+        vkCmdFillBuffer(context.command_buffer(), small_buffer.buffer(), 0, 256,
+                        static_cast<uint32_t>(iteration));
+        context.submit();
+        small.clear();
+        auto large = allocator.allocate(16384);
+        VulkanBuffer &large_buffer = pytorch_vulkan::allocation_buffer(large);
+        context.begin();
+        vkCmdFillBuffer(context.command_buffer(), large_buffer.buffer(), 0, 16384,
+                        static_cast<uint32_t>(iteration + 1));
+        context.submit();
+        large.clear();
+        expect(context.pending_count() == 2,
+               "submitted reuse sequence did not fill both ring slots");
+        context.begin();
+        context.cancel();
+        auto final_small = allocator.allocate(256);
+        VulkanBuffer &final_small_buffer = pytorch_vulkan::allocation_buffer(final_small);
+        context.begin();
+        vkCmdFillBuffer(context.command_buffer(), final_small_buffer.buffer(), 0, 256,
+                        static_cast<uint32_t>(iteration + 2));
+        context.submit();
+        final_small.clear();
+        context.wait();
+        expect(context.pending_count() == 0,
+               "submitted reuse sequence retained a completed slot");
+    }
+}
+
+void test_bounded_allocator_transition_stress(c10::Allocator &allocator) {
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        auto small = allocator.allocate(128 + iteration);
+        auto large = allocator.allocate(8192 + iteration * 17);
+        expect(small.get() != large.get(), "allocator transition aliased allocations");
+        large.clear();
+        small.clear();
+    }
+}
+
 } // namespace
 
 int main() {
@@ -125,6 +188,9 @@ int main() {
         test_zero_byte_allocation(*allocator);
         test_oversized_allocation_rejected(*allocator);
         test_copy_rejected(*allocator);
+        test_release_after_submission(*allocator);
+        test_bounded_reuse_after_submission(*allocator);
+        test_bounded_allocator_transition_stress(*allocator);
         test_explicit_shutdown_preserves_live_allocation(*allocator);
         std::cout << "Vulkan allocator lifetime tests passed\n";
         return 0;

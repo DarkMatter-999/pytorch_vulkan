@@ -22,12 +22,17 @@ class VulkanBuffer;
 struct VulkanDeviceInfo {
     std::string name;
     uint32_t compute_queue_family = 0;
+    bool required_capabilities = false;
+    bool storage_dispatch_limits = false;
+    bool host_visible_memory = false;
+    bool shader_capabilities = false;
 };
 
 struct VulkanExecutionCounterSnapshot {
     std::size_t dispatches = 0;
     std::size_t vulkan_copies = 0;
     std::size_t explicit_transfers = 0;
+    std::size_t fallbacks = 0;
 };
 
 struct VulkanTimingSnapshot {
@@ -36,6 +41,11 @@ struct VulkanTimingSnapshot {
     double submit_wait = 0.0;
     double compute = 0.0;
     double total = 0.0;
+};
+
+struct VulkanPendingTransferResources {
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
 };
 
 enum class VulkanTimingCategory { Allocation, Recording, SubmitWait, Compute };
@@ -76,6 +86,10 @@ class VulkanPlatform {
     void reset_execution_counters() const;
     std::size_t explicit_transfer_count() const;
     void record_explicit_transfer() const;
+    // Records an implicit CPU fallback, rejecting it when strict mode is on.
+    void record_fallback() const;
+    void set_strict_mode(bool enabled) const;
+    bool strict_mode() const;
     std::size_t vulkan_copy_count() const;
     void record_vulkan_copy() const;
      // Counts recorded vkCmdCopyBuffer commands, distinct from logical transfers.
@@ -97,10 +111,7 @@ class VulkanPlatform {
     VulkanExecutionContext &execution_context() const;
 
   private:
-    struct PendingTransferResources {
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-        VkFence fence = VK_NULL_HANDLE;
-    };
+    using PendingTransferResources = VulkanPendingTransferResources;
 
     void cleanup() noexcept;
     friend class VulkanCompute;
@@ -123,6 +134,8 @@ class VulkanPlatform {
     mutable std::mutex transfer_mutex_;
     mutable std::atomic<std::size_t> explicit_transfer_count_{0};
     mutable std::atomic<std::size_t> vulkan_copy_count_{0};
+    mutable std::atomic<std::size_t> fallback_count_{0};
+    mutable std::atomic<bool> strict_mode_{false};
     mutable std::atomic<std::size_t> copy_command_count_{0};
     mutable std::atomic<std::size_t> compute_submitted_count_{0};
     mutable std::atomic<std::size_t> compute_completed_count_{0};
@@ -132,6 +145,10 @@ class VulkanPlatform {
 };
 
 namespace pytorch_vulkan {
+
+namespace testing {
+bool candidate_selection_falls_back() noexcept;
+}
 
 // A forked child cannot safely reuse Vulkan objects created by its parent.
 bool inherited_fork_state() noexcept;

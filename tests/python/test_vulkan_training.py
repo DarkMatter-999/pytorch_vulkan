@@ -328,7 +328,13 @@ def test_fixed_mlp_forward_backward_runs_on_vulkan(vulkan_backend):
     vk_loss = _squared_error_loss(vk_output, vk_target)
     _assert_vk_f32_contiguous(vk_output)
     _assert_vk_f32_contiguous(vk_loss)
-    vk_loss.backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_loss.backward()
+        pytorch_vulkan._C.end_training_step()
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
 
     for parameter in vk_model.parameters():
         _assert_vk_f32_contiguous(parameter.grad)
@@ -337,6 +343,43 @@ def test_fixed_mlp_forward_backward_runs_on_vulkan(vulkan_backend):
     dispatches, transfers = _execution_counters()
     assert dispatches > 0
     assert transfers == 0
+
+
+def test_fixed_mlp_bounded_lifecycle_stress(vulkan_backend):
+    for iteration in range(4):
+        cpu_model, vk_model, cpu_input, vk_input, cpu_target, vk_target = (
+            _make_training_pairs(vulkan_backend, seed=900 + iteration)
+        )
+        cpu_loss = _squared_error_loss(cpu_model(cpu_input), cpu_target)
+        cpu_loss.backward()
+        cpu_optimizer = _make_sgd(cpu_model.parameters())
+        cpu_optimizer.step()
+        optimizer = _make_sgd(vk_model.parameters())
+        pytorch_vulkan._C.reset_execution_counters()
+        run_training_step(vk_model, optimizer, vk_input, vk_target)
+        assert pytorch_vulkan._C.compute_submission_count() == 1
+        assert pytorch_vulkan._C.pending_compute_count() == 0
+        for (cpu_name, cpu_parameter), (vk_name, vk_parameter) in zip(
+            cpu_model.named_parameters(), vk_model.named_parameters()
+        ):
+            assert vk_name == cpu_name
+            torch.testing.assert_close(
+                vk_parameter.cpu(), cpu_parameter, rtol=2e-4, atol=2e-4
+            )
+            torch.testing.assert_close(
+                vk_parameter.grad.cpu(), cpu_parameter.grad, rtol=2e-4, atol=2e-4
+            )
+        for cpu_parameter, vk_parameter in zip(
+            cpu_model.parameters(), vk_model.parameters()
+        ):
+            for name, vk_value in optimizer.state[vk_parameter].items():
+                cpu_value = cpu_optimizer.state[cpu_parameter][name]
+                if isinstance(vk_value, torch.Tensor):
+                    torch.testing.assert_close(
+                        vk_value.cpu(), cpu_value, rtol=2e-4, atol=2e-4
+                    )
+                else:
+                    assert vk_value == cpu_value
 
 
 def test_fused_linear_relu_training_scope_retires_resources(vulkan_backend):
@@ -377,7 +420,13 @@ def test_fused_linear_relu_optimizer_state_matches_cpu_for_mnist_shape(vulkan_ba
 
     pytorch_vulkan._C.reset_execution_counters()
     vk_output = torch.ops.pytorch_vulkan.linear_relu(vk_input, vk_weight, vk_bias)
-    vk_output.mul(vk_output).sum().backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_output.mul(vk_output).sum().backward()
+        pytorch_vulkan._C.end_training_step()
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
     vk_optimizer.step()
 
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
@@ -525,7 +574,13 @@ def test_fixed_mlp_forward_backward_matches_cpu(vulkan_backend):
     vk_loss = _squared_error_loss(vk_output, vk_target)
     _assert_vk_f32_contiguous(vk_output)
     _assert_vk_f32_contiguous(vk_loss)
-    vk_loss.backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_loss.backward()
+        pytorch_vulkan._C.end_training_step()
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
     for parameter in vk_model.parameters():
         _assert_vk_f32_contiguous(parameter.grad)
     _assert_vk_f32_contiguous(vk_input.grad)

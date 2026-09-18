@@ -1,6 +1,7 @@
 import torch
 import inspect
 
+from . import _C
 from ._C import current_device, device_count, formatter_double_supported, is_available, set_device
 from .compiler import compiler_stats, vulkan_backend
 from .compiler_metadata import validate_compiler_tensor_metadata
@@ -115,7 +116,18 @@ class _VulkanValidatedSGD(torch.optim.SGD):
 
     def step(self, closure=None):
         _validate_basic_optimizer_state(self)
-        return super().step(closure)
+        owns_training_step = not _C.training_step_active()
+        if owns_training_step:
+            _C.begin_training_step()
+        try:
+            result = super().step(closure)
+            if owns_training_step:
+                _C.end_training_step()
+            return result
+        except Exception:
+            if owns_training_step:
+                _C.cancel_training_step()
+            raise
 
 
 class _VulkanValidatedAdam(torch.optim.Adam):
@@ -131,7 +143,18 @@ class _VulkanValidatedAdam(torch.optim.Adam):
 
     def step(self, closure=None):
         _validate_basic_optimizer_state(self)
-        return super().step(closure)
+        owns_training_step = not _C.training_step_active()
+        if owns_training_step:
+            _C.begin_training_step()
+        try:
+            result = super().step(closure)
+            if owns_training_step:
+                _C.end_training_step()
+            return result
+        except Exception:
+            if owns_training_step:
+                _C.cancel_training_step()
+            raise
 
 
 torch.optim.SGD = _VulkanValidatedSGD

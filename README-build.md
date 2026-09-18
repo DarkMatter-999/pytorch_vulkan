@@ -1,14 +1,17 @@
 # Development Build
 
-Phase 1 targets Linux with a CPU-only project configuration and an optional
-standalone Vulkan device probe. The legacy OpenCL sources and `dlprimitives`
-submodule remain in the checkout as reference material, but are not entered by
-the active root build.
+The supported extension verification configuration is Linux with
+`BUILD_VULKAN_PROBE=ON` and `BUILD_PYTHON_EXTENSION=ON`. The default remains a
+CPU-only project shell, and the standalone Vulkan device probe is optional.
+The legacy OpenCL sources and `dlprimitives` submodule remain in the checkout
+as reference material, but are not entered by the active root build.
 
 ## Environment
 
 Install `uv`, Python 3.12, a C++17 compiler, CMake, Vulkan headers and loader,
-and the Vulkan validation layer. Create the project environment with:
+and the Vulkan validation layer. The supported Python environment uses
+PyTorch **2.4.0**, `pybind11==2.13.6`, `numpy`, and `pytest`; use the CPU
+PyTorch wheel for the host Python environment. Create it with:
 
 ```bash
 uv venv --python 3.12 .venv
@@ -71,6 +74,7 @@ ctest --test-dir build/vulkan --output-on-failure
 
 The Vulkan hardware tests skip when no suitable device is available. The
 unavailable-device test uses `VK_ICD_FILENAMES` to verify a clear failure path.
+Python assertions and import failures remain real failures, not skips.
 
 ## Python Extension
 
@@ -81,17 +85,33 @@ cmake -S . -B build/vulkan \
   -DBUILD_VULKAN_PROBE=ON \
   -DBUILD_PYTHON_EXTENSION=ON \
   -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
-  -Dpybind11_DIR="$($PWD/.venv/bin/python -m pybind11 --cmakedir)" \
-  -DCMAKE_PREFIX_PATH="$($PWD/.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')"
-cmake --build build/vulkan --target pytorch_vulkan_python
+  -Dpybind11_DIR="$(.venv/bin/python -m pybind11 --cmakedir)" \
+  -DCMAKE_PREFIX_PATH="$(.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')"
+cmake --build build/vulkan -j10
 VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
 PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
-  tests/python/test_vulkan_allocator.py -q
+  -q -rs tests/python
+
+# The same configured Python suite is the supported CTest gate:
+ctest --test-dir build/vulkan --output-on-failure
+
+# Record tool, Python/Torch, repository, and submodule provenance.
+.venv/bin/python tools/record_vulkan_environment.py \
+  > build/vulkan/vulkan-environment.json
 
 # Manual clean-extension build and compile-probe check:
 PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
   tests/manual_python_extension.py -q
 ```
+
+The clean extension build above is the canonical configure/build/test
+sequence. `vulkan_python_suite` runs the configured Python suite through CTest
+and preserves its exit status; no GPU is required for configuration, and
+device-dependent tests use the existing `pytorch_vulkan.is_available()` skip
+convention. Prefix CTest or pytest with
+`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` for a validation-layer run.
+The recorder reports unavailable optional tools explicitly as
+`{"status": "unavailable"}` and never fabricates a version.
 
 The custom PrivateUse1 device name is `vk`; Vulkan API and runtime terminology
 remains unchanged. The allocation contract covers `torch.empty` metadata and
@@ -200,20 +220,40 @@ Long labels, convolutional or BatchNorm training, arbitrary model shapes,
 higher-order or forward-mode AD, unsupported optimizer options, and performance
  support or benchmarks.
 
-### Phase 6A resident benchmark
+### Vulkan resident CPU baseline benchmark
 
 Run the fixed resident MLP and synthetic MNIST-shaped workloads in both modes:
 
 ```bash
 PYTHONPATH=build .venv/bin/python tools/vulkan_training_benchmark.py \
-  --workload both --mode both
+  --workload both --mode both --warmups 2 --repetitions 5 \
+  --cpu-intraop-threads 1 --cpu-interop-threads 1
 ```
 
-Inputs and targets are uploaded before the timed loop. Each JSON result reports
-timing categories, dispatches, Vulkan copies, explicit transfers, independently
-counted submissions, completions, waits, and final loss; results without those
-counters are invalid. Defaults are
-100 MLP steps and 10 MNIST-shaped steps at batch size 512.
+The benchmark runs the same deterministic fixed MLP and synthetic MNIST-shaped
+workloads on CPU and Vulkan. Inputs and targets are prepared before each timed
+loop; explicit readback and CPU/Vulkan comparison happen after timing. `sync`
+measures resident forward/loss execution with each Vulkan operation synchronously
+submitted and waited; `step` measures the resident backward/optimizer contract
+inside one training scope per step. CPU records use the corresponding forward
+or training workload, so the mode labels are not duplicate paths. JSON
+records workload, dtype, shape, batch, warmups, repetitions, CPU thread
+settings, synchronization boundaries, transfer/fallback counters, component
+timings, wall-time mean/median/variance, samples, and outliers. A driver reset
+or execution failure is a failed run, never a successful retry. Vulkan results
+also record final-loss and parameter comparison with CPU. Defaults are 10 MLP
+steps, 2 MNIST-shaped steps, two warmups, five repetitions, and batch size 32
+for MNIST-shaped input. CPU intra-op and inter-op thread counts are explicit
+arguments and are reported in every record.
+
+Fallback accounting is centralized at `VulkanPlatform::record_fallback()`. The
+backend currently rejects unsupported Vulkan operations rather than providing a
+CPU fallback, so normal supported operations and rejected requests leave the
+fallback counter at zero. `_C.test_inject_fallback()` is a test-only seam that
+exercises the policy without tensor payload transfer; any future real fallback
+boundary must call `record_fallback()` immediately before taking that fallback.
+Explicit `.cpu()` transfers and ordinary unsupported rejection are not fallback
+events.
 
 ### Static `torch.compile` Vulkan backend
 
