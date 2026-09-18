@@ -4,6 +4,7 @@
 #include "vulkan/shaders/generated/f32_to_double_spv.h"
 #include "vulkan/shaders/generated/formatter_double_spv.h"
 #include "vulkan/shaders/generated/linear_relu_backward_spv.h"
+#include "vulkan/shaders/generated/loss_spv.h"
 #include "vulkan/shaders/generated/masked_select_spv.h"
 #include "vulkan/shaders/generated/model_spv.h"
 #include "vulkan/shaders/generated/pointwise_spv.h"
@@ -68,6 +69,7 @@ struct ReductionBackwardParams {
     uint32_t strides[8];
     uint32_t storage_offset;
 };
+struct LossParams { uint32_t element_count, reduction, backward, padding; };
 
 struct IndexingParams {
     uint32_t rank, output_numel, reduce_dim, reduce_size;
@@ -460,7 +462,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                      reduction_backward_pipeline_layout_, reduction_backward_pipeline_,
                      vulkan_reduction_shader::kReductionBackwardCode,
                      vulkan_reduction_shader::kReductionBackwardCodeSize,
-                     sizeof(ReductionBackwardParams), 4);
+                      sizeof(ReductionBackwardParams), 4);
+        create_extra(loss_descriptor_layout_, loss_shader_, loss_pipeline_layout_,
+                     loss_pipeline_, vulkan_loss_shader::kCode,
+                     vulkan_loss_shader::kCodeSize, sizeof(LossParams), 4);
         create_extra(indexing_descriptor_layout_, indexing_shader_,
                      indexing_pipeline_layout_, indexing_pipeline_,
                      vulkan_reduction_shader::kIndexingCode,
@@ -728,6 +733,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipeline(device_, reduction_pipeline_, nullptr);
         if (reduction_backward_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, reduction_backward_pipeline_, nullptr);
+        if (loss_pipeline_ != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, loss_pipeline_, nullptr);
         if (indexing_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, indexing_pipeline_, nullptr);
         if (broadcast_pipeline_ != VK_NULL_HANDLE)
@@ -757,6 +764,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, reduction_shader_, nullptr);
         if (reduction_backward_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, reduction_backward_shader_, nullptr);
+        if (loss_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, loss_shader_, nullptr);
         if (indexing_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, indexing_shader_, nullptr);
         if (broadcast_shader_ != VK_NULL_HANDLE)
@@ -786,6 +795,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipelineLayout(device_, reduction_pipeline_layout_, nullptr);
         if (reduction_backward_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, reduction_backward_pipeline_layout_, nullptr);
+        if (loss_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, loss_pipeline_layout_, nullptr);
         if (indexing_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, indexing_pipeline_layout_, nullptr);
         if (broadcast_pipeline_layout_ != VK_NULL_HANDLE)
@@ -816,6 +827,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                          nullptr);
         if (reduction_backward_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, reduction_backward_descriptor_layout_, nullptr);
+        if (loss_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, loss_descriptor_layout_, nullptr);
         if (indexing_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, indexing_descriptor_layout_, nullptr);
         if (broadcast_descriptor_layout_ != VK_NULL_HANDLE)
@@ -854,6 +867,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, reduction_pipeline_, nullptr);
     if (reduction_backward_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, reduction_backward_pipeline_, nullptr);
+    if (loss_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, loss_pipeline_, nullptr);
     if (indexing_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, indexing_pipeline_, nullptr);
     if (broadcast_pipeline_ != VK_NULL_HANDLE)
@@ -887,6 +902,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, reduction_shader_, nullptr);
     if (reduction_backward_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, reduction_backward_shader_, nullptr);
+    if (loss_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, loss_shader_, nullptr);
     if (indexing_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, indexing_shader_, nullptr);
     if (broadcast_shader_ != VK_NULL_HANDLE)
@@ -920,6 +937,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, reduction_pipeline_layout_, nullptr);
     if (reduction_backward_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, reduction_backward_pipeline_layout_, nullptr);
+    if (loss_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, loss_pipeline_layout_, nullptr);
     if (indexing_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, indexing_pipeline_layout_, nullptr);
     if (broadcast_pipeline_layout_ != VK_NULL_HANDLE)
@@ -951,6 +970,8 @@ VulkanCompute::~VulkanCompute() {
     }
     if (reduction_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, reduction_descriptor_layout_, nullptr);
+    if (loss_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, loss_descriptor_layout_, nullptr);
     if (reduction_backward_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, reduction_backward_descriptor_layout_, nullptr);
     if (indexing_descriptor_layout_ != VK_NULL_HANDLE)
@@ -1154,6 +1175,22 @@ void VulkanCompute::reduction_backward(
                           nullptr, 0, reduction_backward_pipeline_,
                           reduction_backward_pipeline_layout_,
                            reduction_backward_descriptor_layout_, params.input_numel, 3, 1);
+}
+
+void VulkanCompute::mse_loss(const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+                             const VulkanBuffer *target, const VulkanTensorLayout &target_layout,
+                             const VulkanBuffer *aux, const VulkanTensorLayout &aux_layout,
+                             const VulkanBuffer *output, const VulkanTensorLayout &output_layout,
+                             uint32_t element_count, uint32_t reduction, bool backward) const {
+    LossParams params{element_count, reduction, backward ? 1U : 0U, 0U};
+    const VulkanBuffer *inputs[] = {input, target, aux};
+    const VulkanTensorLayout *layouts[] = {&input_layout, &target_layout, &aux_layout};
+    const VulkanBuffer *outputs[] = {output};
+    const VulkanTensorLayout *output_layouts[] = {&output_layout};
+    dispatch_multi_output(inputs, layouts, outputs, output_layouts, &params, sizeof(params),
+                          nullptr, 0, loss_pipeline_, loss_pipeline_layout_,
+                          loss_descriptor_layout_, backward ? element_count :
+                          (reduction == 0 ? element_count : 1U), 3, 1);
 }
 
 void VulkanCompute::argmax(VkBuffer input, const VulkanTensorLayout &input_layout,

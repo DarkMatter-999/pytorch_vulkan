@@ -84,7 +84,12 @@ class VulkanCompute final {
                             const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
                             const VulkanBuffer *grad_input, const VulkanTensorLayout &grad_input_layout,
                             uint32_t reduce_mask, uint32_t reduce_numel,
-                            uint32_t reduce_dim, uint32_t operation, bool keepdim) const;
+                             uint32_t reduce_dim, uint32_t operation, bool keepdim) const;
+    void mse_loss(const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+                  const VulkanBuffer *target, const VulkanTensorLayout &target_layout,
+                  const VulkanBuffer *aux, const VulkanTensorLayout &aux_layout,
+                  const VulkanBuffer *output, const VulkanTensorLayout &output_layout,
+                  uint32_t element_count, uint32_t reduction, bool backward) const;
     void argmax(VkBuffer input, const VulkanTensorLayout &input_layout, VkBuffer output,
                 const VulkanTensorLayout &output_layout, uint32_t dim,
                 uint32_t reduce_size, uint32_t output_numel) const;
@@ -218,6 +223,10 @@ class VulkanCompute final {
     VkPipelineLayout reduction_backward_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule reduction_backward_shader_ = VK_NULL_HANDLE;
     VkPipeline reduction_backward_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout loss_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout loss_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule loss_shader_ = VK_NULL_HANDLE;
+    VkPipeline loss_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout indexing_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout indexing_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule indexing_shader_ = VK_NULL_HANDLE;

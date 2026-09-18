@@ -81,7 +81,7 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
             "reduction.softmax.dim",
             "reduction.log-softmax.dim",
             "reduction.softmax.backward",
-            "reduction.log-softmax.backward",
+        "reduction.log-softmax.backward",
         }:
             assert pytorch_vulkan._C.compute_dispatch_count() == 0
     else:

@@ -1,0 +1,37 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Target { float target_data[]; };
+layout(set = 0, binding = 2, std430) readonly buffer Auxiliary { float auxiliary_data[]; };
+layout(set = 0, binding = 3, std430) writeonly buffer Output { float output_data[]; };
+layout(push_constant, std430) uniform Params {
+  uint element_count;
+  uint reduction;
+  uint backward;
+  uint padding;
+} params;
+// mse_loss and mse_loss_backward share this deliberately narrow shader contract.
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= params.element_count) return;
+  if (params.backward != 0u) {
+    float scale = params.reduction == 1u ? 1.0 / float(params.element_count) : 1.0;
+    float grad = params.reduction == 0u ? auxiliary_data[index] : auxiliary_data[0];
+    output_data[index] = 2.0 * (input_data[index] - target_data[index]) * grad * scale;
+    return;
+  }
+  float delta = input_data[index] - target_data[index];
+  if (params.reduction == 0u) output_data[index] = delta * delta;
+  else {
+    // One invocation performs the scalar reduction; this path is dispatched once.
+    if (index == 0u) {
+      float total = 0.0;
+      for (uint i = 0u; i < params.element_count; ++i) {
+        float d = input_data[i] - target_data[i];
+        total += d * d;
+      }
+      output_data[0] = params.reduction == 1u ? total / float(params.element_count) : total;
+    }
+  }
+}

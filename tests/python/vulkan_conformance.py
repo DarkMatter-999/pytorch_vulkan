@@ -25,6 +25,7 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::sub.Tensor", "aten::mul.Tensor", "aten::as_strided.default",
     "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
     "aten::masked_select.default",
+    "aten::mse_loss.default", "aten::mse_loss_backward.default",
     "aten::div.Tensor", "aten::lerp.Scalar_out", "aten::lerp_.Scalar",
     "aten::add.Scalar", "aten::add.Scalar_out", "aten::add.out",
     "aten::sub.Scalar", "aten::sub.Scalar_out", "aten::sub.out",
@@ -57,9 +58,7 @@ ROADMAP_OPERATION_FAMILIES = {
         "aten::min.default", "aten::sum.IntList_out",
         "aten::sum.default",
     }),
-    "MSE loss": frozenset({
-        "aten::mse_loss.default", "aten::mse_loss_backward.default",
-    }),
+    "MSE loss": frozenset(),
     "sigmoid/tanh/GELU": frozenset({
         "aten::gelu.out", "aten::gelu_backward.grad_input",
         "aten::sigmoid.default", "aten::sigmoid.out", "aten::sigmoid_.default",
@@ -254,6 +253,33 @@ def _binary_strided(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]
     rhs = torch.arange(8, dtype=torch.float32).reshape(2, 4)[:, 1::2]
     return (lhs.detach().requires_grad_(requires_grad),
             rhs.detach().requires_grad_(requires_grad))
+
+
+def _loss(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
+    return (torch.tensor([[1.0, -2.0], [3.0, 4.0]], dtype=torch.float32,
+                         requires_grad=requires_grad),
+            torch.tensor([[0.5, 1.0], [2.0, 5.0]], dtype=torch.float32))
+
+
+def _mse_none(input, target):
+    return torch.nn.functional.mse_loss(input, target, reduction="none")
+
+
+def _mse_sum(input, target):
+    return torch.nn.functional.mse_loss(input, target, reduction="sum")
+
+
+def _mse_mean(input, target):
+    return torch.nn.functional.mse_loss(input, target, reduction="mean")
+
+
+def _mse_backward(*, requires_grad=False):
+    input, target = _loss(requires_grad=False)
+    return (torch.ones_like(input), input, target)
+
+
+def _mse_backward_op(grad, input, target):
+    return torch.ops.aten.mse_loss_backward.default(grad, input, target, 0)
 
 
 def _reduction(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -656,6 +682,10 @@ DECLARATION_ID_BY_CASE = {
     "convolution.forward.strided": "aten::convolution.default",
     "pooling.max.rejected": "aten::max_pool2d_with_indices.default",
     "masked-select.bool-mask": "aten::masked_select.default",
+    "loss.mse.none": "aten::mse_loss.default",
+    "loss.mse.sum": "aten::mse_loss.default",
+    "loss.mse.mean": "aten::mse_loss.default",
+    "loss.mse.backward": "aten::mse_loss_backward.default",
     "masked-select.strided-value-view": "aten::masked_select.default",
     "optimizer.div.scalar": "aten::div.Tensor",
     "optimizer.lerp.out": "aten::lerp.Scalar_out",
@@ -794,6 +824,18 @@ ALL_CASES = (
           cpu_reference=torch.sub, expected_shape=(2, 2), check_gradients=True),
     _case("binary.mul.float32.empty", "binary", torch.mul, _empty_binary,
            cpu_reference=torch.mul, expected_shape=(0, 3), execution_mode="empty"),
+    _case("loss.mse.none", "loss", _mse_none, _loss,
+           cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="none"),
+           expected_shape=(2, 2), check_gradients=True),
+    _case("loss.mse.sum", "loss", _mse_sum, _loss,
+           cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="sum"),
+           expected_shape=(), check_gradients=True),
+    _case("loss.mse.mean", "loss", _mse_mean, _loss,
+           cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="mean"),
+           expected_shape=(), check_gradients=True),
+    _case("loss.mse.backward", "loss", _mse_backward_op, _mse_backward,
+           cpu_reference=lambda g, x, y: torch.ops.aten.mse_loss_backward.default(g, x, y, 0),
+           expected_shape=(2, 2)),
     _case("scalar.add.float32", "scalar and out", _scalar_add, _unary,
            cpu_reference=lambda value: torch.add(value, 2.0, alpha=1.0),
            expected_shape=(3,), check_gradients=True),

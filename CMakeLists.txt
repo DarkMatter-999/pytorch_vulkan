@@ -30,6 +30,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/generated/f32_to_double_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
+                    src/vulkan/shaders/generated/loss_spv.h
+                    src/vulkan/shaders/generated/loss_spv.sha256
                      src/vulkan/shaders/generated/formatter_double_spv.h
                      src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
@@ -38,7 +40,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/glsl/broadcast.comp
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp
-                       src/vulkan/shaders/glsl/pooling.comp)
+                       src/vulkan/shaders/glsl/pooling.comp
+                       src/vulkan/shaders/glsl/loss.comp)
         add_custom_target(vulkan_linear_relu_backward_shader_integrity
                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
@@ -56,7 +59,26 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
         add_custom_target(vulkan_linear_relu_backward_shader_generate DEPENDS
                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256)
-        add_dependencies(vulkan_platform vulkan_linear_relu_backward_shader_generate)
+         add_dependencies(vulkan_platform vulkan_linear_relu_backward_shader_generate)
+         add_custom_command(
+           OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
+                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
+           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
+                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/loss.comp
+           VERBATIM)
+         add_custom_target(vulkan_loss_shader_generate DEPENDS
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256)
+         add_custom_target(vulkan_loss_shader_integrity
+                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_loss_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_loss_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/loss.comp)
+          add_dependencies(vulkan_platform vulkan_loss_shader_generate
+                           vulkan_loss_shader_integrity)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -161,6 +183,7 @@ if(BUILD_PYTHON_EXTENSION)
         src/vulkan/operators/add.cpp
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
          src/vulkan/operators/autograd.h src/vulkan/operators/binary.h
+          src/vulkan/operators/loss.cpp src/vulkan/operators/loss.h
          src/vulkan/operators/out.cpp src/vulkan/operators/optimizer.cpp
           src/vulkan/operators/out.h src/vulkan/operators/capability.h
           src/vulkan/operators/unary.cpp

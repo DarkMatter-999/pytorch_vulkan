@@ -207,6 +207,8 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
         "aten::_reshape_alias.default": "`aten::_reshape_alias`",
         "aten::reshape.default": "`aten::reshape`",
         "aten::masked_select.default": "`torch.masked_select`",
+        "aten::mse_loss.default": "`aten::mse_loss` / `aten::mse_loss_backward`",
+        "aten::mse_loss_backward.default": "`aten::mse_loss` / `aten::mse_loss_backward`",
         "aten::div.Tensor": "`div.Tensor`",
         "aten::lerp.Scalar_out": "`lerp.Scalar_out`",
         "aten::lerp_.Scalar": "`lerp_.Scalar`",
