@@ -125,6 +125,22 @@ def test_adaptive_avg_pool2d_rejects_unsupported_overload(vulkan_backend):
         torch.ops.aten._adaptive_avg_pool2d.out(value, [1, 1], torch.empty((2, 4, 1, 1), device=vulkan_backend))
 
 
+def test_max_pooling_indices_and_backward_remain_rejected_without_work(vulkan_backend):
+    value = _pool_input(vulkan_backend)
+    dispatches = pytorch_vulkan._C.compute_dispatch_count()
+    fallbacks = pytorch_vulkan._C.fallback_count()
+    with pytest.raises(RuntimeError, match="Vulkan pooling|unsupported|implemented"):
+        torch.nn.functional.max_pool2d(value, kernel_size=2, stride=2)
+    with pytest.raises((RuntimeError, TypeError), match="pool|index|unsupported|schema|dtype|Long"):
+        torch.ops.aten.max_pool2d_with_indices_backward.default(
+            torch.empty((2, 4, 1, 1), device=vulkan_backend), value,
+            [2, 2], [2, 2], [0, 0], [1, 1], False,
+            torch.empty((2, 4, 1, 1), dtype=torch.int64, device=vulkan_backend)
+        )
+    assert pytorch_vulkan._C.compute_dispatch_count() == dispatches
+    assert pytorch_vulkan._C.fallback_count() == fallbacks
+
+
 def test_adaptive_avg_pool2d_accumulated_leaf_and_higher_order_are_limited(vulkan_backend):
     value = _pool_input(vulkan_backend, requires_grad=True)
     output = torch.nn.functional.adaptive_avg_pool2d(value, (1, 1))

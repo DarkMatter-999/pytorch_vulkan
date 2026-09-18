@@ -95,12 +95,39 @@ at::Tensor convolution_backward_weight(const at::Tensor &grad,
 }
 at::Tensor convolution_backward_bias(const at::Tensor &grad) {
     return run(grad, at::empty({4, 1, 3, 3}, grad.options()),
-               at::empty({4}, grad.options()), 3);
+                at::empty({4}, grad.options()), 3);
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
+    const at::Tensor &grad_output, const at::Tensor &input,
+    const at::Tensor &weight, c10::OptionalArrayRef<int64_t> bias_sizes,
+    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
+    bool transposed, at::IntArrayRef output_padding, int64_t groups,
+    std::array<bool, 3> output_mask) {
+    TORCH_CHECK(bias_sizes.has_value() && bias_sizes->equals({4}),
+                "Vulkan convolution backward requires bias shape (4)");
+    TORCH_CHECK(stride.equals({1, 1}) && padding.equals({1, 1}) &&
+                    dilation.equals({1, 1}) && output_padding.equals({0, 0}) &&
+                    !transposed && groups == 1,
+                "Vulkan convolution backward supports only fixed stride, padding, "
+                "dilation, groups, and non-transposed parameters");
+    TORCH_CHECK(output_mask[0] && output_mask[1] && output_mask[2],
+                "Vulkan convolution backward requires output_mask [true, true, true]");
+    TORCH_CHECK(grad_output.sizes().equals({2, 4, 8, 8}) &&
+                    input.sizes().equals({2, 1, 8, 8}) &&
+                    weight.sizes().equals({4, 1, 3, 3}),
+                "Vulkan convolution backward has unsupported fixed shape");
+    TORCH_CHECK(grad_output.numel() > 0 && input.numel() > 0 && weight.numel() > 0,
+                "Vulkan convolution backward rejects empty tensors");
+    return {convolution_backward_input(grad_output, weight),
+            convolution_backward_weight(grad_output, input),
+            convolution_backward_bias(grad_output)};
 }
 } // namespace pytorch_vulkan
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("convolution", &pytorch_vulkan::convolution);
     m.impl("convolution_overrideable", &pytorch_vulkan::convolution);
+    m.impl("convolution_backward", &pytorch_vulkan::convolution_backward);
 }
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     m.impl("convolution", &pytorch_vulkan::autograd_convolution);

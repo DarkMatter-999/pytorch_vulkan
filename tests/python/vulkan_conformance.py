@@ -20,7 +20,8 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::_softmax.default", "aten::_softmax.out", "aten::_log_softmax.default", "aten::_log_softmax.out",
     "aten::_softmax_backward_data.out", "aten::_log_softmax_backward_data.out",
     "aten::linear.default", "aten::convolution.default",
-    "aten::_adaptive_avg_pool2d.default", "aten::neg.default",
+    "aten::convolution_backward.default", "aten::_adaptive_avg_pool2d.default",
+    "aten::_adaptive_avg_pool2d_backward.default", "aten::neg.default",
     "aten::abs.default", "aten::relu.default", "aten::add.Tensor",
     "aten::sub.Tensor", "aten::mul.Tensor", "aten::as_strided.default",
     "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
@@ -346,6 +347,18 @@ def _convolution_strided(*, requires_grad=False) -> tuple[torch.Tensor, torch.Te
                  for item in (value, weight, bias))
 
 
+def _convolution_backward_inputs(*, requires_grad=False) -> tuple[torch.Tensor, ...]:
+    value, weight, _ = _convolution()
+    return torch.ones((2, 4, 8, 8), dtype=torch.float32), value, weight
+
+
+def _convolution_backward(grad, value, weight):
+    return torch.ops.aten.convolution_backward.default(
+        grad, value, weight, [4], [1, 1], [1, 1], [1, 1], False,
+        [0, 0], 1, [True, True, True]
+    )[0]
+
+
 def _pooling(*, requires_grad=False) -> tuple[torch.Tensor]:
     return (torch.arange(16, dtype=torch.float32).reshape(1, 1, 4, 4),)
 
@@ -511,6 +524,14 @@ def _unsupported_overload(value):
 
 def _adaptive_pool(*, requires_grad=False) -> tuple[torch.Tensor]:
     return (torch.ones((2, 4, 3, 5), dtype=torch.float32, requires_grad=requires_grad),)
+
+
+def _adaptive_pool_backward_inputs(*, requires_grad=False) -> tuple[torch.Tensor, ...]:
+    return torch.ones((2, 4, 1, 1), dtype=torch.float32), _adaptive_pool()[0]
+
+
+def _adaptive_pool_backward(grad, value):
+    return torch.ops.aten._adaptive_avg_pool2d_backward.default(grad, value)
 
 
 def _cpu_neg(value):
@@ -730,6 +751,7 @@ DECLARATION_ID_BY_CASE = {
     "linear.forward.strided": "aten::linear.default",
     "convolution.forward": "aten::convolution.default",
     "convolution.forward.strided": "aten::convolution.default",
+    "convolution.backward": "aten::convolution_backward.default",
     "pooling.max.rejected": "aten::max_pool2d_with_indices.default",
     "masked-select.bool-mask": "aten::masked_select.default",
     "loss.mse.none": "aten::mse_loss.default",
@@ -748,6 +770,7 @@ DECLARATION_ID_BY_CASE = {
     "optimizer.zero.inplace": "aten::zero_.default",
     "aten._adaptive_avg_pool2d.global": "aten::_adaptive_avg_pool2d.default",
     "aten._adaptive_avg_pool2d.global.strided": "aten::_adaptive_avg_pool2d.default",
+    "aten._adaptive_avg_pool2d.backward": "aten::_adaptive_avg_pool2d_backward.default",
     "unary.neg.bool.rejected": "aten::neg.default",
     "unary.neg.float16.rejected": "aten::neg.default",
     "binary.add.double.rejected": "aten::add.Tensor",
@@ -1014,6 +1037,12 @@ ALL_CASES = (
     _case("convolution.forward.strided", "convolution", torch.nn.functional.conv2d,
           _convolution_strided, kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
           cpu_reference=_cpu_convolution, expected_shape=(2, 4, 8, 8), check_gradients=True),
+     _case("convolution.backward", "convolution", _convolution_backward,
+           _convolution_backward_inputs,
+           cpu_reference=lambda grad, value, weight: torch.ops.aten.convolution_backward.default(
+               grad, value, weight, [4], [1, 1], [1, 1], [1, 1], False,
+               [0, 0], 1, [True, True, True]
+           )[0], expected_shape=(2, 1, 8, 8)),
     _case("pooling.max.rejected", "pooling", torch.nn.functional.max_pool2d, _pooling,
           args=(2,), cpu_reference=_cpu_max_pool, supported=False,
           error_pattern=r"Vulkan pooling is not declared"),
@@ -1054,6 +1083,11 @@ ALL_CASES = (
           torch.ops.aten._adaptive_avg_pool2d.default, _pooling_strided,
           args=((1, 1),), cpu_reference=_cpu_adaptive_pool, expected_shape=(1, 1, 1, 1),
           check_gradients=True),
+    _case("aten._adaptive_avg_pool2d.backward", "pooling", _adaptive_pool_backward,
+          _adaptive_pool_backward_inputs,
+          cpu_reference=lambda grad, value: torch.ops.aten._adaptive_avg_pool2d_backward.default(
+              grad, value
+          ), expected_shape=(2, 4, 3, 5)),
     _case("unary.neg.bool.rejected", "unary", torch.neg, _bool_unary, supported=False,
           cpu_reference=_cpu_neg,
            error_pattern=r"supports only float32 tensors"),

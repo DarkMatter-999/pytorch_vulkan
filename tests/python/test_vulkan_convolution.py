@@ -72,6 +72,45 @@ def test_conv2d_backward_is_first_order_only(vulkan_backend):
     assert not gradient.requires_grad
 
 
+def test_convolution_backward_fixed_schema_matches_cpu(vulkan_backend):
+    cpu_input, cpu_weight, cpu_bias = _conv_inputs("cpu", requires_grad=True)
+    vk_input, vk_weight, vk_bias = _conv_inputs(vulkan_backend, requires_grad=True)
+    cpu_output = torch.nn.functional.conv2d(cpu_input, cpu_weight, cpu_bias, padding=1)
+    vk_output = torch.nn.functional.conv2d(vk_input, vk_weight, vk_bias, padding=1)
+    grad = torch.randn_like(cpu_output)
+    expected = torch.ops.aten.convolution_backward.default(
+        grad, cpu_input, cpu_weight, [4], [1, 1], [1, 1], [1, 1], False,
+        [0, 0], 1, [True, True, True]
+    )
+    actual = torch.ops.aten.convolution_backward.default(
+        grad.to(vulkan_backend), vk_input, vk_weight, [4], [1, 1], [1, 1], [1, 1],
+        False, [0, 0], 1, [True, True, True]
+    )
+    assert len(actual) == 3
+    for value, reference in zip(actual, expected):
+        assert value.device == torch.device("vk:0")
+        assert value.dtype is torch.float32
+        torch.testing.assert_close(value.cpu(), reference)
+
+
+@pytest.mark.parametrize("output_mask", [
+    [False, True, True], [True, False, True], [True, True, False],
+    [False, False, False],
+])
+def test_convolution_backward_rejects_partial_output_masks(vulkan_backend, output_mask):
+    input, weight, _ = _conv_inputs(vulkan_backend)
+    grad = torch.empty((2, 4, 8, 8), device=vulkan_backend)
+    dispatches = pytorch_vulkan._C.compute_dispatch_count()
+    fallbacks = pytorch_vulkan._C.fallback_count()
+    with pytest.raises(RuntimeError, match="output_mask|mask|true"):
+        torch.ops.aten.convolution_backward.default(
+            grad, input, weight, [4], [1, 1], [1, 1], [1, 1], False,
+            [0, 0], 1, output_mask
+        )
+    assert pytorch_vulkan._C.compute_dispatch_count() == dispatches
+    assert pytorch_vulkan._C.fallback_count() == fallbacks
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

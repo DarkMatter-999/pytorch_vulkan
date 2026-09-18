@@ -8,6 +8,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/vulkan/shaders/glsl/pooling.comp"
 GENERATED = ROOT / "src/vulkan/shaders/generated/pooling_spv.h"
 MANIFEST = ROOT / "src/vulkan/shaders/generated/pooling_spv.sha256"
+source_text = SOURCE.read_text(encoding="ascii")
+if "params.operation == 0u ? output_count : output_count * params.height * params.width" not in source_text:
+    raise SystemExit("missing adaptive-average pooling operation branches")
 digest = lambda data: hashlib.sha256(data).hexdigest()
 expected = dict(line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines())
 with tempfile.TemporaryDirectory() as directory:
