@@ -419,6 +419,32 @@ def test_scalar_out_is_supported_but_inplace_variant_is_rejected(vulkan_backend,
         getattr(tensor, operation.__name__ + "_")(1.0)
 
 
+@pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
+def test_scalar_pointwise_has_compute_work_without_fallback(vulkan_backend, operation):
+    tensor = torch.tensor([1.0, -2.0], dtype=torch.float32, device=vulkan_backend)
+    output = torch.empty_like(tensor)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    operation(tensor, 2.0, out=output)
+
+    dispatches, copies, transfers, fallbacks = (
+        pytorch_vulkan._C.execution_counter_snapshot()
+    )
+    assert dispatches > 0
+    assert copies == 0
+    assert transfers == 0
+    assert fallbacks == 0
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.sub])
+def test_scalar_alpha_one_is_explicitly_supported(vulkan_backend, operation):
+    values = torch.tensor([1.0, -2.0], dtype=torch.float32)
+    tensor = values.to(vulkan_backend)
+    result = operation(tensor, 2.0, alpha=1.0)
+
+    torch.testing.assert_close(result.cpu(), operation(values, 2.0, alpha=1.0))
+
+
 @pytest.mark.parametrize("operation", [torch.add, torch.mul])
 def test_approved_bool_tensor_operation_matches_cpu(vulkan_backend, operation):
     lhs_cpu = torch.tensor([[True, False], [False, True]], dtype=torch.bool)

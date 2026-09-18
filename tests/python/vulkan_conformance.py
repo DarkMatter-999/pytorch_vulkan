@@ -22,6 +22,10 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
     "aten::masked_select.default",
     "aten::div.Tensor", "aten::lerp.Scalar_out", "aten::lerp_.Scalar",
+    "aten::add.Scalar", "aten::add.Scalar_out", "aten::add.out",
+    "aten::sub.Scalar", "aten::sub.Scalar_out", "aten::sub.out",
+    "aten::mul.Scalar", "aten::mul.Scalar_out", "aten::mul.out",
+    "aten::rsub.Scalar", "aten::rsub.Scalar_out",
     "aten::sqrt.out", "aten::add_.Tensor", "aten::mul_.Scalar",
     "aten::addcmul_.default", "aten::addcdiv_.default", "aten::zero_.default",
     "aten::_copy_from.default", "aten::_to_copy.default", "aten::copy_.default",
@@ -40,11 +44,8 @@ ROADMAP_OPERATION_FAMILIES = {
         "aten::set_.source_Storage", "aten::set_.source_Storage_storage_offset",
     }),
     "scalar and out= pointwise": frozenset({
-        "aten::abs.out", "aten::add.Scalar", "aten::add.Scalar_out",
-        "aten::add.out", "aten::div.out", "aten::exp.out", "aten::fill_.Scalar",
-        "aten::log.out", "aten::mul.Scalar", "aten::mul.Scalar_out",
-        "aten::mul.out", "aten::sub.Scalar", "aten::sub.Scalar_out",
-        "aten::sub.out",
+        "aten::abs.out", "aten::div.out", "aten::exp.out", "aten::fill_.Scalar",
+        "aten::log.out",
     }),
     "reductions/indexing": frozenset({
         "aten::amax.out", "aten::amin.out", "aten::argmax.out",
@@ -560,6 +561,17 @@ DECLARATION_ID_BY_CASE = {
     "binary.add.float32": "aten::add.Tensor",
     "binary.sub.float32.strided": "aten::sub.Tensor",
     "binary.mul.float32.empty": "aten::mul.Tensor",
+    "scalar.add.float32": "aten::add.Scalar",
+    "scalar.sub.float32": "aten::sub.Scalar",
+    "scalar.mul.float32": "aten::mul.Scalar",
+    "out.add.tensor.float32": "aten::add.out",
+    "out.sub.tensor.float32": "aten::sub.out",
+    "out.mul.tensor.float32": "aten::mul.out",
+    "out.add.scalar.float32": "aten::add.Scalar_out",
+    "out.sub.scalar.float32": "aten::sub.Scalar_out",
+    "out.mul.scalar.float32": "aten::mul.Scalar_out",
+    "scalar.rsub.float32": "aten::rsub.Scalar",
+    "out.rsub.scalar.float32": "aten::rsub.Scalar_out",
     "reduction.sum.dim": "aten::sum.dim_IntList",
     "reduction.mean.dim": "aten::mean.dim",
     "reduction.sum.keepdim.strided": "aten::sum.dim_IntList",
@@ -658,6 +670,50 @@ def _empty_strided_zero_template(*, requires_grad=False):
     return (torch.empty_strided((0, 2), (1, 2), dtype=torch.float32),)
 
 
+def _scalar_add(value):
+    return torch.add(value, 2.0, alpha=1.0)
+
+
+def _scalar_sub(value):
+    return torch.sub(value, 2.0, alpha=1.0)
+
+
+def _scalar_mul(value):
+    return torch.mul(value, 2.0)
+
+
+def _scalar_add_out(value):
+    return torch.add(value, 2.0, alpha=1.0, out=torch.empty_like(value))
+
+
+def _scalar_sub_out(value):
+    return torch.sub(value, 2.0, alpha=1.0, out=torch.empty_like(value))
+
+
+def _scalar_mul_out(value):
+    return torch.mul(value, 2.0, out=torch.empty_like(value))
+
+
+def _tensor_add_out(lhs, rhs):
+    return torch.add(lhs, rhs, alpha=1.0, out=torch.empty_like(lhs))
+
+
+def _tensor_sub_out(lhs, rhs):
+    return torch.sub(lhs, rhs, alpha=1.0, out=torch.empty_like(lhs))
+
+
+def _tensor_mul_out(lhs, rhs):
+    return torch.mul(lhs, rhs, out=torch.empty_like(lhs))
+
+
+def _rscalar(value):
+    return torch.ops.aten.rsub.Scalar(value, 2.0, 1.0)
+
+
+def _rscalar_out(value):
+    return torch.ops.aten.rsub.Scalar_out(value, 2.0, 1.0, out=torch.empty_like(value))
+
+
 ALL_CASES = (
     _case("unary.neg.float32", "unary", torch.neg, _unary, cpu_reference=_cpu_neg,
           expected_shape=(3,), check_gradients=True),
@@ -672,7 +728,45 @@ ALL_CASES = (
     _case("binary.sub.float32.strided", "binary", torch.sub, _binary_strided,
           cpu_reference=torch.sub, expected_shape=(2, 2), check_gradients=True),
     _case("binary.mul.float32.empty", "binary", torch.mul, _empty_binary,
-          cpu_reference=torch.mul, expected_shape=(0, 3), execution_mode="empty"),
+           cpu_reference=torch.mul, expected_shape=(0, 3), execution_mode="empty"),
+    _case("scalar.add.float32", "scalar and out", _scalar_add, _unary,
+           cpu_reference=lambda value: torch.add(value, 2.0, alpha=1.0),
+           expected_shape=(3,), check_gradients=True),
+    _case("scalar.sub.float32", "scalar and out", _scalar_sub, _unary,
+           cpu_reference=lambda value: torch.sub(value, 2.0, alpha=1.0),
+           expected_shape=(3,), check_gradients=True),
+    _case("scalar.mul.float32", "scalar and out", _scalar_mul, _unary,
+           cpu_reference=lambda value: torch.mul(value, 2.0),
+           expected_shape=(3,), check_gradients=True),
+    _case("out.add.scalar.float32", "scalar and out", _scalar_add_out, _unary,
+           cpu_reference=lambda value: torch.add(value, 2.0, alpha=1.0,
+                                                 out=torch.empty_like(value)),
+           expected_shape=(3,)),
+    _case("out.sub.scalar.float32", "scalar and out", _scalar_sub_out, _unary,
+           cpu_reference=lambda value: torch.sub(value, 2.0, alpha=1.0,
+                                                 out=torch.empty_like(value)),
+           expected_shape=(3,)),
+    _case("out.mul.scalar.float32", "scalar and out", _scalar_mul_out, _unary,
+           cpu_reference=lambda value: torch.mul(value, 2.0, out=torch.empty_like(value)),
+           expected_shape=(3,)),
+    _case("out.add.tensor.float32", "scalar and out", _tensor_add_out, _binary,
+           cpu_reference=lambda lhs, rhs: torch.add(lhs, rhs, alpha=1.0,
+                                                   out=torch.empty_like(lhs)),
+           expected_shape=(2,)),
+    _case("out.sub.tensor.float32", "scalar and out", _tensor_sub_out, _binary,
+           cpu_reference=lambda lhs, rhs: torch.sub(lhs, rhs, alpha=1.0,
+                                                   out=torch.empty_like(lhs)),
+           expected_shape=(2,)),
+    _case("out.mul.tensor.float32", "scalar and out", _tensor_mul_out, _binary,
+           cpu_reference=lambda lhs, rhs: torch.mul(lhs, rhs, out=torch.empty_like(lhs)),
+           expected_shape=(2,)),
+    _case("scalar.rsub.float32", "scalar and out", _rscalar, _unary,
+           cpu_reference=lambda value: torch.sub(2.0, value, alpha=1.0),
+           expected_shape=(3,)),
+    _case("out.rsub.scalar.float32", "scalar and out", _rscalar_out, _unary,
+           cpu_reference=lambda value: torch.sub(2.0, value, alpha=1.0,
+                                                 out=torch.empty_like(value)),
+           expected_shape=(3,)),
     _case("reduction.sum.dim", "reduction", torch.sum, _reduction, args=(1,),
           cpu_reference=_cpu_sum, expected_shape=(2,), check_gradients=True),
     _case("reduction.mean.dim", "reduction", torch.mean, _reduction, args=(1,),

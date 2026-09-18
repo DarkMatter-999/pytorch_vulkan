@@ -74,12 +74,13 @@ generic user-facing in-place pointwise operations are supported.
 
 The following roadmap families are explicitly inventoried for future expansion.
 Every schema in this table remains deferred; these entries do not add runtime
-registrations or declare support, and the supported manifest above is unchanged.
+registrations or declare support. Schemas promoted to the supported manifest
+are removed from this inventory.
 
 | Roadmap family | Deferred schemas |
 | --- | --- |
 | transfer/creation | `_copy_from_and_resize`, `_local_scalar_dense`, `resize_`, `set_` |
-| scalar and `out=` pointwise | `abs.out`, `add.Scalar`, `add.Scalar_out`, `add.out`, `div.out`, `exp.out`, `fill_.Scalar`, `log.out`, `mul.Scalar`, `mul.Scalar_out`, `mul.out`, `sub.Scalar`, `sub.Scalar_out`, `sub.out` |
+| scalar and `out=` pointwise | `add.Scalar`, `add.Scalar_out`, `add.out`, `mul.Scalar`, `mul.Scalar_out`, `mul.out`, `rsub.Scalar`, `rsub.Scalar_out`, `sub.Scalar`, `sub.Scalar_out`, `sub.out` |
 | reductions/indexing | `amax.out`, `amin.out`, `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.int_out`, `sum.IntList_out`, `sum.default` |
 | MSE loss | `mse_loss`, `mse_loss_backward` |
 | sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input`, `sigmoid`, `sigmoid.out`, `sigmoid_`, `sigmoid_backward.grad_input`, `tanh`, `tanh.out`, `tanh_`, `tanh_backward.grad_input` |
@@ -89,6 +90,11 @@ registrations or declare support, and the supported manifest above is unchanged.
 
 The cross-entropy/NLL row inventories the deferred log-softmax and NLL pieces
 of the composed loss; it does not claim a `cross_entropy` runtime registration.
+
+The scalar and `out=` pointwise F32 forms require same-shaped Vulkan tensor
+operands, reject promotion and unsupported broadcasting, and perform no hidden
+CPU fallback. Their `out` tensors must remain Vulkan F32 tensors; exact aliases
+are permitted while partial or internally overlapping outputs are rejected.
 
 ## Serialization and multiprocessing
 
@@ -109,6 +115,9 @@ aten::convolution.default,aten::_adaptive_avg_pool2d.default,aten::neg.default,
 aten::abs.default,aten::relu.default,aten::add.Tensor,aten::sub.Tensor,
 aten::mul.Tensor,aten::as_strided.default,aten::view.default,
 aten::_reshape_alias.default,aten::reshape.default,aten::masked_select.default,
+aten::add.Scalar,aten::add.Scalar_out,aten::add.out,aten::sub.Scalar,
+aten::sub.Scalar_out,aten::sub.out,aten::mul.Scalar,aten::mul.Scalar_out,
+aten::mul.out,aten::rsub.Scalar,aten::rsub.Scalar_out,
 aten::div.Tensor,aten::lerp.Scalar_out,aten::lerp_.Scalar,aten::sqrt.out,
  aten::add_.Tensor,aten::mul_.Scalar,aten::addcmul_.default,aten::addcdiv_.default,
  aten::zero_.default,aten::_copy_from.default,aten::_to_copy.default,
@@ -125,7 +134,7 @@ aten::_adaptive_avg_pool2d.default,aten::convolution.default -->
 aten::_native_multi_head_attention.default,aten::_native_multi_head_attention.out,aten::_softmax.out,
  aten::_softmax_backward_data.out,aten::_transform_bias_rescale_qkv.default,
 aten::_upsample_nearest_exact2d.out,aten::_upsample_nearest_exact2d_backward.grad_input,aten::abs.out,
-aten::add.Scalar,aten::add.Scalar_out,aten::add.out,aten::addcdiv.out,aten::addcmul.out,aten::addmm.default,
+aten::addcdiv.out,aten::addcmul.out,aten::addmm.default,
 aten::addmm.out,aten::amax.out,aten::amin.out,aten::arange.start_out,aten::argmax.out,aten::atan.out,
 aten::avg_pool2d.out,aten::avg_pool2d_backward.grad_input,aten::bernoulli_.float,aten::binary_cross_entropy.default,
 aten::binary_cross_entropy_backward.default,aten::binary_cross_entropy_backward.grad_input,
@@ -143,16 +152,16 @@ aten::leaky_relu_backward.grad_input,aten::log.out,aten::log_sigmoid_backward.de
 aten::log_sigmoid_backward.grad_input,aten::log_sigmoid_forward.default,aten::log_sigmoid_forward.output,
 aten::logit.default,aten::logit.out,aten::lt.Scalar,aten::lt.Scalar_out,aten::lt.Tensor_out,aten::max.default,
 aten::max_pool2d_with_indices.default,aten::maximum.out,aten::mean.default,aten::mean.out,aten::min.default,
-aten::minimum.out,aten::mm.out,aten::mse_loss.default,aten::mse_loss_backward.default,aten::mul.Scalar,
-aten::mul.Scalar_out,aten::mul.out,aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
+aten::minimum.out,aten::mm.out,aten::mse_loss.default,aten::mse_loss_backward.default,
+aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
 aten::native_dropout.default,aten::native_dropout_backward.default,aten::native_layer_norm.default,
 aten::native_layer_norm_backward.default,aten::ne.Scalar_out,aten::ne.Tensor,aten::ne.Tensor_out,aten::neg.out,
 aten::nll_loss_backward.grad_input,aten::nll_loss_forward.output,aten::normal_.default,
 aten::pow.Tensor_Scalar_out,aten::prod.int_out,aten::reciprocal.out,aten::relu.out,aten::resize_.default,
-aten::round.out,aten::rsub.Scalar,aten::rsub.Scalar_out,aten::set_.source_Storage,
+aten::round.out,aten::set_.source_Storage,
 aten::set_.source_Storage_storage_offset,aten::sgn.out,aten::sigmoid.default,aten::sigmoid.out,
 aten::sigmoid_.default,aten::sigmoid_backward.grad_input,aten::silu.out,aten::silu_backward.grad_input,
-aten::sub.Scalar,aten::sub.Scalar_out,aten::sub.out,aten::sum.IntList_out,aten::sum.default,
+aten::sum.IntList_out,aten::sum.default,
 aten::tanh.default,aten::tanh.out,aten::tanh_.default,aten::tanh_backward.grad_input,
 aten::threshold_backward.grad_input,aten::uniform_.default,aten::upsample_bilinear2d.out,
 aten::upsample_bilinear2d_backward.grad_input,aten::upsample_nearest2d.out,
