@@ -69,6 +69,26 @@ rejected outside an active Vulkan optimizer/training step. The optimizer
 execution schemas above are an internal update path, not a declaration that
 generic user-facing in-place pointwise operations are supported.
 
+## Deferred operator-expansion inventory
+
+The following roadmap families are explicitly inventoried for future expansion.
+Every schema in this table remains deferred; these entries do not add runtime
+registrations or declare support, and the supported manifest above is unchanged.
+
+| Roadmap family | Deferred schemas |
+| --- | --- |
+| transfer/creation | `_copy_from`, `_copy_from_and_resize`, `_local_scalar_dense`, `_to_copy`, `copy_`, `empty`, `empty_strided`, `resize_`, `set_` |
+| scalar and `out=` pointwise | `abs.out`, `add.Scalar`, `add.Scalar_out`, `add.out`, `div.out`, `exp.out`, `fill_.Scalar`, `log.out`, `mul.Scalar`, `mul.Scalar_out`, `mul.out`, `sub.Scalar`, `sub.Scalar_out`, `sub.out` |
+| reductions/indexing | `amax.out`, `amin.out`, `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.int_out`, `sum.IntList_out`, `sum.default` |
+| MSE loss | `mse_loss`, `mse_loss_backward` |
+| sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input`, `sigmoid`, `sigmoid.out`, `sigmoid_`, `sigmoid_backward.grad_input`, `tanh`, `tanh.out`, `tanh_`, `tanh_backward.grad_input` |
+| convolution/pooling backward | `_adaptive_avg_pool2d_backward`, `avg_pool2d_backward.grad_input`, `convolution_backward_overrideable`, `max_pool2d_with_indices`, `upsample_bilinear2d_backward.grad_input`, `upsample_nearest2d_backward.grad_input`, `_upsample_nearest_exact2d_backward.grad_input` |
+| normalization | `native_batch_norm`, `native_batch_norm_backward`, `native_layer_norm`, `native_layer_norm_backward` |
+| cross-entropy/NLL | `_log_softmax.out`, `_log_softmax_backward_data.out`, `nll_loss_forward.output`, `nll_loss_backward.grad_input` |
+
+The cross-entropy/NLL row inventories the deferred log-softmax and NLL pieces
+of the composed loss; it does not claim a `cross_entropy` runtime registration.
+
 ## Serialization and multiprocessing
 
 Explicit `pytorch_vulkan.save/load` preserves view sizes, strides, offsets,

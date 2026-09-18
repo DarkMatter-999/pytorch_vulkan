@@ -26,6 +26,61 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::addcmul_.default", "aten::addcdiv_.default", "aten::zero_.default",
 })
 
+# Roadmap inventory only: these schemas are registered by the backend but remain
+# deferred. Keeping this separate from DECLARED_OPERATION_MANIFEST prevents an
+# inventory entry from being interpreted as a support declaration.
+ROADMAP_OPERATION_FAMILIES = {
+    "transfer/creation": frozenset({
+        "aten::_copy_from.default", "aten::_copy_from_and_resize.default",
+        "aten::_local_scalar_dense.default", "aten::_to_copy.default",
+        "aten::copy_.default", "aten::empty.memory_format",
+        "aten::empty_strided.default", "aten::resize_.default",
+        "aten::set_.source_Storage", "aten::set_.source_Storage_storage_offset",
+    }),
+    "scalar and out= pointwise": frozenset({
+        "aten::abs.out", "aten::add.Scalar", "aten::add.Scalar_out",
+        "aten::add.out", "aten::div.out", "aten::exp.out", "aten::fill_.Scalar",
+        "aten::log.out", "aten::mul.Scalar", "aten::mul.Scalar_out",
+        "aten::mul.out", "aten::sub.Scalar", "aten::sub.Scalar_out",
+        "aten::sub.out",
+    }),
+    "reductions/indexing": frozenset({
+        "aten::amax.out", "aten::amin.out", "aten::argmax.out",
+        "aten::max.default", "aten::mean.default", "aten::mean.out",
+        "aten::min.default", "aten::prod.int_out", "aten::sum.IntList_out",
+        "aten::sum.default",
+    }),
+    "MSE loss": frozenset({
+        "aten::mse_loss.default", "aten::mse_loss_backward.default",
+    }),
+    "sigmoid/tanh/GELU": frozenset({
+        "aten::gelu.out", "aten::gelu_backward.grad_input",
+        "aten::sigmoid.default", "aten::sigmoid.out", "aten::sigmoid_.default",
+        "aten::sigmoid_backward.grad_input", "aten::tanh.default",
+        "aten::tanh.out", "aten::tanh_.default", "aten::tanh_backward.grad_input",
+    }),
+    "convolution/pooling backward": frozenset({
+        "aten::_adaptive_avg_pool2d_backward.default",
+        "aten::avg_pool2d_backward.grad_input",
+        "aten::convolution_backward_overrideable.default",
+        "aten::max_pool2d_with_indices.default",
+        "aten::upsample_bilinear2d_backward.grad_input",
+        "aten::upsample_nearest2d_backward.grad_input",
+        "aten::_upsample_nearest_exact2d_backward.grad_input",
+    }),
+    "normalization": frozenset({
+        "aten::native_batch_norm.default", "aten::native_batch_norm_backward.default",
+        "aten::native_layer_norm.default", "aten::native_layer_norm_backward.default",
+    }),
+    # Cross-entropy is represented by the deferred log-softmax and NLL pieces.
+    "cross-entropy/NLL": frozenset({
+        "aten::_log_softmax.out", "aten::_log_softmax_backward_data.out",
+        "aten::nll_loss_forward.output", "aten::nll_loss_backward.grad_input",
+    }),
+}
+
+ROADMAP_DEFERRED_SCHEMAS = frozenset().union(*ROADMAP_OPERATION_FAMILIES.values())
+
 
 @dataclass(frozen=True)
 class ConformanceCase:
