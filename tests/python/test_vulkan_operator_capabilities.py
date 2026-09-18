@@ -5,7 +5,13 @@ import pytest
 import torch
 
 import pytorch_vulkan
-from vulkan_conformance import ALL_CASES, DECLARED_OPERATION_MANIFEST
+from vulkan_conformance import (
+    ALL_CASES,
+    DECLARED_OPERATION_MANIFEST,
+    ROADMAP_DEFERRED_REASON_BY_FAMILY,
+    ROADMAP_DEFERRED_SCHEMAS,
+    ROADMAP_OPERATION_FAMILIES,
+)
 
 
 SOURCE_SCHEMA_ALIASES = {
@@ -161,6 +167,16 @@ def _source_deferred_schemas(root=Path("src")):
 DEFERRED_SOURCE_SCHEMAS = _source_deferred_schemas()
 
 
+def _undeclared_source_registrations():
+    source_inventory, explicit_rejected = _source_registration_classifications()
+    return frozenset(
+        source_inventory
+        - DECLARED_OPERATION_MANIFEST
+        - ROADMAP_DEFERRED_SCHEMAS
+        - explicit_rejected
+    )
+
+
 def test_declared_manifest_matches_matrix_and_source_registrations():
     matrix = Path("docs/vulkan_operator_capability_matrix.md").read_text()
     marker = re.search(
@@ -249,7 +265,8 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
     assert classifications[0].isdisjoint(classifications[2])
     assert classifications[1].isdisjoint(classifications[2])
     source_inventory, source_explicit_rejected = _source_registration_classifications()
-    assert _matrix_schema_set(matrix, "deferred") == DEFERRED_SOURCE_SCHEMAS
+    assert _matrix_schema_set(matrix, "deferred") == ROADMAP_DEFERRED_SCHEMAS
+    assert ROADMAP_DEFERRED_SCHEMAS == DEFERRED_SOURCE_SCHEMAS
     assert source_explicit_rejected == EXPLICIT_REJECTED_SOURCE_SCHEMAS
     assert EXPLICIT_REJECTED_SOURCE_SCHEMAS
     assert source_inventory == (
@@ -328,6 +345,32 @@ def test_source_classifications_are_pairwise_disjoint():
     assert DECLARED_OPERATION_MANIFEST.isdisjoint(DEFERRED_SOURCE_SCHEMAS)
     assert DECLARED_OPERATION_MANIFEST.isdisjoint(EXPLICIT_REJECTED_SOURCE_SCHEMAS)
     assert DEFERRED_SOURCE_SCHEMAS.isdisjoint(EXPLICIT_REJECTED_SOURCE_SCHEMAS)
+
+
+def test_source_registrations_cannot_be_supported_without_a_declaration():
+    """Every source registration must be supported, rejected, or roadmap-deferred."""
+    assert not _undeclared_source_registrations()
+    source_inventory, explicit_rejected = _source_registration_classifications()
+    source_supported = (
+        source_inventory - ROADMAP_DEFERRED_SCHEMAS - explicit_rejected
+    )
+    assert source_supported == DECLARED_OPERATION_MANIFEST
+    assert {
+        case.declaration_id for case in ALL_CASES if case.supported
+    } == source_supported
+
+
+def test_every_deferred_roadmap_schema_has_an_explicit_reason():
+    assert set(ROADMAP_OPERATION_FAMILIES) == set(ROADMAP_DEFERRED_REASON_BY_FAMILY)
+    assert ROADMAP_DEFERRED_SCHEMAS
+    assert sum(map(len, ROADMAP_OPERATION_FAMILIES.values())) == len(
+        ROADMAP_DEFERRED_SCHEMAS
+    )
+    for family, schemas in ROADMAP_OPERATION_FAMILIES.items():
+        reason = ROADMAP_DEFERRED_REASON_BY_FAMILY[family]
+        assert schemas
+        assert isinstance(reason, str) and reason.strip()
+        assert "deferred" in reason or "not implemented" in reason
 
 
 def test_deferred_operations_are_explicitly_separate_from_declared_manifest():

@@ -14,6 +14,17 @@
 
 namespace {
 
+void validate_cpu_nll_labels(const at::Tensor &input) {
+    TORCH_CHECK(input.is_contiguous(),
+                "Vulkan label transfer requires contiguous CPU int64 labels");
+    const auto *labels = input.data_ptr<int64_t>();
+    for (int64_t index = 0; index < input.numel(); ++index) {
+        TORCH_CHECK(labels[index] == -100 || (labels[index] >= 0 && labels[index] < 3),
+                    "Vulkan nll_loss labels must be ignore_index or in [0, classes) "
+                    "(range validation failed)");
+    }
+}
+
 at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType> dtype,
                          c10::optional<at::Layout> layout,
                          c10::optional<c10::Device> device,
@@ -42,10 +53,12 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
         TORCH_CHECK(
             requested_dtype == at::kFloat || requested_dtype == at::kBool ||
                 requested_dtype == at::kLong || requested_dtype == at::kHalf,
-            "Vulkan _to_copy supports only float32, bool, and traced int64 labels");
+                "Vulkan _to_copy supports only float32, bool, and traced int64 labels");
         c10::optional<pytorch_vulkan::VulkanLabelAllocationGuard> label_guard;
-        if (requested_dtype == at::kLong)
+        if (requested_dtype == at::kLong) {
+            validate_cpu_nll_labels(input);
             label_guard.emplace();
+        }
         auto output =
             at::empty(input.sizes(),
                       input.options().dtype(requested_dtype).device(output_device));

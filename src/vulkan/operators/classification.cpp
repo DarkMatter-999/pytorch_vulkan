@@ -30,6 +30,8 @@ void validate_labels(const at::Tensor &labels) {
                     labels.layout() == at::kStrided && labels.is_contiguous() &&
                     labels.sizes().equals({2}),
                 "Vulkan nll_loss labels require contiguous vk:0 int64 shape (2)");
+    TORCH_CHECK(is_validated_label_allocation(labels.storage().data_ptr()),
+                "Vulkan nll_loss labels have no validated CPU provenance");
 }
 void run(const at::Tensor *inputs[], uint32_t input_count, const at::Tensor *outputs[],
          uint32_t output_count, uint32_t mode, int64_t ignore_index) {

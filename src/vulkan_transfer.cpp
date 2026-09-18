@@ -308,6 +308,16 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
 
     const bool cpu_to_vulkan = source.device().is_cpu();
     const bool vulkan_to_vulkan = !destination.device().is_cpu() && !cpu_to_vulkan;
+    const bool label_copy = vulkan_to_vulkan && source.scalar_type() == at::kLong &&
+        destination.scalar_type() == at::kLong;
+    if (label_copy) {
+        TORCH_CHECK(is_validated_label_allocation(source.storage().data_ptr()),
+                    "Vulkan int64 copy has no validated label provenance");
+    }
+    const auto mark_label_copy = [&] {
+        if (label_copy)
+            mark_validated_label_allocation(destination.storage().data_ptr());
+    };
     const at::Tensor &vulkan_tensor = cpu_to_vulkan ? destination : source;
     const at::DataPtr &vulkan_data = vulkan_tensor.storage().data_ptr();
     VulkanBuffer &vulkan_buffer = allocation_buffer(vulkan_data);
@@ -371,6 +381,7 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
                 staging->read(cpu_destination, bytes);
             }
         }
+        mark_label_copy();
         return destination;
     }
     for (int64_t index = 0; index < destination_layout.numel; ++index) {
@@ -405,6 +416,7 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
             }
         }
     }
+    mark_label_copy();
     return destination;
 }
 

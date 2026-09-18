@@ -23,12 +23,13 @@ void main() {
   if (p.mode == 2u) {
     if (index != 0u) return;
     float loss = 0.0; float count = 0.0;
-    for (uint n = 0u; n < p.batch; ++n) { int64_t label = labels[n]; if (label == int64_t(p.ignore_index)) continue; loss -= logits[n * p.classes + uint(label)] - logsum(n); count += 1.0; }
+    for (uint n = 0u; n < p.batch; ++n) { int64_t label = labels[n]; if (label == int64_t(p.ignore_index)) continue; if (label < 0 || label >= int64_t(p.classes)) return; loss -= logits[n * p.classes + uint(label)] - logsum(n); count += 1.0; }
     out0[0] = count == 0.0 ? 0.0 : loss / count; out1[0] = count;
   } else if (p.mode == 3u) {
     if (index >= p.batch * p.classes) return;
     uint n = index / p.classes; uint c = index % p.classes; int64_t label = labels[n];
     if (label == int64_t(p.ignore_index)) { out0[index] = 0.0; return; }
+    if (label < 0 || label >= int64_t(p.classes)) { out0[index] = 0.0; return; }
     out0[index] = c == uint(label) ? -grad[0] / total[0] : 0.0;
   }
 }

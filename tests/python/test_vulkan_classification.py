@@ -46,13 +46,24 @@ def test_nll_loss_rejects_weights_and_sum_without_vulkan_work(vulkan_backend):
      (torch.ones(2, dtype=torch.float32), "int64"),
      (torch.tensor([0, 1, 2], dtype=torch.int64).to("cpu"), "shape")],
 )
-def test_nll_loss_rejects_invalid_labels_before_vulkan_work(labels, message, vulkan_backend):
+def test_nll_loss_rejects_malformed_labels_before_vulkan_work(labels, message, vulkan_backend):
     logits = torch.ones(2, 3).to(vulkan_backend)
     if labels.device.type == "cpu" and message != "vk:0":
         labels = labels.to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=message):
         torch.ops.aten.nll_loss_forward.default(logits, labels, None, 1, -100)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("labels", [torch.tensor([-1, 1], dtype=torch.int64),
+                                     torch.tensor([3, 1], dtype=torch.int64)])
+def test_cpu_label_transfer_rejects_out_of_range_labels_without_vulkan_work(
+        labels, vulkan_backend):
+    logits = torch.ones(2, 3).to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="range"):
+        labels.to(vulkan_backend)
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 

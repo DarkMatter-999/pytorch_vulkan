@@ -48,44 +48,113 @@ DECLARED_OPERATION_MANIFEST = frozenset({
 # inventory entry from being interpreted as a support declaration.
 ROADMAP_OPERATION_FAMILIES = {
     "transfer/creation": frozenset({
-        "aten::_copy_from.default", "aten::_copy_from_and_resize.default",
-        "aten::_local_scalar_dense.default", "aten::_to_copy.default",
-        "aten::copy_.default", "aten::empty.memory_format",
-        "aten::empty_strided.default", "aten::resize_.default",
-        "aten::set_.source_Storage", "aten::set_.source_Storage_storage_offset",
+        "aten::_copy_from_and_resize.default", "aten::_local_scalar_dense.default",
+        "aten::resize_.default", "aten::set_.source_Storage",
+        "aten::set_.source_Storage_storage_offset",
     }),
     "scalar and out= pointwise": frozenset({
-        "aten::abs.out", "aten::div.out", "aten::exp.out", "aten::fill_.Scalar",
-        "aten::log.out",
+        "aten::abs.out", "aten::add_.Scalar", "aten::div.out", "aten::exp.out",
+        "aten::fill_.Scalar", "aten::log.out", "aten::neg.out", "aten::relu.out",
+        "aten::sigmoid.out", "aten::sigmoid_.default", "aten::tanh.out",
+        "aten::tanh_.default", "aten::sub_.Scalar", "aten::sub_.Tensor",
+        "aten::mul_.Tensor",
     }),
     "reductions/indexing": frozenset({
         "aten::argmax.out",
         "aten::max.default", "aten::mean.default", "aten::mean.out",
         "aten::min.default", "aten::sum.IntList_out",
-        "aten::sum.default",
+        "aten::sum.default", "aten::maximum.out", "aten::minimum.out",
     }),
-    "MSE loss": frozenset(),
+    "MSE loss": frozenset({
+        "aten::binary_cross_entropy.default",
+        "aten::binary_cross_entropy_backward.default",
+        "aten::binary_cross_entropy_backward.grad_input",
+    }),
     "sigmoid/tanh/GELU": frozenset({
-        "aten::gelu.out", "aten::sigmoid.out", "aten::sigmoid_.default",
-        "aten::tanh.out", "aten::tanh_.default",
+        "aten::gelu.out", "aten::silu.out", "aten::silu_backward.grad_input",
     }),
     "convolution/pooling backward": frozenset({
-        "aten::_adaptive_avg_pool2d_backward.default",
-        "aten::avg_pool2d_backward.grad_input",
+        "aten::avg_pool2d.out", "aten::avg_pool2d_backward.grad_input",
         "aten::convolution_backward_overrideable.default",
+        "aten::convolution_overrideable.default",
         "aten::max_pool2d_with_indices.default",
+        "aten::upsample_bilinear2d.out",
         "aten::upsample_bilinear2d_backward.grad_input",
+        "aten::upsample_nearest2d.out",
         "aten::upsample_nearest2d_backward.grad_input",
         "aten::_upsample_nearest_exact2d_backward.grad_input",
+        "aten::_upsample_nearest_exact2d.out",
     }),
     "normalization": frozenset({
         "aten::native_layer_norm.default", "aten::native_layer_norm_backward.default",
     }),
     # Cross-entropy is represented by the deferred log-softmax and NLL pieces.
-    "cross-entropy/NLL": frozenset(),
+    "cross-entropy/NLL": frozenset({
+        "aten::nll_loss_forward.output", "aten::nll_loss_backward.grad_input",
+    }),
+    "attention": frozenset({
+        "aten::_native_multi_head_attention.default",
+        "aten::_native_multi_head_attention.out",
+        "aten::_transform_bias_rescale_qkv.default",
+    }),
+    "tensor algebra": frozenset({
+        "aten::addcdiv.out", "aten::addcmul.out", "aten::addmm.default",
+        "aten::addmm.out", "aten::bmm.out", "aten::dot.default", "aten::mm.out",
+    }),
+    "tensor construction and indexing": frozenset({
+        "aten::_cat.default", "aten::arange.start_out", "aten::cat.out",
+    }),
+    "comparison and math": frozenset({
+        "aten::atan.out", "aten::ceil.default", "aten::ceil.out",
+        "aten::clamp.out", "aten::clamp_min.out", "aten::eq.Scalar_out",
+        "aten::eq.Tensor_out", "aten::ge.Scalar_out", "aten::ge.Tensor_out",
+        "aten::gt.Scalar", "aten::gt.Scalar_out", "aten::gt.Tensor_out",
+        "aten::isfinite.out", "aten::le.Scalar_out", "aten::le.Tensor_out",
+        "aten::le.Tensor_out", "aten::logit.default", "aten::logit.out",
+        "aten::lt.Scalar", "aten::lt.Scalar_out", "aten::lt.Tensor_out",
+        "aten::ne.Scalar_out", "aten::ne.Tensor", "aten::ne.Tensor_out",
+        "aten::round.out", "aten::sgn.out",
+    }),
+    "bitwise and random": frozenset({
+        "aten::bernoulli_.float", "aten::bitwise_and.Tensor_out",
+        "aten::bitwise_not.out", "aten::bitwise_or.Tensor_out",
+        "aten::bitwise_xor.Tensor_out", "aten::normal_.default",
+        "aten::uniform_.default",
+    }),
+    "activation and scalar math": frozenset({
+        "aten::hardsigmoid.out", "aten::hardsigmoid_backward.grad_input",
+        "aten::hardswish_.default", "aten::hardswish_backward.default",
+        "aten::hardtanh.default", "aten::hardtanh_.default",
+        "aten::hardtanh_backward.default", "aten::leaky_relu.out",
+        "aten::leaky_relu_backward.grad_input", "aten::log_sigmoid_backward.default",
+        "aten::log_sigmoid_backward.grad_input", "aten::log_sigmoid_forward.default",
+        "aten::log_sigmoid_forward.output", "aten::pow.Tensor_Scalar_out",
+        "aten::reciprocal.out", "aten::threshold_backward.grad_input",
+    }),
+    "dropout": frozenset({
+        "aten::native_dropout.default", "aten::native_dropout_backward.default",
+    }),
 }
 
 ROADMAP_DEFERRED_SCHEMAS = frozenset().union(*ROADMAP_OPERATION_FAMILIES.values())
+
+ROADMAP_DEFERRED_REASON_BY_FAMILY = {
+    "transfer/creation": "storage resizing, alias rebinding, and scalar readback contracts are deferred",
+    "scalar and out= pointwise": "the overload-specific scalar, out, and in-place validation contracts are deferred",
+    "reductions/indexing": "the deferred reduction and indexing shapes, outputs, or empty-input contracts are not implemented",
+    "MSE loss": "binary cross-entropy support and its backward/reduction contracts are deferred",
+    "sigmoid/tanh/GELU": "additional activation overloads and in-place paths are deferred",
+    "convolution/pooling backward": "additional pooling, upsampling, and overrideable convolution forms are deferred",
+    "normalization": "layer-normalization forward and backward contracts are deferred",
+    "cross-entropy/NLL": "the output-form NLL contracts are deferred",
+    "attention": "attention and QKV-rescaling contracts are deferred",
+    "tensor algebra": "matrix, batched-matrix, and compound tensor algebra contracts are deferred",
+    "tensor construction and indexing": "tensor concatenation and range-construction contracts are deferred",
+    "comparison and math": "the additional comparison, clamp, and scalar-math overload contracts are deferred",
+    "bitwise and random": "bitwise and random-generation contracts are deferred",
+    "activation and scalar math": "additional activation backward and scalar-math contracts are deferred",
+    "dropout": "dropout forward and backward contracts are deferred",
+}
 
 
 @dataclass(frozen=True)

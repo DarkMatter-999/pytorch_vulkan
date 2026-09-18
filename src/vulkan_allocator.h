@@ -39,6 +39,8 @@ void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
 bool is_vulkan_allocation(const at::DataPtr &data);
 VulkanBuffer &allocation_buffer(const at::DataPtr &data);
 const VulkanPlatform &allocation_platform(const at::DataPtr &data);
+bool is_validated_label_allocation(const at::DataPtr &data);
+void mark_validated_label_allocation(const at::DataPtr &data);
 
 } // namespace pytorch_vulkan
 

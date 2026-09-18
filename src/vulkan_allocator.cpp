@@ -32,6 +32,7 @@ std::string device_type_name(c10::DeviceType type) {
 struct VulkanAllocation {
     std::shared_ptr<VulkanPlatform> platform;
     std::unique_ptr<VulkanBuffer> buffer;
+    bool validated_label = false;
 };
 
 std::string allocation_context(c10::Device device, size_t nbytes) {
@@ -164,6 +165,18 @@ const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
     return *allocation->platform;
 }
 
+bool is_validated_label_allocation(const at::DataPtr &data) {
+    if (!is_vulkan_allocation(data))
+        return false;
+    return data.cast_context<VulkanAllocation>(&delete_allocation)->validated_label;
+}
+
+void mark_validated_label_allocation(const at::DataPtr &data) {
+    TORCH_CHECK(is_vulkan_allocation(data),
+                "cannot mark a non-Vulkan allocation as a validated label");
+    data.cast_context<VulkanAllocation>(&delete_allocation)->validated_label = true;
+}
+
 } // namespace pytorch_vulkan
 
 at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
@@ -186,6 +199,7 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
         allocation->platform = pytorch_vulkan::platform();
         allocation->buffer =
             std::make_unique<VulkanBuffer>(*allocation->platform, nbytes);
+        allocation->validated_label = allow_label_allocation;
     } catch (const VulkanUnavailable &error) {
         throw VulkanUnavailable("Vulkan allocation failed (" + context +
                                 "): " + error.what());
