@@ -104,6 +104,12 @@ class VulkanCompute final {
                 const VulkanTensorLayout &output_layout, uint32_t rows,
                 uint32_t features, uint32_t outputs, bool transposed_weight = false,
                 bool has_bias = true, uint32_t operation = 0) const;
+    void gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffer b,
+              const VulkanTensorLayout &b_layout, VkBuffer c,
+              const VulkanTensorLayout &c_layout, VkBuffer output,
+              const VulkanTensorLayout &output_layout, VkBuffer bias,
+              const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n, uint32_t k,
+              float alpha = 1.0F, float beta = 0.0F, bool has_bias = false) const;
     void linear_relu_backward_input(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
                                     const VulkanTensorLayout &,
                                     const VulkanTensorLayout &,
@@ -291,9 +297,15 @@ class VulkanCompute final {
     VkPipelineLayout formatter_double_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule formatter_double_shader_ = VK_NULL_HANDLE;
     VkPipeline formatter_double_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout gemm_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout gemm_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule gemm_shader_ = VK_NULL_HANDLE;
+    VkPipeline gemm_pipeline_ = VK_NULL_HANDLE;
     VkDeviceSize max_storage_buffer_range_ = 0;
     uint32_t max_push_constants_size_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
+    uint32_t max_compute_workgroup_count_y_ = 0;
+    uint32_t max_compute_shared_memory_size_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
     mutable std::atomic<std::size_t> submission_count_{0};
     mutable bool training_step_ = false;

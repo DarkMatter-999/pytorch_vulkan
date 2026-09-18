@@ -29,8 +29,8 @@ void test_bool_storage_and_round_trip() {
     auto device_tensor = at::empty({3}, source.options().device(kDevice));
     expect(device_tensor.nbytes() == source.numel() * sizeof(bool),
            "bool Vulkan storage does not use one byte per element");
-    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(
-        device_tensor, "bool layout test");
+    const auto layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(device_tensor, "bool layout test");
     expect(layout.byte_offset == 0 && layout.byte_range == 3 * sizeof(bool),
            "bool Vulkan layout has the wrong contiguous byte range");
     expect(layout.allocation_bytes >= layout.byte_offset + layout.byte_range,
@@ -42,8 +42,8 @@ void test_bool_storage_and_round_trip() {
     const std::vector<int64_t> offset_sizes{3};
     const std::vector<int64_t> offset_strides{1};
     offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
-    const auto offset_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(
-        offset, "bool offset layout test");
+    const auto offset_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(offset, "bool offset layout test");
     expect(offset_layout.byte_offset == sizeof(bool) &&
                offset_layout.byte_range == 3 * sizeof(bool) &&
                offset_layout.allocation_bytes >=
@@ -56,7 +56,8 @@ void test_bool_storage_and_round_trip() {
 }
 
 void test_empty_bool_storage() {
-    auto tensor = at::empty({0, 3}, at::TensorOptions().dtype(at::kBool).device(kDevice));
+    auto tensor =
+        at::empty({0, 3}, at::TensorOptions().dtype(at::kBool).device(kDevice));
     expect(tensor.nbytes() == 0 && tensor.numel() == 0,
            "empty bool Vulkan tensor has nonzero storage");
 }

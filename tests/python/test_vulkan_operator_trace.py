@@ -51,3 +51,32 @@ def test_linear_relu_training_trace_has_stable_operator_metadata(tmp_path):
             list(backward) == ["schema", "overload"]
             for backward in operator["backward"]
         )
+
+
+def test_gemm_trace_identifies_frontend_and_excludes_cpu_fallback(tmp_path):
+    repository = Path(__file__).resolve().parents[2]
+    artifact = tmp_path / "gemm_forward.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repository / "tools" / "trace_vulkan_operator_workload.py"),
+            "--workload",
+            "gemm_forward",
+            "--output",
+            str(artifact),
+        ],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    trace = json.loads(artifact.read_text())
+    assert trace["workload"] == "gemm_forward"
+    assert trace["frontend"] == "vulkan_gemm"
+    assert trace["cpu_fallback"] is False
+    assert [operator["schema"] for operator in trace["operators"]] == [
+        "aten::mm",
+        "aten::addmm",
+        "aten::linear",
+    ]

@@ -1,8 +1,8 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
-#include "vulkan_tensor_layout.h"
 #include "vulkan_platform.h"
+#include "vulkan_tensor_layout.h"
 
 #include <cstdint>
 #include <iostream>
@@ -102,9 +102,11 @@ void test_callback_waits_for_all_submissions(VulkanPlatform &platform) {
     context.begin();
     context.submit();
     context.wait();
-    expect(callback_count == 1, "callback did not execute exactly once after all submissions");
+    expect(callback_count == 1,
+           "callback did not execute exactly once after all submissions");
     context.wait();
-    expect(callback_count == 1, "callback executed more than once after all submissions");
+    expect(callback_count == 1,
+           "callback executed more than once after all submissions");
 }
 
 void test_abandoned_callback(VulkanPlatform &platform) {
@@ -164,8 +166,8 @@ void test_retained_descriptor_pool(VulkanPlatform &platform) {
     layout_info.bindingCount = 1;
     layout_info.pBindings = &binding;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-    expect(vkCreateDescriptorSetLayout(platform.device(), &layout_info, nullptr, &layout) ==
-               VK_SUCCESS,
+    expect(vkCreateDescriptorSetLayout(platform.device(), &layout_info, nullptr,
+                                       &layout) == VK_SUCCESS,
            "could not create retained descriptor layout");
     VkPipelineLayoutCreateInfo pipeline_layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -180,9 +182,10 @@ void test_retained_descriptor_pool(VulkanPlatform &platform) {
                VK_SUCCESS,
            "could not create retained descriptor pool");
     auto buffer = std::make_shared<VulkanBuffer>(
-        platform, 64, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkDescriptorSetAllocateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        platform, 64,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDescriptorSetAllocateInfo set_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     set_info.descriptorPool = pool;
     set_info.descriptorSetCount = 1;
     set_info.pSetLayouts = &layout;
@@ -222,7 +225,8 @@ void test_retained_descriptor_pool(VulkanPlatform &platform) {
     context.begin();
     vkCmdFillBuffer(context.command_buffer(), ring_buffer.buffer(), 0, 64, 0xfeedfaceU);
     context.submit();
-    expect(context.pending_count() == 2, "ring did not retain both bounded submissions");
+    expect(context.pending_count() == 2,
+           "ring did not retain both bounded submissions");
     context.begin();
     expect(context.pending_count() == 2,
            "ring reuse did not retire the reused submission before recording");
@@ -231,8 +235,8 @@ void test_retained_descriptor_pool(VulkanPlatform &platform) {
            "ring reuse lost the remaining submitted slot");
     context.wait();
     VkDescriptorPool replacement = VK_NULL_HANDLE;
-    expect(vkCreateDescriptorPool(platform.device(), &pool_info, nullptr, &replacement) ==
-               VK_SUCCESS,
+    expect(vkCreateDescriptorPool(platform.device(), &pool_info, nullptr,
+                                  &replacement) == VK_SUCCESS,
            "descriptor pool could not be reused after retirement");
     vkDestroyDescriptorPool(platform.device(), replacement, nullptr);
 }
@@ -247,9 +251,17 @@ void test_platform_pending_compute_count(VulkanPlatform &platform) {
     VulkanBuffer output(platform, 64,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    const pytorch_vulkan::VulkanTensorLayout layout{
-        1, {16}, {1}, 0, sizeof(float), 0, 16, 0, 64, 64,
-        pytorch_vulkan::VulkanOverlap::No};
+    const pytorch_vulkan::VulkanTensorLayout layout{1,
+                                                    {16},
+                                                    {1},
+                                                    0,
+                                                    sizeof(float),
+                                                    0,
+                                                    16,
+                                                    0,
+                                                    64,
+                                                    64,
+                                                    pytorch_vulkan::VulkanOverlap::No};
     expect(platform.pending_compute_count() == 0,
            "platform reported pending compute work before training step");
     platform.compute().begin_training_step();

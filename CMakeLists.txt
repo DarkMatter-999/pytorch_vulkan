@@ -11,6 +11,7 @@ option(BUILD_PYTHON_EXTENSION "Build the minimal Python Vulkan extension" OFF)
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     find_package(Vulkan 1.1 REQUIRED)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
 endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
@@ -34,6 +35,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/generated/loss_spv.sha256
                      src/vulkan/shaders/generated/operator_spv.h
                      src/vulkan/shaders/generated/operator_spv.sha256
+                    src/vulkan/shaders/generated/gemm_spv.h
+                    src/vulkan/shaders/generated/gemm_spv.sha256
                      src/vulkan/shaders/generated/formatter_double_spv.h
                      src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
@@ -95,6 +98,28 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                              ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
                             ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
           add_dependencies(vulkan_platform vulkan_operator_shader_generate)
+         add_custom_command(
+           OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
+                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
+           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
+                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/gemm.comp
+           VERBATIM)
+         add_custom_target(vulkan_gemm_shader_generate DEPENDS
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
+         add_custom_target(vulkan_gemm_shader_integrity
+                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/gemm.comp
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
+         add_dependencies(vulkan_platform vulkan_gemm_shader_generate)
+         if(BUILD_TESTING)
+           add_test(NAME vulkan_gemm_shader_integrity
+                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
+         endif()
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -314,7 +339,7 @@ if(BUILD_PYTHON_EXTENSION)
                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py)
             add_test(NAME vulkan_linear_relu_backward_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
-      endif()
+       endif()
     configure_file(
          "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
          "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"

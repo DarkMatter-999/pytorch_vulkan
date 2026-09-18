@@ -218,6 +218,9 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
         "aten::_softmax_backward_data.out": "`aten::_softmax_backward_data.out` / `aten::_log_softmax_backward_data.out`",
         "aten::_log_softmax_backward_data.out": "`aten::_softmax_backward_data.out` / `aten::_log_softmax_backward_data.out`",
         "aten::linear.default": "`aten::linear`",
+        "aten::mm.default": "`aten::mm`",
+        "aten::addmm.default": "`aten::linear` / `aten::mm` / `aten::addmm`",
+        "aten::addmm.out": "`aten::linear` / `aten::mm` / `aten::addmm`",
         "aten::convolution.default": "`aten::convolution`",
         "aten::convolution_backward.default": "`aten::convolution` / `aten::convolution_backward`",
         "aten::_adaptive_avg_pool2d.default": "`aten::_adaptive_avg_pool2d`",
@@ -319,6 +322,19 @@ def test_conformance_declaration_ids_match_matrix_in_both_directions():
         case.declaration_id for case in ALL_CASES
     } <= supported | rejected | deferred
     assert all(case.declaration_id.startswith("aten::") for case in ALL_CASES)
+
+
+def test_gemm_declarations_cover_supported_frontends_and_deferred_forms():
+    assert {
+        "aten::mm.default",
+        "aten::addmm.default",
+        "aten::addmm.out",
+        "aten::linear.default",
+    } <= DECLARED_OPERATION_MANIFEST
+    assert {
+        "aten::bmm.out",
+        "aten::mm.out",
+    } <= ROADMAP_DEFERRED_SCHEMAS
 
 
 def test_registration_parser_accepts_formatting_variants():
@@ -565,14 +581,19 @@ def test_formatter_double_matrix_rejects_unrelated_schema_claims():
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
         pytest.skip("no suitable Vulkan device is available")
-    return "vk"
+    device = f"{torch._C._get_privateuse1_backend_name()}:0"
+    try:
+        torch.ones(1).to(device)
+    except (NotImplementedError, RuntimeError) as error:
+        pytest.skip(f"Vulkan tensor setup is unavailable: {error}")
+    return device
 
 
 def assert_vulkan_capability(operation, inputs, *, supported, error_pattern=None):
     """Run an operation and assert explicit support or rejection."""
     if supported:
         result = operation(*inputs)
-        assert result.device.type == "vk"
+        assert result.device.type == torch._C._get_privateuse1_backend_name()
         assert result.device.index == 0
         return result
 

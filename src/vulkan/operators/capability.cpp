@@ -3,7 +3,11 @@
 #include <ATen/ATen.h>
 #include <c10/util/Exception.h>
 
+#include "vulkan_allocator.h"
+#include "vulkan_layout.h"
 #include "vulkan_platform.h"
+
+#include <limits>
 
 namespace pytorch_vulkan {
 
@@ -107,6 +111,31 @@ void validate_pointwise_device_capability(bool uses_bool, bool bool_supported,
     TORCH_CHECK(!uses_bool || bool_supported, "Vulkan ", operation_name,
                 " bool pointwise support requires Vulkan 1.2 8-bit storage and int8 "
                 "shader features");
+}
+
+VulkanTensorLayout validate_gemm_2d(const at::Tensor &tensor, at::IntArrayRef shape,
+                                    const char *name) {
+    TORCH_CHECK(tensor.device().type() == c10::DeviceType::PrivateUse1 &&
+                    tensor.device().index() == 0,
+                "Vulkan ", name, " requires Vulkan device index 0");
+    TORCH_CHECK(tensor.layout() == at::kStrided && tensor.scalar_type() == at::kFloat,
+                "Vulkan ", name, " requires a strided float32 tensor");
+    TORCH_CHECK(tensor.dim() == 2 && shape.size() == 2 && tensor.sizes().equals(shape),
+                "Vulkan ", name, " requires the expected 2-D shape");
+    TORCH_CHECK(tensor.is_contiguous(), "Vulkan ", name,
+                " requires a contiguous row-major tensor");
+    auto layout = inspect_vulkan_tensor_layout(tensor, name);
+    TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No, "Vulkan ", name,
+                " has unsupported internal overlap");
+    const auto &data = tensor.storage().data_ptr();
+    validate_allocation(data, layout.byte_range, name);
+    TORCH_CHECK(layout.byte_offset <= layout.allocation_bytes &&
+                    layout.byte_range <= layout.allocation_bytes - layout.byte_offset,
+                "Vulkan ", name, " byte range exceeds its allocation");
+    TORCH_CHECK(tensor.size(0) <= std::numeric_limits<uint32_t>::max() &&
+                    tensor.size(1) <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan ", name, " dimensions exceed dispatch limits");
+    return layout;
 }
 
 } // namespace pytorch_vulkan

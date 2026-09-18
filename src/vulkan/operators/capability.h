@@ -1,8 +1,10 @@
 #pragma once
 
+#include <ATen/core/TensorBody.h>
 #include <c10/core/ScalarType.h>
 
 #include "binary.h"
+#include "vulkan_tensor_layout.h"
 
 namespace pytorch_vulkan {
 
@@ -25,5 +27,7 @@ void validate_operator_rank(int64_t rank, const char *operation_name);
 bool pointwise_uses_bool(c10::ScalarType dtype, PointwiseOperation operation);
 void validate_pointwise_device_capability(bool uses_bool, bool bool_supported,
                                           const char *operation_name);
+VulkanTensorLayout validate_gemm_2d(const at::Tensor &tensor, at::IntArrayRef shape,
+                                    const char *name);
 
 } // namespace pytorch_vulkan

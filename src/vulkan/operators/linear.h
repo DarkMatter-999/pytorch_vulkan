@@ -5,6 +5,7 @@
 #include <tuple>
 
 namespace pytorch_vulkan {
+at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2);
 at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
                   const c10::optional<at::Tensor> &bias);
 at::Tensor linear_relu(const at::Tensor &, const at::Tensor &, const at::Tensor &);

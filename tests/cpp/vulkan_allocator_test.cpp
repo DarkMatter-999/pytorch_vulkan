@@ -62,13 +62,13 @@ void test_oversized_allocation_rejected(c10::Allocator &allocator) {
         (void)allocator.allocate(size);
     } catch (const std::exception &error) {
         message = error.what();
-        rejected = message.find("requested 18446744073709551615 bytes") !=
-                   std::string::npos &&
-                   message.find("PrivateUse1 device index 0") != std::string::npos;
+        rejected =
+            message.find("requested 18446744073709551615 bytes") != std::string::npos &&
+            message.find("PrivateUse1 device index 0") != std::string::npos;
     }
     if (!rejected) {
-        throw std::runtime_error("oversized allocation was not rejected with context: " +
-                                 message);
+        throw std::runtime_error(
+            "oversized allocation was not rejected with context: " + message);
     }
 }
 
@@ -130,7 +130,8 @@ void test_bounded_reuse_after_submission(c10::Allocator &allocator) {
         context.begin();
         context.cancel();
         auto final_small = allocator.allocate(256);
-        VulkanBuffer &final_small_buffer = pytorch_vulkan::allocation_buffer(final_small);
+        VulkanBuffer &final_small_buffer =
+            pytorch_vulkan::allocation_buffer(final_small);
         context.begin();
         vkCmdFillBuffer(context.command_buffer(), final_small_buffer.buffer(), 0, 256,
                         static_cast<uint32_t>(iteration + 2));

@@ -3,6 +3,7 @@
 #include "vulkan/shaders/generated/convolution_spv.h"
 #include "vulkan/shaders/generated/f32_to_double_spv.h"
 #include "vulkan/shaders/generated/formatter_double_spv.h"
+#include "vulkan/shaders/generated/gemm_spv.h"
 #include "vulkan/shaders/generated/linear_relu_backward_spv.h"
 #include "vulkan/shaders/generated/loss_spv.h"
 #include "vulkan/shaders/generated/masked_select_spv.h"
@@ -135,6 +136,14 @@ struct MaskedParams {
 struct PoolingParams {
     uint32_t batch, channels, height, width, operation;
 };
+struct GemmParams {
+    uint32_t m, n, k;
+    uint32_t stride_a, stride_b, stride_c, stride_d, stride_bias;
+    uint32_t matrix_stride;
+    float alpha, beta;
+    uint32_t has_bias;
+    uint32_t reserved[4];
+};
 struct F32ToDoubleParams {
     uint32_t element_count;
 };
@@ -147,6 +156,8 @@ struct FormatterDoubleParams {
 constexpr uint32_t kAdd = 0;
 constexpr uint32_t kWorkgroupSize = 256;
 constexpr uint32_t kMaxPointwiseRank = 8;
+// VulkanTensorLayout stores the ATen ScalarType as its stable integer value.
+constexpr int kFloatScalarType = 6;
 
 bool ranges_overlap(VkBuffer lhs_buffer, const VulkanTensorLayout &lhs,
                     VkBuffer rhs_buffer, const VulkanTensorLayout &rhs) {
@@ -244,6 +255,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         vkGetPhysicalDeviceProperties(platform.physical_device(), &properties);
         max_storage_buffer_range_ = properties.limits.maxStorageBufferRange;
         max_compute_workgroup_count_x_ = properties.limits.maxComputeWorkGroupCount[0];
+        max_compute_workgroup_count_y_ = properties.limits.maxComputeWorkGroupCount[1];
+        max_compute_shared_memory_size_ = properties.limits.maxComputeSharedMemorySize;
         max_push_constants_size_ = properties.limits.maxPushConstantsSize;
         if (properties.limits.maxPushConstantsSize < sizeof(Params))
             throw std::runtime_error(
@@ -756,6 +769,49 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                       masked_compact_pipeline_layout_, masked_compact_pipeline_,
                       vulkan_masked_select_shader::kCompactCode,
                       vulkan_masked_select_shader::kCompactCodeSize, 4);
+
+        VkDescriptorSetLayoutBinding gemm_bindings[5]{};
+        for (uint32_t binding = 0; binding < 5; ++binding) {
+            gemm_bindings[binding] = {binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                      VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        }
+        VkDescriptorSetLayoutCreateInfo gemm_layout{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        gemm_layout.bindingCount = 5;
+        gemm_layout.pBindings = gemm_bindings;
+        check_result(vkCreateDescriptorSetLayout(device_, &gemm_layout, nullptr,
+                                                 &gemm_descriptor_layout_),
+                     "could not create GEMM descriptor-set layout");
+        VkShaderModuleCreateInfo gemm_shader_info{
+            VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+            vulkan_gemm_shader::kCodeSize, vulkan_gemm_shader::kCode};
+        check_result(
+            vkCreateShaderModule(device_, &gemm_shader_info, nullptr, &gemm_shader_),
+            "could not create GEMM shader module");
+        VkPushConstantRange gemm_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                      sizeof(GemmParams)};
+        VkPipelineLayoutCreateInfo gemm_pipeline_layout_info{
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        gemm_pipeline_layout_info.setLayoutCount = 1;
+        gemm_pipeline_layout_info.pSetLayouts = &gemm_descriptor_layout_;
+        gemm_pipeline_layout_info.pushConstantRangeCount = 1;
+        gemm_pipeline_layout_info.pPushConstantRanges = &gemm_push;
+        check_result(vkCreatePipelineLayout(device_, &gemm_pipeline_layout_info,
+                                            nullptr, &gemm_pipeline_layout_),
+                     "could not create GEMM pipeline layout");
+        VkPipelineShaderStageCreateInfo gemm_stage{
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        gemm_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        gemm_stage.module = gemm_shader_;
+        gemm_stage.pName = "main";
+        VkComputePipelineCreateInfo gemm_pipeline_info{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        gemm_pipeline_info.stage = gemm_stage;
+        gemm_pipeline_info.layout = gemm_pipeline_layout_;
+        check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
+                                              &gemm_pipeline_info, nullptr,
+                                              &gemm_pipeline_),
+                     "could not create GEMM compute pipeline");
     } catch (const std::exception &error) {
         for (auto pipeline : pipelines_) {
             if (pipeline != VK_NULL_HANDLE) {
@@ -788,6 +844,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipeline(device_, masked_count_pipeline_, nullptr);
         if (masked_compact_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, masked_compact_pipeline_, nullptr);
+        if (gemm_pipeline_ != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, gemm_pipeline_, nullptr);
         for (auto module : shader_modules_) {
             if (module != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(device_, module, nullptr);
@@ -819,6 +877,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
         if (masked_compact_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
+        if (gemm_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, gemm_shader_, nullptr);
         if (normalization_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, normalization_shader_, nullptr);
         if (classification_shader_ != VK_NULL_HANDLE)
@@ -859,6 +919,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipelineLayout(device_, normalization_pipeline_layout_, nullptr);
         if (classification_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, classification_pipeline_layout_, nullptr);
+        if (gemm_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, gemm_pipeline_layout_, nullptr);
         for (auto layout : descriptor_set_layouts_) {
             if (layout != VK_NULL_HANDLE) {
                 vkDestroyDescriptorSetLayout(device_, layout, nullptr);
@@ -902,6 +964,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         if (classification_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, classification_descriptor_layout_,
                                          nullptr);
+        if (gemm_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
         throw contextual_error("initialization failed", error);
     }
 }
@@ -946,6 +1010,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, f32_to_double_pipeline_, nullptr);
     if (formatter_double_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, formatter_double_pipeline_, nullptr);
+    if (gemm_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, gemm_pipeline_, nullptr);
     for (auto module : shader_modules_) {
         if (module != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device_, module, nullptr);
@@ -985,6 +1051,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, f32_to_double_shader_, nullptr);
     if (formatter_double_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, formatter_double_shader_, nullptr);
+    if (gemm_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, gemm_shader_, nullptr);
     for (auto layout : pipeline_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device_, layout, nullptr);
@@ -1024,6 +1092,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, f32_to_double_pipeline_layout_, nullptr);
     if (formatter_double_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, formatter_double_pipeline_layout_, nullptr);
+    if (gemm_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, gemm_pipeline_layout_, nullptr);
     for (auto layout : descriptor_set_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device_, layout, nullptr);
@@ -1069,6 +1139,8 @@ VulkanCompute::~VulkanCompute() {
     if (formatter_double_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, formatter_double_descriptor_layout_,
                                      nullptr);
+    if (gemm_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
 }
 
 void VulkanCompute::add(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
@@ -1365,6 +1437,192 @@ void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
                    output_layout.allocation_bytes, &params, sizeof(params),
                    static_cast<uint32_t>(output_numel64), VK_NULL_HANDLE,
                    VK_NULL_HANDLE, VK_NULL_HANDLE, &metadata, sizeof(metadata));
+}
+
+void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffer b,
+                         const VulkanTensorLayout &b_layout, VkBuffer c,
+                         const VulkanTensorLayout &c_layout, VkBuffer output,
+                         const VulkanTensorLayout &output_layout, VkBuffer bias,
+                         const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n,
+                         uint32_t k, float alpha, float beta, bool has_bias) const {
+    const auto validate_layout = [&](VkBuffer buffer, const VulkanTensorLayout &layout,
+                                     uint32_t rank, uint32_t rows, uint32_t columns,
+                                     const char *name) {
+        if (buffer == VK_NULL_HANDLE || layout.rank != rank ||
+            layout.scalar_type != kFloatScalarType ||
+            layout.element_bytes != sizeof(float) || layout.sizes.size() != rank ||
+            layout.strides.size() != rank || layout.storage_offset < 0 ||
+            layout.byte_range == 0 || layout.allocation_bytes == 0 ||
+            layout.byte_offset > layout.allocation_bytes ||
+            layout.byte_range > layout.allocation_bytes - layout.byte_offset ||
+            layout.internal_overlap != pytorch_vulkan::VulkanOverlap::No)
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " has an invalid layout");
+        if (layout.sizes[0] != rows || layout.sizes[1] != columns ||
+            layout.strides[0] < 0 || layout.strides[1] < 0 || layout.strides[1] != 1 ||
+            layout.strides[0] != columns ||
+            static_cast<uint64_t>(layout.storage_offset) >
+                std::numeric_limits<uint32_t>::max() ||
+            static_cast<uint64_t>(layout.strides[0]) >
+                std::numeric_limits<uint32_t>::max() ||
+            static_cast<uint64_t>(layout.strides[1]) >
+                std::numeric_limits<uint32_t>::max())
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " is not a representable contiguous matrix");
+        const uint64_t row_span =
+            static_cast<uint64_t>(rows - 1) * static_cast<uint64_t>(layout.strides[0]);
+        const uint64_t column_span = static_cast<uint64_t>(columns - 1) *
+                                     static_cast<uint64_t>(layout.strides[1]);
+        if (row_span > std::numeric_limits<uint64_t>::max() - column_span ||
+            row_span + column_span == std::numeric_limits<uint64_t>::max())
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " footprint overflows");
+        const uint64_t required_elements = row_span + column_span + 1;
+        if (required_elements >
+                std::numeric_limits<uint64_t>::max() / layout.element_bytes ||
+            layout.byte_range < required_elements * layout.element_bytes)
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " byte range is smaller than its footprint");
+        if (layout.byte_offset % sizeof(float) != 0 ||
+            layout.byte_range > max_storage_buffer_range_ ||
+            layout.byte_offset > max_storage_buffer_range_ - layout.byte_range)
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " exceeds the storage-buffer limit");
+    };
+    const auto validate_bias = [&] {
+        if (bias == VK_NULL_HANDLE || bias_layout.rank != 1 ||
+            bias_layout.scalar_type != kFloatScalarType ||
+            bias_layout.element_bytes != sizeof(float) ||
+            bias_layout.sizes.size() != 1 || bias_layout.strides.size() != 1 ||
+            bias_layout.sizes[0] != n || bias_layout.strides[0] != 1 ||
+            bias_layout.storage_offset < 0 || bias_layout.byte_range == 0 ||
+            bias_layout.allocation_bytes == 0 ||
+            bias_layout.byte_offset > bias_layout.allocation_bytes ||
+            bias_layout.byte_range >
+                bias_layout.allocation_bytes - bias_layout.byte_offset ||
+            bias_layout.internal_overlap != pytorch_vulkan::VulkanOverlap::No ||
+            bias_layout.byte_offset % sizeof(float) != 0 ||
+            bias_layout.byte_range > max_storage_buffer_range_ ||
+            bias_layout.byte_offset >
+                max_storage_buffer_range_ - bias_layout.byte_range)
+            throw std::invalid_argument("Vulkan GEMM bias has an invalid layout");
+        const uint64_t required_elements =
+            static_cast<uint64_t>(bias_layout.sizes[0] - 1) *
+                static_cast<uint64_t>(bias_layout.strides[0]) +
+            1;
+        if (required_elements >
+                std::numeric_limits<uint64_t>::max() / bias_layout.element_bytes ||
+            bias_layout.byte_range < required_elements * bias_layout.element_bytes)
+            throw std::invalid_argument(
+                "Vulkan GEMM bias byte range is smaller than its footprint");
+    };
+    const uint64_t m_groups = (static_cast<uint64_t>(m) + 15) / 16;
+    const uint64_t n_groups = (static_cast<uint64_t>(n) + 15) / 16;
+    if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
+        m_groups > max_compute_workgroup_count_y_ ||
+        n_groups > max_compute_workgroup_count_x_ ||
+        2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_)
+        throw std::invalid_argument("Vulkan GEMM exceeds device limits");
+    validate_layout(a, a_layout, 2, m, k, "A");
+    validate_layout(b, b_layout, 2, k, n, "B");
+    validate_layout(output, output_layout, 2, m, n, "output");
+    if (c != VK_NULL_HANDLE)
+        validate_layout(c, c_layout, 2, m, n, "C");
+    else if (beta != 0.0F)
+        throw std::invalid_argument("Vulkan GEMM requires C when beta is nonzero");
+    if (bias != VK_NULL_HANDLE)
+        validate_bias();
+    else if (has_bias)
+        throw std::invalid_argument("Vulkan GEMM requires bias when enabled");
+    if (ranges_overlap(output, output_layout, a, a_layout) ||
+        ranges_overlap(output, output_layout, b, b_layout) ||
+        (c != VK_NULL_HANDLE && ranges_overlap(output, output_layout, c, c_layout)) ||
+        (bias != VK_NULL_HANDLE &&
+         ranges_overlap(output, output_layout, bias, bias_layout)))
+        throw std::invalid_argument("Vulkan GEMM output overlaps an input");
+
+    const VkBuffer ignored_c = c == VK_NULL_HANDLE ? output : c;
+    const VkBuffer ignored_bias = bias == VK_NULL_HANDLE ? output : bias;
+    const VulkanTensorLayout &effective_c =
+        c == VK_NULL_HANDLE ? output_layout : c_layout;
+    const VulkanTensorLayout &effective_bias =
+        bias == VK_NULL_HANDLE ? output_layout : bias_layout;
+    std::scoped_lock lock(platform_.queue_mutex());
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    const auto cleanup = [&] {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device_, pool, nullptr);
+    };
+    try {
+        record_dispatch();
+        VkCommandBuffer cmd = platform_.execution_context().command_buffer();
+        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
+        VkDescriptorPoolCreateInfo pool_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = 1;
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
+                     "could not create GEMM descriptor pool");
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDescriptorSetAllocateInfo set_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        set_info.descriptorPool = pool;
+        set_info.descriptorSetCount = 1;
+        set_info.pSetLayouts = &gemm_descriptor_layout_;
+        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
+                     "could not allocate GEMM descriptor set");
+        const VkDescriptorBufferInfo buffers[] = {
+            {a, a_layout.byte_offset, a_layout.byte_range},
+            {b, b_layout.byte_offset, b_layout.byte_range},
+            {ignored_c, effective_c.byte_offset, effective_c.byte_range},
+            {output, output_layout.byte_offset, output_layout.byte_range},
+            {ignored_bias, effective_bias.byte_offset, effective_bias.byte_range}};
+        VkWriteDescriptorSet writes[5]{};
+        for (uint32_t binding = 0; binding < 5; ++binding) {
+            writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[binding].dstSet = set;
+            writes[binding].dstBinding = binding;
+            writes[binding].descriptorCount = 1;
+            writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[binding].pBufferInfo = &buffers[binding];
+        }
+        vkUpdateDescriptorSets(device_, 5, writes, 0, nullptr);
+        const GemmParams params{m,
+                                n,
+                                k,
+                                static_cast<uint32_t>(a_layout.strides[0]),
+                                static_cast<uint32_t>(b_layout.strides[0]),
+                                static_cast<uint32_t>(effective_c.strides[0]),
+                                static_cast<uint32_t>(output_layout.strides[0]),
+                                1,
+                                1,
+                                alpha,
+                                beta,
+                                has_bias ? 1U : 0U,
+                                {0, 0, 0, 0}};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gemm_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                gemm_pipeline_layout_, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(cmd, gemm_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(params), &params);
+        vkCmdDispatch(cmd, static_cast<uint32_t>(n_groups),
+                      static_cast<uint32_t>(m_groups), 1);
+        platform_.execution_context().retain(pool);
+        pool = VK_NULL_HANDLE;
+        // GEMM is a synchronous primitive even while a training step is active.
+        // Do not use finish_dispatch(), which intentionally leaves training work
+        // recorded for end_training_step().
+        platform_.execution_context().submit();
+        platform_.execution_context().wait();
+        submission_count_.fetch_add(1, std::memory_order_relaxed);
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::exception &error) {
+        if (platform_.execution_context().recording())
+            platform_.execution_context().cancel();
+        cleanup();
+        throw contextual_error("GEMM dispatch failed", error);
+    }
 }
 
 void VulkanCompute::linear_relu_backward_input(

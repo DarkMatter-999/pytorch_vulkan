@@ -8,7 +8,12 @@ import pytorch_vulkan
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
         pytest.skip("no suitable Vulkan device is available")
-    return "vk:0"
+    device = f"{torch._C._get_privateuse1_backend_name()}:0"
+    try:
+        torch.ones(1).to(device)
+    except (NotImplementedError, RuntimeError) as error:
+        pytest.skip(f"Vulkan tensor setup is unavailable: {error}")
+    return device
 
 
 def _linear_inputs(device):
@@ -22,16 +27,18 @@ def _linear_inputs(device):
 
 def test_linear_forward_matches_cpu_and_returns_contiguous_f32(vulkan_backend):
     cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
+    pytorch_vulkan._C.reset_execution_counters()
     result = torch.nn.functional.linear(
         cpu_input.to(vulkan_backend),
         cpu_weight.to(vulkan_backend),
         cpu_bias.to(vulkan_backend),
     )
 
-    assert result.device == torch.device("vk:0")
+    assert result.device == torch.device(vulkan_backend)
     assert result.dtype is torch.float32
     assert result.shape == (2, 16)
     assert result.is_contiguous()
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
     torch.testing.assert_close(
         result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)
     )
@@ -43,7 +50,7 @@ def test_linear_forward_without_bias_matches_cpu(vulkan_backend):
         cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend)
     )
 
-    assert result.device == torch.device("vk:0")
+    assert result.device == torch.device(vulkan_backend)
     assert result.dtype is torch.float32
     assert result.shape == (2, 16)
     assert result.is_contiguous()
@@ -89,7 +96,7 @@ def test_linear_backward_matches_cpu_with_explicit_vulkan_gradient(vulkan_backen
         (vk_weight.grad, cpu_weight.grad),
         (vk_bias.grad, cpu_bias.grad),
     ):
-        assert actual.device == torch.device("vk:0")
+        assert actual.device == torch.device(vulkan_backend)
         assert actual.dtype is torch.float32
         assert actual.is_contiguous()
         torch.testing.assert_close(actual.cpu(), expected)
@@ -129,7 +136,7 @@ def test_linear_backward_is_first_order_only(vulkan_backend):
         create_graph=True,
     )[0]
 
-    assert gradient.device == torch.device("vk:0")
+    assert gradient.device == torch.device(vulkan_backend)
     assert not gradient.requires_grad
 
 
@@ -148,15 +155,16 @@ def test_addmm_forward_and_out_are_reachable(vulkan_backend):
     torch.testing.assert_close(output.cpu(), expected)
 
 
-@pytest.mark.parametrize("keyword", ["alpha", "beta"])
-def test_addmm_out_rejects_non_default_scalars(vulkan_backend, keyword):
-    _, _, bias = _linear_inputs("cpu")
-    mat1 = torch.randn((2, 8), dtype=torch.float32).to(vulkan_backend)
-    mat2 = torch.randn((8, 16), dtype=torch.float32).to(vulkan_backend)
+def test_addmm_out_accepts_non_default_scalars(vulkan_backend):
+    self_cpu = torch.randn((2, 16), dtype=torch.float32)
+    mat1_cpu = torch.randn((2, 8), dtype=torch.float32)
+    mat2_cpu = torch.randn((8, 16), dtype=torch.float32)
+    self, mat1, mat2 = (x.to(vulkan_backend) for x in (self_cpu, mat1_cpu, mat2_cpu))
     output = torch.empty((2, 16), dtype=torch.float32, device=vulkan_backend)
-
-    with pytest.raises(RuntimeError, match=rf"{keyword} == 1"):
-        torch.addmm(bias.to(vulkan_backend), mat1, mat2, out=output, **{keyword: 2})
+    torch.addmm(self, mat1, mat2, beta=0.25, alpha=2.0, out=output)
+    torch.testing.assert_close(
+        output.cpu(), torch.addmm(self_cpu, mat1_cpu, mat2_cpu, beta=0.25, alpha=2.0)
+    )
 
 
 def test_addmm_rejects_arbitrary_non_contiguous_mat2(vulkan_backend):

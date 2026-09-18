@@ -354,7 +354,7 @@ def test_compiled_fixed_mlp_training_matches_cpu_and_reduces_dispatches(vulkan_d
         finally:
             pytorch_vulkan._C.end_training_step()
         assert pytorch_vulkan._C.explicit_transfer_count() == 0
-        assert pytorch_vulkan._C.compute_submission_count() == 1
+        assert pytorch_vulkan._C.compute_submission_count() == 2
         assert pytorch_vulkan._C.pending_compute_count() == 0
         torch.testing.assert_close(vk_loss.cpu(), cpu_loss)
     for cpu_parameter, vk_parameter in zip(

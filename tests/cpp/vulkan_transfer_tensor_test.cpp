@@ -107,7 +107,8 @@ void test_execution_counters_reset_and_read_stably() {
            "CPU-to-Vulkan copy did not increment explicit transfer count");
     auto first = at::neg(input);
     const auto dispatch_after_first = platform->compute_dispatch_count();
-    expect(dispatch_after_first > 0, "unary operation did not increment dispatch count");
+    expect(dispatch_after_first > 0,
+           "unary operation did not increment dispatch count");
 
     auto second = at::neg(input);
     expect(platform->compute_dispatch_count() > dispatch_after_first,
@@ -173,17 +174,22 @@ void test_formatter_presentation_copy_preserves_double_and_rejects_general_readb
     auto result = at::empty({2}, at::TensorOptions().dtype(at::kDouble));
     auto view = at::as_strided(double_tensor, {2}, {1}, 1);
     pytorch_vulkan::formatter_presentation_copy(result, view);
-    expect(result.equal(at::tensor({-2.5, 7.0}, at::TensorOptions().dtype(at::kDouble))),
-           "formatter presentation copy changed Double values");
-    expect_error([&] {
-        auto generic_view_result = at::empty(
-            {2}, at::TensorOptions().dtype(at::kDouble));
-        pytorch_vulkan::copy_tensor(generic_view_result, view, false);
-    }, "readback to CPU is unsupported");
-    expect_error([&] {
-        auto generic = at::empty({3}, at::TensorOptions().dtype(at::kDouble));
-        pytorch_vulkan::copy_tensor(generic, double_tensor, false);
-    }, "readback to CPU is unsupported");
+    expect(
+        result.equal(at::tensor({-2.5, 7.0}, at::TensorOptions().dtype(at::kDouble))),
+        "formatter presentation copy changed Double values");
+    expect_error(
+        [&] {
+            auto generic_view_result =
+                at::empty({2}, at::TensorOptions().dtype(at::kDouble));
+            pytorch_vulkan::copy_tensor(generic_view_result, view, false);
+        },
+        "readback to CPU is unsupported");
+    expect_error(
+        [&] {
+            auto generic = at::empty({3}, at::TensorOptions().dtype(at::kDouble));
+            pytorch_vulkan::copy_tensor(generic, double_tensor, false);
+        },
+        "readback to CPU is unsupported");
     expect(platform->pending_transfer_count() == 0,
            "Double formatter presentation copy left pending resources");
 }
@@ -202,11 +208,11 @@ void test_formatter_presentation_copy_rejects_malformed_sources() {
 
     auto out_of_range = input;
     out_of_range.unsafeGetTensorImpl()->set_storage_offset(3);
-    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(
-        std::vector<int64_t>{2}, std::vector<int64_t>{1});
-    expect_error([&] {
-        pytorch_vulkan::formatter_presentation_copy(result, out_of_range);
-    }, "undersized");
+    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(std::vector<int64_t>{2},
+                                                              std::vector<int64_t>{1});
+    expect_error(
+        [&] { pytorch_vulkan::formatter_presentation_copy(result, out_of_range); },
+        "undersized");
     expect(pytorch_vulkan::platform()->pending_transfer_count() == 0,
            "malformed presentation source left pending resources");
 }
@@ -231,12 +237,16 @@ void test_formatter_double_storage_and_conversion() {
     auto source = at::tensor({1.25F, -2.5F, 0.0F, 7.0F});
     if (!platform->supports_formatter_double()) {
         expect_error(
-            [&] { (void)at::empty({4}, at::TensorOptions().dtype(at::kDouble).device(kDevice)); },
+            [&] {
+                (void)at::empty({4},
+                                at::TensorOptions().dtype(at::kDouble).device(kDevice));
+            },
             "shaderFloat64");
         return;
     }
 
-    auto double_tensor = at::empty({4}, at::TensorOptions().dtype(at::kDouble).device(kDevice));
+    auto double_tensor =
+        at::empty({4}, at::TensorOptions().dtype(at::kDouble).device(kDevice));
     expect(double_tensor.nbytes() == 4 * sizeof(double),
            "Double Vulkan storage does not use native sizeof(double)");
     auto input = at::empty({4}, source.options().device(kDevice));
@@ -252,12 +262,13 @@ void test_compute_range_rejects_before_descriptor_setup() {
     const VkBuffer buffer =
         pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto platform = pytorch_vulkan::platform();
-    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
+    const auto layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
     const std::size_t before = platform->compute_dispatch_count();
     expect_error(
         [&] {
-            platform->compute().linear(buffer, buffer, buffer, buffer,
-                                       layout, layout, layout, layout,
+            platform->compute().linear(buffer, buffer, buffer, buffer, layout, layout,
+                                       layout, layout,
                                        std::numeric_limits<uint32_t>::max(), 1, 1);
         },
         "invalid range");
@@ -270,12 +281,13 @@ void test_linear_output_count_overflow_rejects_before_dispatch() {
     const VkBuffer buffer =
         pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto platform = pytorch_vulkan::platform();
-    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
+    const auto layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
     const std::size_t before = platform->compute_dispatch_count();
     expect_error(
         [&] {
-            platform->compute().linear(buffer, buffer, buffer, buffer,
-                                       layout, layout, layout, layout,
+            platform->compute().linear(buffer, buffer, buffer, buffer, layout, layout,
+                                       layout, layout,
                                        std::numeric_limits<uint32_t>::max(), 1, 2);
         },
         "linear output count overflow");
@@ -318,7 +330,8 @@ void test_pooling_rejects_dimension_product_overflow_before_dispatch() {
     const VkBuffer buffer =
         pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr()).buffer();
     const auto platform = pytorch_vulkan::platform();
-    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
+    const auto layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, "range test");
     const std::size_t before = platform->compute_dispatch_count();
     expect_error(
         [&] {
@@ -381,8 +394,8 @@ void test_strided_copy_reads_and_writes_logical_indices() {
                       .reshape({3, 4})
                       .transpose(0, 1)
                       .narrow(1, 1, 2);
-    auto destination = at::empty_strided({4, 2}, {1, 4},
-                                         source.options().device(kDevice));
+    auto destination =
+        at::empty_strided({4, 2}, {1, 4}, source.options().device(kDevice));
     pytorch_vulkan::copy_tensor(destination, source, false);
     auto result = at::empty({4, 2}, source.options());
     pytorch_vulkan::copy_tensor(result, destination, false);
@@ -391,7 +404,8 @@ void test_strided_copy_reads_and_writes_logical_indices() {
 
 void test_strided_copy_rejects_unsafe_overlap() {
     auto source = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
-    auto destination = at::empty_strided({2, 2}, {0, 1}, source.options().device(kDevice));
+    auto destination =
+        at::empty_strided({2, 2}, {0, 1}, source.options().device(kDevice));
     const auto platform = pytorch_vulkan::platform();
     const std::size_t before = platform->compute_dispatch_count();
     expect_error([&] { pytorch_vulkan::copy_tensor(destination, source, false); },
@@ -402,8 +416,9 @@ void test_strided_copy_rejects_unsafe_overlap() {
     auto storage = at::empty({5}, source.options().device(kDevice));
     auto source_view = at::as_strided(storage, {3}, {1}, 0);
     auto destination_view = at::as_strided(storage, {3}, {1}, 1);
-    expect_error([&] { pytorch_vulkan::copy_tensor(destination_view, source_view, false); },
-                 "partially overlap");
+    expect_error(
+        [&] { pytorch_vulkan::copy_tensor(destination_view, source_view, false); },
+        "partially overlap");
 }
 
 void test_identical_vulkan_copy_is_a_noop() {
@@ -416,10 +431,10 @@ void test_identical_vulkan_copy_is_a_noop() {
 }
 
 void test_strided_copy_zero_elements_is_noop() {
-    auto source = at::empty_strided({0, 3}, {3, 1},
-                                    at::TensorOptions().dtype(at::kFloat));
-    auto destination = at::empty_strided({0, 3}, {1, 1},
-                                         source.options().device(kDevice));
+    auto source =
+        at::empty_strided({0, 3}, {3, 1}, at::TensorOptions().dtype(at::kFloat));
+    auto destination =
+        at::empty_strided({0, 3}, {1, 1}, source.options().device(kDevice));
     pytorch_vulkan::copy_tensor(destination, source, false);
     expect(destination.numel() == 0, "strided zero-element copy changed size");
 }
@@ -519,9 +534,11 @@ void test_vulkan_layout_inspection() {
 }
 
 void test_vulkan_layout_descriptor_and_index_mapping() {
-    auto tensor = at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto tensor =
+        at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
     const auto transposed = at::as_strided(tensor, {3, 2}, {1, 3}, 0);
-    const auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(transposed, "descriptor test");
+    const auto layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(transposed, "descriptor test");
     expect(layout.rank == 2 && layout.sizes == std::vector<int64_t>({3, 2}) &&
                layout.strides == std::vector<int64_t>({1, 3}) &&
                layout.element_bytes == sizeof(float) &&
@@ -543,7 +560,7 @@ void test_vulkan_layout_descriptor_and_index_mapping() {
     expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {3, 0}); },
                  "coordinate");
     expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, 6); },
-                  "linear index");
+                 "linear index");
 
     auto overlapping = at::empty_strided({3, 3}, {2, 4}, tensor.options());
     const auto overlapping_layout =
@@ -553,7 +570,8 @@ void test_vulkan_layout_descriptor_and_index_mapping() {
 }
 
 void test_empty_reductions_stay_on_vulkan() {
-    auto input = at::empty({0, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto input =
+        at::empty({0, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
     auto sum = pytorch_vulkan::sum_tensor(input, 0, false, c10::nullopt);
     auto mean = pytorch_vulkan::mean_tensor(input, 0, false, c10::nullopt);
     expect(sum.device() == kDevice && mean.device() == kDevice,
@@ -571,14 +589,17 @@ void test_empty_reductions_validate_input_layout() {
     auto input = at::empty({0}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
     auto foreign = input;
     foreign.storage().set_data_ptr(at::DataPtr(nullptr, nullptr, nullptr, kDevice));
-    expect_error([&] { (void)pytorch_vulkan::sum_tensor(foreign, 0, false, c10::nullopt); }, "");
+    expect_error(
+        [&] { (void)pytorch_vulkan::sum_tensor(foreign, 0, false, c10::nullopt); }, "");
 
     auto out_of_range = input;
     out_of_range.unsafeGetTensorImpl()->set_storage_offset(1);
-    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(
-        std::vector<int64_t>{0}, std::vector<int64_t>{1});
+    out_of_range.unsafeGetTensorImpl()->set_sizes_and_strides(std::vector<int64_t>{0},
+                                                              std::vector<int64_t>{1});
     expect_error(
-        [&] { (void)pytorch_vulkan::mean_tensor(out_of_range, 0, false, c10::nullopt); },
+        [&] {
+            (void)pytorch_vulkan::mean_tensor(out_of_range, 0, false, c10::nullopt);
+        },
         "");
 }
 
@@ -595,9 +616,8 @@ void test_vulkan_layout_address_rejects_storage_offset_overflow() {
         2,
         std::numeric_limits<VkDeviceSize>::max(),
         pytorch_vulkan::VulkanOverlap::No};
-    expect_error(
-        [&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {1}); },
-        "address exceeds int64 range");
+    expect_error([&] { (void)pytorch_vulkan::vulkan_storage_offset(layout, {1}); },
+                 "address exceeds int64 range");
 }
 
 void test_vulkan_layout_rejects_shader_address_overflow() {
@@ -606,15 +626,16 @@ void test_vulkan_layout_rejects_shader_address_overflow() {
 
     expect_error(
         [&] {
-            (void)pytorch_vulkan::inspect_vulkan_view_layout(
-                input, {2}, {max_uint32}, 1, "shader address");
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(input, {2}, {max_uint32},
+                                                             1, "shader address");
         },
         "shader address");
     expect_error(
         [&] {
             (void)pytorch_vulkan::inspect_vulkan_view_layout(
-                input, {2, 2}, {static_cast<int64_t>(uint32_t{0x80000000}),
-                                static_cast<int64_t>(uint32_t{0x80000000})},
+                input, {2, 2},
+                {static_cast<int64_t>(uint32_t{0x80000000}),
+                 static_cast<int64_t>(uint32_t{0x80000000})},
                 0, "shader address");
         },
         "shader address");
@@ -622,14 +643,15 @@ void test_vulkan_layout_rejects_shader_address_overflow() {
 
 void test_empty_vulkan_view_checks_allocation_boundary() {
     auto input = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
-    const auto valid = pytorch_vulkan::inspect_vulkan_view_layout(
-        input, {0}, {1}, 4, "empty boundary");
-    expect(valid.numel == 0 && valid.byte_range == 0 && valid.byte_offset == valid.allocation_bytes,
+    const auto valid = pytorch_vulkan::inspect_vulkan_view_layout(input, {0}, {1}, 4,
+                                                                  "empty boundary");
+    expect(valid.numel == 0 && valid.byte_range == 0 &&
+               valid.byte_offset == valid.allocation_bytes,
            "empty Vulkan view at allocation boundary was rejected");
     expect_error(
         [&] {
-            (void)pytorch_vulkan::inspect_vulkan_view_layout(
-                input, {0}, {1}, 5, "empty boundary");
+            (void)pytorch_vulkan::inspect_vulkan_view_layout(input, {0}, {1}, 5,
+                                                             "empty boundary");
         },
         "empty boundary");
 }
@@ -639,7 +661,8 @@ void test_empty_vulkan_view_does_not_use_shader_address_limit() {
     expect_error(
         [&] {
             (void)pytorch_vulkan::inspect_vulkan_view_layout(
-                input, {0}, {1}, static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1,
+                input, {0}, {1},
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1,
                 "empty address");
         },
         "outside its Vulkan allocation");
@@ -831,7 +854,8 @@ void test_formatter_comparison_dispatch_is_counted() {
 void test_scalar_pointwise_offset_is_supported() {
     auto source = at::tensor({2.0F, 3.0F, 4.0F, 5.0F});
     auto base = at::empty({5}, source.options().device(kDevice));
-    pytorch_vulkan::copy_tensor(base, at::tensor({0.0F, 2.0F, 3.0F, 4.0F, 5.0F}), false);
+    pytorch_vulkan::copy_tensor(base, at::tensor({0.0F, 2.0F, 3.0F, 4.0F, 5.0F}),
+                                false);
     auto offset = base;
     const std::vector<int64_t> sizes{4};
     const std::vector<int64_t> strides{1};
@@ -840,10 +864,12 @@ void test_scalar_pointwise_offset_is_supported() {
     expect(offset.is_contiguous() && offset.storage_offset() != 0,
            "scalar offset test tensor is not a contiguous offset view");
 
-    for (const auto &[result, expected] : std::vector<std::pair<at::Tensor, at::Tensor>>{
+    for (const auto &[result, expected] :
+         std::vector<std::pair<at::Tensor, at::Tensor>>{
              {at::add(offset, at::Scalar(1.0F)), at::tensor({3.0F, 4.0F, 5.0F, 6.0F})},
              {at::sub(offset, at::Scalar(1.0F)), at::tensor({1.0F, 2.0F, 3.0F, 4.0F})},
-             {at::mul(offset, at::Scalar(2.0F)), at::tensor({4.0F, 6.0F, 8.0F, 10.0F})}}) {
+             {at::mul(offset, at::Scalar(2.0F)),
+              at::tensor({4.0F, 6.0F, 8.0F, 10.0F})}}) {
         auto cpu_result = at::empty_like(expected);
         pytorch_vulkan::copy_tensor(cpu_result, result, false);
         expect(cpu_result.equal(expected), "scalar offset pointwise changed values");
@@ -889,9 +915,11 @@ void test_concurrent_add_dispatches_are_serialized() {
 
 void test_add_invalid_input_cleans_up() {
     const std::vector<int64_t> rank_nine(9, 1);
-    auto lhs = at::empty(rank_nine, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto lhs =
+        at::empty(rank_nine, at::TensorOptions().dtype(at::kFloat).device(kDevice));
     auto rhs = at::empty_like(lhs);
-    expect_error([&] { (void)pytorch_vulkan::add_tensor(lhs, rhs, 1.0F); }, "ranks up to 8");
+    expect_error([&] { (void)pytorch_vulkan::add_tensor(lhs, rhs, 1.0F); },
+                 "ranks up to 8");
     expect(pytorch_vulkan::platform()->pending_transfer_count() == 0,
            "invalid Vulkan add left pending transfer resources");
 }
@@ -919,7 +947,8 @@ void test_repeated_unary_dispatch_and_input_readability() {
 void test_unary_nonzero_storage_offset_is_supported() {
     auto source = at::tensor({2.0F, 3.0F, 4.0F, 5.0F});
     auto base = at::empty({5}, source.options().device(kDevice));
-    pytorch_vulkan::copy_tensor(base, at::tensor({0.0F, 2.0F, 3.0F, 4.0F, 5.0F}), false);
+    pytorch_vulkan::copy_tensor(base, at::tensor({0.0F, 2.0F, 3.0F, 4.0F, 5.0F}),
+                                false);
     auto offset = base;
     const std::vector<int64_t> sizes{4};
     const std::vector<int64_t> strides{1};
@@ -998,8 +1027,8 @@ void test_shared_out_rejects_offset_and_noncontiguous_output() {
     const std::vector<int64_t> offset_sizes{3};
     const std::vector<int64_t> offset_strides{1};
     offset.unsafeGetTensorImpl()->set_sizes_and_strides(offset_sizes, offset_strides);
-    pytorch_vulkan::dispatch_unary_out(
-        input, offset, pytorch_vulkan::PointwiseOperation::Neg, "neg");
+    pytorch_vulkan::dispatch_unary_out(input, offset,
+                                       pytorch_vulkan::PointwiseOperation::Neg, "neg");
 
     auto noncontiguous =
         at::empty_strided({3, 2}, {1, 3}, source.options().device(kDevice));
@@ -1183,36 +1212,47 @@ void test_platform_destruction_is_nothrow() {
 }
 
 void test_reduction_indexing_reject_malformed_metadata() {
-    auto input = at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto input =
+        at::empty({2, 3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
     auto output = at::empty({2, 1}, input.options());
-    const auto input_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, "test input");
-    const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, "test output");
-    auto input_buffer = pytorch_vulkan::allocation_buffer(input.storage().data_ptr()).buffer();
-    auto output_buffer = pytorch_vulkan::allocation_buffer(output.storage().data_ptr()).buffer();
+    const auto input_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(input, "test input");
+    const auto output_layout =
+        pytorch_vulkan::inspect_vulkan_tensor_layout(output, "test output");
+    auto input_buffer =
+        pytorch_vulkan::allocation_buffer(input.storage().data_ptr()).buffer();
+    auto output_buffer =
+        pytorch_vulkan::allocation_buffer(output.storage().data_ptr()).buffer();
     auto platform = pytorch_vulkan::platform();
 
     auto missing_sizes = input_layout;
     missing_sizes.sizes.pop_back();
-    expect_error([&] {
-        platform->compute().reduction(input_buffer, missing_sizes, output_buffer, output_layout,
-                                      2U, 3U, 2U, false);
-    }, "metadata lengths");
+    expect_error(
+        [&] {
+            platform->compute().reduction(input_buffer, missing_sizes, output_buffer,
+                                          output_layout, 2U, 3U, 2U, false);
+        },
+        "metadata lengths");
 
     auto rank_nine = input_layout;
     rank_nine.rank = 9;
     rank_nine.sizes.resize(9, 1);
     rank_nine.strides.resize(9, 1);
-    expect_error([&] {
-        platform->compute().argmax(input_buffer, rank_nine, output_buffer, output_layout,
-                                   0U, 1U, 1U);
-    }, "ranks up to 8");
+    expect_error(
+        [&] {
+            platform->compute().argmax(input_buffer, rank_nine, output_buffer,
+                                       output_layout, 0U, 1U, 1U);
+        },
+        "ranks up to 8");
 
     auto missing_output = output_layout;
     missing_output.strides.pop_back();
-    expect_error([&] {
-        platform->compute().broadcast(input_buffer, input_layout, output_buffer, missing_output,
-                                      2U, 1.0F);
-    }, "output metadata lengths");
+    expect_error(
+        [&] {
+            platform->compute().broadcast(input_buffer, input_layout, output_buffer,
+                                          missing_output, 2U, 1.0F);
+        },
+        "output metadata lengths");
 }
 
 } // namespace

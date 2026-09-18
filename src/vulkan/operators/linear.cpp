@@ -11,10 +11,12 @@
 #include "vulkan_platform.h"
 
 #include <ATen/ops/linear.h>
+#include <ATen/ops/mm.h>
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
 #include <torch/library.h>
 
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -30,6 +32,15 @@ VkDeviceSize checked_bytes(const at::Tensor &tensor, const char *name) {
                     bytes <= std::numeric_limits<VkDeviceSize>::max(),
                 "Vulkan ", name, " byte count exceeds supported size");
     return static_cast<VkDeviceSize>(bytes);
+}
+
+float checked_scalar(const at::Scalar &scalar, const char *name) {
+    TORCH_CHECK(!scalar.isComplex(), "Vulkan ", name, " requires a real scalar");
+    const double value = scalar.toDouble();
+    const float result = static_cast<float>(value);
+    TORCH_CHECK(std::isfinite(value) && std::isfinite(result), "Vulkan ", name,
+                " must be finite and representable as float32");
+    return result;
 }
 
 bool layouts_overlap(const at::Tensor &lhs, const VulkanTensorLayout &lhs_layout,
@@ -124,7 +135,86 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
 
 at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
                   const c10::optional<at::Tensor> &bias) {
+    if (!is_fake_tensor(input) && input.layout() == at::kStrided &&
+        weight.layout() == at::kStrided && input.scalar_type() == at::kFloat &&
+        weight.scalar_type() == at::kFloat && input.dim() == 2 && weight.dim() == 2 &&
+        input.is_contiguous() && weight.is_contiguous() &&
+        input.device() == weight.device() && input.device().index() == 0 &&
+        (!bias.has_value() ||
+         (bias->layout() == at::kStrided && bias->scalar_type() == at::kFloat &&
+          bias->dim() == 1 && bias->is_contiguous() &&
+          bias->size(0) == weight.size(0) && bias->device() == input.device()))) {
+        const int64_t m = input.size(0);
+        const int64_t k = input.size(1);
+        const int64_t n = weight.size(0);
+        if (weight.size(1) == k && m > 0 && n > 0 && k > 0) {
+            at::Tensor output = at::empty({m, n}, input.options());
+            at::Tensor b = bias.has_value() ? *bias : at::empty({1}, input.options());
+            at::Tensor b_matrix = weight.t().contiguous();
+            const auto a_layout = validate_gemm_2d(input, {m, k}, "linear input");
+            const auto b_layout = validate_gemm_2d(b_matrix, {k, n}, "linear weight");
+            const auto c_layout = validate_gemm_2d(output, {m, n}, "linear output");
+            const auto bias_layout =
+                bias.has_value()
+                    ? inspect_vulkan_tensor_layout(b, "linear bias")
+                    : inspect_vulkan_tensor_layout(b, "linear ignored bias");
+            const auto &platform = allocation_platform(input.storage().data_ptr());
+            validate_allocation(b.storage().data_ptr(), bias_layout.byte_range,
+                                "linear bias");
+            validate_allocation(b_matrix.storage().data_ptr(), b_layout.byte_range,
+                                "linear weight");
+            validate_allocation(output.storage().data_ptr(), c_layout.byte_range,
+                                "linear output");
+            TORCH_CHECK(
+                &platform == &allocation_platform(b_matrix.storage().data_ptr()) &&
+                    &platform == &allocation_platform(b.storage().data_ptr()) &&
+                    &platform == &allocation_platform(output.storage().data_ptr()),
+                "Vulkan linear requires one Vulkan platform");
+            TORCH_CHECK(!layouts_overlap(input, a_layout, output, c_layout) &&
+                            !layouts_overlap(b_matrix, b_layout, output, c_layout) &&
+                            !layouts_overlap(b, bias_layout, output, c_layout),
+                        "Vulkan linear output may not alias a GEMM input");
+            platform.compute().gemm(
+                allocation_buffer(input.storage().data_ptr()).buffer(), a_layout,
+                allocation_buffer(b_matrix.storage().data_ptr()).buffer(), b_layout,
+                VK_NULL_HANDLE, c_layout,
+                allocation_buffer(output.storage().data_ptr()).buffer(), c_layout,
+                bias.has_value() ? allocation_buffer(b.storage().data_ptr()).buffer()
+                                 : VK_NULL_HANDLE,
+                bias.has_value() ? bias_layout : c_layout, static_cast<uint32_t>(m),
+                static_cast<uint32_t>(n), static_cast<uint32_t>(k), 1.0F, 0.0F,
+                bias.has_value());
+            return output;
+        }
+    }
     return lower_linear(input, weight, bias);
+}
+
+at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
+    if (is_fake_tensor(mat1))
+        return at::_ops::mm::redispatch(c10::DispatchKeySet(c10::DispatchKey::Meta),
+                                        mat1, mat2);
+    TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2 && mat1.size(1) == mat2.size(0),
+                "Vulkan mm requires matching 2-D matrices");
+    const int64_t m = mat1.size(0), k = mat1.size(1), n = mat2.size(1);
+    at::Tensor output = at::empty({m, n}, mat1.options());
+    const auto a_layout = validate_gemm_2d(mat1, {m, k}, "mm mat1");
+    const auto b_layout = validate_gemm_2d(mat2, {k, n}, "mm mat2");
+    const auto out_layout = validate_gemm_2d(output, {m, n}, "mm output");
+    const auto &platform = allocation_platform(mat1.storage().data_ptr());
+    TORCH_CHECK(&platform == &allocation_platform(mat2.storage().data_ptr()) &&
+                    &platform == &allocation_platform(output.storage().data_ptr()),
+                "Vulkan mm requires one Vulkan platform");
+    TORCH_CHECK(!layouts_overlap(mat1, a_layout, output, out_layout) &&
+                    !layouts_overlap(mat2, b_layout, output, out_layout),
+                "Vulkan mm output may not alias an input");
+    platform.compute().gemm(
+        allocation_buffer(mat1.storage().data_ptr()).buffer(), a_layout,
+        allocation_buffer(mat2.storage().data_ptr()).buffer(), b_layout, VK_NULL_HANDLE,
+        out_layout, allocation_buffer(output.storage().data_ptr()).buffer(), out_layout,
+        VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(m), static_cast<uint32_t>(n),
+        static_cast<uint32_t>(k));
+    return output;
 }
 
 at::Tensor linear_relu(const at::Tensor &input, const at::Tensor &weight,
@@ -359,8 +449,41 @@ linear_relu_backward(const at::Tensor &grad_output, const at::Tensor &input,
 
 at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tensor &mat2,
                  const at::Scalar &beta, const at::Scalar &alpha) {
-    TORCH_CHECK(beta.toDouble() == 1.0 && alpha.toDouble() == 1.0,
-                "Vulkan addmm supports only beta == 1 and alpha == 1");
+    if (!is_fake_tensor(mat1) && self.dim() == 2 && mat1.dim() == 2 &&
+        mat2.dim() == 2 && self.size(0) == mat1.size(0) &&
+        self.size(1) == mat2.size(1) && mat1.size(1) == mat2.size(0) &&
+        self.is_contiguous() && mat1.is_contiguous() && mat2.is_contiguous() &&
+        self.scalar_type() == at::kFloat && mat1.scalar_type() == at::kFloat &&
+        mat2.scalar_type() == at::kFloat) {
+        const int64_t m = mat1.size(0), n = mat2.size(1), k = mat1.size(1);
+        at::Tensor output = at::empty({m, n}, self.options());
+        const auto a_layout = validate_gemm_2d(mat1, {m, k}, "addmm mat1");
+        const auto b_layout = validate_gemm_2d(mat2, {k, n}, "addmm mat2");
+        const auto c_layout = validate_gemm_2d(self, {m, n}, "addmm self");
+        const auto out_layout = validate_gemm_2d(output, {m, n}, "addmm output");
+        const auto &platform = allocation_platform(mat1.storage().data_ptr());
+        TORCH_CHECK(&platform == &allocation_platform(mat2.storage().data_ptr()) &&
+                        &platform == &allocation_platform(self.storage().data_ptr()) &&
+                        &platform == &allocation_platform(output.storage().data_ptr()),
+                    "Vulkan addmm requires one Vulkan platform");
+        TORCH_CHECK(!layouts_overlap(output, out_layout, mat1, a_layout) &&
+                        !layouts_overlap(output, out_layout, mat2, b_layout) &&
+                        !layouts_overlap(output, out_layout, self, c_layout),
+                    "Vulkan addmm output may not alias an input");
+        platform.compute().gemm(
+            allocation_buffer(mat1.storage().data_ptr()).buffer(), a_layout,
+            allocation_buffer(mat2.storage().data_ptr()).buffer(), b_layout,
+            allocation_buffer(self.storage().data_ptr()).buffer(), c_layout,
+            allocation_buffer(output.storage().data_ptr()).buffer(), out_layout,
+            VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(m),
+            static_cast<uint32_t>(n), static_cast<uint32_t>(k),
+            checked_scalar(alpha, "addmm alpha"), checked_scalar(beta, "addmm beta"),
+            false);
+        return output;
+    }
+    TORCH_CHECK(
+        beta.toDouble() == 1.0 && alpha.toDouble() == 1.0,
+        "Vulkan addmm supports non-default scalars only for contiguous 2-D self");
     TORCH_CHECK(self.dim() == 1 && mat1.dim() == 2 && mat2.dim() == 2 &&
                     mat1.size(1) == mat2.size(0) && self.size(0) == mat2.size(1),
                 "Vulkan addmm supports a 1-D bias and matching 2-D matrices");
@@ -370,14 +493,48 @@ at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tenso
 at::Tensor &addmm_out(const at::Tensor &self, const at::Tensor &mat1,
                       const at::Tensor &mat2, const at::Scalar &beta,
                       const at::Scalar &alpha, at::Tensor &out) {
-    TORCH_CHECK(beta.toDouble() == 1.0 && alpha.toDouble() == 1.0,
-                "Vulkan addmm supports only beta == 1 and alpha == 1");
+    if (self.dim() == 2 && mat1.dim() == 2 && mat2.dim() == 2 && out.dim() == 2 &&
+        self.sizes().equals({mat1.size(0), mat2.size(1)}) &&
+        mat1.size(1) == mat2.size(0) && out.sizes().equals(self.sizes()) &&
+        self.is_contiguous() && mat1.is_contiguous() && mat2.is_contiguous() &&
+        out.is_contiguous() && self.scalar_type() == at::kFloat &&
+        mat1.scalar_type() == at::kFloat && mat2.scalar_type() == at::kFloat &&
+        out.scalar_type() == at::kFloat) {
+        const int64_t m = mat1.size(0), n = mat2.size(1), k = mat1.size(1);
+        const auto a_layout = validate_gemm_2d(mat1, {m, k}, "addmm.out mat1");
+        const auto b_layout = validate_gemm_2d(mat2, {k, n}, "addmm.out mat2");
+        const auto c_layout = validate_gemm_2d(self, {m, n}, "addmm.out self");
+        const auto out_layout = validate_gemm_2d(out, {m, n}, "addmm.out output");
+        const auto &platform = allocation_platform(mat1.storage().data_ptr());
+        TORCH_CHECK(&platform == &allocation_platform(mat2.storage().data_ptr()) &&
+                        &platform == &allocation_platform(self.storage().data_ptr()) &&
+                        &platform == &allocation_platform(out.storage().data_ptr()),
+                    "Vulkan addmm.out requires one Vulkan platform");
+        TORCH_CHECK(!layouts_overlap(out, out_layout, mat1, a_layout) &&
+                        !layouts_overlap(out, out_layout, mat2, b_layout) &&
+                        !layouts_overlap(out, out_layout, self, c_layout),
+                    "Vulkan addmm.out output may not alias an input");
+        platform.compute().gemm(
+            allocation_buffer(mat1.storage().data_ptr()).buffer(), a_layout,
+            allocation_buffer(mat2.storage().data_ptr()).buffer(), b_layout,
+            allocation_buffer(self.storage().data_ptr()).buffer(), c_layout,
+            allocation_buffer(out.storage().data_ptr()).buffer(), out_layout,
+            VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(m),
+            static_cast<uint32_t>(n), static_cast<uint32_t>(k),
+            checked_scalar(alpha, "addmm.out alpha"),
+            checked_scalar(beta, "addmm.out beta"), false);
+        return out;
+    }
+    TORCH_CHECK(
+        beta.toDouble() == 1.0 && alpha.toDouble() == 1.0,
+        "Vulkan addmm.out supports non-default scalars only for the allocating form");
     lower_linear(mat1, mat2, self, true, &out);
     return out;
 }
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+    m.impl("mm", &pytorch_vulkan::mm);
     m.impl("linear", &pytorch_vulkan::linear);
     m.impl("addmm", &pytorch_vulkan::addmm);
     m.impl("addmm.out", &pytorch_vulkan::addmm_out);

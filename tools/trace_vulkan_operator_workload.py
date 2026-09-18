@@ -53,19 +53,57 @@ def _linear_relu_training():
     ]
 
 
+def _gemm_forward():
+    import torch
+
+    torch.manual_seed(1)
+    left = torch.randn(2, 4, dtype=torch.float32)
+    right = torch.randn(4, 3, dtype=torch.float32)
+    value = torch.randn(2, 3, dtype=torch.float32)
+    weight = torch.randn(3, 4, dtype=torch.float32)
+    bias = torch.randn(3, dtype=torch.float32)
+    mm = torch.mm(left, right)
+    addmm = torch.addmm(value, left, right)
+    linear = torch.nn.functional.linear(left, weight, bias)
+
+    def operator(schema, inputs, output):
+        return {
+            "schema": schema,
+            "overload": "default",
+            "frontend": "vulkan_gemm",
+            "inputs": [_tensor_metadata(item) for item in inputs],
+            "outputs": [_tensor_metadata(output)],
+            "backward": [],
+        }
+
+    return [
+        operator("aten::mm", (left, right), mm),
+        operator("aten::addmm", (value, left, right), addmm),
+        operator("aten::linear", (left, weight, bias), linear),
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workload", required=True)
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
 
-    if arguments.workload != "linear_relu_training":
+    if arguments.workload not in {"linear_relu_training", "gemm_forward"}:
         parser.error(f"unsupported workload: {arguments.workload}")
 
+    operators = (
+        _linear_relu_training()
+        if arguments.workload == "linear_relu_training"
+        else _gemm_forward()
+    )
     trace = {
         "workload": arguments.workload,
-        "operators": _linear_relu_training(),
+        "operators": operators,
     }
+    if arguments.workload == "gemm_forward":
+        trace["frontend"] = "vulkan_gemm"
+        trace["cpu_fallback"] = False
     arguments.output.write_text(json.dumps(trace, indent=2) + "\n")
 
 

@@ -1,0 +1,73 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer A { float values[]; } a;
+layout(set = 0, binding = 1, std430) readonly buffer B { float values[]; } b;
+layout(set = 0, binding = 2, std430) readonly buffer C { float values[]; } c;
+layout(set = 0, binding = 3, std430) writeonly buffer D { float values[]; } d;
+layout(set = 0, binding = 4, std430) readonly buffer Bias { float values[]; } bias;
+
+layout(push_constant, std430) uniform Params {
+  /* offset 0 */ uint M;
+  /* offset 4 */ uint N;
+  /* offset 8 */ uint K;
+  /* offset 12 */ uint stride_a;
+  /* offset 16 */ uint stride_b;
+  /* offset 20 */ uint stride_c;
+  /* offset 24 */ uint stride_d;
+  /* offset 28 */ uint stride_bias;
+  /* offset 32 */ uint matrix_stride;
+  /* offset 36 */ float alpha;
+  /* offset 40 */ float beta;
+  /* offset 44 */ uint has_bias;
+  /* offset 48 */ uint reserved0;
+  /* offset 52 */ uint reserved1;
+  /* offset 56 */ uint reserved2;
+  /* offset 60 */ uint reserved3;
+} params;
+
+shared float tile_a[16][16];
+shared float tile_b[16][16];
+
+void main() {
+  uint row = gl_WorkGroupID.y * 16u + gl_LocalInvocationID.y;
+  uint col = gl_WorkGroupID.x * 16u + gl_LocalInvocationID.x;
+  float accumulator = 0.0;
+  uint tile_count = (params.K + 15u) / 16u;
+
+  for (uint tile = 0u; tile < tile_count; ++tile) {
+    uint a_col = tile * 16u + gl_LocalInvocationID.x;
+    uint b_row = tile * 16u + gl_LocalInvocationID.y;
+    if (row < params.M && a_col < params.K)
+      tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
+          a.values[row * params.stride_a + a_col * params.matrix_stride];
+    else
+      tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
+    if (b_row < params.K && col < params.N)
+      tile_b[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
+          b.values[b_row * params.stride_b + col * params.matrix_stride];
+    else
+      tile_b[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
+    barrier();
+
+    for (uint k = 0u; k < 16u; ++k) {
+      uint k_index = tile * 16u + k;
+      if (k_index >= params.K)
+        break;
+      accumulator += tile_a[gl_LocalInvocationID.y][k] * tile_b[k][gl_LocalInvocationID.x];
+    }
+    barrier();
+  }
+
+  if (row < params.M && col < params.N) {
+    float value = 0.0;
+    if (params.alpha != 0.0)
+      value += params.alpha * accumulator;
+    if (params.beta != 0.0)
+      value += params.beta * c.values[row * params.stride_c + col * params.matrix_stride];
+    if (params.has_bias != 0u)
+      value += bias.values[col * params.stride_bias];
+    d.values[row * params.stride_d + col * params.matrix_stride] = value;
+  }
+}

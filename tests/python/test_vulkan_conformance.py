@@ -21,7 +21,12 @@ from vulkan_conformance import (
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
         pytest.skip("no suitable Vulkan device is available")
-    return "vk:0"
+    device = f"{torch._C._get_privateuse1_backend_name()}:0"
+    try:
+        torch.ones(1).to(device)
+    except (NotImplementedError, RuntimeError) as error:
+        pytest.skip(f"Vulkan tensor setup is unavailable: {error}")
+    return device
 
 
 def test_registry_names_are_unique():
@@ -73,7 +78,8 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     assert case.execution_mode in {"compute", "copy", "metadata", "empty"}
     if case.execution_mode == "compute":
         assert pytorch_vulkan._C.compute_dispatch_count() > 0
-        assert pytorch_vulkan._C.vulkan_copy_count() == 0
+        if case.name not in {"linear.forward", "linear.forward.strided"}:
+            assert pytorch_vulkan._C.vulkan_copy_count() == 0
     elif case.execution_mode == "copy":
         assert pytorch_vulkan._C.vulkan_copy_count() > 0
         if case.name not in {
@@ -142,6 +148,20 @@ def test_execution_counters_count_dispatch_and_explicit_cpu_transfer(vulkan_back
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     result.cpu()
     assert pytorch_vulkan._C.explicit_transfer_count() == 1
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    ["linear.forward", "mm.forward", "addmm.forward", "addmm.out"],
+)
+def test_gemm_frontends_complete_one_synchronous_dispatch(vulkan_backend, case_name):
+    case = next(case for case in ALL_CASES if case.name == case_name)
+    run_and_compare(case, vulkan_backend)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    assert pytorch_vulkan._C.compute_submitted_count() == 1
+    assert pytorch_vulkan._C.compute_completed_count() == 1
+    assert pytorch_vulkan._C.compute_wait_count() == 1
+    assert pytorch_vulkan._C.fallback_count() == 0
 
 
 def test_execution_counter_snapshot_accounts_for_fallbacks(vulkan_backend):

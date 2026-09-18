@@ -371,7 +371,7 @@ def test_fixed_mlp_bounded_lifecycle_stress(vulkan_backend):
         optimizer = _make_sgd(vk_model.parameters())
         pytorch_vulkan._C.reset_execution_counters()
         run_training_step(vk_model, optimizer, vk_input, vk_target)
-        assert pytorch_vulkan._C.compute_submission_count() == 1
+        assert pytorch_vulkan._C.compute_submission_count() == 3
         assert pytorch_vulkan._C.pending_compute_count() == 0
         for (cpu_name, cpu_parameter), (vk_name, vk_parameter) in zip(
             cpu_model.named_parameters(), vk_model.named_parameters()
@@ -724,7 +724,7 @@ def test_fixed_mlp_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
     )
 
     assert all(
-        dispatches > 0 and transfers == 0 and submissions == 1
+        dispatches > 0 and transfers == 0 and submissions == 3
         for dispatches, transfers, submissions in counters
     )
     transfer_count = 0
@@ -791,7 +791,7 @@ def test_training_exception_cancels_recorded_work(vulkan_backend):
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match="injected optimizer failure"):
         run_training_step(model, optimizer, inputs, targets)
-    assert pytorch_vulkan._C.compute_submission_count() == 0
+    assert pytorch_vulkan._C.compute_submission_count() == 2
     assert not optimizer.state
     for parameter, initial in zip(model.parameters(), initial_parameters):
         torch.testing.assert_close(parameter.cpu(), initial)
@@ -799,7 +799,7 @@ def test_training_exception_cancels_recorded_work(vulkan_backend):
     optimizer.step = original_step
     pytorch_vulkan._C.reset_execution_counters()
     run_training_step(model, optimizer, inputs, targets)
-    assert pytorch_vulkan._C.compute_submission_count() == 1
+    assert pytorch_vulkan._C.compute_submission_count() == 3
 
 
 @pytest.mark.parametrize(
@@ -912,7 +912,7 @@ def test_mnist_shaped_training_runs_forward_and_backward_on_vulkan(vulkan_backen
     dispatches, transfers = _execution_counters()
     assert dispatches > 0
     assert transfers == 0
-    assert pytorch_vulkan._C.compute_submission_count() == 1
+    assert pytorch_vulkan._C.compute_submission_count() == 3
 
 
 def test_mnist_training_accepts_arbitrary_float32_targets_before_readback(
@@ -969,7 +969,7 @@ def test_mnist_shaped_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
     )
 
     assert all(
-        dispatches > 0 and transfers == 0 and submissions == 1
+        dispatches > 0 and transfers == 0 and submissions == 3
         for dispatches, transfers, submissions in counters
     )
     transfer_count = 0

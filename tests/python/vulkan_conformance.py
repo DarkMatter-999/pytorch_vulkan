@@ -31,6 +31,9 @@ DECLARED_OPERATION_MANIFEST = frozenset(
         "aten::_softmax_backward_data.out",
         "aten::_log_softmax_backward_data.out",
         "aten::linear.default",
+        "aten::mm.default",
+        "aten::addmm.default",
+        "aten::addmm.out",
         "aten::convolution.default",
         "aten::convolution_backward.default",
         "aten::_adaptive_avg_pool2d.default",
@@ -184,8 +187,6 @@ ROADMAP_OPERATION_FAMILIES = {
         {
             "aten::addcdiv.out",
             "aten::addcmul.out",
-            "aten::addmm.default",
-            "aten::addmm.out",
             "aten::bmm.out",
             "aten::dot.default",
             "aten::mm.out",
@@ -391,7 +392,9 @@ def assert_cpu_parity(case: ConformanceCase, result: torch.Tensor) -> None:
 
 def assert_vulkan_result(result: torch.Tensor, case: ConformanceCase) -> None:
     assert isinstance(result, torch.Tensor)
-    assert result.device == torch.device("vk:0")
+    assert result.device == torch.device(
+        f"{torch._C._get_privateuse1_backend_name()}:0"
+    )
     assert result.dtype == case.expected_dtype
     if case.expected_shape is not None:
         assert tuple(result.shape) == case.expected_shape
@@ -551,6 +554,33 @@ def _linear_strided(
     return tuple(
         item.detach().requires_grad_(requires_grad) for item in (value, weight, bias)
     )
+
+
+def _mm(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
+    return (
+        torch.arange(10, dtype=torch.float32).reshape(2, 5),
+        torch.ones((5, 3), dtype=torch.float32),
+    )
+
+
+def _addmm(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return (
+        torch.zeros((2, 3), dtype=torch.float32),
+        torch.arange(10, dtype=torch.float32).reshape(2, 5),
+        torch.ones((5, 3), dtype=torch.float32),
+    )
+
+
+def _addmm_out(value, mat1, mat2):
+    return torch.addmm(value, mat1, mat2, out=torch.empty_like(value))
+
+
+def _cpu_addmm(value, mat1, mat2):
+    return torch.addmm(value, mat1, mat2)
+
+
+def _cpu_mm(value, other):
+    return torch.mm(value, other)
 
 
 def _convolution(
@@ -1094,6 +1124,9 @@ DECLARATION_ID_BY_CASE = {
     "view.reshape-alias.metadata": "aten::_reshape_alias.default",
     "linear.forward": "aten::linear.default",
     "linear.forward.strided": "aten::linear.default",
+    "mm.forward": "aten::mm.default",
+    "addmm.forward": "aten::addmm.default",
+    "addmm.out": "aten::addmm.out",
     "convolution.forward": "aten::convolution.default",
     "convolution.forward.strided": "aten::convolution.default",
     "convolution.backward": "aten::convolution_backward.default",
@@ -1809,6 +1842,30 @@ ALL_CASES = (
         cpu_reference=_cpu_linear,
         expected_shape=(2, 3),
         check_gradients=True,
+    ),
+    _case(
+        "mm.forward",
+        "linear",
+        torch.mm,
+        _mm,
+        cpu_reference=_cpu_mm,
+        expected_shape=(2, 3),
+    ),
+    _case(
+        "addmm.forward",
+        "linear",
+        torch.addmm,
+        _addmm,
+        cpu_reference=_cpu_addmm,
+        expected_shape=(2, 3),
+    ),
+    _case(
+        "addmm.out",
+        "linear",
+        _addmm_out,
+        _addmm,
+        cpu_reference=_addmm_out,
+        expected_shape=(2, 3),
     ),
     _case(
         "convolution.forward",

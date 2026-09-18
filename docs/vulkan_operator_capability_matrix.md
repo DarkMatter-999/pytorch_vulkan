@@ -16,7 +16,9 @@ universal operator support.
 | `aten::_softmax_backward_data.out` / `aten::_log_softmax_backward_data.out` | F32 | F32 | contiguous F32 grad/output tensors; rank ≤ 8; one supported dimension | first-order backward kernel | unsupported higher-order forms rejected |
 | `aten::mse_loss` / `aten::mse_loss_backward` | F32 | F32 | matching, contiguous F32 input/target and Vulkan-resident outputs; reductions `none`, `sum`, and `mean` | first-order reverse mode | empty `sum` is zero, empty `mean` is NaN, empty `none` is empty |
 | `aten::sigmoid` / `aten::tanh` / `aten::gelu` | F32 | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; GELU requires `approximate="tanh"` and the standard `0.044715` polynomial; fresh Vulkan output | first-order reverse mode | empty output supported without dispatch |
-| `aten::linear` | F32 | F32 | 2-D strided input/weight with matching features; strided 1-D bias; non-overlapping output with no operand alias | first-order | explicit fixed-shape contract |
+| `aten::linear` | F32 | F32 | Eligible 2-D F32 input/weight matrices on Vulkan device index 0 with matching features, contiguous fast-path operands, optional contiguous 1-D bias, and non-overlapping output; other explicitly supported contracts use the serial Vulkan path | first-order | GEMM dispatch |
+| `aten::mm` | F32 | F32 | 2-D contiguous F32 matrices on Vulkan device index 0 with matching inner dimension and non-overlapping output | forward | GEMM dispatch |
+| `aten::addmm` | F32 | F32 | Contiguous 2-D F32 self/matrix operands on Vulkan device index 0 with matching shapes use the production GEMM dispatch; the existing 1-D F32 bias with matching 2-D matrices remains a legacy supported serial Vulkan fallback; non-overlapping output and explicit scalar contracts | forward | GEMM dispatch for eligible 2-D form; serial Vulkan fallback for 1-D-bias form |
 | `aten::convolution` / `aten::convolution_backward` | F32 | F32 | fixed F32 shapes `(2,1,8,8)` + `(4,1,3,3)` + bias `(4,)` -> `(2,4,8,8)`; strided operands; stride/padding/dilation `[1,1]`, groups `1`, non-transposed, output padding `[0,0]`; backward requires output mask `[true,true,true]` | first-order | empty and unsupported backward forms rejected |
 | `aten::_adaptive_avg_pool2d` / `_adaptive_avg_pool2d_backward` | F32 | F32 | nonempty rank-4 NCHW strided, non-overlapping input; output size `(1, 1)`; backward grad shape `(N,C,1,1)` | first-order | empty and non-global forms rejected |
 | `aten::native_batch_norm` / `native_batch_norm_backward` | F32 | F32 | fixed contiguous training inputs `(2,4)` or `(2,4,2,2)`; affine F32 `(4,)`; Vulkan running mean/variance; momentum `0.1`, eps `1e-5`; backward output mask `[true,true,true]` | first-order | eval, partial affine, missing stats, other shapes, and masks rejected |
@@ -44,6 +46,14 @@ The fixed model slices are the **fixed MLP** (`aten::linear`) and **fixed CNN**
 (`aten::convolution` plus `aten::_adaptive_avg_pool2d`). Every consuming
 operator must independently declare the layouts it accepts; view construction
 does not widen those contracts.
+
+Eligible `mm`, eligible 2-D `addmm`, and eligible `linear` calls use the GEMM
+dispatch by default and do not require an environment variable. The existing
+1-D-bias `addmm` form is a legacy supported serial Vulkan fallback; the serial
+path is not a CPU fallback. `aten::mm.out`, `aten::bmm.out`, and other unlisted
+GEMM forms remain deferred and are listed in the deferred schema inventory
+below.
+The supported GEMM family is `aten::linear` / `aten::mm` / `aten::addmm`.
 
 ## Formatter-Compatible Double
 
@@ -121,7 +131,7 @@ permits intentional Vulkan-to-Vulkan value-view materialization and forbids hidd
  aten::amin.default,aten::amin.out,aten::prod.dim_int,aten::prod.int_out,
  aten::_softmax.default,aten::_softmax.out,aten::_log_softmax.default,aten::_log_softmax.out,
  aten::_softmax_backward_data.out,aten::_log_softmax_backward_data.out,
- aten::linear.default,
+   aten::linear.default,aten::mm.default,aten::addmm.default,aten::addmm.out,
   aten::convolution.default,aten::convolution_backward.default,aten::_adaptive_avg_pool2d.default,
     aten::_adaptive_avg_pool2d_backward.default,aten::mse_loss.default,
   aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
@@ -152,8 +162,7 @@ aten::_adaptive_avg_pool2d.default,aten::convolution.default -->
  aten::_native_multi_head_attention.default,aten::_native_multi_head_attention.out,
  aten::_transform_bias_rescale_qkv.default,
 aten::_upsample_nearest_exact2d.out,aten::_upsample_nearest_exact2d_backward.grad_input,aten::abs.out,
-aten::addcdiv.out,aten::addcmul.out,aten::addmm.default,
- aten::addmm.out,aten::arange.start_out,aten::argmax.out,aten::atan.out,
+  aten::addcdiv.out,aten::addcmul.out,aten::arange.start_out,aten::argmax.out,aten::atan.out,
 aten::avg_pool2d.out,aten::avg_pool2d_backward.grad_input,aten::bernoulli_.float,aten::binary_cross_entropy.default,
 aten::binary_cross_entropy_backward.default,aten::binary_cross_entropy_backward.grad_input,
 aten::bitwise_and.Tensor_out,aten::bitwise_not.out,aten::bitwise_or.Tensor_out,aten::bitwise_xor.Tensor_out,
@@ -170,7 +179,7 @@ aten::leaky_relu_backward.grad_input,aten::log.out,aten::log_sigmoid_backward.de
 aten::log_sigmoid_backward.grad_input,aten::log_sigmoid_forward.default,aten::log_sigmoid_forward.output,
 aten::logit.default,aten::logit.out,aten::lt.Scalar,aten::lt.Scalar_out,aten::lt.Tensor_out,aten::max.default,
 aten::max_pool2d_with_indices.default,aten::maximum.out,aten::mean.default,aten::mean.out,aten::min.default,
- aten::minimum.out,aten::mm.out,
+  aten::minimum.out,aten::mm.out,
 aten::native_dropout.default,aten::native_dropout_backward.default,aten::native_layer_norm.default,
 aten::native_layer_norm_backward.default,aten::ne.Scalar_out,aten::ne.Tensor,aten::ne.Tensor_out,aten::neg.out,
   aten::normal_.default,
