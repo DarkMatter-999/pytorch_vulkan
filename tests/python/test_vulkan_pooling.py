@@ -19,7 +19,9 @@ def _pool_input(device, requires_grad=False):
 
 def test_adaptive_avg_pool2d_global_forward_matches_cpu(vulkan_backend):
     cpu_input = _pool_input("cpu")
-    result = torch.nn.functional.adaptive_avg_pool2d(cpu_input.to(vulkan_backend), (1, 1))
+    result = torch.nn.functional.adaptive_avg_pool2d(
+        cpu_input.to(vulkan_backend), (1, 1)
+    )
     expected = torch.nn.functional.adaptive_avg_pool2d(cpu_input, (1, 1))
 
     assert result.device == torch.device("vk:0")
@@ -48,15 +50,21 @@ def test_adaptive_avg_pool2d_global_backward_matches_cpu(vulkan_backend):
 
 
 @pytest.mark.parametrize("output_size", [(2, 2), (1, 2), (2, 1), [1], [1, 1, 1]])
-def test_adaptive_avg_pool2d_rejects_non_global_output_size(vulkan_backend, output_size):
+def test_adaptive_avg_pool2d_rejects_non_global_output_size(
+    vulkan_backend, output_size
+):
     with pytest.raises(RuntimeError, match="output|size|global|support|fixed"):
-        torch.ops.aten._adaptive_avg_pool2d.default(_pool_input(vulkan_backend), output_size)
+        torch.ops.aten._adaptive_avg_pool2d.default(
+            _pool_input(vulkan_backend), output_size
+        )
 
 
 @pytest.mark.parametrize("shape", [(), (4,), (2, 4, 3), (2, 4, 3, 5, 1)])
 def test_adaptive_avg_pool2d_rejects_non_rank4(vulkan_backend, shape):
     with pytest.raises(RuntimeError, match="rank|shape|4|dimension"):
-        torch.ops.aten._adaptive_avg_pool2d.default(torch.empty(shape, device=vulkan_backend), [1, 1])
+        torch.ops.aten._adaptive_avg_pool2d.default(
+            torch.empty(shape, device=vulkan_backend), [1, 1]
+        )
 
 
 def test_adaptive_avg_pool2d_rejects_empty_input(vulkan_backend):
@@ -121,8 +129,13 @@ def test_adaptive_avg_pool2d_preserves_formatter_and_fill_contract(vulkan_backen
 
 def test_adaptive_avg_pool2d_rejects_unsupported_overload(vulkan_backend):
     value = _pool_input(vulkan_backend)
-    with pytest.raises((RuntimeError, TypeError, AttributeError), match="out|unsupported|overload|schema"):
-        torch.ops.aten._adaptive_avg_pool2d.out(value, [1, 1], torch.empty((2, 4, 1, 1), device=vulkan_backend))
+    with pytest.raises(
+        (RuntimeError, TypeError, AttributeError),
+        match="out|unsupported|overload|schema",
+    ):
+        torch.ops.aten._adaptive_avg_pool2d.out(
+            value, [1, 1], torch.empty((2, 4, 1, 1), device=vulkan_backend)
+        )
 
 
 def test_max_pooling_indices_and_backward_remain_rejected_without_work(vulkan_backend):
@@ -131,17 +144,26 @@ def test_max_pooling_indices_and_backward_remain_rejected_without_work(vulkan_ba
     fallbacks = pytorch_vulkan._C.fallback_count()
     with pytest.raises(RuntimeError, match="Vulkan pooling|unsupported|implemented"):
         torch.nn.functional.max_pool2d(value, kernel_size=2, stride=2)
-    with pytest.raises((RuntimeError, TypeError), match="pool|index|unsupported|schema|dtype|Long"):
+    with pytest.raises(
+        (RuntimeError, TypeError), match="pool|index|unsupported|schema|dtype|Long"
+    ):
         torch.ops.aten.max_pool2d_with_indices_backward.default(
-            torch.empty((2, 4, 1, 1), device=vulkan_backend), value,
-            [2, 2], [2, 2], [0, 0], [1, 1], False,
-            torch.empty((2, 4, 1, 1), dtype=torch.int64, device=vulkan_backend)
+            torch.empty((2, 4, 1, 1), device=vulkan_backend),
+            value,
+            [2, 2],
+            [2, 2],
+            [0, 0],
+            [1, 1],
+            False,
+            torch.empty((2, 4, 1, 1), dtype=torch.int64, device=vulkan_backend),
         )
     assert pytorch_vulkan._C.compute_dispatch_count() == dispatches
     assert pytorch_vulkan._C.fallback_count() == fallbacks
 
 
-def test_adaptive_avg_pool2d_accumulated_leaf_and_higher_order_are_limited(vulkan_backend):
+def test_adaptive_avg_pool2d_accumulated_leaf_and_higher_order_are_limited(
+    vulkan_backend,
+):
     value = _pool_input(vulkan_backend, requires_grad=True)
     output = torch.nn.functional.adaptive_avg_pool2d(value, (1, 1))
     gradient = torch.ones_like(output.cpu()).to(vulkan_backend)
@@ -151,6 +173,11 @@ def test_adaptive_avg_pool2d_accumulated_leaf_and_higher_order_are_limited(vulka
 
     value = _pool_input(vulkan_backend, requires_grad=True)
     output = torch.nn.functional.adaptive_avg_pool2d(value, (1, 1))
-    higher_order = torch.autograd.grad(output, value, torch.ones_like(output.cpu()).to(vulkan_backend), create_graph=True)[0]
+    higher_order = torch.autograd.grad(
+        output,
+        value,
+        torch.ones_like(output.cpu()).to(vulkan_backend),
+        create_graph=True,
+    )[0]
     assert higher_order.device == torch.device("vk:0")
     assert not higher_order.requires_grad

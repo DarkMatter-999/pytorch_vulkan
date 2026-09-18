@@ -16,9 +16,9 @@ at::Tensor relu_backward_tensor(const at::Tensor &output, const at::Tensor &grad
 at::Tensor sigmoid_backward_tensor(const at::Tensor &output, const at::Tensor &grad);
 at::Tensor tanh_backward_tensor(const at::Tensor &output, const at::Tensor &grad);
 at::Tensor gelu_backward_tensor(const at::Tensor &input, const at::Tensor &grad,
-                               c10::string_view approximate);
-at::Tensor &sigmoid_backward_out(const at::Tensor &grad_output, const at::Tensor &output,
-                                 at::Tensor &grad_input);
+                                c10::string_view approximate);
+at::Tensor &sigmoid_backward_out(const at::Tensor &grad_output,
+                                 const at::Tensor &output, at::Tensor &grad_input);
 at::Tensor &tanh_backward_out(const at::Tensor &grad_output, const at::Tensor &output,
                               at::Tensor &grad_input);
 at::Tensor &gelu_backward_out(const at::Tensor &grad_output, const at::Tensor &input,

@@ -15,18 +15,28 @@ directory.mkdir(parents=True, exist_ok=True)
 HEADER = directory / "formatter_double_spv.h"
 MANIFEST = directory / "formatter_double_spv.sha256"
 binary_directory = directory if len(sys.argv) > 1 else pathlib.Path("/tmp")
-with tempfile.TemporaryDirectory(dir=binary_directory if binary_directory.exists() else None) as temp:
+with tempfile.TemporaryDirectory(
+    dir=binary_directory if binary_directory.exists() else None
+) as temp:
     binary = pathlib.Path(temp) / "formatter_double.comp.spv"
     subprocess.run(["glslc", "-Os", "-o", str(binary), str(SOURCE)], check=True)
     spirv = binary.read_bytes()
 
     words = struct.unpack(f"<{len(spirv) // 4}I", spirv)
-    lines = ["#pragma once", "#include <cstddef>", "#include <cstdint>",
-             "namespace vulkan_formatter_double_shader {",
-             "inline constexpr uint32_t kCode[] = {"]
-    lines.extend("    " + ", ".join(f"0x{word:08x}U" for word in words[i:i + 8]) + ","
-                 for i in range(0, len(words), 8))
-    lines.extend(["};", "inline constexpr std::size_t kCodeSize = sizeof(kCode);", "}", ""])
+    lines = [
+        "#pragma once",
+        "#include <cstddef>",
+        "#include <cstdint>",
+        "namespace vulkan_formatter_double_shader {",
+        "inline constexpr uint32_t kCode[] = {",
+    ]
+    lines.extend(
+        "    " + ", ".join(f"0x{word:08x}U" for word in words[i : i + 8]) + ","
+        for i in range(0, len(words), 8)
+    )
+    lines.extend(
+        ["};", "inline constexpr std::size_t kCodeSize = sizeof(kCode);", "}", ""]
+    )
     HEADER.write_text("\n".join(lines), encoding="ascii")
     MANIFEST.write_text(
         f"source_sha256={hashlib.sha256(SOURCE.read_bytes()).hexdigest()}\n"

@@ -24,7 +24,11 @@ def _assert_no_implicit_transfer_or_fallback():
 @pytest.mark.parametrize(
     "make_view, expected_shape, expected_stride",
     [
-        (lambda source: torch.as_strided(source, source.size(), source.stride()), (2, 3), (3, 1)),
+        (
+            lambda source: torch.as_strided(source, source.size(), source.stride()),
+            (2, 3),
+            (3, 1),
+        ),
         (lambda source: source.view(-1), (6,), (1,)),
         (lambda source: torch.reshape(source, (6,)), (6,), (1,)),
     ],
@@ -83,7 +87,9 @@ def test_as_strided_accepts_general_in_allocation_metadata(vulkan_backend):
         torch.as_strided(source, (2,), (1,), storage_offset=1),
     ]
     for result in views:
-        assert result.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+        assert (
+            result.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+        )
     assert tuple(views[0].shape) == (2,)
     assert tuple(views[1].stride()) == (1, 2)
     assert tuple(views[2].stride()) == (0, 1)
@@ -127,11 +133,15 @@ def test_reshape_alias_and_incompatible_reshape_copy(vulkan_backend):
     copied = transposed.reshape(6)
 
     assert alias.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
-    assert copied.untyped_storage().data_ptr() != transposed.untyped_storage().data_ptr()
+    assert (
+        copied.untyped_storage().data_ptr() != transposed.untyped_storage().data_ptr()
+    )
     assert alias.device == source.device == copied.device
 
     del alias, transposed, source
-    torch.testing.assert_close(copied.cpu(), torch.tensor([0., 3., 1., 4., 2., 5.]))
+    torch.testing.assert_close(
+        copied.cpu(), torch.tensor([0.0, 3.0, 1.0, 4.0, 2.0, 5.0])
+    )
 
 
 def test_reshape_alias_accepts_compute_stride_noncontiguous_layout(vulkan_backend):
@@ -291,7 +301,9 @@ def test_incompatible_reshape_preserves_gradient(vulkan_backend):
     cpu_result = cpu.transpose(0, 1).reshape(6)
     vk_source = vk.transpose(0, 1)
     vk_result = vk_source.reshape(6)
-    assert vk_result.untyped_storage().data_ptr() != vk_source.untyped_storage().data_ptr()
+    assert (
+        vk_result.untyped_storage().data_ptr() != vk_source.untyped_storage().data_ptr()
+    )
     cpu_result.backward(grad)
     vk_result.backward(vk_grad)
 

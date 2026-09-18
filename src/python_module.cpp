@@ -41,34 +41,34 @@ PYBIND11_MODULE(_C, module) {
                [] { pytorch_vulkan::platform()->compute().end_training_step(); });
     module.def("cancel_training_step",
                [] { pytorch_vulkan::platform()->compute().cancel_training_step(); });
-    module.def("training_step_active",
-               [] { return pytorch_vulkan::platform()->compute().training_step_active(); });
+    module.def("training_step_active", [] {
+        return pytorch_vulkan::platform()->compute().training_step_active();
+    });
     module.def("explicit_transfer_count",
                [] { return pytorch_vulkan::platform()->explicit_transfer_count(); });
-    module.def("fallback_count",
-               [] { return pytorch_vulkan::platform()->execution_counter_snapshot().fallbacks; });
-    module.def("set_strict_mode",
-               [](bool enabled) { pytorch_vulkan::platform()->set_strict_mode(enabled); });
-    module.def("strict_mode",
-               [] { return pytorch_vulkan::platform()->strict_mode(); });
+    module.def("fallback_count", [] {
+        return pytorch_vulkan::platform()->execution_counter_snapshot().fallbacks;
+    });
+    module.def("set_strict_mode", [](bool enabled) {
+        pytorch_vulkan::platform()->set_strict_mode(enabled);
+    });
+    module.def("strict_mode", [] { return pytorch_vulkan::platform()->strict_mode(); });
     // Test-only seam: records an attempted fallback without moving payloads or
     // invoking a CPU implementation. Real fallback boundaries must call the
     // same centralized policy instead of incrementing counters directly.
-    module.def("test_inject_fallback", [] {
-        pytorch_vulkan::platform()->record_fallback();
-    });
+    module.def("test_inject_fallback",
+               [] { pytorch_vulkan::platform()->record_fallback(); });
     module.def("pending_compute_count",
                [] { return pytorch_vulkan::platform()->pending_compute_count(); });
     module.def("vulkan_copy_count",
                [] { return pytorch_vulkan::platform()->vulkan_copy_count(); });
     module.def("copy_command_count",
                [] { return pytorch_vulkan::platform()->copy_command_count(); });
-    module.def("reset_timing",
-               [] { pytorch_vulkan::platform()->reset_timing(); });
+    module.def("reset_timing", [] { pytorch_vulkan::platform()->reset_timing(); });
     module.def("timing_snapshot", [] {
         const auto timing = pytorch_vulkan::platform()->timing_snapshot();
-        return py::make_tuple(timing.allocation, timing.recording,
-                              timing.submit_wait, timing.compute, timing.total);
+        return py::make_tuple(timing.allocation, timing.recording, timing.submit_wait,
+                              timing.compute, timing.total);
     });
     py::module_::import("atexit").attr("register")(
         py::cpp_function(&pytorch_vulkan::shutdown_platform));

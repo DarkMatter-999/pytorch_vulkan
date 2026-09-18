@@ -25,24 +25,38 @@ def main():
         for line in manifest.read_text(encoding="ascii").splitlines()
         if "=" in line
     )
-    version = subprocess.check_output(["glslc", "--version"], text=True).splitlines()[0].strip()
-    if expected.get("compiler") != f"glslc {version}" or re.fullmatch(r"\d+\.\d+", version) is None:
-        raise SystemExit(f"pointwise manifest compiler mismatch: expected glslc {version}")
+    version = (
+        subprocess.check_output(["glslc", "--version"], text=True)
+        .splitlines()[0]
+        .strip()
+    )
+    if (
+        expected.get("compiler") != f"glslc {version}"
+        or re.fullmatch(r"\d+\.\d+", version) is None
+    ):
+        raise SystemExit(
+            f"pointwise manifest compiler mismatch: expected glslc {version}"
+        )
 
-    names = [("kTensorTensorCode", 0, False, False),
-             ("kTensorScalarCode", 1, False, False),
-             ("kScalarTensorCode", 2, False, False),
-             ("kUnaryCode", 3, False, False),
-             ("kBoolTensorTensorCode", 0, True, False),
-             ("kBoolOutputTensorScalarCode", 1, False, True),
-             ("kBoolOutputUnaryCode", 3, False, True),
-             ("kBoolOutputTensorTensorCode", 0, False, True),
-             ("kCompoundMulCode", 4, False, False),
-             ("kCompoundDivCode", 5, False, False)]
+    names = [
+        ("kTensorTensorCode", 0, False, False),
+        ("kTensorScalarCode", 1, False, False),
+        ("kScalarTensorCode", 2, False, False),
+        ("kUnaryCode", 3, False, False),
+        ("kBoolTensorTensorCode", 0, True, False),
+        ("kBoolOutputTensorScalarCode", 1, False, True),
+        ("kBoolOutputUnaryCode", 3, False, True),
+        ("kBoolOutputTensorTensorCode", 0, False, True),
+        ("kCompoundMulCode", 4, False, False),
+        ("kCompoundDivCode", 5, False, False),
+    ]
     with tempfile.TemporaryDirectory() as directory:
         binaries = []
         for _, mode, bool_dtype, bool_output in names:
-            path = pathlib.Path(directory) / f"pointwise_{mode}_{int(bool_dtype)}_{int(bool_output)}.spv"
+            path = (
+                pathlib.Path(directory)
+                / f"pointwise_{mode}_{int(bool_dtype)}_{int(bool_output)}.spv"
+            )
             command = ["glslc", "-Os", f"-DPOINTWISE_MODE={mode}"]
             if bool_dtype:
                 command.append("-DPOINTWISE_BOOL")
@@ -58,7 +72,9 @@ def main():
     }
     for key, value in actual.items():
         if expected.get(key) != value:
-            raise SystemExit(f"{key} mismatch: expected {expected.get(key)}, got {value}")
+            raise SystemExit(
+                f"{key} mismatch: expected {expected.get(key)}, got {value}"
+            )
         print(f"{key}={value}")
 
 

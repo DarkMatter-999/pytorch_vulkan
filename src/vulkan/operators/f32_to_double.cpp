@@ -53,7 +53,7 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
         TORCH_CHECK(
             requested_dtype == at::kFloat || requested_dtype == at::kBool ||
                 requested_dtype == at::kLong || requested_dtype == at::kHalf,
-                "Vulkan _to_copy supports only float32, bool, and traced int64 labels");
+            "Vulkan _to_copy supports only float32, bool, and traced int64 labels");
         c10::optional<pytorch_vulkan::VulkanLabelAllocationGuard> label_guard;
         if (requested_dtype == at::kLong) {
             validate_cpu_nll_labels(input);

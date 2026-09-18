@@ -36,14 +36,18 @@ def main():
     if re.fullmatch(r"\d+\.\d+", first_line) is None or first_line != EXPECTED_VERSION:
         raise SystemExit(f"expected glslc {EXPECTED_VERSION}, got {version!r}")
 
-    names = [("kTensorTensorCode", 0, False, False), ("kTensorScalarCode", 1, False, False),
-             ("kScalarTensorCode", 2, False, False), ("kUnaryCode", 3, False, False),
-             ("kBoolTensorTensorCode", 0, True, False),
-             ("kBoolOutputTensorScalarCode", 1, False, True),
-             ("kBoolOutputUnaryCode", 3, False, True),
-             ("kBoolOutputTensorTensorCode", 0, False, True),
-             ("kCompoundMulCode", 4, False, False),
-             ("kCompoundDivCode", 5, False, False)]
+    names = [
+        ("kTensorTensorCode", 0, False, False),
+        ("kTensorScalarCode", 1, False, False),
+        ("kScalarTensorCode", 2, False, False),
+        ("kUnaryCode", 3, False, False),
+        ("kBoolTensorTensorCode", 0, True, False),
+        ("kBoolOutputTensorScalarCode", 1, False, True),
+        ("kBoolOutputUnaryCode", 3, False, True),
+        ("kBoolOutputTensorTensorCode", 0, False, True),
+        ("kCompoundMulCode", 4, False, False),
+        ("kCompoundDivCode", 5, False, False),
+    ]
     with tempfile.TemporaryDirectory() as directory:
         binaries = []
         for _, mode, bool_dtype, bool_output in names:
@@ -61,11 +65,15 @@ def main():
         header.write("#pragma once\n\n#include <cstddef>\n#include <cstdint>\n\n")
         header.write("namespace vulkan_pointwise_shader {\n")
         for (name, _, _, _), binary in zip(names, binaries):
-            words = [int.from_bytes(binary[index:index + 4], "little")
-                     for index in range(0, len(binary), 4)]
+            words = [
+                int.from_bytes(binary[index : index + 4], "little")
+                for index in range(0, len(binary), 4)
+            ]
             header.write(f"inline constexpr uint32_t {name}[] = {{\n")
             for index in range(0, len(words), 8):
-                values = ", ".join(f"0x{word:08x}U" for word in words[index:index + 8])
+                values = ", ".join(
+                    f"0x{word:08x}U" for word in words[index : index + 8]
+                )
                 header.write(f"    {values},\n")
             header.write("};\n")
             header.write(f"inline constexpr std::size_t {name}Size = sizeof({name});\n")
@@ -78,7 +86,9 @@ def main():
     }
     for key, value in actual.items():
         if expected.get(key) != value:
-            raise SystemExit(f"{key} mismatch: expected {expected.get(key)}, got {value}")
+            raise SystemExit(
+                f"{key} mismatch: expected {expected.get(key)}, got {value}"
+            )
         print(f"{key}={value}")
 
 

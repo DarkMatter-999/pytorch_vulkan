@@ -53,7 +53,11 @@ def test_positive_stride_nonzero_offset_view_aliases_storage(vulkan_backend):
 def test_view_reshape_and_as_strided_preserve_aliasing(vulkan_backend):
     source = _source(vulkan_backend)
 
-    for view in (source.view(12), source.reshape(12), torch.as_strided(source, (3, 4), (4, 1))):
+    for view in (
+        source.view(12),
+        source.reshape(12),
+        torch.as_strided(source, (3, 4), (4, 1)),
+    ):
         assert view.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
 
 
@@ -83,7 +87,9 @@ def test_serialization_rejects_overlapping_metadata(vulkan_backend):
 
 
 def test_vulkan_rejects_unsupported_dtype(vulkan_backend):
-    with pytest.raises((RuntimeError, ValueError), match="(unsupported|supports|Double|float64|dtype)"):
+    with pytest.raises(
+        (RuntimeError, ValueError), match="(unsupported|supports|Double|float64|dtype)"
+    ):
         torch.empty((2,), dtype=torch.int32, device=vulkan_backend)
 
 
@@ -137,7 +143,9 @@ def test_compiler_rejects_symbolic_metadata_before_storage_offset():
     tensor = _CompilerTensor((_SymbolicDim(), 8))
     tensor._offset = AssertionError("symbolic storage_offset() was called")
 
-    with pytest.raises(RuntimeError, match="Vulkan compiler requires static contiguous F32 metadata"):
+    with pytest.raises(
+        RuntimeError, match="Vulkan compiler requires static contiguous F32 metadata"
+    ):
         validate_compiler_tensor_metadata(tensor)
     assert tensor.storage_offset_calls == 0
 
@@ -145,5 +153,7 @@ def test_compiler_rejects_symbolic_metadata_before_storage_offset():
 def test_compiler_rejects_nonzero_storage_offset():
     tensor = _CompilerTensor((8, 8), offset=1)
 
-    with pytest.raises(RuntimeError, match="Vulkan compiler requires zero-offset contiguous tensors"):
+    with pytest.raises(
+        RuntimeError, match="Vulkan compiler requires zero-offset contiguous tensors"
+    ):
         validate_compiler_tensor_metadata(tensor)

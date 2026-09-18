@@ -1,5 +1,5 @@
-#include "binary.h"
 #include "autograd.h"
+#include "binary.h"
 #include "out.h"
 
 #include <torch/library.h>
@@ -33,7 +33,8 @@ at::Tensor &sub_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
 at::Tensor &rsub_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
                             const at::Scalar &alpha, at::Tensor &out) {
     return pytorch_vulkan::dispatch_tensor_scalar_out(
-        tensor, scalar, alpha, out, pytorch_vulkan::PointwiseOperation::Sub, "rsub", true);
+        tensor, scalar, alpha, out, pytorch_vulkan::PointwiseOperation::Sub, "rsub",
+        true);
 }
 
 at::Tensor &sub_inplace_tensor(at::Tensor &self, const at::Tensor &other,

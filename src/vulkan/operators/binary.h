@@ -39,24 +39,22 @@ at::Tensor pointwise_tensor_scalar(const at::Tensor &tensor, const at::Scalar &s
                                    const char *operation_name);
 
 at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rhs,
-                                      const at::Scalar &alpha, PointwiseOperation operation,
-                                      const char *operation_name);
+                                     const at::Scalar &alpha,
+                                     PointwiseOperation operation,
+                                     const char *operation_name);
 
 at::Tensor &dispatch_unary_out(const at::Tensor &input, at::Tensor &out,
                                PointwiseOperation operation,
                                const char *operation_name);
-at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs,
-                                       const at::Tensor &rhs,
-                                       const at::Scalar &alpha,
-                                       at::Tensor &out,
+at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &rhs,
+                                       const at::Scalar &alpha, at::Tensor &out,
                                        PointwiseOperation operation,
                                        const char *operation_name);
 at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor,
-                                        const at::Scalar &scalar,
-                                        const at::Scalar &alpha,
-                                        at::Tensor &out,
-                                        PointwiseOperation operation,
-                                        const char *operation_name,
-                                        bool scalar_left = false);
+                                       const at::Scalar &scalar,
+                                       const at::Scalar &alpha, at::Tensor &out,
+                                       PointwiseOperation operation,
+                                       const char *operation_name,
+                                       bool scalar_left = false);
 
 } // namespace pytorch_vulkan

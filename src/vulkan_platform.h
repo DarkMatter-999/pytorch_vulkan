@@ -2,8 +2,8 @@
 
 #include <vulkan/vulkan.h>
 
-#include <cstdint>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -92,11 +92,11 @@ class VulkanPlatform {
     bool strict_mode() const;
     std::size_t vulkan_copy_count() const;
     void record_vulkan_copy() const;
-     // Counts recorded vkCmdCopyBuffer commands, distinct from logical transfers.
-     std::size_t copy_command_count() const;
-     void record_copy_command() const;
-    void copy_buffer_sync(VkBuffer source, VkBuffer destination,
-                          VkDeviceSize size, VkDeviceSize source_offset = 0,
+    // Counts recorded vkCmdCopyBuffer commands, distinct from logical transfers.
+    std::size_t copy_command_count() const;
+    void record_copy_command() const;
+    void copy_buffer_sync(VkBuffer source, VkBuffer destination, VkDeviceSize size,
+                          VkDeviceSize source_offset = 0,
                           VkDeviceSize destination_offset = 0) const;
     void fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
                           uint32_t data) const;

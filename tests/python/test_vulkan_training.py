@@ -27,7 +27,9 @@ def _make_mnist_batch(seed, batch_size):
     torch.manual_seed(seed)
     inputs = torch.randn(batch_size, 1, 28, 28, dtype=torch.float32)
     labels = torch.randint(10, (batch_size,), dtype=torch.int64)
-    targets = torch.nn.functional.one_hot(labels, num_classes=10).to(dtype=torch.float32)
+    targets = torch.nn.functional.one_hot(labels, num_classes=10).to(
+        dtype=torch.float32
+    )
     assert torch.all(targets.eq(1).sum(dim=1).eq(1))
     assert torch.all(targets.eq(0).sum(dim=1).eq(9))
     return inputs, targets
@@ -62,7 +64,9 @@ def _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn
     if targets.ndim != 2 or tuple(targets.shape) != (inputs.shape[0], 10):
         raise RuntimeError("MNIST training targets must have shape (batch, 10)")
     modules = list(model.children())
-    if not isinstance(model, torch.nn.Sequential) or [type(module) for module in modules] != [
+    if not isinstance(model, torch.nn.Sequential) or [
+        type(module) for module in modules
+    ] != [
         torch.nn.Flatten,
         torch.nn.Linear,
         torch.nn.ReLU,
@@ -76,7 +80,9 @@ def _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn
         or modules[3].in_features != 32
         or modules[3].out_features != 10
     ):
-        raise RuntimeError("MNIST training model must be Flatten->Linear(784,32)->ReLU->Linear(32,10)")
+        raise RuntimeError(
+            "MNIST training model must be Flatten->Linear(784,32)->ReLU->Linear(32,10)"
+        )
     if loss_fn is not _squared_error_loss:
         raise RuntimeError("MNIST training supports only float32 squared-error loss")
     for parameter in parameters:
@@ -84,9 +90,7 @@ def _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn
     if not isinstance(optimizer, (torch.optim.SGD, torch.optim.Adam)):
         raise RuntimeError("MNIST training supports only SGD and Adam")
     optimizer_parameters = [
-        parameter
-        for group in optimizer.param_groups
-        for parameter in group["params"]
+        parameter for group in optimizer.param_groups for parameter in group["params"]
     ]
     if optimizer_parameters != parameters:
         raise RuntimeError("MNIST optimizer parameters must match the training model")
@@ -100,11 +104,17 @@ def _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn
         ("capturable", torch.optim.Adam),
     )
     for option, optimizer_type in unsupported:
-        if isinstance(optimizer, optimizer_type) and optimizer.defaults.get(option, False):
-            raise RuntimeError(f"MNIST training does not support optimizer option {option}")
+        if isinstance(optimizer, optimizer_type) and optimizer.defaults.get(
+            option, False
+        ):
+            raise RuntimeError(
+                f"MNIST training does not support optimizer option {option}"
+            )
 
 
-def run_mnist_training_step(model, optimizer, inputs, targets, loss_fn=_squared_error_loss):
+def run_mnist_training_step(
+    model, optimizer, inputs, targets, loss_fn=_squared_error_loss
+):
     _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn)
     pytorch_vulkan._C.begin_training_step()
     try:
@@ -184,7 +194,9 @@ def test_mlp_fixture_seed_is_deterministic():
     first = _make_mlp("cpu", seed=23)
     second = _make_mlp("cpu", seed=23)
 
-    for first_parameter, second_parameter in zip(first.parameters(), second.parameters()):
+    for first_parameter, second_parameter in zip(
+        first.parameters(), second.parameters()
+    ):
         torch.testing.assert_close(first_parameter, second_parameter)
 
 
@@ -264,7 +276,9 @@ def test_cpu_and_vulkan_training_pairs_share_state(vulkan_backend):
         _readback_with_counter_assertion(vk_output, transfer_count), cpu_output
     )
     transfer_count += 1
-    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+    for cpu_parameter, vk_parameter in zip(
+        cpu_model.parameters(), vk_model.parameters()
+    ):
         torch.testing.assert_close(
             _readback_with_counter_assertion(vk_parameter, transfer_count),
             cpu_parameter,
@@ -434,12 +448,18 @@ def test_fused_linear_relu_optimizer_state_matches_cpu_for_mnist_shape(vulkan_ba
         (vk_input.grad, vk_weight.grad, vk_bias.grad),
         (cpu_input.grad, cpu_weight.grad, cpu_bias.grad),
     ):
-        torch.testing.assert_close(vk_gradient.cpu(), cpu_gradient, rtol=2e-4, atol=2e-4)
+        torch.testing.assert_close(
+            vk_gradient.cpu(), cpu_gradient, rtol=2e-4, atol=2e-4
+        )
     for vk_parameter, cpu_parameter in zip(
         (vk_weight, vk_bias), (cpu_weight, cpu_bias)
     ):
-        torch.testing.assert_close(vk_parameter.cpu(), cpu_parameter, rtol=2e-4, atol=2e-4)
-    for vk_parameter, cpu_parameter in zip((vk_weight, vk_bias), (cpu_weight, cpu_bias)):
+        torch.testing.assert_close(
+            vk_parameter.cpu(), cpu_parameter, rtol=2e-4, atol=2e-4
+        )
+    for vk_parameter, cpu_parameter in zip(
+        (vk_weight, vk_bias), (cpu_weight, cpu_bias)
+    ):
         torch.testing.assert_close(
             vk_optimizer.state[vk_parameter]["momentum_buffer"].cpu(),
             cpu_optimizer.state[cpu_parameter]["momentum_buffer"],
@@ -466,16 +486,26 @@ def test_batch_norm_classification_training_matches_cpu(vulkan_backend):
 
         def forward(self, value):
             value = torch.ops.aten.native_batch_norm.default(
-                value, self.weight, self.bias, self.running_mean, self.running_var,
-                True, 0.1, 1e-5
+                value,
+                self.weight,
+                self.bias,
+                self.running_mean,
+                self.running_var,
+                True,
+                0.1,
+                1e-5,
             )[0]
             return self.classifier(value)
 
     torch.manual_seed(419)
     cpu_model = FixedClassifier()
     vk_model = FixedClassifier().to(vulkan_backend)
-    vk_model.load_state_dict({name: value.detach().clone().to(vulkan_backend)
-                              for name, value in cpu_model.state_dict().items()})
+    vk_model.load_state_dict(
+        {
+            name: value.detach().clone().to(vulkan_backend)
+            for name, value in cpu_model.state_dict().items()
+        }
+    )
     cpu_input = torch.randn(2, 4, requires_grad=True)
     cpu_labels = torch.tensor([1, 2], dtype=torch.int64)
     vk_input = cpu_input.detach().clone().to(vulkan_backend).requires_grad_()
@@ -483,11 +513,13 @@ def test_batch_norm_classification_training_matches_cpu(vulkan_backend):
     cpu_optimizer = torch.optim.SGD(cpu_model.parameters(), lr=0.01)
     vk_optimizer = torch.optim.SGD(vk_model.parameters(), lr=0.01)
     cpu_loss = torch.nn.functional.cross_entropy(cpu_model(cpu_input), cpu_labels)
-    cpu_loss.backward(); cpu_optimizer.step()
+    cpu_loss.backward()
+    cpu_optimizer.step()
     pytorch_vulkan._C.begin_training_step()
     try:
         vk_loss = torch.nn.functional.cross_entropy(vk_model(vk_input), vk_labels)
-        vk_loss.backward(); vk_optimizer.step()
+        vk_loss.backward()
+        vk_optimizer.step()
         pytorch_vulkan._C.end_training_step()
     except BaseException:
         pytorch_vulkan._C.cancel_training_step()
@@ -516,7 +548,9 @@ def run_training_step(model, optimizer, inputs, targets):
         raise RuntimeError("training targets must have shape (batch, 4)")
 
     modules = list(model.children())
-    if not isinstance(model, torch.nn.Sequential) or [type(module) for module in modules] != [
+    if not isinstance(model, torch.nn.Sequential) or [
+        type(module) for module in modules
+    ] != [
         torch.nn.Linear,
         torch.nn.ReLU,
         torch.nn.Linear,
@@ -644,7 +678,9 @@ def test_fixed_mlp_forward_backward_matches_cpu(vulkan_backend):
         _readback_with_counter_assertion(vk_input.grad, transfer_count), cpu_input.grad
     )
     transfer_count += 1
-    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+    for cpu_parameter, vk_parameter in zip(
+        cpu_model.parameters(), vk_model.parameters()
+    ):
         torch.testing.assert_close(
             _readback_with_counter_assertion(vk_parameter.grad, transfer_count),
             cpu_parameter.grad,
@@ -667,7 +703,9 @@ def _run_fixed_mlp(device, optimizer_factory, inputs, targets, steps):
                 _assert_vk_f32_contiguous(parameter)
                 _assert_vk_f32_contiguous(parameter.grad)
             _assert_optimizer_state_vulkan(optimizer)
-            counters.append((*_execution_counters(), pytorch_vulkan._C.compute_submission_count()))
+            counters.append(
+                (*_execution_counters(), pytorch_vulkan._C.compute_submission_count())
+            )
         losses.append(loss.detach())
     return model, optimizer, losses, counters if device != "cpu" else None
 
@@ -695,9 +733,12 @@ def test_fixed_mlp_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
             _readback_with_counter_assertion(vk_loss, transfer_count), cpu_loss
         )
         transfer_count += 1
-    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+    for cpu_parameter, vk_parameter in zip(
+        cpu_model.parameters(), vk_model.parameters()
+    ):
         torch.testing.assert_close(
-            _readback_with_counter_assertion(vk_parameter, transfer_count), cpu_parameter
+            _readback_with_counter_assertion(vk_parameter, transfer_count),
+            cpu_parameter,
         )
         transfer_count += 1
     for cpu_parameter, parameter in zip(cpu_model.parameters(), vk_model.parameters()):
@@ -772,7 +813,11 @@ def test_training_exception_cancels_recorded_work(vulkan_backend):
 def test_run_training_step_rejects_invalid_contract_without_side_effects(
     inputs, targets, model_factory, message, vulkan_backend
 ):
-    model = model_factory(vulkan_backend, seed=61) if model_factory is _make_mlp else model_factory(8, 4).to(vulkan_backend)
+    model = (
+        model_factory(vulkan_backend, seed=61)
+        if model_factory is _make_mlp
+        else model_factory(8, 4).to(vulkan_backend)
+    )
     optimizer = _make_sgd(model.parameters())
     input_dtype = torch.float64 if inputs == "float64" else torch.float32
     vk_inputs = (
@@ -837,7 +882,10 @@ def _mnist_training_pairs(device, seed=79):
     cpu_inputs, cpu_targets = _make_mnist_batch(seed + 1, batch_size=3)
     vk_model = _make_mnist_classifier(device, seed)
     vk_model.load_state_dict(
-        {name: value.detach().clone().to(device) for name, value in cpu_model.state_dict().items()}
+        {
+            name: value.detach().clone().to(device)
+            for name, value in cpu_model.state_dict().items()
+        }
     )
     return (
         cpu_model,
@@ -852,7 +900,9 @@ def _mnist_training_pairs(device, seed=79):
 def test_mnist_shaped_training_runs_forward_and_backward_on_vulkan(vulkan_backend):
     _, vk_model, _, vk_inputs, _, vk_targets = _mnist_training_pairs(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
-    loss = run_mnist_training_step(vk_model, _make_sgd(vk_model.parameters()), vk_inputs, vk_targets)
+    loss = run_mnist_training_step(
+        vk_model, _make_sgd(vk_model.parameters()), vk_inputs, vk_targets
+    )
 
     _assert_vk_f32_contiguous(loss)
     _assert_vk_f32_contiguous(vk_inputs.grad)
@@ -865,9 +915,13 @@ def test_mnist_shaped_training_runs_forward_and_backward_on_vulkan(vulkan_backen
     assert pytorch_vulkan._C.compute_submission_count() == 1
 
 
-def test_mnist_training_accepts_arbitrary_float32_targets_before_readback(vulkan_backend):
+def test_mnist_training_accepts_arbitrary_float32_targets_before_readback(
+    vulkan_backend,
+):
     _, vk_model, _, vk_inputs, _, _ = _mnist_training_pairs(vulkan_backend)
-    cpu_targets = torch.linspace(-1.0, 1.0, steps=30, dtype=torch.float32).reshape(3, 10)
+    cpu_targets = torch.linspace(-1.0, 1.0, steps=30, dtype=torch.float32).reshape(
+        3, 10
+    )
     vk_targets = cpu_targets.to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
 
@@ -888,7 +942,9 @@ def _run_mnist_training(device, optimizer_factory, inputs, targets, steps=4):
     counters = []
     for _ in range(steps):
         pytorch_vulkan._C.reset_execution_counters()
-        losses.append(run_mnist_training_step(model, optimizer, inputs, targets).detach())
+        losses.append(
+            run_mnist_training_step(model, optimizer, inputs, targets).detach()
+        )
         counters.append(_execution_counters())
         counters[-1] = (*counters[-1], pytorch_vulkan._C.compute_submission_count())
         _assert_optimizer_state_vulkan(optimizer)
@@ -897,8 +953,8 @@ def _run_mnist_training(device, optimizer_factory, inputs, targets, steps=4):
 
 @pytest.mark.parametrize("optimizer_factory", [_make_sgd, _make_adam])
 def test_mnist_shaped_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
-    cpu_model, _, cpu_inputs, vk_inputs, cpu_targets, vk_targets = _mnist_training_pairs(
-        vulkan_backend
+    cpu_model, _, cpu_inputs, vk_inputs, cpu_targets, vk_targets = (
+        _mnist_training_pairs(vulkan_backend)
     )
     cpu_optimizer = optimizer_factory(cpu_model.parameters())
     cpu_losses = []
@@ -925,7 +981,9 @@ def test_mnist_shaped_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
             atol=1e-4,
         )
         transfer_count += 1
-    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+    for cpu_parameter, vk_parameter in zip(
+        cpu_model.parameters(), vk_model.parameters()
+    ):
         torch.testing.assert_close(
             _readback_with_counter_assertion(vk_parameter, transfer_count),
             cpu_parameter,
@@ -933,7 +991,9 @@ def test_mnist_shaped_sgd_and_adam_match_cpu(optimizer_factory, vulkan_backend):
             atol=1e-4,
         )
         transfer_count += 1
-    for cpu_parameter, vk_parameter in zip(cpu_model.parameters(), vk_model.parameters()):
+    for cpu_parameter, vk_parameter in zip(
+        cpu_model.parameters(), vk_model.parameters()
+    ):
         for name, value in vk_optimizer.state[vk_parameter].items():
             expected = cpu_optimizer.state[cpu_parameter][name]
             if isinstance(value, torch.Tensor) and value.device.type == "vk":
@@ -978,7 +1038,9 @@ def test_mnist_unsupported_boundaries_reject_without_side_effects(case, vulkan_b
         )
         message = "float32"
     elif case == "convolution":
-        convolution_model = torch.nn.Sequential(torch.nn.Conv2d(1, 4, 3)).to(vulkan_backend)
+        convolution_model = torch.nn.Sequential(torch.nn.Conv2d(1, 4, 3)).to(
+            vulkan_backend
+        )
         rejected_model = convolution_model
         action = lambda: run_mnist_training_step(
             convolution_model, optimizer, vk_inputs, vk_targets
@@ -1001,7 +1063,9 @@ def test_mnist_unsupported_boundaries_reject_without_side_effects(case, vulkan_b
         message = "float32"
     elif case == "cpu_input":
         cpu_inputs = vk_inputs.cpu()
-        action = lambda: run_mnist_training_step(vk_model, optimizer, cpu_inputs, vk_targets)
+        action = lambda: run_mnist_training_step(
+            vk_model, optimizer, cpu_inputs, vk_targets
+        )
         message = "vk:0"
     else:
         action = None
@@ -1015,7 +1079,8 @@ def test_mnist_unsupported_boundaries_reject_without_side_effects(case, vulkan_b
         message = "contiguous"
 
     rejected_model.register_buffer(
-        "rejection_sentinel", torch.tensor([3.0], dtype=torch.float32).to(vulkan_backend)
+        "rejection_sentinel",
+        torch.tensor([3.0], dtype=torch.float32).to(vulkan_backend),
     )
     optimizer = _make_sgd(rejected_model.parameters())
     for parameter in rejected_model.parameters():
@@ -1039,14 +1104,17 @@ def test_mnist_unsupported_boundaries_reject_without_side_effects(case, vulkan_b
     def snapshot_state():
         return {
             parameter: {
-                name: snapshot_tensor(value) if isinstance(value, torch.Tensor) else value
+                name: snapshot_tensor(value)
+                if isinstance(value, torch.Tensor)
+                else value
                 for name, value in state.items()
             }
             for parameter, state in optimizer.state.items()
         }
 
     before_parameters = {
-        parameter: snapshot_tensor(parameter) for parameter in rejected_model.parameters()
+        parameter: snapshot_tensor(parameter)
+        for parameter in rejected_model.parameters()
     }
     before_buffers = {
         name: snapshot_tensor(value) for name, value in rejected_model.named_buffers()

@@ -11,7 +11,9 @@ def _spawn_vulkan_child(queue, result_queue):
     tensor = queue.get()
     vulkan_tensor = tensor.to("vk")
     result = torch.add(vulkan_tensor, 2.0).cpu()
-    result_queue.put((result.tolist(), result.device.type, pytorch_vulkan.is_available()))
+    result_queue.put(
+        (result.tolist(), result.device.type, pytorch_vulkan.is_available())
+    )
 
 
 def _spawn_view_child(queue, result_queue):
@@ -86,7 +88,9 @@ def test_repeated_spawned_children_exit_cleanly(vulkan_backend):
     for value in range(4):
         queue = context.Queue()
         result_queue = context.Queue()
-        process = context.Process(target=_spawn_vulkan_child, args=(queue, result_queue))
+        process = context.Process(
+            target=_spawn_vulkan_child, args=(queue, result_queue)
+        )
         queue.put(torch.tensor([float(value)], dtype=torch.float32))
         process.start()
         values, device_type, available = result_queue.get(timeout=30)

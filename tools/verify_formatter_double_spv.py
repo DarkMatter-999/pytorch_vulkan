@@ -8,7 +8,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/vulkan/shaders/glsl/formatter_double.comp"
 GENERATED = ROOT / "src/vulkan/shaders/generated/formatter_double_spv.h"
 MANIFEST = ROOT / "src/vulkan/shaders/generated/formatter_double_spv.sha256"
-expected = dict(line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines())
+expected = dict(
+    line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines()
+)
 with tempfile.TemporaryDirectory() as directory:
     binary = pathlib.Path(directory) / "formatter_double.comp.spv"
     subprocess.run(["glslc", "-Os", "-o", str(binary), str(SOURCE)], check=True)

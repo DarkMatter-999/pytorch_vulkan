@@ -13,9 +13,7 @@ FORMATTER_CONVERSION_ERROR = (
     "Vulkan formatter conversion supports only Vulkan float32 to Vulkan Double"
 )
 REQUESTED_DTYPE_ERROR = "Vulkan _to_copy requested dtype does not match source dtype"
-DOUBLE_READBACK_ERROR = (
-    "Vulkan formatter Double payload readback to CPU is unsupported"
-)
+DOUBLE_READBACK_ERROR = "Vulkan formatter Double payload readback to CPU is unsupported"
 
 
 @pytest.fixture
@@ -41,7 +39,9 @@ def test_formatter_double_capability_is_explicit(vulkan_backend):
 
 
 def test_f32_to_double_conversion_is_vulkan_resident(vulkan_backend):
-    source = torch.tensor([1.25, -2.5, 0.0, 7.0], dtype=torch.float32).to(vulkan_backend)
+    source = torch.tensor([1.25, -2.5, 0.0, 7.0], dtype=torch.float32).to(
+        vulkan_backend
+    )
 
     if not pytorch_vulkan.formatter_double_supported():
         with pytest.raises(RuntimeError, match=re.escape(FORMATTER_DOUBLE_ERROR)):

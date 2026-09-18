@@ -5,8 +5,8 @@
 #include "vulkan_execution.h"
 #include "vulkan_layout.h"
 
-#include <c10/util/Exception.h>
 #include <ATen/MemoryOverlap.h>
+#include <c10/util/Exception.h>
 #include <torch/library.h>
 
 #include <limits>
@@ -52,9 +52,11 @@ std::size_t checked_bytes(const at::Tensor &destination, const at::Tensor &sourc
 }
 
 std::size_t checked_range_bytes(const at::Tensor &source, std::size_t bytes) {
-    TORCH_CHECK(source.storage_offset() >= 0, "Vulkan formatter presentation has a negative storage offset");
+    TORCH_CHECK(source.storage_offset() >= 0,
+                "Vulkan formatter presentation has a negative storage offset");
     const auto offset = static_cast<uint64_t>(source.storage_offset());
-    const auto element_bytes = pytorch_vulkan::vulkan_storage_bytes(source.scalar_type());
+    const auto element_bytes =
+        pytorch_vulkan::vulkan_storage_bytes(source.scalar_type());
     TORCH_CHECK(offset <= std::numeric_limits<uint64_t>::max() / element_bytes,
                 "Vulkan formatter presentation offset overflows");
     const auto byte_offset = offset * element_bytes;
@@ -65,7 +67,8 @@ std::size_t checked_range_bytes(const at::Tensor &source, std::size_t bytes) {
 
 uint64_t checked_byte_offset(int64_t element_offset, uint64_t element_bytes,
                              const char *label) {
-    TORCH_CHECK(element_offset >= 0, "Vulkan ", label, " has a negative element offset");
+    TORCH_CHECK(element_offset >= 0, "Vulkan ", label,
+                " has a negative element offset");
     const auto offset = static_cast<uint64_t>(element_offset);
     TORCH_CHECK(offset <= std::numeric_limits<uint64_t>::max() / element_bytes,
                 "Vulkan ", label, " byte offset overflows");
@@ -95,30 +98,34 @@ TransferLayout transfer_layout(const at::Tensor &tensor, const char *label) {
     TORCH_CHECK(result.numel >= 0, "Vulkan copy has a negative element count");
     if (is_vulkan_device(tensor.device())) {
         result.vulkan = true;
-        result.vulkan_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, label);
+        result.vulkan_layout =
+            pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, label);
     }
     return result;
 }
 
 uint64_t logical_offset(const TransferLayout &layout, int64_t linear_index) {
     if (layout.vulkan)
-        return static_cast<uint64_t>(pytorch_vulkan::vulkan_storage_offset(
-            layout.vulkan_layout, linear_index));
+        return static_cast<uint64_t>(
+            pytorch_vulkan::vulkan_storage_offset(layout.vulkan_layout, linear_index));
     TORCH_CHECK(linear_index >= 0 && linear_index < layout.numel,
                 "Vulkan copy linear index is out of range");
     uint64_t offset = 0;
     if (!layout.sizes.empty()) {
         uint64_t remaining = static_cast<uint64_t>(linear_index);
-        for (int64_t dim = static_cast<int64_t>(layout.sizes.size()) - 1; dim >= 0; --dim) {
-            const auto coordinate = remaining % static_cast<uint64_t>(layout.sizes[dim]);
+        for (int64_t dim = static_cast<int64_t>(layout.sizes.size()) - 1; dim >= 0;
+             --dim) {
+            const auto coordinate =
+                remaining % static_cast<uint64_t>(layout.sizes[dim]);
             remaining /= static_cast<uint64_t>(layout.sizes[dim]);
             if (layout.strides[dim] == 0)
                 continue;
             TORCH_CHECK(coordinate <= std::numeric_limits<uint64_t>::max() /
-                                         static_cast<uint64_t>(layout.strides[dim]),
+                                          static_cast<uint64_t>(layout.strides[dim]),
                         "Vulkan copy address arithmetic overflow");
-            TORCH_CHECK(offset <= std::numeric_limits<uint64_t>::max() -
-                                         coordinate * static_cast<uint64_t>(layout.strides[dim]),
+            TORCH_CHECK(offset <=
+                            std::numeric_limits<uint64_t>::max() -
+                                coordinate * static_cast<uint64_t>(layout.strides[dim]),
                         "Vulkan copy address arithmetic overflow");
             offset += coordinate * static_cast<uint64_t>(layout.strides[dim]);
         }
@@ -127,7 +134,8 @@ uint64_t logical_offset(const TransferLayout &layout, int64_t linear_index) {
 }
 
 bool same_allocation(const at::Tensor &lhs, const at::Tensor &rhs) {
-    return lhs.storage().data_ptr().get_context() == rhs.storage().data_ptr().get_context();
+    return lhs.storage().data_ptr().get_context() ==
+           rhs.storage().data_ptr().get_context();
 }
 
 bool same_layout(const TransferLayout &lhs, const TransferLayout &rhs) {
@@ -142,9 +150,11 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
     destination_layout = transfer_layout(destination, "destination");
     source_layout = transfer_layout(source, "source");
     if (destination.scalar_type() != source.scalar_type() &&
-        (destination.scalar_type() == at::kDouble || source.scalar_type() == at::kDouble)) {
-        TORCH_CHECK(false,
-                    "Vulkan copy supports only float32 and bool tensors for this transfer");
+        (destination.scalar_type() == at::kDouble ||
+         source.scalar_type() == at::kDouble)) {
+        TORCH_CHECK(
+            false,
+            "Vulkan copy supports only float32 and bool tensors for this transfer");
     }
     TORCH_CHECK(destination.scalar_type() == source.scalar_type(),
                 "Vulkan copy requires matching dtypes");
@@ -157,19 +167,23 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
         TORCH_CHECK(at::has_internal_overlap(destination) == at::MemOverlap::No,
                     "Vulkan copy destination has internal overlap");
     }
-    TORCH_CHECK(!(destination_cpu && !source_cpu && source.scalar_type() == at::kDouble),
-                "Vulkan formatter Double payload readback to CPU is unsupported");
-    TORCH_CHECK(!(destination_cpu && source_cpu),
-                "Vulkan copy ", direction(destination, source),
-                " requires exactly one CPU and one Vulkan device, or two Vulkan tensors; destination ",
+    TORCH_CHECK(
+        !(destination_cpu && !source_cpu && source.scalar_type() == at::kDouble),
+        "Vulkan formatter Double payload readback to CPU is unsupported");
+    TORCH_CHECK(!(destination_cpu && source_cpu), "Vulkan copy ",
+                direction(destination, source),
+                " requires exactly one CPU and one Vulkan device, or two Vulkan "
+                "tensors; destination ",
                 destination.device(), ", source ", source.device());
-    TORCH_CHECK(destination_cpu ? is_vulkan_device(source.device())
-                                : is_vulkan_device(destination.device()),
-                "Vulkan copy requires a CPU and PrivateUse1/Vulkan device; destination ",
-                destination.device(), ", source ", source.device());
-    const c10::Device &vulkan_device = destination_cpu ? source.device() : destination.device();
-    TORCH_CHECK(vulkan_device.index() == 0,
-                "Vulkan copy ", direction(destination, source),
+    TORCH_CHECK(
+        destination_cpu ? is_vulkan_device(source.device())
+                        : is_vulkan_device(destination.device()),
+        "Vulkan copy requires a CPU and PrivateUse1/Vulkan device; destination ",
+        destination.device(), ", source ", source.device());
+    const c10::Device &vulkan_device =
+        destination_cpu ? source.device() : destination.device();
+    TORCH_CHECK(vulkan_device.index() == 0, "Vulkan copy ",
+                direction(destination, source),
                 " supports only Vulkan device index 0, got ", vulkan_device.index());
     if (!destination_cpu && !source_cpu) {
         TORCH_CHECK(destination.device() == source.device(),
@@ -180,9 +194,11 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
         if (same_allocation(destination, source)) {
             const auto &dl = destination_layout.vulkan_layout;
             const auto &sl = source_layout.vulkan_layout;
-            const bool ranges_overlap = dl.byte_offset < sl.byte_offset + sl.byte_range &&
+            const bool ranges_overlap =
+                dl.byte_offset < sl.byte_offset + sl.byte_range &&
                 sl.byte_offset < dl.byte_offset + dl.byte_range;
-            TORCH_CHECK(!ranges_overlap || same_layout(destination_layout, source_layout),
+            TORCH_CHECK(!ranges_overlap ||
+                            same_layout(destination_layout, source_layout),
                         "Vulkan copy source and destination partially overlap");
         }
     }
@@ -193,12 +209,12 @@ void record_vulkan_copy(const VulkanPlatform &platform, VkBuffer source,
                         VkBuffer destination, VkDeviceSize size,
                         VkDeviceSize source_offset, VkDeviceSize destination_offset) {
     VkCommandBuffer command_buffer = platform.execution_context().command_buffer();
-    const VkMemoryBarrier before_copy{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_ACCESS_TRANSFER_READ_BIT};
+    const VkMemoryBarrier before_copy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                      VK_ACCESS_SHADER_WRITE_BIT,
+                                      VK_ACCESS_TRANSFER_READ_BIT};
     vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0,
-                         nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0, nullptr,
+                         0, nullptr);
     const VkBufferCopy copy_region{source_offset, destination_offset, size};
     vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
     platform.record_copy_command();
@@ -219,14 +235,14 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
     TORCH_CHECK(source_layout.internal_overlap == VulkanOverlap::No,
                 "Vulkan reshape copy requires a non-overlapping source layout");
 
-    at::Tensor destination = at::empty(source.sizes(),
-                                       source.options().device(source.device()));
+    at::Tensor destination =
+        at::empty(source.sizes(), source.options().device(source.device()));
     const auto destination_layout =
         inspect_vulkan_tensor_layout(destination, "reshape destination");
     TORCH_CHECK(destination_layout.internal_overlap == VulkanOverlap::No &&
                     destination_layout.storage_offset == 0 &&
                     at::geometry_is_contiguous(destination_layout.sizes,
-                                                destination_layout.strides),
+                                               destination_layout.strides),
                 "Vulkan reshape copy requires a contiguous destination layout");
     TORCH_CHECK(source_layout.scalar_type == destination_layout.scalar_type,
                 "Vulkan reshape copy requires matching dtypes");
@@ -239,7 +255,8 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
 
     const at::DataPtr &source_data = source.storage().data_ptr();
     const at::DataPtr &destination_data = destination.storage().data_ptr();
-    validate_allocation(source_data, source_layout.byte_offset + source_layout.byte_range,
+    validate_allocation(source_data,
+                        source_layout.byte_offset + source_layout.byte_range,
                         "reshape source");
     validate_allocation(destination_data,
                         destination_layout.byte_offset + destination_layout.byte_range,
@@ -251,31 +268,36 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
                 "Vulkan reshape copy requires tensors on the same Vulkan device");
     platform.record_vulkan_copy();
 
-    const bool source_contiguous = at::geometry_is_contiguous(
-        source_layout.sizes, source_layout.strides);
+    const bool source_contiguous =
+        at::geometry_is_contiguous(source_layout.sizes, source_layout.strides);
     if (source_contiguous) {
         if (platform.execution_context().recording()) {
-            record_vulkan_copy(platform, source_buffer.buffer(), destination_buffer.buffer(),
-                               static_cast<VkDeviceSize>(source_layout.byte_range),
-                               source_layout.byte_offset, destination_layout.byte_offset);
+            record_vulkan_copy(
+                platform, source_buffer.buffer(), destination_buffer.buffer(),
+                static_cast<VkDeviceSize>(source_layout.byte_range),
+                source_layout.byte_offset, destination_layout.byte_offset);
         } else {
-            platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
-                                       static_cast<VkDeviceSize>(source_layout.byte_range),
-                                       source_layout.byte_offset, destination_layout.byte_offset);
+            platform.copy_buffer_sync(
+                source_buffer.buffer(), destination_buffer.buffer(),
+                static_cast<VkDeviceSize>(source_layout.byte_range),
+                source_layout.byte_offset, destination_layout.byte_offset);
         }
         return destination;
     }
 
     for (int64_t index = 0; index < source_layout.numel; ++index) {
         const auto source_element = vulkan_storage_offset(source_layout, index);
-        const auto destination_element = vulkan_storage_offset(destination_layout, index);
+        const auto destination_element =
+            vulkan_storage_offset(destination_layout, index);
         const auto source_offset = static_cast<VkDeviceSize>(checked_byte_offset(
             source_element, source_layout.element_bytes, "reshape source"));
-        const auto destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
-            destination_element, destination_layout.element_bytes, "reshape destination"));
-        platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
-                                  static_cast<VkDeviceSize>(source_layout.element_bytes),
-                                  source_offset, destination_offset);
+        const auto destination_offset = static_cast<VkDeviceSize>(
+            checked_byte_offset(destination_element, destination_layout.element_bytes,
+                                "reshape destination"));
+        platform.copy_buffer_sync(
+            source_buffer.buffer(), destination_buffer.buffer(),
+            static_cast<VkDeviceSize>(source_layout.element_bytes), source_offset,
+            destination_offset);
     }
     return destination;
 }
@@ -309,7 +331,7 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     const bool cpu_to_vulkan = source.device().is_cpu();
     const bool vulkan_to_vulkan = !destination.device().is_cpu() && !cpu_to_vulkan;
     const bool label_copy = vulkan_to_vulkan && source.scalar_type() == at::kLong &&
-        destination.scalar_type() == at::kLong;
+                            destination.scalar_type() == at::kLong;
     if (label_copy) {
         TORCH_CHECK(is_validated_label_allocation(source.storage().data_ptr()),
                     "Vulkan int64 copy has no validated label provenance");
@@ -322,8 +344,8 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     const at::DataPtr &vulkan_data = vulkan_tensor.storage().data_ptr();
     VulkanBuffer &vulkan_buffer = allocation_buffer(vulkan_data);
     const VulkanPlatform &platform = allocation_platform(vulkan_data);
-    const bool host_visible = (vulkan_buffer.memory_properties() &
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+    const bool host_visible =
+        (vulkan_buffer.memory_properties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
     std::unique_lock<std::mutex> transfer_lock;
     if (!vulkan_to_vulkan && !host_visible)
         transfer_lock = std::unique_lock<std::mutex>(platform.transfer_mutex());
@@ -337,47 +359,54 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
         platform.record_vulkan_copy();
 
     const auto *cpu_source = source.device().is_cpu()
-        ? static_cast<const char *>(source.data_ptr()) : nullptr;
+                                 ? static_cast<const char *>(source.data_ptr())
+                                 : nullptr;
     auto *cpu_destination = destination.device().is_cpu()
-        ? static_cast<char *>(destination.data_ptr()) : nullptr;
-    const auto element_size = static_cast<VkDeviceSize>(destination_layout.element_bytes);
+                                ? static_cast<char *>(destination.data_ptr())
+                                : nullptr;
+    const auto element_size =
+        static_cast<VkDeviceSize>(destination_layout.element_bytes);
     if (!vulkan_to_vulkan)
         platform.record_explicit_transfer();
 
     const bool bulk_contiguous = source.scalar_type() == at::kFloat &&
-        destination.scalar_type() == at::kFloat && source.is_contiguous() &&
-        destination.is_contiguous();
+                                 destination.scalar_type() == at::kFloat &&
+                                 source.is_contiguous() && destination.is_contiguous();
     if (bulk_contiguous) {
-        const VkDeviceSize source_offset = static_cast<VkDeviceSize>(checked_byte_offset(
-            static_cast<int64_t>(logical_offset(source_layout, 0)),
-            source_layout.element_bytes, "source"));
-        const VkDeviceSize destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
-            static_cast<int64_t>(logical_offset(destination_layout, 0)),
-            destination_layout.element_bytes, "destination"));
+        const VkDeviceSize source_offset = static_cast<VkDeviceSize>(
+            checked_byte_offset(static_cast<int64_t>(logical_offset(source_layout, 0)),
+                                source_layout.element_bytes, "source"));
+        const VkDeviceSize destination_offset =
+            static_cast<VkDeviceSize>(checked_byte_offset(
+                static_cast<int64_t>(logical_offset(destination_layout, 0)),
+                destination_layout.element_bytes, "destination"));
         if (cpu_to_vulkan) {
             if (host_visible) {
                 vulkan_buffer.write(cpu_source, bytes, destination_offset);
             } else {
                 staging->write(cpu_source, bytes);
                 platform.copy_buffer_sync(staging->buffer(), vulkan_buffer.buffer(),
-                                           bytes, 0, destination_offset);
+                                          bytes, 0, destination_offset);
             }
         } else if (vulkan_to_vulkan) {
             const auto &source_buffer = allocation_buffer(source.storage().data_ptr());
-            auto &destination_buffer = allocation_buffer(destination.storage().data_ptr());
+            auto &destination_buffer =
+                allocation_buffer(destination.storage().data_ptr());
             if (platform.execution_context().recording()) {
-                record_vulkan_copy(platform, source_buffer.buffer(), destination_buffer.buffer(),
-                                   bytes, source_offset, destination_offset);
+                record_vulkan_copy(platform, source_buffer.buffer(),
+                                   destination_buffer.buffer(), bytes, source_offset,
+                                   destination_offset);
             } else {
-                platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
-                                           bytes, source_offset, destination_offset);
+                platform.copy_buffer_sync(source_buffer.buffer(),
+                                          destination_buffer.buffer(), bytes,
+                                          source_offset, destination_offset);
             }
         } else {
             if (host_visible) {
                 vulkan_buffer.read(cpu_destination, bytes, source_offset);
             } else {
                 platform.copy_buffer_sync(vulkan_buffer.buffer(), staging->buffer(),
-                                           bytes, source_offset, 0);
+                                          bytes, source_offset, 0);
                 staging->read(cpu_destination, bytes);
             }
         }
@@ -385,33 +414,37 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
         return destination;
     }
     for (int64_t index = 0; index < destination_layout.numel; ++index) {
-        const VkDeviceSize destination_offset = static_cast<VkDeviceSize>(checked_byte_offset(
-            static_cast<int64_t>(logical_offset(destination_layout, index)),
-            destination_layout.element_bytes, "destination"));
-        const VkDeviceSize source_offset = static_cast<VkDeviceSize>(checked_byte_offset(
-            static_cast<int64_t>(logical_offset(source_layout, index)),
-            source_layout.element_bytes, "source"));
+        const VkDeviceSize destination_offset =
+            static_cast<VkDeviceSize>(checked_byte_offset(
+                static_cast<int64_t>(logical_offset(destination_layout, index)),
+                destination_layout.element_bytes, "destination"));
+        const VkDeviceSize source_offset =
+            static_cast<VkDeviceSize>(checked_byte_offset(
+                static_cast<int64_t>(logical_offset(source_layout, index)),
+                source_layout.element_bytes, "source"));
         if (cpu_to_vulkan) {
             if (host_visible) {
                 vulkan_buffer.write(cpu_source + source_offset, element_size,
-                                     destination_offset);
+                                    destination_offset);
             } else {
                 staging->write(cpu_source + source_offset, element_size);
                 platform.copy_buffer_sync(staging->buffer(), vulkan_buffer.buffer(),
-                                           element_size, 0, destination_offset);
+                                          element_size, 0, destination_offset);
             }
         } else if (vulkan_to_vulkan) {
             const auto &source_buffer = allocation_buffer(source.storage().data_ptr());
-            auto &destination_buffer = allocation_buffer(destination.storage().data_ptr());
-            platform.copy_buffer_sync(source_buffer.buffer(), destination_buffer.buffer(),
-                                       element_size, source_offset, destination_offset);
+            auto &destination_buffer =
+                allocation_buffer(destination.storage().data_ptr());
+            platform.copy_buffer_sync(source_buffer.buffer(),
+                                      destination_buffer.buffer(), element_size,
+                                      source_offset, destination_offset);
         } else {
             if (host_visible) {
                 vulkan_buffer.read(cpu_destination + destination_offset, element_size,
                                    source_offset);
             } else {
                 platform.copy_buffer_sync(vulkan_buffer.buffer(), staging->buffer(),
-                                           element_size, source_offset, 0);
+                                          element_size, source_offset, 0);
                 staging->read(cpu_destination + destination_offset, element_size);
             }
         }
@@ -422,8 +455,9 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
 
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                                         const at::Tensor &source) {
-    TORCH_CHECK(destination.device().is_cpu() && !source.device().is_cpu(),
-                "Vulkan formatter presentation requires Vulkan source and CPU destination");
+    TORCH_CHECK(
+        destination.device().is_cpu() && !source.device().is_cpu(),
+        "Vulkan formatter presentation requires Vulkan source and CPU destination");
     TORCH_CHECK(destination.layout() == at::kStrided && source.layout() == at::kStrided,
                 "Vulkan formatter presentation requires strided tensors");
     if (!destination.is_contiguous() || !source.is_contiguous())

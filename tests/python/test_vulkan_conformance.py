@@ -80,11 +80,11 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
             "masked-select.strided-value-view",
             "reduction.softmax.dim",
             "reduction.log-softmax.dim",
-                "reduction.softmax.backward",
-                "reduction.log-softmax.backward",
-                "unary.sigmoid.backward",
-                "unary.tanh.backward",
-                "unary.gelu.tanh.backward",
+            "reduction.softmax.backward",
+            "reduction.log-softmax.backward",
+            "unary.sigmoid.backward",
+            "unary.tanh.backward",
+            "unary.gelu.tanh.backward",
         }:
             assert pytorch_vulkan._C.compute_dispatch_count() == 0
     else:
@@ -97,7 +97,9 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
 
 
 @pytest.mark.parametrize(
-    "case", [case for case in ALL_CASES if case.check_gradients], ids=lambda case: case.name
+    "case",
+    [case for case in ALL_CASES if case.check_gradients],
+    ids=lambda case: case.name,
 )
 def test_declared_autograd_case_matches_cpu(vulkan_backend, case):
     assert_gradients(case, vulkan_backend)
@@ -178,7 +180,9 @@ def test_optimizer_step_preserves_an_outer_training_scope(vulkan_backend):
         pytorch_vulkan._C.cancel_training_step()
 
 
-@pytest.mark.parametrize("case_name", ["optimizer.add.inplace", "optimizer.mul.scalar.inplace"])
+@pytest.mark.parametrize(
+    "case_name", ["optimizer.add.inplace", "optimizer.mul.scalar.inplace"]
+)
 def test_direct_optimizer_inplace_schema_preserves_an_outer_training_scope(
     vulkan_backend, case_name
 ):

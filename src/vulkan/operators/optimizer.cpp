@@ -44,15 +44,17 @@ pytorch_vulkan::VulkanTensorLayout validate_tensor(const at::Tensor &tensor,
                 "Vulkan ", name, " requires a strided float32 tensor");
     TORCH_CHECK(tensor.is_contiguous(), "Vulkan ", name,
                 " requires a contiguous tensor");
-    TORCH_CHECK(at::has_internal_overlap(tensor) == at::MemOverlap::No,
-                "Vulkan ", name, " tensor has internal overlap");
+    TORCH_CHECK(at::has_internal_overlap(tensor) == at::MemOverlap::No, "Vulkan ", name,
+                " tensor has internal overlap");
     auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, name);
-    TORCH_CHECK(layout.rank <= 8 && layout.numel <= std::numeric_limits<uint32_t>::max(),
+    TORCH_CHECK(layout.rank <= 8 &&
+                    layout.numel <= std::numeric_limits<uint32_t>::max(),
                 "Vulkan ", name, " tensor layout exceeds supported range");
     return layout;
 }
 
-void validate_overlap(const at::Tensor &input, const at::Tensor &self, const char *name) {
+void validate_overlap(const at::Tensor &input, const at::Tensor &self,
+                      const char *name) {
     const auto overlap = at::get_overlap_status(input, self);
     TORCH_CHECK(overlap != at::MemOverlapStatus::Partial &&
                     overlap != at::MemOverlapStatus::TooHard,
@@ -65,8 +67,10 @@ at::Tensor &dispatch_compound(at::Tensor &self, const at::Tensor &tensor1,
     const auto self_layout = validate_tensor(self, name);
     const auto tensor1_layout = validate_tensor(tensor1, name);
     const auto tensor2_layout = validate_tensor(tensor2, name);
-    TORCH_CHECK(self.device() == tensor1.device() && self.device() == tensor2.device() &&
-                    self.sizes().equals(tensor1.sizes()) && self.sizes().equals(tensor2.sizes()),
+    TORCH_CHECK(self.device() == tensor1.device() &&
+                    self.device() == tensor2.device() &&
+                    self.sizes().equals(tensor1.sizes()) &&
+                    self.sizes().equals(tensor2.sizes()),
                 "Vulkan ", name, " requires matching Vulkan tensor operands");
     const float scalar = scalar_to_float(value, name);
     validate_overlap(tensor1, self, name);
@@ -74,9 +78,12 @@ at::Tensor &dispatch_compound(at::Tensor &self, const at::Tensor &tensor1,
     const auto &self_data = self.storage().data_ptr();
     const auto &tensor1_data = tensor1.storage().data_ptr();
     const auto &tensor2_data = tensor2.storage().data_ptr();
-    pytorch_vulkan::validate_allocation(self_data, self_layout.allocation_bytes, "self");
-    pytorch_vulkan::validate_allocation(tensor1_data, tensor1_layout.allocation_bytes, "tensor1");
-    pytorch_vulkan::validate_allocation(tensor2_data, tensor2_layout.allocation_bytes, "tensor2");
+    pytorch_vulkan::validate_allocation(self_data, self_layout.allocation_bytes,
+                                        "self");
+    pytorch_vulkan::validate_allocation(tensor1_data, tensor1_layout.allocation_bytes,
+                                        "tensor1");
+    pytorch_vulkan::validate_allocation(tensor2_data, tensor2_layout.allocation_bytes,
+                                        "tensor2");
     const auto &platform = pytorch_vulkan::allocation_platform(self_data);
     TORCH_CHECK(&platform == &pytorch_vulkan::allocation_platform(tensor1_data) &&
                     &platform == &pytorch_vulkan::allocation_platform(tensor2_data),
@@ -86,7 +93,8 @@ at::Tensor &dispatch_compound(at::Tensor &self, const at::Tensor &tensor1,
             pytorch_vulkan::allocation_buffer(self_data).buffer(), self_layout,
             pytorch_vulkan::allocation_buffer(tensor1_data).buffer(), tensor1_layout,
             pytorch_vulkan::allocation_buffer(tensor2_data).buffer(), tensor2_layout,
-            pytorch_vulkan::allocation_buffer(self_data).buffer(), self_layout, scalar, operation);
+            pytorch_vulkan::allocation_buffer(self_data).buffer(), self_layout, scalar,
+            operation);
     }
     return self;
 }

@@ -73,10 +73,11 @@ at::Tensor dispatch(const at::Tensor &input, const at::Tensor &grad,
     validate_allocation(output_data, bytes(output, "output"), "pooling output");
     platform.compute().pooling(
         allocation_buffer(operation == 0 ? input_data : grad_data).buffer(),
-        allocation_buffer(output_data).buffer(), operation == 0 ? input_layout : grad_layout,
-        output_layout, static_cast<uint32_t>(input.size(0)),
-        static_cast<uint32_t>(input.size(1)), static_cast<uint32_t>(input.size(2)),
-        static_cast<uint32_t>(input.size(3)), operation);
+        allocation_buffer(output_data).buffer(),
+        operation == 0 ? input_layout : grad_layout, output_layout,
+        static_cast<uint32_t>(input.size(0)), static_cast<uint32_t>(input.size(1)),
+        static_cast<uint32_t>(input.size(2)), static_cast<uint32_t>(input.size(3)),
+        operation);
     return output;
 }
 } // namespace

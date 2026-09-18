@@ -11,12 +11,16 @@ MANIFEST = ROOT / "src/vulkan/shaders/generated/linear_relu_backward_spv.sha256"
 
 subprocess.run(["glslc", "-Os", "-o", str(BINARY), str(SOURCE)], check=True)
 data = BINARY.read_bytes()
-words = [int.from_bytes(data[i:i + 4], "little") for i in range(0, len(data), 4)]
+words = [int.from_bytes(data[i : i + 4], "little") for i in range(0, len(data), 4)]
 with HEADER.open("w", encoding="ascii") as header:
     header.write("#pragma once\n#include <cstddef>\n#include <cstdint>\n")
-    header.write("namespace vulkan_backward_shader {\ninline constexpr uint32_t kCode[] = {\n")
+    header.write(
+        "namespace vulkan_backward_shader {\ninline constexpr uint32_t kCode[] = {\n"
+    )
     for i in range(0, len(words), 8):
-        header.write("    " + ", ".join(f"0x{x:08x}U" for x in words[i:i + 8]) + ",\n")
+        header.write(
+            "    " + ", ".join(f"0x{x:08x}U" for x in words[i : i + 8]) + ",\n"
+        )
     header.write("};\ninline constexpr std::size_t kCodeSize = sizeof(kCode);\n}\n")
 
 MANIFEST.write_text(

@@ -8,8 +8,8 @@
 #include "vulkan_layout.h"
 #include "vulkan_platform.h"
 
-#include <c10/util/Exception.h>
 #include <c10/core/GradMode.h>
+#include <c10/util/Exception.h>
 #include <limits>
 #include <torch/autograd.h>
 #include <torch/library.h>
@@ -28,14 +28,14 @@ void validate_tensor(const at::Tensor &tensor, const char *name) {
 
 uint32_t validate_common(const at::Tensor &input, const at::Tensor &target,
                          int64_t reduction, const char *name) {
-    TORCH_CHECK(reduction >= 0 && reduction <= 2,
-                "Vulkan mse_loss ", name, " supports reductions none, mean, and sum");
+    TORCH_CHECK(reduction >= 0 && reduction <= 2, "Vulkan mse_loss ", name,
+                " supports reductions none, mean, and sum");
     validate_tensor(input, "input");
     validate_tensor(target, "target");
-    TORCH_CHECK(input.sizes().equals(target.sizes()),
-                "Vulkan mse_loss ", name, " requires matching input and target shapes");
-    TORCH_CHECK(input.numel() >= 0 &&
-                    static_cast<uint64_t>(input.numel()) <= std::numeric_limits<uint32_t>::max(),
+    TORCH_CHECK(input.sizes().equals(target.sizes()), "Vulkan mse_loss ", name,
+                " requires matching input and target shapes");
+    TORCH_CHECK(input.numel() >= 0 && static_cast<uint64_t>(input.numel()) <=
+                                          std::numeric_limits<uint32_t>::max(),
                 "Vulkan mse_loss ", name, " exceeds dispatch limits");
     return static_cast<uint32_t>(input.numel());
 }
@@ -43,7 +43,8 @@ uint32_t validate_common(const at::Tensor &input, const at::Tensor &target,
 at::Tensor dispatch_loss(const at::Tensor &input, const at::Tensor &target,
                          int64_t reduction) {
     const uint32_t elements = validate_common(input, target, reduction, "forward");
-    auto output = reduction == 0 ? at::empty_like(input) : at::empty({}, input.options());
+    auto output =
+        reduction == 0 ? at::empty_like(input) : at::empty({}, input.options());
     if (elements == 0) {
         if (reduction != 0) {
             auto layout = inspect_vulkan_tensor_layout(output, "mse_loss output");
@@ -68,15 +69,17 @@ at::Tensor dispatch_loss(const at::Tensor &input, const at::Tensor &target,
     TORCH_CHECK(&platform == &allocation_platform(target_data) &&
                     &platform == &allocation_platform(output_data),
                 "Vulkan mse_loss requires one Vulkan platform");
-    platform.compute().mse_loss(
-        &allocation_buffer(input_data), input_layout, &allocation_buffer(target_data), target_layout,
-        &allocation_buffer(input_data), input_layout, &allocation_buffer(output_data), output_layout,
-        elements, static_cast<uint32_t>(reduction), false);
+    platform.compute().mse_loss(&allocation_buffer(input_data), input_layout,
+                                &allocation_buffer(target_data), target_layout,
+                                &allocation_buffer(input_data), input_layout,
+                                &allocation_buffer(output_data), output_layout,
+                                elements, static_cast<uint32_t>(reduction), false);
     return output;
 }
 } // namespace
 
-at::Tensor mse_loss(const at::Tensor &input, const at::Tensor &target, int64_t reduction) {
+at::Tensor mse_loss(const at::Tensor &input, const at::Tensor &target,
+                    int64_t reduction) {
     return dispatch_loss(input, target, reduction);
 }
 
@@ -84,36 +87,47 @@ at::Tensor mse_loss_backward(const at::Tensor &grad_output, const at::Tensor &in
                              const at::Tensor &target, int64_t reduction) {
     const uint32_t elements = validate_common(input, target, reduction, "backward");
     validate_tensor(grad_output, "grad_output");
-    TORCH_CHECK(reduction == 0 ? grad_output.sizes().equals(input.sizes()) : grad_output.dim() == 0,
+    TORCH_CHECK(reduction == 0 ? grad_output.sizes().equals(input.sizes())
+                               : grad_output.dim() == 0,
                 "Vulkan mse_loss backward has an invalid grad_output shape");
     auto result = at::empty_like(input);
-    if (elements == 0) return result;
-    const auto input_layout = inspect_vulkan_tensor_layout(input, "mse_loss backward input");
-    const auto target_layout = inspect_vulkan_tensor_layout(target, "mse_loss backward target");
-    const auto grad_layout = inspect_vulkan_tensor_layout(grad_output, "mse_loss backward grad");
-    const auto result_layout = inspect_vulkan_tensor_layout(result, "mse_loss backward result");
+    if (elements == 0)
+        return result;
+    const auto input_layout =
+        inspect_vulkan_tensor_layout(input, "mse_loss backward input");
+    const auto target_layout =
+        inspect_vulkan_tensor_layout(target, "mse_loss backward target");
+    const auto grad_layout =
+        inspect_vulkan_tensor_layout(grad_output, "mse_loss backward grad");
+    const auto result_layout =
+        inspect_vulkan_tensor_layout(result, "mse_loss backward result");
     const auto &input_data = input.storage().data_ptr();
     const auto &target_data = target.storage().data_ptr();
     const auto &grad_data = grad_output.storage().data_ptr();
     const auto &result_data = result.storage().data_ptr();
-    validate_allocation(input_data, input_layout.allocation_bytes, "mse_loss backward input");
-    validate_allocation(target_data, target_layout.allocation_bytes, "mse_loss backward target");
-    validate_allocation(grad_data, grad_layout.allocation_bytes, "mse_loss backward grad");
-    validate_allocation(result_data, result_layout.allocation_bytes, "mse_loss backward result");
+    validate_allocation(input_data, input_layout.allocation_bytes,
+                        "mse_loss backward input");
+    validate_allocation(target_data, target_layout.allocation_bytes,
+                        "mse_loss backward target");
+    validate_allocation(grad_data, grad_layout.allocation_bytes,
+                        "mse_loss backward grad");
+    validate_allocation(result_data, result_layout.allocation_bytes,
+                        "mse_loss backward result");
     const auto &platform = allocation_platform(input_data);
     TORCH_CHECK(&platform == &allocation_platform(target_data) &&
                     &platform == &allocation_platform(grad_data) &&
                     &platform == &allocation_platform(result_data),
                 "Vulkan mse_loss backward requires one Vulkan platform");
-    platform.compute().mse_loss(
-        &allocation_buffer(input_data), input_layout, &allocation_buffer(target_data), target_layout,
-        &allocation_buffer(grad_data), grad_layout, &allocation_buffer(result_data), result_layout,
-        elements, static_cast<uint32_t>(reduction), true);
+    platform.compute().mse_loss(&allocation_buffer(input_data), input_layout,
+                                &allocation_buffer(target_data), target_layout,
+                                &allocation_buffer(grad_data), grad_layout,
+                                &allocation_buffer(result_data), result_layout,
+                                elements, static_cast<uint32_t>(reduction), true);
     return result;
 }
 
 class MSELossAutograd final : public torch::autograd::Function<MSELossAutograd> {
-public:
+  public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input, const at::Tensor &target,
                               int64_t reduction) {
@@ -123,12 +137,14 @@ public:
         ctx->saved_data["reduction"] = reduction;
         return output;
     }
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx, torch::autograd::variable_list grads) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grads) {
         at::AutoDispatchBelowAutograd guard;
         TORCH_CHECK(!c10::GradMode::is_enabled(),
                     "Vulkan mse_loss does not support higher-order gradients");
-        if (!grads[0].defined()) return {at::Tensor(), at::Tensor(), at::Tensor()};
+        if (!grads[0].defined())
+            return {at::Tensor(), at::Tensor(), at::Tensor()};
         auto saved = ctx->get_saved_variables();
         return {pytorch_vulkan::mse_loss_backward(grads[0], saved[0], saved[1],
                                                   ctx->saved_data["reduction"].toInt()),

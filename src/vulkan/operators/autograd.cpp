@@ -100,11 +100,12 @@ class LinearReluAutogradFunction final
         ctx->save_for_backward({input, weight, output});
         return output;
     }
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grads) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grads) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined()) return {at::Tensor(), at::Tensor(), at::Tensor()};
+        if (!grads[0].defined())
+            return {at::Tensor(), at::Tensor(), at::Tensor()};
         auto saved = ctx->get_saved_variables();
         if (disable_multi_output_backward() ||
             !supports_multi_output_backward(grads[0]) ||
@@ -115,8 +116,7 @@ class LinearReluAutogradFunction final
                     linear_relu_backward_weight(grads[0], saved[0], saved[2]),
                     linear_relu_backward_bias(grads[0], saved[2])};
         auto gradients = linear_relu_backward(grads[0], saved[0], saved[1], saved[2]);
-        return {std::get<0>(gradients), std::get<1>(gradients),
-                std::get<2>(gradients)};
+        return {std::get<0>(gradients), std::get<1>(gradients), std::get<2>(gradients)};
     }
 };
 class AdaptiveAvgPoolAutogradFunction final
@@ -311,7 +311,8 @@ at::Tensor autograd_relu(const at::Tensor &input) {
 }
 
 at::Tensor autograd_sigmoid(const at::Tensor &input) {
-    return autograd_unary_saved_output<&sigmoid_tensor, &sigmoid_backward_tensor>(input);
+    return autograd_unary_saved_output<&sigmoid_tensor, &sigmoid_backward_tensor>(
+        input);
 }
 
 at::Tensor autograd_tanh(const at::Tensor &input) {
@@ -319,7 +320,8 @@ at::Tensor autograd_tanh(const at::Tensor &input) {
 }
 
 namespace {
-class GeluAutogradFunction final : public torch::autograd::Function<GeluAutogradFunction> {
+class GeluAutogradFunction final
+    : public torch::autograd::Function<GeluAutogradFunction> {
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input, c10::string_view approximate) {
@@ -329,13 +331,14 @@ class GeluAutogradFunction final : public torch::autograd::Function<GeluAutograd
         ctx->save_for_backward({input});
         return gelu_tensor(input, approximate);
     }
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grads) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grads) {
         at::AutoDispatchBelowAutograd guard;
         TORCH_CHECK(!c10::GradMode::is_enabled(),
                     "Vulkan gelu does not support higher-order gradients");
-        if (!grads[0].defined()) return {at::Tensor(), at::Tensor()};
+        if (!grads[0].defined())
+            return {at::Tensor(), at::Tensor()};
         return {gelu_backward_tensor(ctx->get_saved_variables()[0], grads[0], "tanh"),
                 at::Tensor()};
     }

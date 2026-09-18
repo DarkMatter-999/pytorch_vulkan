@@ -13,127 +13,258 @@ TensorFactory = Callable[[], tuple[Any, ...]]
 # These identifiers are the deliberately narrow operation surface in the
 # capability matrix. Unsupported/deferred schemas are listed separately in
 # the capability tests rather than inferred from registry case names.
-DECLARED_OPERATION_MANIFEST = frozenset({
-    "aten::sum.dim_IntList", "aten::mean.dim", "aten::argmax.default",
-    "aten::amax.default", "aten::amax.out", "aten::amin.default", "aten::amin.out",
-    "aten::prod.dim_int", "aten::prod.int_out",
-    "aten::_softmax.default", "aten::_softmax.out", "aten::_log_softmax.default", "aten::_log_softmax.out",
-    "aten::_softmax_backward_data.out", "aten::_log_softmax_backward_data.out",
-    "aten::linear.default", "aten::convolution.default",
-    "aten::convolution_backward.default", "aten::_adaptive_avg_pool2d.default",
-    "aten::_adaptive_avg_pool2d_backward.default", "aten::neg.default",
-    "aten::native_batch_norm.default", "aten::native_batch_norm_backward.default",
-    "aten::nll_loss_forward.default", "aten::nll_loss_backward.default",
-    "aten::abs.default", "aten::relu.default", "aten::add.Tensor",
-    "aten::sub.Tensor", "aten::mul.Tensor", "aten::as_strided.default",
-    "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
-    "aten::masked_select.default",
-    "aten::mse_loss.default", "aten::mse_loss_backward.default",
-    "aten::sigmoid.default", "aten::tanh.default", "aten::gelu.default",
-    "aten::sigmoid_backward.grad_input", "aten::tanh_backward.grad_input",
-    "aten::gelu_backward.grad_input",
-    "aten::div.Tensor", "aten::lerp.Scalar_out", "aten::lerp_.Scalar",
-    "aten::add.Scalar", "aten::add.Scalar_out", "aten::add.out",
-    "aten::sub.Scalar", "aten::sub.Scalar_out", "aten::sub.out",
-    "aten::mul.Scalar", "aten::mul.Scalar_out", "aten::mul.out",
-    "aten::rsub.Scalar", "aten::rsub.Scalar_out",
-    "aten::sqrt.out", "aten::add_.Tensor", "aten::mul_.Scalar",
-    "aten::addcmul_.default", "aten::addcdiv_.default", "aten::zero_.default",
-    "aten::_copy_from.default", "aten::_to_copy.default", "aten::copy_.default",
-    "aten::empty.memory_format", "aten::empty_strided.default",
-})
+DECLARED_OPERATION_MANIFEST = frozenset(
+    {
+        "aten::sum.dim_IntList",
+        "aten::mean.dim",
+        "aten::argmax.default",
+        "aten::amax.default",
+        "aten::amax.out",
+        "aten::amin.default",
+        "aten::amin.out",
+        "aten::prod.dim_int",
+        "aten::prod.int_out",
+        "aten::_softmax.default",
+        "aten::_softmax.out",
+        "aten::_log_softmax.default",
+        "aten::_log_softmax.out",
+        "aten::_softmax_backward_data.out",
+        "aten::_log_softmax_backward_data.out",
+        "aten::linear.default",
+        "aten::convolution.default",
+        "aten::convolution_backward.default",
+        "aten::_adaptive_avg_pool2d.default",
+        "aten::_adaptive_avg_pool2d_backward.default",
+        "aten::neg.default",
+        "aten::native_batch_norm.default",
+        "aten::native_batch_norm_backward.default",
+        "aten::nll_loss_forward.default",
+        "aten::nll_loss_backward.default",
+        "aten::abs.default",
+        "aten::relu.default",
+        "aten::add.Tensor",
+        "aten::sub.Tensor",
+        "aten::mul.Tensor",
+        "aten::as_strided.default",
+        "aten::view.default",
+        "aten::_reshape_alias.default",
+        "aten::reshape.default",
+        "aten::masked_select.default",
+        "aten::mse_loss.default",
+        "aten::mse_loss_backward.default",
+        "aten::sigmoid.default",
+        "aten::tanh.default",
+        "aten::gelu.default",
+        "aten::sigmoid_backward.grad_input",
+        "aten::tanh_backward.grad_input",
+        "aten::gelu_backward.grad_input",
+        "aten::div.Tensor",
+        "aten::lerp.Scalar_out",
+        "aten::lerp_.Scalar",
+        "aten::add.Scalar",
+        "aten::add.Scalar_out",
+        "aten::add.out",
+        "aten::sub.Scalar",
+        "aten::sub.Scalar_out",
+        "aten::sub.out",
+        "aten::mul.Scalar",
+        "aten::mul.Scalar_out",
+        "aten::mul.out",
+        "aten::rsub.Scalar",
+        "aten::rsub.Scalar_out",
+        "aten::sqrt.out",
+        "aten::add_.Tensor",
+        "aten::mul_.Scalar",
+        "aten::addcmul_.default",
+        "aten::addcdiv_.default",
+        "aten::zero_.default",
+        "aten::_copy_from.default",
+        "aten::_to_copy.default",
+        "aten::copy_.default",
+        "aten::empty.memory_format",
+        "aten::empty_strided.default",
+    }
+)
 
 # Roadmap inventory only: these schemas are registered by the backend but remain
 # deferred. Keeping this separate from DECLARED_OPERATION_MANIFEST prevents an
 # inventory entry from being interpreted as a support declaration.
 ROADMAP_OPERATION_FAMILIES = {
-    "transfer/creation": frozenset({
-        "aten::_copy_from_and_resize.default", "aten::_local_scalar_dense.default",
-        "aten::resize_.default", "aten::set_.source_Storage",
-        "aten::set_.source_Storage_storage_offset",
-    }),
-    "scalar and out= pointwise": frozenset({
-        "aten::abs.out", "aten::add_.Scalar", "aten::div.out", "aten::exp.out",
-        "aten::fill_.Scalar", "aten::log.out", "aten::neg.out", "aten::relu.out",
-        "aten::sigmoid.out", "aten::sigmoid_.default", "aten::tanh.out",
-        "aten::tanh_.default", "aten::sub_.Scalar", "aten::sub_.Tensor",
-        "aten::mul_.Tensor",
-    }),
-    "reductions/indexing": frozenset({
-        "aten::argmax.out",
-        "aten::max.default", "aten::mean.default", "aten::mean.out",
-        "aten::min.default", "aten::sum.IntList_out",
-        "aten::sum.default", "aten::maximum.out", "aten::minimum.out",
-    }),
-    "MSE loss": frozenset({
-        "aten::binary_cross_entropy.default",
-        "aten::binary_cross_entropy_backward.default",
-        "aten::binary_cross_entropy_backward.grad_input",
-    }),
-    "sigmoid/tanh/GELU": frozenset({
-        "aten::gelu.out", "aten::silu.out", "aten::silu_backward.grad_input",
-    }),
-    "convolution/pooling backward": frozenset({
-        "aten::avg_pool2d.out", "aten::avg_pool2d_backward.grad_input",
-        "aten::convolution_backward_overrideable.default",
-        "aten::convolution_overrideable.default",
-        "aten::max_pool2d_with_indices.default",
-        "aten::upsample_bilinear2d.out",
-        "aten::upsample_bilinear2d_backward.grad_input",
-        "aten::upsample_nearest2d.out",
-        "aten::upsample_nearest2d_backward.grad_input",
-        "aten::_upsample_nearest_exact2d_backward.grad_input",
-        "aten::_upsample_nearest_exact2d.out",
-    }),
-    "normalization": frozenset({
-        "aten::native_layer_norm.default", "aten::native_layer_norm_backward.default",
-    }),
+    "transfer/creation": frozenset(
+        {
+            "aten::_copy_from_and_resize.default",
+            "aten::_local_scalar_dense.default",
+            "aten::resize_.default",
+            "aten::set_.source_Storage",
+            "aten::set_.source_Storage_storage_offset",
+        }
+    ),
+    "scalar and out= pointwise": frozenset(
+        {
+            "aten::abs.out",
+            "aten::add_.Scalar",
+            "aten::div.out",
+            "aten::exp.out",
+            "aten::fill_.Scalar",
+            "aten::log.out",
+            "aten::neg.out",
+            "aten::relu.out",
+            "aten::sigmoid.out",
+            "aten::sigmoid_.default",
+            "aten::tanh.out",
+            "aten::tanh_.default",
+            "aten::sub_.Scalar",
+            "aten::sub_.Tensor",
+            "aten::mul_.Tensor",
+        }
+    ),
+    "reductions/indexing": frozenset(
+        {
+            "aten::argmax.out",
+            "aten::max.default",
+            "aten::mean.default",
+            "aten::mean.out",
+            "aten::min.default",
+            "aten::sum.IntList_out",
+            "aten::sum.default",
+            "aten::maximum.out",
+            "aten::minimum.out",
+        }
+    ),
+    "MSE loss": frozenset(
+        {
+            "aten::binary_cross_entropy.default",
+            "aten::binary_cross_entropy_backward.default",
+            "aten::binary_cross_entropy_backward.grad_input",
+        }
+    ),
+    "sigmoid/tanh/GELU": frozenset(
+        {
+            "aten::gelu.out",
+            "aten::silu.out",
+            "aten::silu_backward.grad_input",
+        }
+    ),
+    "convolution/pooling backward": frozenset(
+        {
+            "aten::avg_pool2d.out",
+            "aten::avg_pool2d_backward.grad_input",
+            "aten::convolution_backward_overrideable.default",
+            "aten::convolution_overrideable.default",
+            "aten::max_pool2d_with_indices.default",
+            "aten::upsample_bilinear2d.out",
+            "aten::upsample_bilinear2d_backward.grad_input",
+            "aten::upsample_nearest2d.out",
+            "aten::upsample_nearest2d_backward.grad_input",
+            "aten::_upsample_nearest_exact2d_backward.grad_input",
+            "aten::_upsample_nearest_exact2d.out",
+        }
+    ),
+    "normalization": frozenset(
+        {
+            "aten::native_layer_norm.default",
+            "aten::native_layer_norm_backward.default",
+        }
+    ),
     # Cross-entropy is represented by the deferred log-softmax and NLL pieces.
-    "cross-entropy/NLL": frozenset({
-        "aten::nll_loss_forward.output", "aten::nll_loss_backward.grad_input",
-    }),
-    "attention": frozenset({
-        "aten::_native_multi_head_attention.default",
-        "aten::_native_multi_head_attention.out",
-        "aten::_transform_bias_rescale_qkv.default",
-    }),
-    "tensor algebra": frozenset({
-        "aten::addcdiv.out", "aten::addcmul.out", "aten::addmm.default",
-        "aten::addmm.out", "aten::bmm.out", "aten::dot.default", "aten::mm.out",
-    }),
-    "tensor construction and indexing": frozenset({
-        "aten::_cat.default", "aten::arange.start_out", "aten::cat.out",
-    }),
-    "comparison and math": frozenset({
-        "aten::atan.out", "aten::ceil.default", "aten::ceil.out",
-        "aten::clamp.out", "aten::clamp_min.out", "aten::eq.Scalar_out",
-        "aten::eq.Tensor_out", "aten::ge.Scalar_out", "aten::ge.Tensor_out",
-        "aten::gt.Scalar", "aten::gt.Scalar_out", "aten::gt.Tensor_out",
-        "aten::isfinite.out", "aten::le.Scalar_out", "aten::le.Tensor_out",
-        "aten::le.Tensor_out", "aten::logit.default", "aten::logit.out",
-        "aten::lt.Scalar", "aten::lt.Scalar_out", "aten::lt.Tensor_out",
-        "aten::ne.Scalar_out", "aten::ne.Tensor", "aten::ne.Tensor_out",
-        "aten::round.out", "aten::sgn.out",
-    }),
-    "bitwise and random": frozenset({
-        "aten::bernoulli_.float", "aten::bitwise_and.Tensor_out",
-        "aten::bitwise_not.out", "aten::bitwise_or.Tensor_out",
-        "aten::bitwise_xor.Tensor_out", "aten::normal_.default",
-        "aten::uniform_.default",
-    }),
-    "activation and scalar math": frozenset({
-        "aten::hardsigmoid.out", "aten::hardsigmoid_backward.grad_input",
-        "aten::hardswish_.default", "aten::hardswish_backward.default",
-        "aten::hardtanh.default", "aten::hardtanh_.default",
-        "aten::hardtanh_backward.default", "aten::leaky_relu.out",
-        "aten::leaky_relu_backward.grad_input", "aten::log_sigmoid_backward.default",
-        "aten::log_sigmoid_backward.grad_input", "aten::log_sigmoid_forward.default",
-        "aten::log_sigmoid_forward.output", "aten::pow.Tensor_Scalar_out",
-        "aten::reciprocal.out", "aten::threshold_backward.grad_input",
-    }),
-    "dropout": frozenset({
-        "aten::native_dropout.default", "aten::native_dropout_backward.default",
-    }),
+    "cross-entropy/NLL": frozenset(
+        {
+            "aten::nll_loss_forward.output",
+            "aten::nll_loss_backward.grad_input",
+        }
+    ),
+    "attention": frozenset(
+        {
+            "aten::_native_multi_head_attention.default",
+            "aten::_native_multi_head_attention.out",
+            "aten::_transform_bias_rescale_qkv.default",
+        }
+    ),
+    "tensor algebra": frozenset(
+        {
+            "aten::addcdiv.out",
+            "aten::addcmul.out",
+            "aten::addmm.default",
+            "aten::addmm.out",
+            "aten::bmm.out",
+            "aten::dot.default",
+            "aten::mm.out",
+        }
+    ),
+    "tensor construction and indexing": frozenset(
+        {
+            "aten::_cat.default",
+            "aten::arange.start_out",
+            "aten::cat.out",
+        }
+    ),
+    "comparison and math": frozenset(
+        {
+            "aten::atan.out",
+            "aten::ceil.default",
+            "aten::ceil.out",
+            "aten::clamp.out",
+            "aten::clamp_min.out",
+            "aten::eq.Scalar_out",
+            "aten::eq.Tensor_out",
+            "aten::ge.Scalar_out",
+            "aten::ge.Tensor_out",
+            "aten::gt.Scalar",
+            "aten::gt.Scalar_out",
+            "aten::gt.Tensor_out",
+            "aten::isfinite.out",
+            "aten::le.Scalar_out",
+            "aten::le.Tensor_out",
+            "aten::le.Tensor_out",
+            "aten::logit.default",
+            "aten::logit.out",
+            "aten::lt.Scalar",
+            "aten::lt.Scalar_out",
+            "aten::lt.Tensor_out",
+            "aten::ne.Scalar_out",
+            "aten::ne.Tensor",
+            "aten::ne.Tensor_out",
+            "aten::round.out",
+            "aten::sgn.out",
+        }
+    ),
+    "bitwise and random": frozenset(
+        {
+            "aten::bernoulli_.float",
+            "aten::bitwise_and.Tensor_out",
+            "aten::bitwise_not.out",
+            "aten::bitwise_or.Tensor_out",
+            "aten::bitwise_xor.Tensor_out",
+            "aten::normal_.default",
+            "aten::uniform_.default",
+        }
+    ),
+    "activation and scalar math": frozenset(
+        {
+            "aten::hardsigmoid.out",
+            "aten::hardsigmoid_backward.grad_input",
+            "aten::hardswish_.default",
+            "aten::hardswish_backward.default",
+            "aten::hardtanh.default",
+            "aten::hardtanh_.default",
+            "aten::hardtanh_backward.default",
+            "aten::leaky_relu.out",
+            "aten::leaky_relu_backward.grad_input",
+            "aten::log_sigmoid_backward.default",
+            "aten::log_sigmoid_backward.grad_input",
+            "aten::log_sigmoid_forward.default",
+            "aten::log_sigmoid_forward.output",
+            "aten::pow.Tensor_Scalar_out",
+            "aten::reciprocal.out",
+            "aten::threshold_backward.grad_input",
+        }
+    ),
+    "dropout": frozenset(
+        {
+            "aten::native_dropout.default",
+            "aten::native_dropout_backward.default",
+        }
+    ),
 }
 
 ROADMAP_DEFERRED_SCHEMAS = frozenset().union(*ROADMAP_OPERATION_FAMILIES.values())
@@ -199,8 +330,10 @@ def to_vulkan_inputs(value: Any, device: str = "vk:0") -> Any:
         if value.dim() == 0:
             return value
         converted = value.to(device)
-        if (tuple(value.stride()) != tuple(converted.stride()) or
-                value.storage_offset() != converted.storage_offset()):
+        if (
+            tuple(value.stride()) != tuple(converted.stride())
+            or value.storage_offset() != converted.storage_offset()
+        ):
             converted = torch.empty_strided(
                 value.size(), value.stride(), dtype=value.dtype, device=device
             )
@@ -227,9 +360,12 @@ def run_and_compare(case: ConformanceCase, device: str = "vk:0") -> tuple[Any, A
     """Compute the CPU reference and Vulkan result with counters scoped to execution."""
     cpu_inputs = case.inputs()
     reference_inputs = tuple(
-        value.clone() if isinstance(value, torch.Tensor) else value for value in cpu_inputs
+        value.clone() if isinstance(value, torch.Tensor) else value
+        for value in cpu_inputs
     )
-    cpu_result = case.cpu_reference(*reference_inputs, *case.args, **(case.kwargs or {}))
+    cpu_result = case.cpu_reference(
+        *reference_inputs, *case.args, **(case.kwargs or {})
+    )
     inputs = to_vulkan_inputs(cpu_inputs, device)
     pytorch_vulkan._C.reset_execution_counters()
     result = case.operation(*inputs, *case.args, **(case.kwargs or {}))
@@ -298,12 +434,17 @@ def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
         assert cpu_input.grad is not None
         assert vk_input.grad is not None
         assert vk_input.grad.device == torch.device(device)
-        torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad,
-                                   rtol=case.rtol, atol=case.atol)
+        torch.testing.assert_close(
+            vk_input.grad.cpu(), cpu_input.grad, rtol=case.rtol, atol=case.atol
+        )
 
 
 def _unary(*, requires_grad=False) -> tuple[torch.Tensor]:
-    return (torch.tensor([-2.0, 0.5, 3.0], dtype=torch.float32, requires_grad=requires_grad),)
+    return (
+        torch.tensor(
+            [-2.0, 0.5, 3.0], dtype=torch.float32, requires_grad=requires_grad
+        ),
+    )
 
 
 def _unary_strided(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -321,14 +462,19 @@ def _binary(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
 def _binary_strided(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
     lhs = torch.arange(8, dtype=torch.float32).reshape(2, 4)[:, ::2]
     rhs = torch.arange(8, dtype=torch.float32).reshape(2, 4)[:, 1::2]
-    return (lhs.detach().requires_grad_(requires_grad),
-            rhs.detach().requires_grad_(requires_grad))
+    return (
+        lhs.detach().requires_grad_(requires_grad),
+        rhs.detach().requires_grad_(requires_grad),
+    )
 
 
 def _loss(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
-    return (torch.tensor([[1.0, -2.0], [3.0, 4.0]], dtype=torch.float32,
-                         requires_grad=requires_grad),
-            torch.tensor([[0.5, 1.0], [2.0, 5.0]], dtype=torch.float32))
+    return (
+        torch.tensor(
+            [[1.0, -2.0], [3.0, 4.0]], dtype=torch.float32, requires_grad=requires_grad
+        ),
+        torch.tensor([[0.5, 1.0], [2.0, 5.0]], dtype=torch.float32),
+    )
 
 
 def _mse_none(input, target):
@@ -353,7 +499,11 @@ def _mse_backward_op(grad, input, target):
 
 
 def _reduction(*, requires_grad=False) -> tuple[torch.Tensor]:
-    return (torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, requires_grad=requires_grad),)
+    return (
+        torch.tensor(
+            [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, requires_grad=requires_grad
+        ),
+    )
 
 
 def _reduction_strided(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -366,8 +516,10 @@ def _indexing(*, requires_grad=False) -> tuple[torch.Tensor]:
 
 
 def _indexing_strided(*, requires_grad=False) -> tuple[torch.Tensor]:
-    value = torch.tensor([[1.0, 8.0, 2.0, 7.0], [9.0, 3.0, 6.0, 4.0],
-                          [5.0, 0.0, 11.0, 10.0]], dtype=torch.float32).t()
+    value = torch.tensor(
+        [[1.0, 8.0, 2.0, 7.0], [9.0, 3.0, 6.0, 4.0], [5.0, 0.0, 11.0, 10.0]],
+        dtype=torch.float32,
+    ).t()
     return (value.detach().requires_grad_(requires_grad),)
 
 
@@ -390,15 +542,20 @@ def _linear(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.T
     )
 
 
-def _linear_strided(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _linear_strided(
+    *, requires_grad=False
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     value = torch.arange(8, dtype=torch.float32).reshape(2, 4)[:, ::2]
     weight = torch.arange(12, dtype=torch.float32).reshape(3, 4)[:, ::2]
     bias = torch.arange(6, dtype=torch.float32)[::2]
-    return tuple(item.detach().requires_grad_(requires_grad)
-                 for item in (value, weight, bias))
+    return tuple(
+        item.detach().requires_grad_(requires_grad) for item in (value, weight, bias)
+    )
 
 
-def _convolution(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _convolution(
+    *, requires_grad=False
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return (
         torch.ones((2, 1, 8, 8), dtype=torch.float32, requires_grad=requires_grad),
         torch.ones((4, 1, 3, 3), dtype=torch.float32, requires_grad=requires_grad),
@@ -406,12 +563,15 @@ def _convolution(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, to
     )
 
 
-def _convolution_strided(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _convolution_strided(
+    *, requires_grad=False
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     value, weight, bias = _convolution()
     value = value.transpose(2, 3)
     weight = weight.transpose(2, 3)
-    return tuple(item.detach().requires_grad_(requires_grad)
-                 for item in (value, weight, bias))
+    return tuple(
+        item.detach().requires_grad_(requires_grad) for item in (value, weight, bias)
+    )
 
 
 def _convolution_backward_inputs(*, requires_grad=False) -> tuple[torch.Tensor, ...]:
@@ -421,8 +581,17 @@ def _convolution_backward_inputs(*, requires_grad=False) -> tuple[torch.Tensor, 
 
 def _convolution_backward(grad, value, weight):
     return torch.ops.aten.convolution_backward.default(
-        grad, value, weight, [4], [1, 1], [1, 1], [1, 1], False,
-        [0, 0], 1, [True, True, True]
+        grad,
+        value,
+        weight,
+        [4],
+        [1, 1],
+        [1, 1],
+        [1, 1],
+        False,
+        [0, 0],
+        1,
+        [True, True, True],
     )[0]
 
 
@@ -494,8 +663,10 @@ def _gelu_backward_cpu(grad, input):
 
 
 def _empty_binary(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
-    return (torch.empty((0, 3), dtype=torch.float32, requires_grad=requires_grad),
-            torch.empty((0, 3), dtype=torch.float32, requires_grad=requires_grad))
+    return (
+        torch.empty((0, 3), dtype=torch.float32, requires_grad=requires_grad),
+        torch.empty((0, 3), dtype=torch.float32, requires_grad=requires_grad),
+    )
 
 
 def _empty_reduction(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -519,28 +690,38 @@ def _mixed_device_add(value):
 
 
 def _broadcast_binary(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
-    return (torch.ones((2, 1), dtype=torch.float32),
-            torch.ones((1, 2), dtype=torch.float32))
+    return (
+        torch.ones((2, 1), dtype=torch.float32),
+        torch.ones((1, 2), dtype=torch.float32),
+    )
 
 
 def _optimizer_pair(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
-    return (torch.tensor([1.0, 2.0], dtype=torch.float32),
-            torch.tensor(2.0, dtype=torch.float32))
+    return (
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+        torch.tensor(2.0, dtype=torch.float32),
+    )
 
 
 def _optimizer_single(*, requires_grad=False) -> tuple[torch.Tensor]:
     return (torch.tensor([1.0, 2.0], dtype=torch.float32),)
 
 
-def _optimizer_triple(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return (torch.tensor([1.0, 2.0], dtype=torch.float32),
-            torch.tensor([0.5, 1.5], dtype=torch.float32),
-            torch.tensor([2.0, 3.0], dtype=torch.float32))
+def _optimizer_triple(
+    *, requires_grad=False
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return (
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+        torch.tensor([0.5, 1.5], dtype=torch.float32),
+        torch.tensor([2.0, 3.0], dtype=torch.float32),
+    )
 
 
 def _optimizer_value_pair(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
-    return (torch.tensor([1.0, 2.0], dtype=torch.float32),
-            torch.tensor([3.0, 4.0], dtype=torch.float32))
+    return (
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+        torch.tensor([3.0, 4.0], dtype=torch.float32),
+    )
 
 
 def _wrong_offset(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -606,7 +787,8 @@ def _normalization(*, requires_grad=False):
         torch.randn(2, 4, dtype=torch.float32, requires_grad=requires_grad),
         torch.ones(4, dtype=torch.float32, requires_grad=requires_grad),
         torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
-        torch.zeros(4, dtype=torch.float32), torch.ones(4, dtype=torch.float32),
+        torch.zeros(4, dtype=torch.float32),
+        torch.ones(4, dtype=torch.float32),
     )
 
 
@@ -621,21 +803,39 @@ def _normalization_backward(*, requires_grad=False):
     _, save_mean, save_inv = torch.ops.aten.native_batch_norm.default(
         input, weight, bias, running_mean, running_var, True, 0.1, 1e-5
     )
-    return (torch.ones_like(input), input, weight, running_mean, running_var,
-            save_mean, save_inv)
+    return (
+        torch.ones_like(input),
+        input,
+        weight,
+        running_mean,
+        running_var,
+        save_mean,
+        save_inv,
+    )
 
 
-def _native_batch_norm_backward_output(grad, input, weight, running_mean, running_var,
-                                       save_mean, save_inv):
+def _native_batch_norm_backward_output(
+    grad, input, weight, running_mean, running_var, save_mean, save_inv
+):
     return torch.ops.aten.native_batch_norm_backward.default(
-        grad, input, weight, running_mean, running_var, save_mean, save_inv,
-        True, 1e-5, [True, True, True]
+        grad,
+        input,
+        weight,
+        running_mean,
+        running_var,
+        save_mean,
+        save_inv,
+        True,
+        1e-5,
+        [True, True, True],
     )[0]
 
 
 def _nll_forward(*, requires_grad=False):
-    return (torch.randn(2, 3, dtype=torch.float32, requires_grad=requires_grad),
-            torch.tensor([1, 2], dtype=torch.int64))
+    return (
+        torch.randn(2, 3, dtype=torch.float32, requires_grad=requires_grad),
+        torch.tensor([1, 2], dtype=torch.int64),
+    )
 
 
 def _nll_forward_output(logits, labels):
@@ -756,16 +956,31 @@ def _log_softmax(value, dim):
 
 
 def _amax_out(value, dim):
-    return torch.ops.aten.amax.out(value, [dim], False, out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device))
+    return torch.ops.aten.amax.out(
+        value,
+        [dim],
+        False,
+        out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device),
+    )
 
 
 def _amin_out(value, dim):
-    return torch.ops.aten.amin.out(value, [dim], False, out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device))
+    return torch.ops.aten.amin.out(
+        value,
+        [dim],
+        False,
+        out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device),
+    )
 
 
 def _prod_int_out(value, dim):
-    return torch.ops.aten.prod.int_out(value, dim, False, dtype=value.dtype,
-                                       out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device))
+    return torch.ops.aten.prod.int_out(
+        value,
+        dim,
+        False,
+        dtype=value.dtype,
+        out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device),
+    )
 
 
 def _softmax_out(value, dim):
@@ -773,23 +988,29 @@ def _softmax_out(value, dim):
 
 
 def _log_softmax_out(value, dim):
-    return torch.ops.aten._log_softmax.out(value, dim, False, out=torch.empty_like(value))
+    return torch.ops.aten._log_softmax.out(
+        value, dim, False, out=torch.empty_like(value)
+    )
 
 
 def _softmax_backward_inputs(*, requires_grad=False):
-    output = torch.softmax(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32), dim=1)
+    output = torch.softmax(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32), dim=1
+    )
     grad = torch.ones_like(output)
     return grad, output
 
 
 def _softmax_backward_out(grad, output):
     return torch.ops.aten._softmax_backward_data.out(
-        grad, output, 1, torch.float32, grad_input=torch.empty_like(output))
+        grad, output, 1, torch.float32, grad_input=torch.empty_like(output)
+    )
 
 
 def _log_softmax_backward_out(grad, output):
     return torch.ops.aten._log_softmax_backward_data.out(
-        grad, output, 1, torch.float32, out=torch.empty_like(output))
+        grad, output, 1, torch.float32, out=torch.empty_like(output)
+    )
 
 
 def _cpu_reshape(value, shape):
@@ -919,18 +1140,54 @@ DECLARATION_ID_BY_CASE = {
 }
 
 
-def _case(name, family, operation, factory, *, args=(), kwargs=None,
-          supported=True, error_pattern=r"Vulkan", expected_dtype=torch.float32,
-          expected_shape=None, check_gradients=False, cpu_reference=None,
-           autograd_supported=True, autograd_error_type=None,
-           autograd_error_pattern=None, requires_grad_inputs=False, rtol=1e-5, atol=1e-8,
-           execution_mode="compute", convert_inputs=True, setup_inputs=None):
-    case = ConformanceCase(name, family, DECLARATION_ID_BY_CASE[name], operation, factory, cpu_reference, args,
-                           kwargs, supported, error_pattern, expected_dtype,
-                           expected_shape, check_gradients, autograd_supported,
-                           autograd_error_type, autograd_error_pattern,
-                           requires_grad_inputs, rtol, atol, execution_mode, convert_inputs,
-                           setup_inputs)
+def _case(
+    name,
+    family,
+    operation,
+    factory,
+    *,
+    args=(),
+    kwargs=None,
+    supported=True,
+    error_pattern=r"Vulkan",
+    expected_dtype=torch.float32,
+    expected_shape=None,
+    check_gradients=False,
+    cpu_reference=None,
+    autograd_supported=True,
+    autograd_error_type=None,
+    autograd_error_pattern=None,
+    requires_grad_inputs=False,
+    rtol=1e-5,
+    atol=1e-8,
+    execution_mode="compute",
+    convert_inputs=True,
+    setup_inputs=None,
+):
+    case = ConformanceCase(
+        name,
+        family,
+        DECLARATION_ID_BY_CASE[name],
+        operation,
+        factory,
+        cpu_reference,
+        args,
+        kwargs,
+        supported,
+        error_pattern,
+        expected_dtype,
+        expected_shape,
+        check_gradients,
+        autograd_supported,
+        autograd_error_type,
+        autograd_error_pattern,
+        requires_grad_inputs,
+        rtol,
+        atol,
+        execution_mode,
+        convert_inputs,
+        setup_inputs,
+    )
     return case
 
 
@@ -1011,273 +1268,912 @@ def _rscalar_out(value):
 
 
 ALL_CASES = (
-    _case("unary.neg.float32", "unary", torch.neg, _unary, cpu_reference=_cpu_neg,
-          expected_shape=(3,), check_gradients=True),
-    _case("unary.neg.float32.strided", "unary", torch.neg, _unary_strided,
-          cpu_reference=_cpu_neg, expected_shape=(2, 2), check_gradients=True),
-    _case("unary.abs.float32", "unary", torch.abs, _unary,
-          cpu_reference=torch.abs, expected_shape=(3,), check_gradients=True),
-    _case("unary.relu.float32.empty", "unary", torch.relu, _empty_unary,
-           cpu_reference=torch.relu, expected_shape=(0, 3), execution_mode="empty"),
-    _case("unary.sigmoid.float32", "unary", torch.sigmoid, _unary,
-           cpu_reference=torch.sigmoid, expected_shape=(3,), check_gradients=True),
-    _case("unary.tanh.float32", "unary", torch.tanh, _unary,
-           cpu_reference=torch.tanh, expected_shape=(3,), check_gradients=True,
-           rtol=1e-4, atol=2e-5),
-    _case("unary.gelu.tanh.float32", "unary", _gelu_tanh, _unary,
-           cpu_reference=_gelu_tanh, expected_shape=(3,), check_gradients=True,
-           rtol=2e-5, atol=2e-6),
-    _case("unary.sigmoid.float32.empty", "unary", torch.sigmoid, _empty_unary,
-           cpu_reference=torch.sigmoid, expected_shape=(0, 3), execution_mode="empty"),
-    _case("unary.sigmoid.backward", "unary", _sigmoid_backward_op,
-           _activation_backward, cpu_reference=_sigmoid_backward_cpu,
-           expected_shape=(3,), execution_mode="copy"),
-    _case("unary.tanh.backward", "unary", _tanh_backward_op,
-           _activation_backward, cpu_reference=_tanh_backward_cpu,
-           expected_shape=(3,), execution_mode="copy", rtol=1e-4, atol=2e-5),
-    _case("unary.gelu.tanh.backward", "unary", _gelu_backward_op,
-           _activation_backward, cpu_reference=_gelu_backward_cpu,
-           expected_shape=(3,), execution_mode="copy", rtol=3e-4, atol=2e-5),
-    _case("binary.add.float32", "binary", torch.add, _binary, cpu_reference=_cpu_add,
-          expected_shape=(2,), check_gradients=True),
-    _case("binary.sub.float32.strided", "binary", torch.sub, _binary_strided,
-          cpu_reference=torch.sub, expected_shape=(2, 2), check_gradients=True),
-    _case("binary.mul.float32.empty", "binary", torch.mul, _empty_binary,
-           cpu_reference=torch.mul, expected_shape=(0, 3), execution_mode="empty"),
-    _case("loss.mse.none", "loss", _mse_none, _loss,
-           cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="none"),
-           expected_shape=(2, 2), check_gradients=True),
-    _case("loss.mse.sum", "loss", _mse_sum, _loss,
-           cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="sum"),
-           expected_shape=(), check_gradients=True),
-    _case("loss.mse.mean", "loss", _mse_mean, _loss,
-           cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="mean"),
-           expected_shape=(), check_gradients=True),
-    _case("loss.mse.backward", "loss", _mse_backward_op, _mse_backward,
-           cpu_reference=lambda g, x, y: torch.ops.aten.mse_loss_backward.default(g, x, y, 0),
-           expected_shape=(2, 2)),
-    _case("scalar.add.float32", "scalar and out", _scalar_add, _unary,
-           cpu_reference=lambda value: torch.add(value, 2.0, alpha=1.0),
-           expected_shape=(3,), check_gradients=True),
-    _case("scalar.sub.float32", "scalar and out", _scalar_sub, _unary,
-           cpu_reference=lambda value: torch.sub(value, 2.0, alpha=1.0),
-           expected_shape=(3,), check_gradients=True),
-    _case("scalar.mul.float32", "scalar and out", _scalar_mul, _unary,
-           cpu_reference=lambda value: torch.mul(value, 2.0),
-           expected_shape=(3,), check_gradients=True),
-    _case("out.add.scalar.float32", "scalar and out", _scalar_add_out, _unary,
-           cpu_reference=lambda value: torch.add(value, 2.0, alpha=1.0,
-                                                 out=torch.empty_like(value)),
-           expected_shape=(3,)),
-    _case("out.sub.scalar.float32", "scalar and out", _scalar_sub_out, _unary,
-           cpu_reference=lambda value: torch.sub(value, 2.0, alpha=1.0,
-                                                 out=torch.empty_like(value)),
-           expected_shape=(3,)),
-    _case("out.mul.scalar.float32", "scalar and out", _scalar_mul_out, _unary,
-           cpu_reference=lambda value: torch.mul(value, 2.0, out=torch.empty_like(value)),
-           expected_shape=(3,)),
-    _case("out.add.tensor.float32", "scalar and out", _tensor_add_out, _binary,
-           cpu_reference=lambda lhs, rhs: torch.add(lhs, rhs, alpha=1.0,
-                                                   out=torch.empty_like(lhs)),
-           expected_shape=(2,)),
-    _case("out.sub.tensor.float32", "scalar and out", _tensor_sub_out, _binary,
-           cpu_reference=lambda lhs, rhs: torch.sub(lhs, rhs, alpha=1.0,
-                                                   out=torch.empty_like(lhs)),
-           expected_shape=(2,)),
-    _case("out.mul.tensor.float32", "scalar and out", _tensor_mul_out, _binary,
-           cpu_reference=lambda lhs, rhs: torch.mul(lhs, rhs, out=torch.empty_like(lhs)),
-           expected_shape=(2,)),
-    _case("scalar.rsub.float32", "scalar and out", _rscalar, _unary,
-           cpu_reference=lambda value: torch.sub(2.0, value, alpha=1.0),
-           expected_shape=(3,)),
-    _case("out.rsub.scalar.float32", "scalar and out", _rscalar_out, _unary,
-           cpu_reference=lambda value: torch.sub(2.0, value, alpha=1.0,
-                                                 out=torch.empty_like(value)),
-           expected_shape=(3,)),
-    _case("reduction.sum.dim", "reduction", torch.sum, _reduction, args=(1,),
-          cpu_reference=_cpu_sum, expected_shape=(2,), check_gradients=True),
-    _case("reduction.mean.dim", "reduction", torch.mean, _reduction, args=(1,),
-          cpu_reference=_cpu_mean, expected_shape=(2,), check_gradients=True),
-    _case("reduction.sum.keepdim.strided", "reduction", torch.sum, _reduction_strided,
-          args=(1,), kwargs={"keepdim": True}, cpu_reference=_cpu_sum,
-          expected_shape=(3, 1, 4), check_gradients=True),
-    _case("reduction.mean.optional-dim", "reduction", torch.mean, _reduction,
-           cpu_reference=_cpu_mean, expected_shape=(), check_gradients=True),
-    _case("reduction.sum.empty-dim", "reduction", torch.sum, _empty_reduction,
-           args=(0,), cpu_reference=_cpu_sum, expected_shape=(3,), execution_mode="empty"),
-    _case("reduction.mean.empty-dim", "reduction", torch.mean, _empty_reduction,
-           args=(0,), cpu_reference=_cpu_mean, expected_shape=(3,), execution_mode="empty",
-           rtol=0, atol=0),
-    _case("reduction.amax.dim", "reduction", _amax_out, _reduction, args=(1,),
-           cpu_reference=torch.amax, expected_shape=(2,)),
-    _case("reduction.amax.default", "reduction", torch.amax, _reduction, args=(1,),
-           cpu_reference=torch.amax, expected_shape=(2,)),
-    _case("reduction.amin.dim", "reduction", _amin_out, _reduction, args=(1,),
-           cpu_reference=torch.amin, expected_shape=(2,)),
-    _case("reduction.amin.default", "reduction", torch.amin, _reduction, args=(1,),
-           cpu_reference=torch.amin, expected_shape=(2,)),
-    _case("reduction.prod.dim", "reduction", _prod_int_out, _reduction, args=(1,),
-           cpu_reference=_cpu_prod, expected_shape=(2,)),
-    _case("reduction.prod.default", "reduction", torch.prod, _reduction, args=(1,),
-           cpu_reference=_cpu_prod, expected_shape=(2,)),
-    _case("reduction.softmax.dim", "reduction", _softmax_out, _reduction, args=(1,),
-           cpu_reference=_softmax, expected_shape=(2, 2), execution_mode="copy"),
-    _case("reduction.softmax.default", "reduction", _softmax, _reduction, args=(1,),
-           cpu_reference=_softmax, expected_shape=(2, 2)),
-    _case("reduction.log-softmax.dim", "reduction", _log_softmax_out, _reduction, args=(1,),
-           cpu_reference=_log_softmax, expected_shape=(2, 2), execution_mode="copy"),
-    _case("reduction.log-softmax.default", "reduction", _log_softmax, _reduction, args=(1,),
-           cpu_reference=_log_softmax, expected_shape=(2, 2)),
-    _case("reduction.softmax.backward", "reduction", _softmax_backward_out,
-           _softmax_backward_inputs, cpu_reference=lambda grad, output: torch.ops.aten._softmax_backward_data(
-               grad, output, 1, torch.float32), expected_shape=(2, 2), execution_mode="copy"),
-    _case("reduction.log-softmax.backward", "reduction", _log_softmax_backward_out,
-           _softmax_backward_inputs, cpu_reference=lambda grad, output: torch.ops.aten._log_softmax_backward_data(
-               grad, output, 1, torch.float32, ), expected_shape=(2, 2), execution_mode="copy"),
-    _case("indexing.argmax.dim", "indexing", torch.argmax, _indexing, args=(1,),
-          cpu_reference=_cpu_argmax, expected_dtype=torch.int64, expected_shape=(2,)),
-    _case("indexing.argmax.optional-dim.keepdim", "indexing", torch.argmax, _indexing,
-          kwargs={"keepdim": True}, cpu_reference=_cpu_argmax,
-          expected_dtype=torch.int64, expected_shape=(1, 1)),
-    _case("indexing.argmax.strided", "indexing", torch.argmax, _indexing_strided,
-          args=(-1,), cpu_reference=_cpu_argmax, expected_dtype=torch.int64,
-          expected_shape=(4,)),
-    _case("view.reshape.float32", "view", torch.reshape, _view, args=((6,),),
-          cpu_reference=_cpu_reshape, expected_shape=(6,), check_gradients=True,
-          execution_mode="copy"),
-    _case("view.as-strided.metadata", "view", torch.as_strided, _metadata_view,
-           args=((2, 3), (3, 1)), cpu_reference=_cpu_as_strided, expected_shape=(2, 3),
-           execution_mode="metadata"),
-    _case("view.view.metadata", "view", torch.ops.aten.view.default, _metadata_view,
-           args=((6,),), cpu_reference=lambda value, shape: torch.ops.aten.view.default(value, shape),
-           expected_shape=(6,), execution_mode="metadata"),
-    _case("view.reshape-alias.metadata", "view", torch.ops.aten._reshape_alias.default,
-           _metadata_view, args=((2, 3), (3, 1)),
-           cpu_reference=lambda value, size, stride: torch.ops.aten._reshape_alias.default(
-               value, size, stride), expected_shape=(2, 3), execution_mode="metadata"),
-    _case("linear.forward", "linear", torch.nn.functional.linear, _linear,
-          cpu_reference=_cpu_linear, expected_shape=(2, 3), check_gradients=True),
-    _case("linear.forward.strided", "linear", torch.nn.functional.linear, _linear_strided,
-          cpu_reference=_cpu_linear, expected_shape=(2, 3), check_gradients=True),
-    _case("convolution.forward", "convolution", torch.nn.functional.conv2d, _convolution,
-          kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
-          cpu_reference=_cpu_convolution, expected_shape=(2, 4, 8, 8), check_gradients=True),
-    _case("convolution.forward.strided", "convolution", torch.nn.functional.conv2d,
-          _convolution_strided, kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
-          cpu_reference=_cpu_convolution, expected_shape=(2, 4, 8, 8), check_gradients=True),
-     _case("convolution.backward", "convolution", _convolution_backward,
-           _convolution_backward_inputs,
-           cpu_reference=lambda grad, value, weight: torch.ops.aten.convolution_backward.default(
-               grad, value, weight, [4], [1, 1], [1, 1], [1, 1], False,
-               [0, 0], 1, [True, True, True]
-           )[0], expected_shape=(2, 1, 8, 8)),
-    _case("pooling.max.rejected", "pooling", torch.nn.functional.max_pool2d, _pooling,
-          args=(2,), cpu_reference=_cpu_max_pool, supported=False,
-          error_pattern=r"Vulkan pooling is not declared"),
-    _case("masked-select.bool-mask", "masked-select", torch.masked_select, _masked_select,
-          cpu_reference=_cpu_masked_select, expected_shape=(2,),
-          autograd_supported=False, autograd_error_type=NotImplementedError,
-           autograd_error_pattern=r"aten::(zero_|masked_scatter_)", requires_grad_inputs=True),
-    _case("masked-select.strided-value-view", "masked-select", torch.masked_select,
-           _masked_select_view, cpu_reference=_cpu_masked_select, expected_shape=(3,),
-           execution_mode="copy"),
-    _case("optimizer.div.scalar", "optimizer", torch.ops.aten.div.Tensor,
-           _optimizer_pair, cpu_reference=torch.div, expected_shape=(2,)),
-    _case("optimizer.lerp.out", "optimizer", _lerp_out, _optimizer_value_pair,
-           cpu_reference=_cpu_lerp, expected_shape=(2,)),
-    _case("optimizer.lerp.inplace", "optimizer", _lerp_inplace, _optimizer_value_pair,
-           cpu_reference=_cpu_lerp, expected_shape=(2,)),
-    _case("optimizer.sqrt.out", "optimizer", _sqrt_out, _optimizer_single,
-           cpu_reference=torch.sqrt, expected_shape=(2,)),
-    _case("optimizer.add.inplace", "optimizer", _add_inplace, _optimizer_value_pair,
-           cpu_reference=torch.add, expected_shape=(2,)),
-    _case("optimizer.mul.scalar.inplace", "optimizer", _mul_scalar_inplace,
-           _optimizer_single, cpu_reference=lambda value: value * 2,
-           expected_shape=(2,)),
-    _case("optimizer.addcmul.inplace", "optimizer", _addcmul_inplace,
-           _optimizer_triple, cpu_reference=lambda lhs, a, b: torch.addcmul(
-               lhs, a, b, value=0.25), expected_shape=(2,)),
-    _case("optimizer.addcdiv.inplace", "optimizer", _addcdiv_inplace,
-           _optimizer_triple, cpu_reference=lambda lhs, a, b: torch.addcdiv(
-               lhs, a, b, value=0.25), expected_shape=(2,)),
-    _case("optimizer.zero.inplace", "optimizer", _zero_inplace,
-           _optimizer_single, cpu_reference=lambda value: value.zero_(),
-           expected_shape=(2,)),
-    _case("aten._adaptive_avg_pool2d.global", "pooling",
-          torch.ops.aten._adaptive_avg_pool2d.default, _adaptive_pool,
-          args=((1, 1),), cpu_reference=_cpu_adaptive_pool, expected_shape=(2, 4, 1, 1),
-           check_gradients=True),
-    _case("aten._adaptive_avg_pool2d.global.strided", "pooling",
-          torch.ops.aten._adaptive_avg_pool2d.default, _pooling_strided,
-          args=((1, 1),), cpu_reference=_cpu_adaptive_pool, expected_shape=(1, 1, 1, 1),
-          check_gradients=True),
-    _case("aten._adaptive_avg_pool2d.backward", "pooling", _adaptive_pool_backward,
-          _adaptive_pool_backward_inputs,
-          cpu_reference=lambda grad, value: torch.ops.aten._adaptive_avg_pool2d_backward.default(
-              grad, value
-           ), expected_shape=(2, 4, 3, 5)),
-     _case("normalization.native-batch-norm", "normalization",
-           _native_batch_norm_output, _normalization, cpu_reference=_native_batch_norm_output,
-           expected_shape=(2, 4)),
-     _case("normalization.native-batch-norm-backward", "normalization",
-           _native_batch_norm_backward_output, _normalization_backward,
-           cpu_reference=_native_batch_norm_backward_output, expected_shape=(2, 4)),
-     _case("classification.nll-forward", "cross-entropy/NLL", _nll_forward_output,
-           _nll_forward, cpu_reference=_nll_forward_output, expected_shape=()),
-     _case("classification.nll-backward", "cross-entropy/NLL", _nll_backward_output,
-           _nll_backward, cpu_reference=_nll_backward_output, expected_shape=(2, 3)),
-    _case("unary.neg.bool.rejected", "unary", torch.neg, _bool_unary, supported=False,
-          cpu_reference=_cpu_neg,
-           error_pattern=r"supports only float32 tensors"),
-    _case("unary.neg.float16.rejected", "unary", torch.neg, _float16_unary, supported=False,
-           cpu_reference=_cpu_neg,
-           error_pattern=r"float16 support is deferred"),
-    _case("binary.add.double.rejected", "binary", torch.add, _double_binary,
-           supported=False, convert_inputs=True, cpu_reference=_cpu_add,
-           error_pattern=r"formatter conversion supports only Vulkan float32 to Vulkan Double"),
-    _case("binary.add.mixed-device.rejected", "binary", _mixed_device_add, _unary,
-           supported=False, cpu_reference=_cpu_add,
-           error_pattern=r"requires operands on the same device; got"),
-    _case("binary.add.broadcast.rejected", "binary", torch.add, _broadcast_binary,
-           supported=False, cpu_reference=_cpu_add,
-           error_pattern=r"requires equal tensor sizes; broadcasting is unsupported"),
-    _case("reduction.sum.non-contiguous-overlap.rejected", "reduction", torch.sum, _overlapping,
-           args=(1,), supported=False, cpu_reference=_cpu_sum,
-           error_pattern=r"rejects overlapping input views"),
-    _case("comparison.ne.nonzero-offset-input.rejected", "comparison",
-            torch.ne, _wrong_offset, supported=False,
-            cpu_reference=torch.ne,
-            error_pattern=r"formatter Double ne\.Tensor requires a contiguous zero-offset strided input",
-            setup_inputs=_setup_double_offset),
-    _case("unary.neg.invalid-out.rejected", "unary", _invalid_out, _unary,
-           supported=False, cpu_reference=_cpu_neg,
-           error_pattern=r"supports only float32 and bool tensors, got Long"),
-    _case("unary.neg.cpu-out.rejected", "unary", _cpu_out, _unary,
-           supported=False, cpu_reference=_cpu_neg,
-           error_pattern=r"requires a Vulkan output tensor"),
-    _case("pooling.parameters.rejected", "pooling", _bad_pool_params, _adaptive_pool,
-           args=(), supported=False, cpu_reference=_cpu_adaptive_pool,
-           error_pattern=r"output size|\(1, 1\)"),
-    _case("convolution.shape.rejected", "convolution", torch.nn.functional.conv2d,
-           _wrong_convolution, kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
-           supported=False, cpu_reference=_cpu_convolution,
-           error_pattern=r"unsupported fixed shape|shape"),
-    _case("unary.neg_.unsupported-overload.rejected", "unary", _unsupported_overload,
-           _unary, supported=False, cpu_reference=_cpu_neg,
-           error_pattern=r"Vulkan neg in-place variants are unsupported"),
-    _case("transfer.copy_from.float32", "transfer", _copy_from, _transfer_pair,
-           cpu_reference=_copy_from_cpu_reference, expected_shape=(4,),
-           execution_mode="copy"),
-    _case("transfer.to_copy.float32", "transfer", lambda value: value.to(
-        value.device, copy=True), _unary, cpu_reference=lambda value: value.to(
-        value.device, copy=True), expected_shape=(3,), execution_mode="copy"),
-    _case("transfer.copy.float32", "transfer", _copy_in_place, _transfer_pair,
-           cpu_reference=_copy_in_place, expected_shape=(4,), execution_mode="copy"),
-    _case("transfer.empty.float32", "transfer", _empty_like_template, _empty_unary,
-           cpu_reference=_empty_like_template, expected_shape=(0, 3), execution_mode="empty"),
-    _case("transfer.empty_strided.float32", "transfer", _empty_strided_like_template,
-           _empty_strided_zero_template, cpu_reference=_empty_strided_like_template,
-           expected_shape=(0, 2), execution_mode="empty"),
+    _case(
+        "unary.neg.float32",
+        "unary",
+        torch.neg,
+        _unary,
+        cpu_reference=_cpu_neg,
+        expected_shape=(3,),
+        check_gradients=True,
+    ),
+    _case(
+        "unary.neg.float32.strided",
+        "unary",
+        torch.neg,
+        _unary_strided,
+        cpu_reference=_cpu_neg,
+        expected_shape=(2, 2),
+        check_gradients=True,
+    ),
+    _case(
+        "unary.abs.float32",
+        "unary",
+        torch.abs,
+        _unary,
+        cpu_reference=torch.abs,
+        expected_shape=(3,),
+        check_gradients=True,
+    ),
+    _case(
+        "unary.relu.float32.empty",
+        "unary",
+        torch.relu,
+        _empty_unary,
+        cpu_reference=torch.relu,
+        expected_shape=(0, 3),
+        execution_mode="empty",
+    ),
+    _case(
+        "unary.sigmoid.float32",
+        "unary",
+        torch.sigmoid,
+        _unary,
+        cpu_reference=torch.sigmoid,
+        expected_shape=(3,),
+        check_gradients=True,
+    ),
+    _case(
+        "unary.tanh.float32",
+        "unary",
+        torch.tanh,
+        _unary,
+        cpu_reference=torch.tanh,
+        expected_shape=(3,),
+        check_gradients=True,
+        rtol=1e-4,
+        atol=2e-5,
+    ),
+    _case(
+        "unary.gelu.tanh.float32",
+        "unary",
+        _gelu_tanh,
+        _unary,
+        cpu_reference=_gelu_tanh,
+        expected_shape=(3,),
+        check_gradients=True,
+        rtol=2e-5,
+        atol=2e-6,
+    ),
+    _case(
+        "unary.sigmoid.float32.empty",
+        "unary",
+        torch.sigmoid,
+        _empty_unary,
+        cpu_reference=torch.sigmoid,
+        expected_shape=(0, 3),
+        execution_mode="empty",
+    ),
+    _case(
+        "unary.sigmoid.backward",
+        "unary",
+        _sigmoid_backward_op,
+        _activation_backward,
+        cpu_reference=_sigmoid_backward_cpu,
+        expected_shape=(3,),
+        execution_mode="copy",
+    ),
+    _case(
+        "unary.tanh.backward",
+        "unary",
+        _tanh_backward_op,
+        _activation_backward,
+        cpu_reference=_tanh_backward_cpu,
+        expected_shape=(3,),
+        execution_mode="copy",
+        rtol=1e-4,
+        atol=2e-5,
+    ),
+    _case(
+        "unary.gelu.tanh.backward",
+        "unary",
+        _gelu_backward_op,
+        _activation_backward,
+        cpu_reference=_gelu_backward_cpu,
+        expected_shape=(3,),
+        execution_mode="copy",
+        rtol=3e-4,
+        atol=2e-5,
+    ),
+    _case(
+        "binary.add.float32",
+        "binary",
+        torch.add,
+        _binary,
+        cpu_reference=_cpu_add,
+        expected_shape=(2,),
+        check_gradients=True,
+    ),
+    _case(
+        "binary.sub.float32.strided",
+        "binary",
+        torch.sub,
+        _binary_strided,
+        cpu_reference=torch.sub,
+        expected_shape=(2, 2),
+        check_gradients=True,
+    ),
+    _case(
+        "binary.mul.float32.empty",
+        "binary",
+        torch.mul,
+        _empty_binary,
+        cpu_reference=torch.mul,
+        expected_shape=(0, 3),
+        execution_mode="empty",
+    ),
+    _case(
+        "loss.mse.none",
+        "loss",
+        _mse_none,
+        _loss,
+        cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="none"),
+        expected_shape=(2, 2),
+        check_gradients=True,
+    ),
+    _case(
+        "loss.mse.sum",
+        "loss",
+        _mse_sum,
+        _loss,
+        cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="sum"),
+        expected_shape=(),
+        check_gradients=True,
+    ),
+    _case(
+        "loss.mse.mean",
+        "loss",
+        _mse_mean,
+        _loss,
+        cpu_reference=lambda x, y: torch.nn.functional.mse_loss(x, y, reduction="mean"),
+        expected_shape=(),
+        check_gradients=True,
+    ),
+    _case(
+        "loss.mse.backward",
+        "loss",
+        _mse_backward_op,
+        _mse_backward,
+        cpu_reference=lambda g, x, y: torch.ops.aten.mse_loss_backward.default(
+            g, x, y, 0
+        ),
+        expected_shape=(2, 2),
+    ),
+    _case(
+        "scalar.add.float32",
+        "scalar and out",
+        _scalar_add,
+        _unary,
+        cpu_reference=lambda value: torch.add(value, 2.0, alpha=1.0),
+        expected_shape=(3,),
+        check_gradients=True,
+    ),
+    _case(
+        "scalar.sub.float32",
+        "scalar and out",
+        _scalar_sub,
+        _unary,
+        cpu_reference=lambda value: torch.sub(value, 2.0, alpha=1.0),
+        expected_shape=(3,),
+        check_gradients=True,
+    ),
+    _case(
+        "scalar.mul.float32",
+        "scalar and out",
+        _scalar_mul,
+        _unary,
+        cpu_reference=lambda value: torch.mul(value, 2.0),
+        expected_shape=(3,),
+        check_gradients=True,
+    ),
+    _case(
+        "out.add.scalar.float32",
+        "scalar and out",
+        _scalar_add_out,
+        _unary,
+        cpu_reference=lambda value: torch.add(
+            value, 2.0, alpha=1.0, out=torch.empty_like(value)
+        ),
+        expected_shape=(3,),
+    ),
+    _case(
+        "out.sub.scalar.float32",
+        "scalar and out",
+        _scalar_sub_out,
+        _unary,
+        cpu_reference=lambda value: torch.sub(
+            value, 2.0, alpha=1.0, out=torch.empty_like(value)
+        ),
+        expected_shape=(3,),
+    ),
+    _case(
+        "out.mul.scalar.float32",
+        "scalar and out",
+        _scalar_mul_out,
+        _unary,
+        cpu_reference=lambda value: torch.mul(value, 2.0, out=torch.empty_like(value)),
+        expected_shape=(3,),
+    ),
+    _case(
+        "out.add.tensor.float32",
+        "scalar and out",
+        _tensor_add_out,
+        _binary,
+        cpu_reference=lambda lhs, rhs: torch.add(
+            lhs, rhs, alpha=1.0, out=torch.empty_like(lhs)
+        ),
+        expected_shape=(2,),
+    ),
+    _case(
+        "out.sub.tensor.float32",
+        "scalar and out",
+        _tensor_sub_out,
+        _binary,
+        cpu_reference=lambda lhs, rhs: torch.sub(
+            lhs, rhs, alpha=1.0, out=torch.empty_like(lhs)
+        ),
+        expected_shape=(2,),
+    ),
+    _case(
+        "out.mul.tensor.float32",
+        "scalar and out",
+        _tensor_mul_out,
+        _binary,
+        cpu_reference=lambda lhs, rhs: torch.mul(lhs, rhs, out=torch.empty_like(lhs)),
+        expected_shape=(2,),
+    ),
+    _case(
+        "scalar.rsub.float32",
+        "scalar and out",
+        _rscalar,
+        _unary,
+        cpu_reference=lambda value: torch.sub(2.0, value, alpha=1.0),
+        expected_shape=(3,),
+    ),
+    _case(
+        "out.rsub.scalar.float32",
+        "scalar and out",
+        _rscalar_out,
+        _unary,
+        cpu_reference=lambda value: torch.sub(
+            2.0, value, alpha=1.0, out=torch.empty_like(value)
+        ),
+        expected_shape=(3,),
+    ),
+    _case(
+        "reduction.sum.dim",
+        "reduction",
+        torch.sum,
+        _reduction,
+        args=(1,),
+        cpu_reference=_cpu_sum,
+        expected_shape=(2,),
+        check_gradients=True,
+    ),
+    _case(
+        "reduction.mean.dim",
+        "reduction",
+        torch.mean,
+        _reduction,
+        args=(1,),
+        cpu_reference=_cpu_mean,
+        expected_shape=(2,),
+        check_gradients=True,
+    ),
+    _case(
+        "reduction.sum.keepdim.strided",
+        "reduction",
+        torch.sum,
+        _reduction_strided,
+        args=(1,),
+        kwargs={"keepdim": True},
+        cpu_reference=_cpu_sum,
+        expected_shape=(3, 1, 4),
+        check_gradients=True,
+    ),
+    _case(
+        "reduction.mean.optional-dim",
+        "reduction",
+        torch.mean,
+        _reduction,
+        cpu_reference=_cpu_mean,
+        expected_shape=(),
+        check_gradients=True,
+    ),
+    _case(
+        "reduction.sum.empty-dim",
+        "reduction",
+        torch.sum,
+        _empty_reduction,
+        args=(0,),
+        cpu_reference=_cpu_sum,
+        expected_shape=(3,),
+        execution_mode="empty",
+    ),
+    _case(
+        "reduction.mean.empty-dim",
+        "reduction",
+        torch.mean,
+        _empty_reduction,
+        args=(0,),
+        cpu_reference=_cpu_mean,
+        expected_shape=(3,),
+        execution_mode="empty",
+        rtol=0,
+        atol=0,
+    ),
+    _case(
+        "reduction.amax.dim",
+        "reduction",
+        _amax_out,
+        _reduction,
+        args=(1,),
+        cpu_reference=torch.amax,
+        expected_shape=(2,),
+    ),
+    _case(
+        "reduction.amax.default",
+        "reduction",
+        torch.amax,
+        _reduction,
+        args=(1,),
+        cpu_reference=torch.amax,
+        expected_shape=(2,),
+    ),
+    _case(
+        "reduction.amin.dim",
+        "reduction",
+        _amin_out,
+        _reduction,
+        args=(1,),
+        cpu_reference=torch.amin,
+        expected_shape=(2,),
+    ),
+    _case(
+        "reduction.amin.default",
+        "reduction",
+        torch.amin,
+        _reduction,
+        args=(1,),
+        cpu_reference=torch.amin,
+        expected_shape=(2,),
+    ),
+    _case(
+        "reduction.prod.dim",
+        "reduction",
+        _prod_int_out,
+        _reduction,
+        args=(1,),
+        cpu_reference=_cpu_prod,
+        expected_shape=(2,),
+    ),
+    _case(
+        "reduction.prod.default",
+        "reduction",
+        torch.prod,
+        _reduction,
+        args=(1,),
+        cpu_reference=_cpu_prod,
+        expected_shape=(2,),
+    ),
+    _case(
+        "reduction.softmax.dim",
+        "reduction",
+        _softmax_out,
+        _reduction,
+        args=(1,),
+        cpu_reference=_softmax,
+        expected_shape=(2, 2),
+        execution_mode="copy",
+    ),
+    _case(
+        "reduction.softmax.default",
+        "reduction",
+        _softmax,
+        _reduction,
+        args=(1,),
+        cpu_reference=_softmax,
+        expected_shape=(2, 2),
+    ),
+    _case(
+        "reduction.log-softmax.dim",
+        "reduction",
+        _log_softmax_out,
+        _reduction,
+        args=(1,),
+        cpu_reference=_log_softmax,
+        expected_shape=(2, 2),
+        execution_mode="copy",
+    ),
+    _case(
+        "reduction.log-softmax.default",
+        "reduction",
+        _log_softmax,
+        _reduction,
+        args=(1,),
+        cpu_reference=_log_softmax,
+        expected_shape=(2, 2),
+    ),
+    _case(
+        "reduction.softmax.backward",
+        "reduction",
+        _softmax_backward_out,
+        _softmax_backward_inputs,
+        cpu_reference=lambda grad, output: torch.ops.aten._softmax_backward_data(
+            grad, output, 1, torch.float32
+        ),
+        expected_shape=(2, 2),
+        execution_mode="copy",
+    ),
+    _case(
+        "reduction.log-softmax.backward",
+        "reduction",
+        _log_softmax_backward_out,
+        _softmax_backward_inputs,
+        cpu_reference=lambda grad, output: torch.ops.aten._log_softmax_backward_data(
+            grad,
+            output,
+            1,
+            torch.float32,
+        ),
+        expected_shape=(2, 2),
+        execution_mode="copy",
+    ),
+    _case(
+        "indexing.argmax.dim",
+        "indexing",
+        torch.argmax,
+        _indexing,
+        args=(1,),
+        cpu_reference=_cpu_argmax,
+        expected_dtype=torch.int64,
+        expected_shape=(2,),
+    ),
+    _case(
+        "indexing.argmax.optional-dim.keepdim",
+        "indexing",
+        torch.argmax,
+        _indexing,
+        kwargs={"keepdim": True},
+        cpu_reference=_cpu_argmax,
+        expected_dtype=torch.int64,
+        expected_shape=(1, 1),
+    ),
+    _case(
+        "indexing.argmax.strided",
+        "indexing",
+        torch.argmax,
+        _indexing_strided,
+        args=(-1,),
+        cpu_reference=_cpu_argmax,
+        expected_dtype=torch.int64,
+        expected_shape=(4,),
+    ),
+    _case(
+        "view.reshape.float32",
+        "view",
+        torch.reshape,
+        _view,
+        args=((6,),),
+        cpu_reference=_cpu_reshape,
+        expected_shape=(6,),
+        check_gradients=True,
+        execution_mode="copy",
+    ),
+    _case(
+        "view.as-strided.metadata",
+        "view",
+        torch.as_strided,
+        _metadata_view,
+        args=((2, 3), (3, 1)),
+        cpu_reference=_cpu_as_strided,
+        expected_shape=(2, 3),
+        execution_mode="metadata",
+    ),
+    _case(
+        "view.view.metadata",
+        "view",
+        torch.ops.aten.view.default,
+        _metadata_view,
+        args=((6,),),
+        cpu_reference=lambda value, shape: torch.ops.aten.view.default(value, shape),
+        expected_shape=(6,),
+        execution_mode="metadata",
+    ),
+    _case(
+        "view.reshape-alias.metadata",
+        "view",
+        torch.ops.aten._reshape_alias.default,
+        _metadata_view,
+        args=((2, 3), (3, 1)),
+        cpu_reference=lambda value, size, stride: torch.ops.aten._reshape_alias.default(
+            value, size, stride
+        ),
+        expected_shape=(2, 3),
+        execution_mode="metadata",
+    ),
+    _case(
+        "linear.forward",
+        "linear",
+        torch.nn.functional.linear,
+        _linear,
+        cpu_reference=_cpu_linear,
+        expected_shape=(2, 3),
+        check_gradients=True,
+    ),
+    _case(
+        "linear.forward.strided",
+        "linear",
+        torch.nn.functional.linear,
+        _linear_strided,
+        cpu_reference=_cpu_linear,
+        expected_shape=(2, 3),
+        check_gradients=True,
+    ),
+    _case(
+        "convolution.forward",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _convolution,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 8, 8),
+        check_gradients=True,
+    ),
+    _case(
+        "convolution.forward.strided",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _convolution_strided,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 8, 8),
+        check_gradients=True,
+    ),
+    _case(
+        "convolution.backward",
+        "convolution",
+        _convolution_backward,
+        _convolution_backward_inputs,
+        cpu_reference=lambda grad,
+        value,
+        weight: torch.ops.aten.convolution_backward.default(
+            grad,
+            value,
+            weight,
+            [4],
+            [1, 1],
+            [1, 1],
+            [1, 1],
+            False,
+            [0, 0],
+            1,
+            [True, True, True],
+        )[0],
+        expected_shape=(2, 1, 8, 8),
+    ),
+    _case(
+        "pooling.max.rejected",
+        "pooling",
+        torch.nn.functional.max_pool2d,
+        _pooling,
+        args=(2,),
+        cpu_reference=_cpu_max_pool,
+        supported=False,
+        error_pattern=r"Vulkan pooling is not declared",
+    ),
+    _case(
+        "masked-select.bool-mask",
+        "masked-select",
+        torch.masked_select,
+        _masked_select,
+        cpu_reference=_cpu_masked_select,
+        expected_shape=(2,),
+        autograd_supported=False,
+        autograd_error_type=NotImplementedError,
+        autograd_error_pattern=r"aten::(zero_|masked_scatter_)",
+        requires_grad_inputs=True,
+    ),
+    _case(
+        "masked-select.strided-value-view",
+        "masked-select",
+        torch.masked_select,
+        _masked_select_view,
+        cpu_reference=_cpu_masked_select,
+        expected_shape=(3,),
+        execution_mode="copy",
+    ),
+    _case(
+        "optimizer.div.scalar",
+        "optimizer",
+        torch.ops.aten.div.Tensor,
+        _optimizer_pair,
+        cpu_reference=torch.div,
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.lerp.out",
+        "optimizer",
+        _lerp_out,
+        _optimizer_value_pair,
+        cpu_reference=_cpu_lerp,
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.lerp.inplace",
+        "optimizer",
+        _lerp_inplace,
+        _optimizer_value_pair,
+        cpu_reference=_cpu_lerp,
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.sqrt.out",
+        "optimizer",
+        _sqrt_out,
+        _optimizer_single,
+        cpu_reference=torch.sqrt,
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.add.inplace",
+        "optimizer",
+        _add_inplace,
+        _optimizer_value_pair,
+        cpu_reference=torch.add,
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.mul.scalar.inplace",
+        "optimizer",
+        _mul_scalar_inplace,
+        _optimizer_single,
+        cpu_reference=lambda value: value * 2,
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.addcmul.inplace",
+        "optimizer",
+        _addcmul_inplace,
+        _optimizer_triple,
+        cpu_reference=lambda lhs, a, b: torch.addcmul(lhs, a, b, value=0.25),
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.addcdiv.inplace",
+        "optimizer",
+        _addcdiv_inplace,
+        _optimizer_triple,
+        cpu_reference=lambda lhs, a, b: torch.addcdiv(lhs, a, b, value=0.25),
+        expected_shape=(2,),
+    ),
+    _case(
+        "optimizer.zero.inplace",
+        "optimizer",
+        _zero_inplace,
+        _optimizer_single,
+        cpu_reference=lambda value: value.zero_(),
+        expected_shape=(2,),
+    ),
+    _case(
+        "aten._adaptive_avg_pool2d.global",
+        "pooling",
+        torch.ops.aten._adaptive_avg_pool2d.default,
+        _adaptive_pool,
+        args=((1, 1),),
+        cpu_reference=_cpu_adaptive_pool,
+        expected_shape=(2, 4, 1, 1),
+        check_gradients=True,
+    ),
+    _case(
+        "aten._adaptive_avg_pool2d.global.strided",
+        "pooling",
+        torch.ops.aten._adaptive_avg_pool2d.default,
+        _pooling_strided,
+        args=((1, 1),),
+        cpu_reference=_cpu_adaptive_pool,
+        expected_shape=(1, 1, 1, 1),
+        check_gradients=True,
+    ),
+    _case(
+        "aten._adaptive_avg_pool2d.backward",
+        "pooling",
+        _adaptive_pool_backward,
+        _adaptive_pool_backward_inputs,
+        cpu_reference=lambda grad,
+        value: torch.ops.aten._adaptive_avg_pool2d_backward.default(grad, value),
+        expected_shape=(2, 4, 3, 5),
+    ),
+    _case(
+        "normalization.native-batch-norm",
+        "normalization",
+        _native_batch_norm_output,
+        _normalization,
+        cpu_reference=_native_batch_norm_output,
+        expected_shape=(2, 4),
+    ),
+    _case(
+        "normalization.native-batch-norm-backward",
+        "normalization",
+        _native_batch_norm_backward_output,
+        _normalization_backward,
+        cpu_reference=_native_batch_norm_backward_output,
+        expected_shape=(2, 4),
+    ),
+    _case(
+        "classification.nll-forward",
+        "cross-entropy/NLL",
+        _nll_forward_output,
+        _nll_forward,
+        cpu_reference=_nll_forward_output,
+        expected_shape=(),
+    ),
+    _case(
+        "classification.nll-backward",
+        "cross-entropy/NLL",
+        _nll_backward_output,
+        _nll_backward,
+        cpu_reference=_nll_backward_output,
+        expected_shape=(2, 3),
+    ),
+    _case(
+        "unary.neg.bool.rejected",
+        "unary",
+        torch.neg,
+        _bool_unary,
+        supported=False,
+        cpu_reference=_cpu_neg,
+        error_pattern=r"supports only float32 tensors",
+    ),
+    _case(
+        "unary.neg.float16.rejected",
+        "unary",
+        torch.neg,
+        _float16_unary,
+        supported=False,
+        cpu_reference=_cpu_neg,
+        error_pattern=r"float16 support is deferred",
+    ),
+    _case(
+        "binary.add.double.rejected",
+        "binary",
+        torch.add,
+        _double_binary,
+        supported=False,
+        convert_inputs=True,
+        cpu_reference=_cpu_add,
+        error_pattern=r"formatter conversion supports only Vulkan float32 to Vulkan Double",
+    ),
+    _case(
+        "binary.add.mixed-device.rejected",
+        "binary",
+        _mixed_device_add,
+        _unary,
+        supported=False,
+        cpu_reference=_cpu_add,
+        error_pattern=r"requires operands on the same device; got",
+    ),
+    _case(
+        "binary.add.broadcast.rejected",
+        "binary",
+        torch.add,
+        _broadcast_binary,
+        supported=False,
+        cpu_reference=_cpu_add,
+        error_pattern=r"requires equal tensor sizes; broadcasting is unsupported",
+    ),
+    _case(
+        "reduction.sum.non-contiguous-overlap.rejected",
+        "reduction",
+        torch.sum,
+        _overlapping,
+        args=(1,),
+        supported=False,
+        cpu_reference=_cpu_sum,
+        error_pattern=r"rejects overlapping input views",
+    ),
+    _case(
+        "comparison.ne.nonzero-offset-input.rejected",
+        "comparison",
+        torch.ne,
+        _wrong_offset,
+        supported=False,
+        cpu_reference=torch.ne,
+        error_pattern=r"formatter Double ne\.Tensor requires a contiguous zero-offset strided input",
+        setup_inputs=_setup_double_offset,
+    ),
+    _case(
+        "unary.neg.invalid-out.rejected",
+        "unary",
+        _invalid_out,
+        _unary,
+        supported=False,
+        cpu_reference=_cpu_neg,
+        error_pattern=r"supports only float32 and bool tensors, got Long",
+    ),
+    _case(
+        "unary.neg.cpu-out.rejected",
+        "unary",
+        _cpu_out,
+        _unary,
+        supported=False,
+        cpu_reference=_cpu_neg,
+        error_pattern=r"requires a Vulkan output tensor",
+    ),
+    _case(
+        "pooling.parameters.rejected",
+        "pooling",
+        _bad_pool_params,
+        _adaptive_pool,
+        args=(),
+        supported=False,
+        cpu_reference=_cpu_adaptive_pool,
+        error_pattern=r"output size|\(1, 1\)",
+    ),
+    _case(
+        "convolution.shape.rejected",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _wrong_convolution,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        supported=False,
+        cpu_reference=_cpu_convolution,
+        error_pattern=r"unsupported fixed shape|shape",
+    ),
+    _case(
+        "unary.neg_.unsupported-overload.rejected",
+        "unary",
+        _unsupported_overload,
+        _unary,
+        supported=False,
+        cpu_reference=_cpu_neg,
+        error_pattern=r"Vulkan neg in-place variants are unsupported",
+    ),
+    _case(
+        "transfer.copy_from.float32",
+        "transfer",
+        _copy_from,
+        _transfer_pair,
+        cpu_reference=_copy_from_cpu_reference,
+        expected_shape=(4,),
+        execution_mode="copy",
+    ),
+    _case(
+        "transfer.to_copy.float32",
+        "transfer",
+        lambda value: value.to(value.device, copy=True),
+        _unary,
+        cpu_reference=lambda value: value.to(value.device, copy=True),
+        expected_shape=(3,),
+        execution_mode="copy",
+    ),
+    _case(
+        "transfer.copy.float32",
+        "transfer",
+        _copy_in_place,
+        _transfer_pair,
+        cpu_reference=_copy_in_place,
+        expected_shape=(4,),
+        execution_mode="copy",
+    ),
+    _case(
+        "transfer.empty.float32",
+        "transfer",
+        _empty_like_template,
+        _empty_unary,
+        cpu_reference=_empty_like_template,
+        expected_shape=(0, 3),
+        execution_mode="empty",
+    ),
+    _case(
+        "transfer.empty_strided.float32",
+        "transfer",
+        _empty_strided_like_template,
+        _empty_strided_zero_template,
+        cpu_reference=_empty_strided_like_template,
+        expected_shape=(0, 2),
+        execution_mode="empty",
+    ),
 )
 
 

@@ -48,7 +48,13 @@ def test_fixed_model_forward_and_first_order_gradients(vulkan_backend):
     torch.testing.assert_close(vk_bias.grad.cpu(), cpu_bias.grad)
     torch.testing.assert_close(vk_weight2.grad.cpu(), cpu_weight2.grad)
     torch.testing.assert_close(vk_bias2.grad.cpu(), cpu_bias2.grad)
-    for gradient in (vk_input.grad, vk_weight.grad, vk_bias.grad, vk_weight2.grad, vk_bias2.grad):
+    for gradient in (
+        vk_input.grad,
+        vk_weight.grad,
+        vk_bias.grad,
+        vk_weight2.grad,
+        vk_bias2.grad,
+    ):
         _assert_vulkan(gradient)
 
 
@@ -61,8 +67,14 @@ def test_fixed_normalization_classifier_workload(vulkan_backend):
     running_mean = torch.zeros(4)
     running_var = torch.ones(4)
     cpu_norm = torch.ops.aten.native_batch_norm.default(
-        cpu_input, torch.ones(4, requires_grad=True), torch.zeros(4, requires_grad=True),
-        running_mean, running_var, True, 0.1, 1e-5
+        cpu_input,
+        torch.ones(4, requires_grad=True),
+        torch.zeros(4, requires_grad=True),
+        running_mean,
+        running_var,
+        True,
+        0.1,
+        1e-5,
     )[0]
     cpu_logits = torch.nn.functional.linear(cpu_norm, cpu_weight, cpu_bias)
     cpu_loss = torch.nn.functional.cross_entropy(cpu_logits, cpu_labels)
@@ -71,16 +83,25 @@ def test_fixed_normalization_classifier_workload(vulkan_backend):
     vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
     vk_bias = cpu_bias.detach().to(vulkan_backend).requires_grad_()
     vk_norm = torch.ops.aten.native_batch_norm.default(
-        vk_input, torch.ones(4).to(vulkan_backend).requires_grad_(),
+        vk_input,
+        torch.ones(4).to(vulkan_backend).requires_grad_(),
         torch.zeros(4).to(vulkan_backend).requires_grad_(),
-        running_mean.to(vulkan_backend), running_var.to(vulkan_backend), True, 0.1, 1e-5
+        running_mean.to(vulkan_backend),
+        running_var.to(vulkan_backend),
+        True,
+        0.1,
+        1e-5,
     )[0]
     vk_logits = torch.nn.functional.linear(vk_norm, vk_weight, vk_bias)
-    vk_loss = torch.nn.functional.cross_entropy(vk_logits, cpu_labels.to(vulkan_backend))
+    vk_loss = torch.nn.functional.cross_entropy(
+        vk_logits, cpu_labels.to(vulkan_backend)
+    )
     vk_loss.backward()
     _assert_vulkan(vk_loss)
     torch.testing.assert_close(vk_loss.cpu(), cpu_loss.detach(), rtol=2e-4, atol=2e-4)
-    torch.testing.assert_close(vk_weight.grad.cpu(), cpu_weight.grad, rtol=2e-4, atol=2e-4)
+    torch.testing.assert_close(
+        vk_weight.grad.cpu(), cpu_weight.grad, rtol=2e-4, atol=2e-4
+    )
     torch.testing.assert_close(vk_bias.grad.cpu(), cpu_bias.grad, rtol=2e-4, atol=2e-4)
 
 
@@ -128,10 +149,13 @@ def test_fixed_mlp_bounded_repeated_forward_parity(vulkan_backend):
         )
         vk_input = cpu_input.to(vulkan_backend)
         vk_output = torch.nn.functional.linear(
-            torch.relu(torch.nn.functional.linear(
-                vk_input, cpu_weight.to(vulkan_backend), cpu_bias.to(vulkan_backend)
-            )),
-            cpu_weight2.to(vulkan_backend), cpu_bias2.to(vulkan_backend),
+            torch.relu(
+                torch.nn.functional.linear(
+                    vk_input, cpu_weight.to(vulkan_backend), cpu_bias.to(vulkan_backend)
+                )
+            ),
+            cpu_weight2.to(vulkan_backend),
+            cpu_bias2.to(vulkan_backend),
         )
         torch.testing.assert_close(vk_output.cpu(), cpu_output)
 

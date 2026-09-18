@@ -5,7 +5,6 @@ import torch
 import pytorch_vulkan
 
 
-
 @pytest.fixture
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
@@ -56,7 +55,9 @@ def make_adam(parameters, **overrides):
 def _state_snapshot(optimizer, parameter):
     state = optimizer.state[parameter]
     return {
-        name: (value.detach().cpu().clone() if isinstance(value, torch.Tensor) else value)
+        name: (
+            value.detach().cpu().clone() if isinstance(value, torch.Tensor) else value
+        )
         for name, value in state.items()
     }
 
@@ -116,13 +117,22 @@ def run_training_steps(device, optimizer_factory, steps):
                 )
             )
         losses.append(loss.detach().cpu().clone())
-    return parameter.detach().cpu().clone(), _state_snapshot(optimizer, parameter), losses, counters
+    return (
+        parameter.detach().cpu().clone(),
+        _state_snapshot(optimizer, parameter),
+        losses,
+        counters,
+    )
 
 
 @pytest.mark.parametrize("optimizer_factory", [make_sgd, make_adam])
 def test_optimizer_steps_match_cpu(optimizer_factory, vulkan_backend):
-    cpu_parameter, cpu_state, cpu_losses, _ = run_training_steps("cpu", optimizer_factory, 1)
-    vk_parameter, vk_state, vk_losses, counters = run_training_steps(vulkan_backend, optimizer_factory, 1)
+    cpu_parameter, cpu_state, cpu_losses, _ = run_training_steps(
+        "cpu", optimizer_factory, 1
+    )
+    vk_parameter, vk_state, vk_losses, counters = run_training_steps(
+        vulkan_backend, optimizer_factory, 1
+    )
     torch.testing.assert_close(vk_parameter, cpu_parameter)
     torch.testing.assert_close(vk_losses[0], cpu_losses[0])
     assert counters == [(value, 0) for value, _ in counters]
@@ -134,12 +144,20 @@ def test_optimizer_steps_match_cpu(optimizer_factory, vulkan_backend):
 
 @pytest.mark.parametrize("optimizer_factory", [make_sgd, make_adam])
 def test_optimizer_multi_step_state_matches_cpu(optimizer_factory, vulkan_backend):
-    cpu_parameter, cpu_state, cpu_losses, _ = run_training_steps("cpu", optimizer_factory, 4)
-    vk_parameter, vk_state, vk_losses, counters = run_training_steps(vulkan_backend, optimizer_factory, 4)
+    cpu_parameter, cpu_state, cpu_losses, _ = run_training_steps(
+        "cpu", optimizer_factory, 4
+    )
+    vk_parameter, vk_state, vk_losses, counters = run_training_steps(
+        vulkan_backend, optimizer_factory, 4
+    )
     torch.testing.assert_close(vk_parameter, cpu_parameter)
     torch.testing.assert_close(torch.stack(vk_losses), torch.stack(cpu_losses))
     assert all(dispatches > 0 and transfers == 0 for dispatches, transfers in counters)
-    expected_names = ("momentum_buffer",) if optimizer_factory is make_sgd else ("step", "exp_avg", "exp_avg_sq")
+    expected_names = (
+        ("momentum_buffer",)
+        if optimizer_factory is make_sgd
+        else ("step", "exp_avg", "exp_avg_sq")
+    )
     for name in expected_names:
         assert name in vk_state
         if name != "step":
@@ -147,7 +165,10 @@ def test_optimizer_multi_step_state_matches_cpu(optimizer_factory, vulkan_backen
             assert vk_state[name].device == torch.device("cpu")
             torch.testing.assert_close(vk_state[name], cpu_state[name])
     if optimizer_factory is make_adam:
-        assert not isinstance(vk_state["step"], torch.Tensor) or vk_state["step"].device.type == "cpu"
+        assert (
+            not isinstance(vk_state["step"], torch.Tensor)
+            or vk_state["step"].device.type == "cpu"
+        )
         torch.testing.assert_close(vk_state["step"], cpu_state["step"])
 
 
@@ -187,7 +208,9 @@ def test_optimizer_repeated_updates_survive_allocator_size_transitions(
                     )
                 )
         if device != "cpu":
-            assert all(dispatches > 0 and transfers == 0 for dispatches, transfers in counters)
+            assert all(
+                dispatches > 0 and transfers == 0 for dispatches, transfers in counters
+            )
         return parameter.detach().cpu().clone(), _state_snapshot(optimizer, parameter)
 
     for shape, steps in [((2,), 32), ((257,), 2), ((2,), 32)]:
@@ -220,10 +243,13 @@ def test_cpu_optimizer_options_preserve_pytorch_behavior():
     adam.step()
 
 
-@pytest.mark.parametrize("constructor, args, options, message", [
-    (torch.optim.SGD, (0.1, 0.9, 0.0, 0.0, True), {}, "nesterov"),
-    (torch.optim.Adam, (), {"fused": True}, "fused"),
-])
+@pytest.mark.parametrize(
+    "constructor, args, options, message",
+    [
+        (torch.optim.SGD, (0.1, 0.9, 0.0, 0.0, True), {}, "nesterov"),
+        (torch.optim.Adam, (), {"fused": True}, "fused"),
+    ],
+)
 def test_unsupported_vulkan_options_reject_in_positional_or_keyword_form(
     constructor, args, options, message, vulkan_backend
 ):
@@ -248,7 +274,9 @@ def test_vulkan_optimizer_accepts_parameter_groups(optimizer_factory, vulkan_bac
 
 
 @pytest.mark.parametrize("optimizer_factory", [make_sgd, make_adam])
-def test_repeated_backward_accumulates_vulkan_gradient(optimizer_factory, vulkan_backend):
+def test_repeated_backward_accumulates_vulkan_gradient(
+    optimizer_factory, vulkan_backend
+):
     cpu = torch.tensor([1.0, -2.0], requires_grad=True)
     vk = cpu.detach().to(vulkan_backend).requires_grad_()
     cpu_optimizer = optimizer_factory([cpu])
@@ -277,10 +305,13 @@ def test_repeated_backward_accumulates_vulkan_gradient(optimizer_factory, vulkan
     torch.testing.assert_close(vk.grad.cpu(), torch.zeros_like(cpu))
 
 
-@pytest.mark.parametrize("optimizer_factory, state_names", [
-    (make_sgd, ("momentum_buffer",)),
-    (make_adam, ("exp_avg", "exp_avg_sq")),
-])
+@pytest.mark.parametrize(
+    "optimizer_factory, state_names",
+    [
+        (make_sgd, ("momentum_buffer",)),
+        (make_adam, ("exp_avg", "exp_avg_sq")),
+    ],
+)
 def test_optimizer_state_tensors_remain_vulkan_resident(
     optimizer_factory, state_names, vulkan_backend
 ):
@@ -293,7 +324,10 @@ def test_optimizer_state_tensors_remain_vulkan_resident(
     for name in state_names:
         assert state[name].device == torch.device("vk:0")
     if optimizer_factory is make_adam:
-        assert not isinstance(state["step"], torch.Tensor) or state["step"].device.type == "cpu"
+        assert (
+            not isinstance(state["step"], torch.Tensor)
+            or state["step"].device.type == "cpu"
+        )
     assert pytorch_vulkan._C.compute_dispatch_count() > 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
 
@@ -355,10 +389,22 @@ def test_unsupported_vulkan_group_options_reject_before_dispatch(
 @pytest.mark.parametrize(
     "optimizer_factory, parameter_factory, message",
     [
-        (make_sgd, lambda device: torch.empty(2, dtype=torch.float64, device=device), "float32"),
-        (make_adam, lambda device: torch.empty(2, dtype=torch.float64, device=device), "float32"),
+        (
+            make_sgd,
+            lambda device: torch.empty(2, dtype=torch.float64, device=device),
+            "float32",
+        ),
+        (
+            make_adam,
+            lambda device: torch.empty(2, dtype=torch.float64, device=device),
+            "float32",
+        ),
         (make_sgd, lambda device: torch.empty((2, 2), device=device).t(), "contiguous"),
-        (make_adam, lambda device: torch.empty((2, 2), device=device).t(), "contiguous"),
+        (
+            make_adam,
+            lambda device: torch.empty((2, 2), device=device).t(),
+            "contiguous",
+        ),
         (make_sgd, lambda device: torch.ones(2), "vk:0"),
         (make_adam, lambda device: torch.ones(2), "vk:0"),
     ],
@@ -366,7 +412,9 @@ def test_unsupported_vulkan_group_options_reject_before_dispatch(
 def test_invalid_optimizer_parameters_reject_before_dispatch(
     optimizer_factory, parameter_factory, message, vulkan_backend
 ):
-    parameter = parameter_factory(vulkan_backend if message != "vk:0" else "cpu").requires_grad_()
+    parameter = parameter_factory(
+        vulkan_backend if message != "vk:0" else "cpu"
+    ).requires_grad_()
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=message):
         if message == "vk:0":
@@ -410,16 +458,39 @@ def test_overlapping_optimizer_parameter_rejects_without_side_effects(
     torch.testing.assert_close(parameter.cpu(), before)
 
 
-@pytest.mark.parametrize("optimizer_factory, state_factory, message", [
-    (make_sgd, lambda device: torch.empty(2, dtype=torch.float64, device=device), "float32"),
-    (make_adam, lambda device: torch.empty(2, dtype=torch.float64, device=device), "float32"),
-    (make_sgd, lambda device: torch.empty((2, 2), device=device).t(), "contiguous"),
-    (make_adam, lambda device: torch.empty((2, 2), device=device).t(), "contiguous"),
-    (make_sgd, lambda device: torch.empty(3, device=device)[1:], "zero-offset"),
-    (make_adam, lambda device: torch.empty(3, device=device)[1:], "zero-offset"),
-    (make_sgd, lambda device: torch.as_strided(torch.empty(2, device=device), (2,), (0,)), "overlapping"),
-    (make_adam, lambda device: torch.as_strided(torch.empty(2, device=device), (2,), (0,)), "overlapping"),
-])
+@pytest.mark.parametrize(
+    "optimizer_factory, state_factory, message",
+    [
+        (
+            make_sgd,
+            lambda device: torch.empty(2, dtype=torch.float64, device=device),
+            "float32",
+        ),
+        (
+            make_adam,
+            lambda device: torch.empty(2, dtype=torch.float64, device=device),
+            "float32",
+        ),
+        (make_sgd, lambda device: torch.empty((2, 2), device=device).t(), "contiguous"),
+        (
+            make_adam,
+            lambda device: torch.empty((2, 2), device=device).t(),
+            "contiguous",
+        ),
+        (make_sgd, lambda device: torch.empty(3, device=device)[1:], "zero-offset"),
+        (make_adam, lambda device: torch.empty(3, device=device)[1:], "zero-offset"),
+        (
+            make_sgd,
+            lambda device: torch.as_strided(torch.empty(2, device=device), (2,), (0,)),
+            "overlapping",
+        ),
+        (
+            make_adam,
+            lambda device: torch.as_strided(torch.empty(2, device=device), (2,), (0,)),
+            "overlapping",
+        ),
+    ],
+)
 def test_invalid_vulkan_optimizer_state_rejects_before_dispatch(
     optimizer_factory, state_factory, message, vulkan_backend
 ):
@@ -443,10 +514,13 @@ def test_invalid_vulkan_optimizer_state_rejects_before_dispatch(
     optimizer.state[parameter][state_name] = state
 
 
-@pytest.mark.parametrize("optimizer_factory, state_name", [
-    (make_sgd, "momentum_buffer"),
-    (make_adam, "exp_avg"),
-])
+@pytest.mark.parametrize(
+    "optimizer_factory, state_name",
+    [
+        (make_sgd, "momentum_buffer"),
+        (make_adam, "exp_avg"),
+    ],
+)
 def test_cpu_tensor_optimizer_state_rejects_before_mutation(
     optimizer_factory, state_name, vulkan_backend
 ):
@@ -482,9 +556,7 @@ def _install_malformed_gradient(parameter, kind):
     elif kind == "offset":
         parameter.grad.data = torch.empty(3, device="vk")[1:]
     elif kind == "overlap":
-        parameter.grad.data = torch.as_strided(
-            torch.empty(2, device="vk"), (2,), (0,)
-        )
+        parameter.grad.data = torch.as_strided(torch.empty(2, device="vk"), (2,), (0,))
     elif kind == "shape":
         parameter.grad.data = torch.empty(3, device="vk")
     else:
@@ -535,17 +607,23 @@ def test_malformed_vulkan_gradient_rejects_before_dispatch(
 
 
 @pytest.mark.parametrize("optimizer_factory", [make_sgd, make_adam])
-def test_float16_vulkan_parameters_reject_before_optimizer_work(optimizer_factory, vulkan_backend):
+def test_float16_vulkan_parameters_reject_before_optimizer_work(
+    optimizer_factory, vulkan_backend
+):
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match="float16|float32|deferred"):
-        parameter = torch.empty(2, dtype=torch.float16, device=vulkan_backend).requires_grad_()
+        parameter = torch.empty(
+            2, dtype=torch.float16, device=vulkan_backend
+        ).requires_grad_()
         optimizer_factory([parameter])
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
 
 
 @pytest.mark.parametrize("optimizer_factory", [make_sgd, make_adam])
-def test_mixed_cpu_vulkan_parameters_reject_before_dispatch(optimizer_factory, vulkan_backend):
+def test_mixed_cpu_vulkan_parameters_reject_before_dispatch(
+    optimizer_factory, vulkan_backend
+):
     parameters = [
         torch.ones(2, device=vulkan_backend, requires_grad=True),
         torch.ones(2, requires_grad=True),
@@ -557,10 +635,13 @@ def test_mixed_cpu_vulkan_parameters_reject_before_dispatch(optimizer_factory, v
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
 
 
-@pytest.mark.parametrize("optimizer_factory, state_name", [
-    (make_sgd, "momentum_buffer"),
-    (make_adam, "exp_avg"),
-])
+@pytest.mark.parametrize(
+    "optimizer_factory, state_name",
+    [
+        (make_sgd, "momentum_buffer"),
+        (make_adam, "exp_avg"),
+    ],
+)
 def test_wrong_shaped_optimizer_state_rejects_before_dispatch(
     optimizer_factory, state_name, vulkan_backend
 ):
@@ -633,7 +714,9 @@ def test_inplace_pointwise_rejects_partial_overlap_before_dispatch(vulkan_backen
     version = self_vk._version
     pytorch_vulkan._C.reset_execution_counters()
 
-    with pytest.raises(RuntimeError, match="Vulkan add_.*in-place operations are unsupported"):
+    with pytest.raises(
+        RuntimeError, match="Vulkan add_.*in-place operations are unsupported"
+    ):
         self_vk.add_(other_vk)
 
     assert self_vk._version == version
@@ -647,7 +730,9 @@ def test_public_inplace_pointwise_rejects_valid_view_layouts(vulkan_backend, vie
     vk = cpu.to(vulkan_backend)
     self_vk = vk[view]
     other_vk = torch.full_like(self_vk, 2.0)
-    with pytest.raises(RuntimeError, match="Vulkan add_.*in-place operations are unsupported"):
+    with pytest.raises(
+        RuntimeError, match="Vulkan add_.*in-place operations are unsupported"
+    ):
         self_vk.add_(other_vk)
 
 
@@ -656,7 +741,9 @@ def test_inplace_pointwise_rejects_uncertain_noncontiguous_view(vulkan_backend):
     other = torch.ones(3, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
 
-    with pytest.raises(RuntimeError, match="Vulkan add_.*in-place operations are unsupported"):
+    with pytest.raises(
+        RuntimeError, match="Vulkan add_.*in-place operations are unsupported"
+    ):
         vk.add_(other)
 
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
@@ -736,7 +823,9 @@ def test_compound_update_rejects_non_float32_without_side_effects(vulkan_backend
 
 
 @pytest.mark.parametrize("name", ["addcmul_", "addcdiv_"])
-def test_compound_update_rejects_noncontiguous_without_side_effects(vulkan_backend, name):
+def test_compound_update_rejects_noncontiguous_without_side_effects(
+    vulkan_backend, name
+):
     self_vk = torch.ones(3, device=vulkan_backend)
     tensor1 = torch.ones(6, device=vulkan_backend)[::2]
     tensor2 = torch.ones(3, device=vulkan_backend)
@@ -754,7 +843,9 @@ def test_compound_update_rejects_noncontiguous_without_side_effects(vulkan_backe
 
 
 @pytest.mark.parametrize("name", ["addcmul_", "addcdiv_"])
-def test_compound_update_rejects_partial_overlap_without_side_effects(vulkan_backend, name):
+def test_compound_update_rejects_partial_overlap_without_side_effects(
+    vulkan_backend, name
+):
     base = torch.ones(4, device=vulkan_backend)
     self_vk = base[:3]
     tensor1 = base[1:]

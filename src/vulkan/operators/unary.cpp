@@ -3,21 +3,21 @@
 #include "autograd.h"
 #include "binary.h"
 #include "capability.h"
+#include "fake_tensor.h"
+#include "formatter_double.h"
 #include "out.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
-#include "vulkan_platform.h"
 #include "vulkan_layout.h"
-#include "formatter_double.h"
-#include "fake_tensor.h"
+#include "vulkan_platform.h"
 
+#include <ATen/ops/abs.h>
+#include <ATen/ops/neg.h>
+#include <ATen/ops/relu.h>
 #include <c10/core/DeviceType.h>
 #include <c10/core/GradMode.h>
 #include <c10/util/Exception.h>
-#include <ATen/ops/relu.h>
-#include <ATen/ops/abs.h>
-#include <ATen/ops/neg.h>
 #include <torch/library.h>
 
 #include <limits>
@@ -28,20 +28,21 @@ bool is_vulkan_device(const c10::Device &device) {
     return device.type() == c10::DeviceType::PrivateUse1;
 }
 
-pytorch_vulkan::VulkanTensorLayout validate_input(
-    const at::Tensor &input, pytorch_vulkan::PointwiseOperation operation,
-    const char *operation_name) {
+pytorch_vulkan::VulkanTensorLayout
+validate_input(const at::Tensor &input, pytorch_vulkan::PointwiseOperation operation,
+               const char *operation_name) {
     TORCH_CHECK(is_vulkan_device(input.device()), "Vulkan ", operation_name,
                 " requires a Vulkan tensor");
     TORCH_CHECK(input.device().index() == 0, "Vulkan ", operation_name,
                 " supports only Vulkan device index 0");
     TORCH_CHECK(input.layout() == at::kStrided, "Vulkan ", operation_name,
                 " requires a strided tensor");
-    pytorch_vulkan::validate_unary_dtype(input.scalar_type(), operation, operation_name);
+    pytorch_vulkan::validate_unary_dtype(input.scalar_type(), operation,
+                                         operation_name);
     auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(input, operation_name);
     TORCH_CHECK(layout.rank <= 8, "Vulkan ", operation_name, " supports ranks up to 8");
-    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ", operation_name,
-                " element count exceeds the supported range");
+    TORCH_CHECK(layout.numel <= std::numeric_limits<uint32_t>::max(), "Vulkan ",
+                operation_name, " element count exceeds the supported range");
     return layout;
 }
 
@@ -86,8 +87,10 @@ at::Tensor dispatch_unary(const at::Tensor &input,
 
     const at::DataPtr &input_data = input.storage().data_ptr();
     const at::DataPtr &output_data = output.storage().data_ptr();
-    pytorch_vulkan::validate_allocation(input_data, input_layout.allocation_bytes, "input");
-    pytorch_vulkan::validate_allocation(output_data, output_layout.allocation_bytes, "output");
+    pytorch_vulkan::validate_allocation(input_data, input_layout.allocation_bytes,
+                                        "input");
+    pytorch_vulkan::validate_allocation(output_data, output_layout.allocation_bytes,
+                                        "output");
     const VulkanPlatform &input_platform =
         pytorch_vulkan::allocation_platform(input_data);
     const VulkanPlatform &output_platform =
@@ -99,8 +102,9 @@ at::Tensor dispatch_unary(const at::Tensor &input,
 
     VulkanBuffer &input_buffer = pytorch_vulkan::allocation_buffer(input_data);
     VulkanBuffer &output_buffer = pytorch_vulkan::allocation_buffer(output_data);
-    input_platform.compute().unary(input_buffer.buffer(), input_layout, output_buffer.buffer(),
-                                   output_layout, static_cast<uint32_t>(operation));
+    input_platform.compute().unary(input_buffer.buffer(), input_layout,
+                                   output_buffer.buffer(), output_layout,
+                                   static_cast<uint32_t>(operation));
     return output;
 }
 
@@ -129,7 +133,8 @@ at::Tensor tanh_tensor(const at::Tensor &input) {
 }
 
 at::Tensor gelu_tensor(const at::Tensor &input, c10::string_view approximate) {
-    TORCH_CHECK(approximate == "tanh", "Vulkan gelu supports only approximate=\"tanh\"");
+    TORCH_CHECK(approximate == "tanh",
+                "Vulkan gelu supports only approximate=\"tanh\"");
     return dispatch_unary(input, PointwiseOperation::GeluTanh, "gelu");
 }
 
@@ -140,38 +145,45 @@ at::Tensor ceil_tensor(const at::Tensor &input) {
 }
 
 at::Tensor abs_backward_tensor(const at::Tensor &input, const at::Tensor &grad) {
-    return at::mul(dispatch_unary(input, PointwiseOperation::AbsBackward, "abs backward"), grad);
+    return at::mul(
+        dispatch_unary(input, PointwiseOperation::AbsBackward, "abs backward"), grad);
 }
 
 at::Tensor relu_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
-    return at::mul(dispatch_unary(output, PointwiseOperation::ReluBackward, "relu backward"), grad);
+    return at::mul(
+        dispatch_unary(output, PointwiseOperation::ReluBackward, "relu backward"),
+        grad);
 }
 
 at::Tensor sigmoid_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
     TORCH_CHECK(!c10::GradMode::is_enabled(),
                 "Vulkan sigmoid does not support higher-order gradients");
-    return at::mul(dispatch_unary(output, PointwiseOperation::SigmoidBackward,
-                                  "sigmoid backward"), grad);
+    return at::mul(
+        dispatch_unary(output, PointwiseOperation::SigmoidBackward, "sigmoid backward"),
+        grad);
 }
 
 at::Tensor tanh_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
     TORCH_CHECK(!c10::GradMode::is_enabled(),
                 "Vulkan tanh does not support higher-order gradients");
-    return at::mul(dispatch_unary(output, PointwiseOperation::TanhBackward,
-                                  "tanh backward"), grad);
+    return at::mul(
+        dispatch_unary(output, PointwiseOperation::TanhBackward, "tanh backward"),
+        grad);
 }
 
 at::Tensor gelu_backward_tensor(const at::Tensor &input, const at::Tensor &grad,
                                 c10::string_view approximate) {
     TORCH_CHECK(!c10::GradMode::is_enabled(),
                 "Vulkan gelu does not support higher-order gradients");
-    TORCH_CHECK(approximate == "tanh", "Vulkan gelu supports only approximate=\"tanh\"");
-    return at::mul(dispatch_unary(input, PointwiseOperation::GeluTanhBackward,
-                                  "gelu backward"), grad);
+    TORCH_CHECK(approximate == "tanh",
+                "Vulkan gelu supports only approximate=\"tanh\"");
+    return at::mul(
+        dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"),
+        grad);
 }
 
-at::Tensor &sigmoid_backward_out(const at::Tensor &grad_output, const at::Tensor &output,
-                                  at::Tensor &grad_input) {
+at::Tensor &sigmoid_backward_out(const at::Tensor &grad_output,
+                                 const at::Tensor &output, at::Tensor &grad_input) {
     return grad_input.copy_(at::mul(
         dispatch_unary(output, PointwiseOperation::SigmoidBackward, "sigmoid backward"),
         grad_output));
@@ -186,26 +198,31 @@ at::Tensor &tanh_backward_out(const at::Tensor &grad_output, const at::Tensor &o
 
 at::Tensor &gelu_backward_out(const at::Tensor &grad_output, const at::Tensor &input,
                               c10::string_view approximate, at::Tensor &grad_input) {
-    TORCH_CHECK(approximate == "tanh", "Vulkan gelu supports only approximate=\"tanh\"");
+    TORCH_CHECK(approximate == "tanh",
+                "Vulkan gelu supports only approximate=\"tanh\"");
     return grad_input.copy_(at::mul(
         dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"),
         grad_output));
 }
 
 at::Tensor &neg_out(const at::Tensor &input, at::Tensor &out) {
-    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Neg, "neg");
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Neg,
+                                              "neg");
 }
 
 at::Tensor &abs_out(const at::Tensor &input, at::Tensor &out) {
-    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Abs, "abs");
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Abs,
+                                              "abs");
 }
 
 at::Tensor &relu_out(const at::Tensor &input, at::Tensor &out) {
-    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Relu, "relu");
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Relu,
+                                              "relu");
 }
 
 at::Tensor &sqrt_out(const at::Tensor &input, at::Tensor &out) {
-    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Sqrt, "sqrt");
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Sqrt,
+                                              "sqrt");
 }
 
 at::Tensor &reject_neg_inplace(at::Tensor &self) {

@@ -57,7 +57,6 @@ def test_contiguous_float32_bulk_copy_is_exact_and_synchronous(vulkan_backend):
     torch.testing.assert_close(destination.to("cpu"), source, rtol=0, atol=0)
 
 
-
 def _tensor_metadata(tensor):
     return (
         tensor.device,
@@ -83,9 +82,7 @@ def test_cpu_to_vulkan_copy_is_in_place_and_synchronous(vulkan_backend):
 
 
 def test_vulkan_to_cpu_copy_is_in_place_and_synchronous(vulkan_backend):
-    source = torch.tensor([1.0, -2.5, 3.25], dtype=torch.float32).to(
-        vulkan_backend
-    )
+    source = torch.tensor([1.0, -2.5, 3.25], dtype=torch.float32).to(vulkan_backend)
     destination = torch.empty((3,), dtype=torch.float32)
     metadata_before = _tensor_metadata(destination)
 
@@ -95,8 +92,9 @@ def test_vulkan_to_cpu_copy_is_in_place_and_synchronous(vulkan_backend):
     assert _tensor_metadata(destination) == metadata_before
     # The CPU tensor is directly observable when copy_ returns, without another
     # Vulkan operation that could hide an asynchronous implementation.
-    torch.testing.assert_close(destination, torch.tensor([1.0, -2.5, 3.25]),
-                               rtol=0, atol=0)
+    torch.testing.assert_close(
+        destination, torch.tensor([1.0, -2.5, 3.25]), rtol=0, atol=0
+    )
 
 
 def test_non_blocking_copy_is_rejected(vulkan_backend):
@@ -135,7 +133,9 @@ def test_vulkan_to_vulkan_copy_is_supported(vulkan_backend):
     destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
     assert destination.copy_(source) is destination
-    assert destination.untyped_storage().data_ptr() != source.untyped_storage().data_ptr()
+    assert (
+        destination.untyped_storage().data_ptr() != source.untyped_storage().data_ptr()
+    )
     assert destination.storage_offset() == 0
     assert destination.untyped_storage().nbytes() >= destination.nbytes
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 1, 0, 0)
@@ -199,9 +199,7 @@ def test_cpu_vk_cpu_round_trip_scalar_like(vulkan_backend):
 
 
 def test_cpu_vk_cpu_round_trip_multidimensional_contiguous(vulkan_backend):
-    source = torch.tensor(
-        [[1.0, -2.5], [3.25, 0.0]], dtype=torch.float32
-    ).contiguous()
+    source = torch.tensor([[1.0, -2.5], [3.25, 0.0]], dtype=torch.float32).contiguous()
     device_tensor = source.to(vulkan_backend)
     result = device_tensor.to("cpu")
     assert result.device.type == "cpu"
@@ -223,9 +221,7 @@ def test_independent_vulkan_tensor_lifetimes_and_repeated_round_trips(
     for index in (3, 1, 0, 2):
         result = device_tensors[index].to("cpu")
         assert result.device.type == "cpu"
-        torch.testing.assert_close(
-            result, sources[index], rtol=0, atol=0
-        )
+        torch.testing.assert_close(result, sources[index], rtol=0, atol=0)
         del device_tensors[index]
     gc.collect()
 
@@ -234,9 +230,7 @@ def test_independent_vulkan_tensor_lifetimes_and_repeated_round_trips(
         device_tensor = source.to(vulkan_backend)
         result = device_tensor.to("cpu")
         assert result.device.type == "cpu"
-        torch.testing.assert_close(
-            result, source, rtol=0, atol=0
-        )
+        torch.testing.assert_close(result, source, rtol=0, atol=0)
         del device_tensor
     gc.collect()
 
@@ -360,11 +354,11 @@ def test_copy_rejects_storage_range_outside_vulkan_allocation(vulkan_backend):
 
 def test_copy_rejects_overlapping_destination_before_vulkan_work(vulkan_backend):
     source = torch.ones((2, 2), dtype=torch.float32, device=vulkan_backend)
-    destination_storage = torch.empty((2, 2), dtype=torch.float32, device=vulkan_backend)
+    destination_storage = torch.empty(
+        (2, 2), dtype=torch.float32, device=vulkan_backend
+    )
     destination = torch.as_strided(destination_storage, (2, 2), (0, 1))
     pytorch_vulkan._C.reset_execution_counters()
 
-    _assert_transfer_rejected(
-        lambda: destination.copy_(source), "internal overlap"
-    )
+    _assert_transfer_rejected(lambda: destination.copy_(source), "internal overlap")
     _assert_no_vulkan_work()

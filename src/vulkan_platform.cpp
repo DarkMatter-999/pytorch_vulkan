@@ -1,11 +1,11 @@
 #include "vulkan_platform.h"
 
+#include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
-#include "vulkan_buffer.h"
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -13,11 +13,11 @@
 #include <pthread.h>
 #endif
 #include <array>
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <chrono>
 
 namespace {
 
@@ -73,7 +73,8 @@ bool has_storage_buffer_memory(VkPhysicalDevice physical_device, VkDevice device
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size = kProbeStorageBufferSize;
     buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkBuffer buffer = VK_NULL_HANDLE;
     if (vkCreateBuffer(device, &buffer_info, nullptr, &buffer) != VK_SUCCESS)
@@ -85,7 +86,8 @@ bool has_storage_buffer_memory(VkPhysicalDevice physical_device, VkDevice device
     bool suitable = false;
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
         if ((requirements.memoryTypeBits & (1U << i)) != 0 &&
-            (memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+            (memory.memoryTypes[i].propertyFlags &
+             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
             suitable = true;
             break;
         }
@@ -96,13 +98,16 @@ bool has_storage_buffer_memory(VkPhysicalDevice physical_device, VkDevice device
 
 bool has_required_workgroup_limits(const VkPhysicalDeviceLimits &limits) {
     return limits.maxComputeWorkGroupCount[0] > 0 &&
-        limits.maxComputeWorkGroupCount[1] > 0 && limits.maxComputeWorkGroupCount[2] > 0 &&
-        limits.maxComputeWorkGroupSize[0] >= kMinimumWorkgroupSize &&
-        limits.maxComputeWorkGroupSize[1] >= 1 && limits.maxComputeWorkGroupSize[2] >= 1 &&
-        limits.maxComputeWorkGroupInvocations >= kMinimumWorkgroupSize;
+           limits.maxComputeWorkGroupCount[1] > 0 &&
+           limits.maxComputeWorkGroupCount[2] > 0 &&
+           limits.maxComputeWorkGroupSize[0] >= kMinimumWorkgroupSize &&
+           limits.maxComputeWorkGroupSize[1] >= 1 &&
+           limits.maxComputeWorkGroupSize[2] >= 1 &&
+           limits.maxComputeWorkGroupInvocations >= kMinimumWorkgroupSize;
 }
 
-DeviceSuitability assess_device(VkPhysicalDevice device, uint32_t negotiated_api_version) {
+DeviceSuitability assess_device(VkPhysicalDevice device,
+                                uint32_t negotiated_api_version) {
     DeviceSuitability result;
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device, &properties);
@@ -123,9 +128,9 @@ DeviceSuitability assess_device(VkPhysicalDevice device, uint32_t negotiated_api
     // Storage-buffer-storage-class is core in Vulkan 1.1, but remains an
     // explicit requirement for a 1.0 physical device.
     const bool api_1_1 = VK_VERSION_MINOR(negotiated_api_version) >= 1 &&
-        VK_VERSION_MINOR(properties.apiVersion) >= 1;
+                         VK_VERSION_MINOR(properties.apiVersion) >= 1;
     const bool api_1_2 = VK_VERSION_MINOR(negotiated_api_version) >= 2 &&
-        VK_VERSION_MINOR(properties.apiVersion) >= 2;
+                         VK_VERSION_MINOR(properties.apiVersion) >= 2;
     const bool storage_extension =
         api_1_2 || has_device_extension(device, VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
     result.has_8bit_storage_extension =
@@ -133,14 +138,16 @@ DeviceSuitability assess_device(VkPhysicalDevice device, uint32_t negotiated_api
     result.has_float16_int8_extension =
         has_device_extension(device, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
     result.storage_dispatch_limits =
-        storage_extension && properties.limits.maxStorageBufferRange >= kProbeStorageBufferSize &&
+        storage_extension &&
+        properties.limits.maxStorageBufferRange >= kProbeStorageBufferSize &&
         has_required_workgroup_limits(properties.limits) &&
         properties.limits.maxPushConstantsSize >= kMinimumPushConstantsSize;
 
     VkPhysicalDeviceMemoryProperties memory{};
     vkGetPhysicalDeviceMemoryProperties(device, &memory);
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-        if ((memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+        if ((memory.memoryTypes[i].propertyFlags &
+             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
             result.host_visible_memory = true;
             break;
         }
@@ -154,23 +161,26 @@ DeviceSuitability assess_device(VkPhysicalDevice device, uint32_t negotiated_api
         features.pNext = &core12;
         vkGetPhysicalDeviceFeatures2(device, &features);
         result.formatter_double_supported = features.features.shaderFloat64;
-        result.bool_pointwise_supported = core12.shaderInt8 && core12.storageBuffer8BitAccess;
-        result.shader_capabilities = core12.storageBuffer8BitAccess &&
-            core12.uniformAndStorageBuffer8BitAccess;
+        result.bool_pointwise_supported =
+            core12.shaderInt8 && core12.storageBuffer8BitAccess;
+        result.shader_capabilities =
+            core12.storageBuffer8BitAccess && core12.uniformAndStorageBuffer8BitAccess;
         result.uses_core_12_features = true;
     } else {
         VkPhysicalDevice8BitStorageFeatures storage8{};
         storage8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
         VkPhysicalDeviceShaderFloat16Int8Features float16_int8{};
-        float16_int8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        float16_int8.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
         features.pNext = &storage8;
         storage8.pNext = &float16_int8;
         vkGetPhysicalDeviceFeatures2(device, &features);
         result.formatter_double_supported = features.features.shaderFloat64;
         result.bool_pointwise_supported = result.has_float16_int8_extension &&
-            float16_int8.shaderInt8 && storage8.storageBuffer8BitAccess;
+                                          float16_int8.shaderInt8 &&
+                                          storage8.storageBuffer8BitAccess;
         result.shader_capabilities = storage8.storageBuffer8BitAccess &&
-            storage8.uniformAndStorageBuffer8BitAccess;
+                                     storage8.uniformAndStorageBuffer8BitAccess;
     }
 
     if (!result.required_capabilities)
@@ -297,8 +307,10 @@ bool candidate_selection_falls_back() noexcept {
     limits.maxComputeWorkGroupSize[1] = 1;
     limits.maxComputeWorkGroupSize[2] = 0;
     const bool z_rejected = !has_required_workgroup_limits(limits);
-    return dimensions_pass && y_rejected && z_rejected && select_candidate(
-               candidates, [&reasons](const Candidate &candidate) {
+    return dimensions_pass && y_rejected && z_rejected &&
+           select_candidate(
+               candidates,
+               [&reasons](const Candidate &candidate) {
                    if (!candidate.suitable)
                        reasons.emplace_back(candidate.reason);
                    return candidate.suitable;
@@ -308,9 +320,10 @@ bool candidate_selection_falls_back() noexcept {
                    if (!candidate.initializes)
                        reasons.emplace_back(candidate.reason);
                    return candidate.initializes;
-               }) == 2 && attempts == 2 && reasons.size() == 2 &&
-        reasons[0] == "missing compute queue" &&
-         reasons[1] == "logical device creation failed";
+               }) == 2 &&
+           attempts == 2 && reasons.size() == 2 &&
+           reasons[0] == "missing compute queue" &&
+           reasons[1] == "logical device creation failed";
 }
 
 } // namespace testing
@@ -440,7 +453,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
             if (device_ != VK_NULL_HANDLE && vkDeviceWaitIdle(device_) != VK_SUCCESS) {
                 std::scoped_lock quarantine_lock(quarantine_mutex);
                 if (quarantined_resource_count < kQuarantineCapacity) {
-                    auto &resources = quarantined_resources[quarantined_resource_count++];
+                    auto &resources =
+                        quarantined_resources[quarantined_resource_count++];
                     resources.compute = std::move(compute_);
                     resources.execution = std::move(execution_);
                     resources.instance = instance_;
@@ -478,95 +492,115 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                 vkGetPhysicalDeviceProperties(device, &properties);
                 suitability = assess_device(device, api_version_);
                 if (!suitability.reason.empty()) {
-                    if (!rejected_devices.empty()) rejected_devices += "; ";
-                    rejected_devices += std::string(properties.deviceName) + ": " + suitability.reason;
+                    if (!rejected_devices.empty())
+                        rejected_devices += "; ";
+                    rejected_devices +=
+                        std::string(properties.deviceName) + ": " + suitability.reason;
                 }
                 return suitability.reason.empty();
             },
             [&](VkPhysicalDevice device) {
-            try {
-                const uint32_t family = suitability.compute_queue_family;
-                device_info_.name = properties.deviceName;
-                device_info_.compute_queue_family = family;
-                device_info_.required_capabilities = suitability.required_capabilities;
-                device_info_.storage_dispatch_limits = suitability.storage_dispatch_limits;
-                device_info_.host_visible_memory = suitability.host_visible_memory;
-                device_info_.shader_capabilities = suitability.shader_capabilities;
-                float queue_priority = 1.0F;
-                VkDeviceQueueCreateInfo queue_info{};
-                queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-                queue_info.queueFamilyIndex = family;
-                queue_info.queueCount = 1;
-                queue_info.pQueuePriorities = &queue_priority;
-                VkPhysicalDeviceFeatures2 enabled_features2{};
-                enabled_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                enabled_features2.features.shaderFloat64 = suitability.formatter_double_supported;
-                VkDeviceCreateInfo device_info{};
-                device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-                device_info.queueCreateInfoCount = 1;
-                device_info.pQueueCreateInfos = &queue_info;
-                VkPhysicalDeviceVulkan12Features core12{};
-                VkPhysicalDevice8BitStorageFeatures enabled_8bit{};
-                VkPhysicalDeviceShaderFloat16Int8Features enabled_int8{};
-                const char *device_extensions[] = {
-                    VK_KHR_8BIT_STORAGE_EXTENSION_NAME,
-                    VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME};
-                if (suitability.uses_core_12_features) {
-                    core12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-                    core12.storageBuffer8BitAccess = VK_TRUE;
-                    core12.uniformAndStorageBuffer8BitAccess = VK_TRUE;
-                    core12.shaderInt8 = suitability.bool_pointwise_supported;
-                    enabled_features2.pNext = &core12;
-                } else {
-                    enabled_8bit.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
-                    enabled_8bit.storageBuffer8BitAccess = VK_TRUE;
-                    enabled_8bit.uniformAndStorageBuffer8BitAccess = VK_TRUE;
-                    enabled_int8.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-                    enabled_int8.shaderInt8 = suitability.bool_pointwise_supported;
-                    enabled_8bit.pNext = suitability.bool_pointwise_supported ? &enabled_int8 : nullptr;
-                    enabled_features2.pNext = &enabled_8bit;
-                    device_info.enabledExtensionCount =
-                        suitability.bool_pointwise_supported ? 2 : 1;
-                    device_info.ppEnabledExtensionNames = device_extensions;
+                try {
+                    const uint32_t family = suitability.compute_queue_family;
+                    device_info_.name = properties.deviceName;
+                    device_info_.compute_queue_family = family;
+                    device_info_.required_capabilities =
+                        suitability.required_capabilities;
+                    device_info_.storage_dispatch_limits =
+                        suitability.storage_dispatch_limits;
+                    device_info_.host_visible_memory = suitability.host_visible_memory;
+                    device_info_.shader_capabilities = suitability.shader_capabilities;
+                    float queue_priority = 1.0F;
+                    VkDeviceQueueCreateInfo queue_info{};
+                    queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+                    queue_info.queueFamilyIndex = family;
+                    queue_info.queueCount = 1;
+                    queue_info.pQueuePriorities = &queue_priority;
+                    VkPhysicalDeviceFeatures2 enabled_features2{};
+                    enabled_features2.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    enabled_features2.features.shaderFloat64 =
+                        suitability.formatter_double_supported;
+                    VkDeviceCreateInfo device_info{};
+                    device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+                    device_info.queueCreateInfoCount = 1;
+                    device_info.pQueueCreateInfos = &queue_info;
+                    VkPhysicalDeviceVulkan12Features core12{};
+                    VkPhysicalDevice8BitStorageFeatures enabled_8bit{};
+                    VkPhysicalDeviceShaderFloat16Int8Features enabled_int8{};
+                    const char *device_extensions[] = {
+                        VK_KHR_8BIT_STORAGE_EXTENSION_NAME,
+                        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME};
+                    if (suitability.uses_core_12_features) {
+                        core12.sType =
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+                        core12.storageBuffer8BitAccess = VK_TRUE;
+                        core12.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+                        core12.shaderInt8 = suitability.bool_pointwise_supported;
+                        enabled_features2.pNext = &core12;
+                    } else {
+                        enabled_8bit.sType =
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+                        enabled_8bit.storageBuffer8BitAccess = VK_TRUE;
+                        enabled_8bit.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+                        enabled_int8.sType =
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+                        enabled_int8.shaderInt8 = suitability.bool_pointwise_supported;
+                        enabled_8bit.pNext = suitability.bool_pointwise_supported
+                                                 ? &enabled_int8
+                                                 : nullptr;
+                        enabled_features2.pNext = &enabled_8bit;
+                        device_info.enabledExtensionCount =
+                            suitability.bool_pointwise_supported ? 2 : 1;
+                        device_info.ppEnabledExtensionNames = device_extensions;
+                    }
+                    device_info.pEnabledFeatures = nullptr;
+                    device_info.pNext = &enabled_features2;
+                    if (suitability.uses_core_12_features &&
+                        suitability.has_8bit_storage_extension) {
+                        device_info.enabledExtensionCount = 1;
+                        device_info.ppEnabledExtensionNames = device_extensions;
+                    }
+                    check_result(
+                        vkCreateDevice(device, &device_info, nullptr, &device_),
+                        "Could not create Vulkan logical device");
+                    if (!has_storage_buffer_memory(device, device_))
+                        throw VulkanUnavailable(
+                            "storage buffer has no host-visible memory type");
+                    physical_device_ = device;
+                    bool_pointwise_supported_ = suitability.bool_pointwise_supported;
+                    formatter_double_supported_ =
+                        suitability.formatter_double_supported;
+                    vkGetDeviceQueue(device_, family, 0, &compute_queue_);
+                    VkCommandPoolCreateInfo command_pool_info{};
+                    command_pool_info.sType =
+                        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+                    command_pool_info.flags =
+                        VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+                    command_pool_info.queueFamilyIndex = family;
+                    check_result(vkCreateCommandPool(device_, &command_pool_info,
+                                                     nullptr, &command_pool_),
+                                 "Could not create Vulkan command pool");
+                    execution_ = std::make_unique<VulkanExecutionContext>(
+                        device_, compute_queue_, command_pool_, this);
+                    compute_ = std::make_unique<VulkanCompute>(*this);
+                    return true;
+                } catch (const std::exception &error) {
+                    if (!rejected_devices.empty())
+                        rejected_devices += "; ";
+                    rejected_devices +=
+                        std::string(properties.deviceName) + ": " + error.what();
+                    cleanup_candidate();
+                    if (instance_ == VK_NULL_HANDLE)
+                        throw VulkanUnavailable(
+                            "Could not safely clean up Vulkan candidate");
+                    return false;
                 }
-                device_info.pEnabledFeatures = nullptr;
-                device_info.pNext = &enabled_features2;
-                if (suitability.uses_core_12_features && suitability.has_8bit_storage_extension) {
-                    device_info.enabledExtensionCount = 1;
-                    device_info.ppEnabledExtensionNames = device_extensions;
-                }
-                check_result(vkCreateDevice(device, &device_info, nullptr, &device_),
-                             "Could not create Vulkan logical device");
-                if (!has_storage_buffer_memory(device, device_))
-                    throw VulkanUnavailable("storage buffer has no host-visible memory type");
-                physical_device_ = device;
-                bool_pointwise_supported_ = suitability.bool_pointwise_supported;
-                formatter_double_supported_ = suitability.formatter_double_supported;
-                vkGetDeviceQueue(device_, family, 0, &compute_queue_);
-                VkCommandPoolCreateInfo command_pool_info{};
-                command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-                command_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-                command_pool_info.queueFamilyIndex = family;
-                check_result(vkCreateCommandPool(device_, &command_pool_info, nullptr,
-                                                 &command_pool_),
-                             "Could not create Vulkan command pool");
-                execution_ = std::make_unique<VulkanExecutionContext>(
-                    device_, compute_queue_, command_pool_, this);
-                compute_ = std::make_unique<VulkanCompute>(*this);
-                return true;
-            } catch (const std::exception &error) {
-                if (!rejected_devices.empty()) rejected_devices += "; ";
-                rejected_devices += std::string(properties.deviceName) + ": " + error.what();
-                cleanup_candidate();
-                if (instance_ == VK_NULL_HANDLE)
-                    throw VulkanUnavailable("Could not safely clean up Vulkan candidate");
-                return false;
-            }
             });
 
         if (selected_candidate < 0)
-            throw VulkanUnavailable("No suitable Vulkan physical device: " + rejected_devices);
+            throw VulkanUnavailable("No suitable Vulkan physical device: " +
+                                    rejected_devices);
     } catch (...) {
         cleanup();
         throw;
@@ -594,17 +628,17 @@ void VulkanPlatform::cleanup() noexcept {
                 resources.instance = instance_;
                 resources.device = device_;
                 resources.command_pool = command_pool_;
-                    resources.debug_messenger = debug_messenger_;
-                    resources.staging_buffer = std::move(staging_buffer_);
-                    resources.pending_transfer_resources =
-                        std::move(pending_transfer_resources_);
+                resources.debug_messenger = debug_messenger_;
+                resources.staging_buffer = std::move(staging_buffer_);
+                resources.pending_transfer_resources =
+                    std::move(pending_transfer_resources_);
             } else {
                 // No allocation-free owner remains.  Leak every handle and
                 // the compute object rather than destroying unknown work.
                 compute_.release();
-                    execution_.release();
-                    staging_buffer_.release();
-                    pending_transfer_resources_.clear();
+                execution_.release();
+                staging_buffer_.release();
+                pending_transfer_resources_.clear();
             }
             instance_ = VK_NULL_HANDLE;
             device_ = VK_NULL_HANDLE;
@@ -819,7 +853,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
                  "Could not allocate Vulkan command buffer");
     timing_.allocation += std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - allocation_start).count();
+                              std::chrono::steady_clock::now() - allocation_start)
+                              .count();
 
     VkFence fence = VK_NULL_HANDLE;
     bool submission_may_be_pending = false;
@@ -861,7 +896,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan command buffer");
         timing_.recording += std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - recording_start).count();
+                                 std::chrono::steady_clock::now() - recording_start)
+                                 .count();
 
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -897,7 +933,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
             check_result(wait_result, "Could not wait for Vulkan transfer fence");
         }
         timing_.submit_wait += std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - submit_wait_start).count();
+                                   std::chrono::steady_clock::now() - submit_wait_start)
+                                   .count();
     } catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
             throw;
@@ -928,8 +965,9 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     }
 
     release_resources();
-    timing_.total += std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - total_start).count();
+    timing_.total +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - total_start)
+            .count();
 }
 
 void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
@@ -996,13 +1034,14 @@ void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,
 
 VulkanBuffer &VulkanPlatform::staging_buffer(VkDeviceSize size) const {
     if (size == 0)
-        throw std::invalid_argument("Vulkan staging buffer size must be greater than zero");
+        throw std::invalid_argument(
+            "Vulkan staging buffer size must be greater than zero");
     std::scoped_lock lock(queue_mutex_);
     const auto start = std::chrono::steady_clock::now();
     if (staging_buffer_ == nullptr || staging_buffer_->size() < size) {
         staging_buffer_ = std::make_unique<VulkanBuffer>(
-            *this, size, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            *this, size,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
     const auto end = std::chrono::steady_clock::now();
     timing_.allocation += std::chrono::duration<double>(end - start).count();
@@ -1019,7 +1058,8 @@ void VulkanPlatform::reset_timing() const {
     timing_ = {};
 }
 
-void VulkanPlatform::record_timing(VulkanTimingCategory category, double seconds) const {
+void VulkanPlatform::record_timing(VulkanTimingCategory category,
+                                   double seconds) const {
     timing_.total += seconds;
     switch (category) {
     case VulkanTimingCategory::Allocation:

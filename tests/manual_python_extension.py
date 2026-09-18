@@ -60,10 +60,10 @@ def test_python_extension_imports_and_reports_vulkan(tmp_path):
     build_dir = tmp_path / "build"
     probe_source = tmp_path / "torch_compile_probe.cpp"
     probe_source.write_text(
-        '#include <ATen/ATen.h>\n'
-        '#include <c10/core/Allocator.h>\n'
-        '#include <c10/core/impl/DeviceGuardImplInterface.h>\n'
-        'void pytorch_vulkan_torch_compile_probe() {}\n'
+        "#include <ATen/ATen.h>\n"
+        "#include <c10/core/Allocator.h>\n"
+        "#include <c10/core/impl/DeviceGuardImplInterface.h>\n"
+        "void pytorch_vulkan_torch_compile_probe() {}\n"
     )
     torch_prefix = subprocess.check_output(
         [str(PYTHON), "-c", "import torch; print(torch.utils.cmake_prefix_path)"],

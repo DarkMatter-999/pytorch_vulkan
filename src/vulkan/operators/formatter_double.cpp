@@ -1,13 +1,13 @@
 #include "formatter_double.h"
 
+#include "binary.h"
+#include "unary.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
-#include "vulkan_platform.h"
 #include "vulkan_layout.h"
+#include "vulkan_platform.h"
 #include "vulkan_transfer.h"
-#include "unary.h"
-#include "binary.h"
 
 #include <c10/util/Exception.h>
 #include <torch/library.h>
@@ -23,8 +23,8 @@ void validate(const at::Tensor &input, const char *name) {
     TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
                     input.device().index() == 0,
                 "Vulkan formatter Double ", name, " requires vk:0 input");
-    TORCH_CHECK(input.scalar_type() == at::kDouble,
-                "Vulkan formatter Double ", name, " requires float64 input");
+    TORCH_CHECK(input.scalar_type() == at::kDouble, "Vulkan formatter Double ", name,
+                " requires float64 input");
     TORCH_CHECK(input.layout() == at::kStrided && input.is_contiguous() &&
                     input.storage_offset() == 0,
                 "Vulkan formatter Double ", name,
@@ -36,8 +36,9 @@ void validate(const at::Tensor &input, const char *name) {
 uint32_t checked_count(const at::Tensor &input, const char *name) {
     TORCH_CHECK(input.numel() > 0, "Vulkan formatter Double ", name,
                 " does not support empty input");
-    TORCH_CHECK(static_cast<uint64_t>(input.numel()) <= std::numeric_limits<uint32_t>::max(),
-                "Vulkan formatter Double ", name, " element count exceeds uint32 range");
+    TORCH_CHECK(
+        static_cast<uint64_t>(input.numel()) <= std::numeric_limits<uint32_t>::max(),
+        "Vulkan formatter Double ", name, " element count exceeds uint32 range");
     return static_cast<uint32_t>(input.numel());
 }
 
@@ -53,31 +54,30 @@ at::Tensor dispatch(const at::Tensor &input, uint32_t operation, const char *nam
                     const at::Tensor *rhs_tensor = nullptr) {
     validate(input, name);
     const uint32_t count = checked_count(input, name);
-    at::Tensor output = at::empty(reduction_output ? at::IntArrayRef{} : input.sizes(), input.options().dtype(
-        bool_output ? at::kBool : at::kDouble));
+    at::Tensor output =
+        at::empty(reduction_output ? at::IntArrayRef{} : input.sizes(),
+                  input.options().dtype(bool_output ? at::kBool : at::kDouble));
     if (output_numel == 0)
         output_numel = count;
     const VkDeviceSize input_bytes = checked_bytes(count, name);
-    const VkDeviceSize output_bytes = bool_output
-        ? static_cast<VkDeviceSize>(count)
-        : checked_bytes(output_numel, name);
+    const VkDeviceSize output_bytes = bool_output ? static_cast<VkDeviceSize>(count)
+                                                  : checked_bytes(output_numel, name);
     const auto &input_data = input.storage().data_ptr();
     const auto &rhs_data = rhs_tensor ? rhs_tensor->storage().data_ptr() : input_data;
     const auto &output_data = output.storage().data_ptr();
-    const VkDeviceSize rhs_bytes = rhs_tensor
-        ? checked_bytes(static_cast<uint64_t>(rhs_tensor->numel()), name)
-        : input_bytes;
+    const VkDeviceSize rhs_bytes =
+        rhs_tensor ? checked_bytes(static_cast<uint64_t>(rhs_tensor->numel()), name)
+                   : input_bytes;
     validate_allocation(input_data, input_bytes, "formatter input");
     validate_allocation(rhs_data, rhs_bytes, "formatter rhs");
     validate_allocation(output_data, output_bytes, "formatter output");
     const auto &platform = allocation_platform(input_data);
     TORCH_CHECK(&platform == &allocation_platform(output_data),
                 "Vulkan formatter Double ", name, " requires one Vulkan platform");
-    platform.compute().formatter_double(allocation_buffer(input_data).buffer(),
-                                       allocation_buffer(rhs_data).buffer(),
-                                       allocation_buffer(output_data).buffer(), input_bytes,
-                                       rhs_bytes, output_bytes, count, operation, scalar,
-                                       output_numel, bool_output);
+    platform.compute().formatter_double(
+        allocation_buffer(input_data).buffer(), allocation_buffer(rhs_data).buffer(),
+        allocation_buffer(output_data).buffer(), input_bytes, rhs_bytes, output_bytes,
+        count, operation, scalar, output_numel, bool_output);
     return output;
 }
 
@@ -115,9 +115,10 @@ at::Tensor formatter_double_ne(const at::Tensor &input, const at::Tensor &other)
                         other.device() == input.device() && other.is_contiguous() &&
                         other.numel() == input.numel(),
                     "Vulkan ne.Tensor requires equal Vulkan shapes and devices");
-        TORCH_CHECK((input.storage_offset() == 0 || input.dim() == 0) &&
-                        (other.storage_offset() == 0 || other.dim() == 0),
-                    "Vulkan ne.Tensor does not support tensors with non-zero storage_offset()");
+        TORCH_CHECK(
+            (input.storage_offset() == 0 || input.dim() == 0) &&
+                (other.storage_offset() == 0 || other.dim() == 0),
+            "Vulkan ne.Tensor does not support tensors with non-zero storage_offset()");
         at::Tensor output = at::empty(input.sizes(), input.options().dtype(at::kBool));
         const auto count = checked_count(input, "ne.Tensor");
         const auto bytes = static_cast<VkDeviceSize>(count) * sizeof(float);
@@ -131,11 +132,13 @@ at::Tensor formatter_double_ne(const at::Tensor &input, const at::Tensor &other)
         TORCH_CHECK(&platform == &allocation_platform(rhs) &&
                         &platform == &allocation_platform(out),
                     "Vulkan ne.Tensor requires one Vulkan platform");
-         platform.compute().comparison_tensor(
-             allocation_buffer(lhs).buffer(), inspect_vulkan_tensor_layout(input, "ne lhs"),
-             allocation_buffer(rhs).buffer(), inspect_vulkan_tensor_layout(other, "ne rhs"),
-             allocation_buffer(out).buffer(), inspect_vulkan_tensor_layout(output, "ne output"),
-             10);
+        platform.compute().comparison_tensor(
+            allocation_buffer(lhs).buffer(),
+            inspect_vulkan_tensor_layout(input, "ne lhs"),
+            allocation_buffer(rhs).buffer(),
+            inspect_vulkan_tensor_layout(other, "ne rhs"),
+            allocation_buffer(out).buffer(),
+            inspect_vulkan_tensor_layout(output, "ne output"), 10);
         return output;
     }
     validate(input, "ne.Tensor");
@@ -147,11 +150,13 @@ at::Tensor formatter_double_ne(const at::Tensor &input, const at::Tensor &other)
     return dispatch(input, kNe, "ne.Tensor", true, 0.0, 0, false, &other);
 }
 at::Tensor formatter_double_gt(const at::Tensor &input, const at::Scalar &other) {
-    TORCH_CHECK(!other.isComplex(), "Vulkan formatter Double gt.Scalar requires a real scalar");
+    TORCH_CHECK(!other.isComplex(),
+                "Vulkan formatter Double gt.Scalar requires a real scalar");
     return dispatch(input, kGt, "gt.Scalar", true, other.toDouble());
 }
 at::Tensor formatter_double_lt(const at::Tensor &input, const at::Scalar &other) {
-    TORCH_CHECK(!other.isComplex(), "Vulkan formatter Double lt.Scalar requires a real scalar");
+    TORCH_CHECK(!other.isComplex(),
+                "Vulkan formatter Double lt.Scalar requires a real scalar");
     return dispatch(input, kLt, "lt.Scalar", true, other.toDouble());
 }
 at::Tensor formatter_double_ceil(const at::Tensor &input) {
@@ -160,11 +165,12 @@ at::Tensor formatter_double_ceil(const at::Tensor &input) {
     return dispatch(input, kCeil, "ceil");
 }
 at::Scalar formatter_double_local_scalar_dense(const at::Tensor &input) {
-    TORCH_CHECK((input.scalar_type() == at::kBool || input.scalar_type() == at::kFloat ||
-                 input.scalar_type() == at::kDouble) &&
-                    input.device().type() == c10::DeviceType::PrivateUse1 &&
-                    input.device().index() == 0 && input.dim() == 0 && input.is_contiguous(),
-                "Vulkan formatter _local_scalar_dense requires a contiguous scalar");
+    TORCH_CHECK(
+        (input.scalar_type() == at::kBool || input.scalar_type() == at::kFloat ||
+         input.scalar_type() == at::kDouble) &&
+            input.device().type() == c10::DeviceType::PrivateUse1 &&
+            input.device().index() == 0 && input.dim() == 0 && input.is_contiguous(),
+        "Vulkan formatter _local_scalar_dense requires a contiguous scalar");
     at::Tensor cpu = at::empty({}, input.options().device(c10::kCPU));
     formatter_presentation_copy(cpu, input);
     return cpu.item();

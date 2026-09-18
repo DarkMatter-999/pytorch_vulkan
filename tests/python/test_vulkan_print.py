@@ -32,10 +32,10 @@ def test_print_and_repr_present_exact_f32_values(vulkan_backend, capsys):
         assert "device='vk:0'" in text
 
 
-def test_multidimensional_print_presents_values_without_materializing_view(vulkan_backend, capsys):
-    cpu = torch.tensor(
-        [[-1.0, 0.0, 1.0e20], [3.5, 7.25, -1.0e-7]], dtype=torch.float32
-    )
+def test_multidimensional_print_presents_values_without_materializing_view(
+    vulkan_backend, capsys
+):
+    cpu = torch.tensor([[-1.0, 0.0, 1.0e20], [3.5, 7.25, -1.0e-7]], dtype=torch.float32)
     tensor = cpu.to(vulkan_backend)
 
     view = tensor.view(-1)
@@ -50,7 +50,11 @@ def test_multidimensional_print_presents_values_without_materializing_view(vulka
         assert "-1.0000e-07" in text
         assert "device='vk:0'" in text
     assert view.untyped_storage().data_ptr() == tensor.untyped_storage().data_ptr()
-    assert before == (tuple(tensor.shape), tuple(tensor.stride()), tensor.storage_offset())
+    assert before == (
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.storage_offset(),
+    )
 
 
 def test_f32_tolist_presents_the_requested_values(vulkan_backend):
@@ -61,7 +65,9 @@ def test_f32_tolist_presents_the_requested_values(vulkan_backend):
 
 
 def test_isfinite_accepts_float32_max(vulkan_backend):
-    values = torch.tensor([torch.finfo(torch.float32).max], dtype=torch.float32).to(vulkan_backend)
+    values = torch.tensor([torch.finfo(torch.float32).max], dtype=torch.float32).to(
+        vulkan_backend
+    )
 
     result = torch.isfinite(values)
 
@@ -69,7 +75,9 @@ def test_isfinite_accepts_float32_max(vulkan_backend):
 
 
 def test_print_flattening_view_supports_formatter_double(vulkan_backend):
-    source = torch.tensor([[-2.0, 0.0], [4.0, 8.0]], dtype=torch.float32).to(vulkan_backend)
+    source = torch.tensor([[-2.0, 0.0], [4.0, 8.0]], dtype=torch.float32).to(
+        vulkan_backend
+    )
     flattened = source.view(-1)
 
     assert flattened.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
@@ -93,13 +101,17 @@ def test_masked_select_compacts_f32_values_on_vulkan(vulkan_backend):
 @pytest.mark.parametrize("selected", [0, 4])
 def test_masked_select_handles_empty_and_full_masks(vulkan_backend, selected):
     values = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
-    mask = torch.tensor([index < selected for index in range(4)], dtype=torch.bool).to(vulkan_backend)
+    mask = torch.tensor([index < selected for index in range(4)], dtype=torch.bool).to(
+        vulkan_backend
+    )
 
     result = torch.masked_select(values, mask)
 
     assert result.device == values.device
     assert result.shape == (selected,)
-    torch.testing.assert_close(result.cpu(), torch.arange(selected, dtype=torch.float32))
+    torch.testing.assert_close(
+        result.cpu(), torch.arange(selected, dtype=torch.float32)
+    )
 
 
 def test_masked_select_rejects_broadcasting_and_unsupported_metadata(vulkan_backend):
@@ -114,11 +126,23 @@ def test_masked_select_rejects_broadcasting_and_unsupported_metadata(vulkan_back
     "mask_factory, message",
     [
         (lambda values: torch.ones(4, dtype=torch.float32).to(values.device), "bool"),
-        (lambda values: torch.as_strided(torch.ones(4, dtype=torch.bool).to(values.device), (2, 2), (1, 2)), "contiguous"),
-        (lambda values: torch.as_strided(torch.ones(5, dtype=torch.bool).to(values.device), (4,), (1,), 1), "storage_offset"),
+        (
+            lambda values: torch.as_strided(
+                torch.ones(4, dtype=torch.bool).to(values.device), (2, 2), (1, 2)
+            ),
+            "contiguous",
+        ),
+        (
+            lambda values: torch.as_strided(
+                torch.ones(5, dtype=torch.bool).to(values.device), (4,), (1,), 1
+            ),
+            "storage_offset",
+        ),
     ],
 )
-def test_masked_select_rejects_unsupported_mask_forms(vulkan_backend, mask_factory, message):
+def test_masked_select_rejects_unsupported_mask_forms(
+    vulkan_backend, mask_factory, message
+):
     values = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
     mask = mask_factory(values)
 
@@ -142,7 +166,9 @@ def test_masked_select_rejects_cpu_mask(vulkan_backend):
         ("mask-device", "vk:0"),
     ],
 )
-def test_masked_select_rejects_before_vulkan_side_effects(vulkan_backend, case, message):
+def test_masked_select_rejects_before_vulkan_side_effects(
+    vulkan_backend, case, message
+):
     values = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
     valid_mask = torch.ones(values.shape, dtype=torch.bool).to(vulkan_backend)
     if case == "overlapping-values":
@@ -152,8 +178,9 @@ def test_masked_select_rejects_before_vulkan_side_effects(vulkan_backend, case, 
         mask = torch.as_strided(valid_mask, (2, 2), (1, 2))
         values = values.reshape(2, 2)
     elif case == "mask-offset":
-        mask = torch.as_strided(torch.ones(5, dtype=torch.bool).to(vulkan_backend),
-                                (4,), (1,), 1)
+        mask = torch.as_strided(
+            torch.ones(5, dtype=torch.bool).to(vulkan_backend), (4,), (1,), 1
+        )
     else:
         mask = torch.ones(4, dtype=torch.bool)
     pytorch_vulkan._C.reset_execution_counters()
@@ -162,13 +189,26 @@ def test_masked_select_rejects_before_vulkan_side_effects(vulkan_backend, case, 
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 
-@pytest.mark.parametrize("values_factory, expected", [
-    (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (2, 2), (1, 2)),
-     torch.tensor([0.0, 2.0, 1.0, 3.0])),
-    (lambda device: torch.as_strided(torch.arange(5, dtype=torch.float32).to(device), (4,), (1,), 1),
-     torch.tensor([1.0, 2.0, 3.0, 4.0])),
-])
-def test_masked_select_accepts_positive_stride_and_offset_values(vulkan_backend, values_factory, expected):
+@pytest.mark.parametrize(
+    "values_factory, expected",
+    [
+        (
+            lambda device: torch.as_strided(
+                torch.arange(5, dtype=torch.float32).to(device), (2, 2), (1, 2)
+            ),
+            torch.tensor([0.0, 2.0, 1.0, 3.0]),
+        ),
+        (
+            lambda device: torch.as_strided(
+                torch.arange(5, dtype=torch.float32).to(device), (4,), (1,), 1
+            ),
+            torch.tensor([1.0, 2.0, 3.0, 4.0]),
+        ),
+    ],
+)
+def test_masked_select_accepts_positive_stride_and_offset_values(
+    vulkan_backend, values_factory, expected
+):
     values = values_factory(vulkan_backend)
     mask = torch.ones(values.shape, dtype=torch.bool).to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()

@@ -24,8 +24,8 @@ void validate(const at::Tensor &t, const char *name) {
     TORCH_CHECK(t.device().type() == c10::DeviceType::PrivateUse1 &&
                     t.device().index() == 0,
                 "Vulkan convolution ", name, " requires vk:0");
-    TORCH_CHECK(t.scalar_type() == at::kFloat,
-                "Vulkan convolution ", name, " requires float32");
+    TORCH_CHECK(t.scalar_type() == at::kFloat, "Vulkan convolution ", name,
+                " requires float32");
 }
 at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
                const at::Tensor &bias, uint32_t operation) {
@@ -33,7 +33,8 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     validate(weight, "weight");
     validate(bias, "bias");
     const auto input_layout = inspect_vulkan_tensor_layout(input, "convolution input");
-    const auto weight_layout = inspect_vulkan_tensor_layout(weight, "convolution weight");
+    const auto weight_layout =
+        inspect_vulkan_tensor_layout(weight, "convolution weight");
     const auto bias_layout = inspect_vulkan_tensor_layout(bias, "convolution bias");
     TORCH_CHECK((operation == 0 && input.sizes().equals({2, 1, 8, 8})) ||
                     (operation != 0 && input.sizes().equals({2, 4, 8, 8})),
@@ -54,7 +55,8 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     const auto &weight_data = weight.storage().data_ptr();
     const auto &bias_data = bias.storage().data_ptr();
     const auto &out_data = output.storage().data_ptr();
-    const auto output_layout = inspect_vulkan_tensor_layout(output, "convolution output");
+    const auto output_layout =
+        inspect_vulkan_tensor_layout(output, "convolution output");
     const auto &platform = allocation_platform(in_data);
     TORCH_CHECK(&platform == &allocation_platform(weight_data) &&
                     &platform == &allocation_platform(bias_data) &&
@@ -64,11 +66,10 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     validate_allocation(weight_data, bytes(weight, "weight"), "convolution weight");
     validate_allocation(bias_data, bytes(bias, "bias"), "convolution bias");
     validate_allocation(out_data, bytes(output, "output"), "convolution output");
-    platform.compute().convolution(allocation_buffer(in_data).buffer(),
-                                   allocation_buffer(weight_data).buffer(),
-                                   allocation_buffer(bias_data).buffer(),
-                                   allocation_buffer(out_data).buffer(), input_layout,
-                                   weight_layout, bias_layout, output_layout, operation);
+    platform.compute().convolution(
+        allocation_buffer(in_data).buffer(), allocation_buffer(weight_data).buffer(),
+        allocation_buffer(bias_data).buffer(), allocation_buffer(out_data).buffer(),
+        input_layout, weight_layout, bias_layout, output_layout, operation);
     return output;
 }
 } // namespace
@@ -95,15 +96,14 @@ at::Tensor convolution_backward_weight(const at::Tensor &grad,
 }
 at::Tensor convolution_backward_bias(const at::Tensor &grad) {
     return run(grad, at::empty({4, 1, 3, 3}, grad.options()),
-                at::empty({4}, grad.options()), 3);
+               at::empty({4}, grad.options()), 3);
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
-    const at::Tensor &grad_output, const at::Tensor &input,
-    const at::Tensor &weight, c10::OptionalArrayRef<int64_t> bias_sizes,
-    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
-    bool transposed, at::IntArrayRef output_padding, int64_t groups,
-    std::array<bool, 3> output_mask) {
+    const at::Tensor &grad_output, const at::Tensor &input, const at::Tensor &weight,
+    c10::OptionalArrayRef<int64_t> bias_sizes, at::IntArrayRef stride,
+    at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed,
+    at::IntArrayRef output_padding, int64_t groups, std::array<bool, 3> output_mask) {
     TORCH_CHECK(bias_sizes.has_value() && bias_sizes->equals({4}),
                 "Vulkan convolution backward requires bias shape (4)");
     TORCH_CHECK(stride.equals({1, 1}) && padding.equals({1, 1}) &&

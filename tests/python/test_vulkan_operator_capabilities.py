@@ -15,23 +15,33 @@ from vulkan_conformance import (
 
 
 SOURCE_SCHEMA_ALIASES = {
-    "argmax": "aten::argmax.default", "linear": "aten::linear.default",
+    "argmax": "aten::argmax.default",
+    "linear": "aten::linear.default",
     "convolution": "aten::convolution.default",
     "_adaptive_avg_pool2d": "aten::_adaptive_avg_pool2d.default",
-    "neg": "aten::neg.default", "abs": "aten::abs.default",
-    "relu": "aten::relu.default", "add.Tensor": "aten::add.Tensor",
-    "sigmoid": "aten::sigmoid.default", "tanh": "aten::tanh.default",
+    "neg": "aten::neg.default",
+    "abs": "aten::abs.default",
+    "relu": "aten::relu.default",
+    "add.Tensor": "aten::add.Tensor",
+    "sigmoid": "aten::sigmoid.default",
+    "tanh": "aten::tanh.default",
     "gelu": "aten::gelu.default",
-    "sub.Tensor": "aten::sub.Tensor", "mul.Tensor": "aten::mul.Tensor",
-    "as_strided": "aten::as_strided.default", "view": "aten::view.default",
+    "sub.Tensor": "aten::sub.Tensor",
+    "mul.Tensor": "aten::mul.Tensor",
+    "as_strided": "aten::as_strided.default",
+    "view": "aten::view.default",
     "_reshape_alias": "aten::_reshape_alias.default",
     "reshape": "aten::reshape.default",
     "masked_select": "aten::masked_select.default",
 }
 
-EXPLICIT_REJECTED_SOURCE_SCHEMAS = frozenset({
-    "aten::abs_.default", "aten::neg_.default", "aten::relu_.default",
-})
+EXPLICIT_REJECTED_SOURCE_SCHEMAS = frozenset(
+    {
+        "aten::abs_.default",
+        "aten::neg_.default",
+        "aten::relu_.default",
+    }
+)
 
 
 def _strip_cpp_comments(source):
@@ -66,7 +76,11 @@ def _strip_cpp_comments(source):
             result.extend("  ")
             index += 2
             while index < len(source):
-                if source[index] == "*" and index + 1 < len(source) and source[index + 1] == "/":
+                if (
+                    source[index] == "*"
+                    and index + 1 < len(source)
+                    and source[index + 1] == "/"
+                ):
                     result.extend("  ")
                     index += 2
                     break
@@ -108,7 +122,7 @@ def _extract_privateuse1_blocks(source):
             elif char == "}":
                 depth -= 1
                 if depth == 0:
-                    blocks.append(source[opening + 1:index])
+                    blocks.append(source[opening + 1 : index])
                     break
     return blocks
 
@@ -122,9 +136,7 @@ def _canonical_source_schema(identifier):
 
 
 def _parse_m_impl_schemas(block):
-    return {
-        schema for schema, _ in _parse_m_impl_registrations(block)
-    }
+    return {schema for schema, _ in _parse_m_impl_registrations(block)}
 
 
 def _parse_m_impl_registrations(block):
@@ -183,10 +195,15 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
         r"Vulkan conformance supported schemas:\s*(.*?)\s*-->", matrix, re.DOTALL
     )
     assert marker is not None
-    matrix_rows = {item.strip() for item in marker.group(1).replace("\n", "").split(",") if item.strip()}
+    matrix_rows = {
+        item.strip()
+        for item in marker.group(1).replace("\n", "").split(",")
+        if item.strip()
+    }
     assert DECLARED_OPERATION_MANIFEST == matrix_rows
     matrix_declarations = {
-        "aten::sum.dim_IntList": "`aten::sum`", "aten::mean.dim": "`aten::mean`",
+        "aten::sum.dim_IntList": "`aten::sum`",
+        "aten::mean.dim": "`aten::mean`",
         "aten::argmax.default": "`aten::argmax`",
         "aten::amax.out": "`aten::amax.out` / `aten::amin.out`",
         "aten::amax.default": "`aten::amax.out` / `aten::amin.out`",
@@ -204,11 +221,11 @@ def test_declared_manifest_matches_matrix_and_source_registrations():
         "aten::convolution.default": "`aten::convolution`",
         "aten::convolution_backward.default": "`aten::convolution` / `aten::convolution_backward`",
         "aten::_adaptive_avg_pool2d.default": "`aten::_adaptive_avg_pool2d`",
-            "aten::_adaptive_avg_pool2d_backward.default": "`aten::_adaptive_avg_pool2d` / `_adaptive_avg_pool2d_backward`",
-            "aten::native_batch_norm.default": "`aten::native_batch_norm` / `native_batch_norm_backward`",
-            "aten::native_batch_norm_backward.default": "`aten::native_batch_norm` / `native_batch_norm_backward`",
-            "aten::nll_loss_forward.default": "`aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward`",
-            "aten::nll_loss_backward.default": "`aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward`",
+        "aten::_adaptive_avg_pool2d_backward.default": "`aten::_adaptive_avg_pool2d` / `_adaptive_avg_pool2d_backward`",
+        "aten::native_batch_norm.default": "`aten::native_batch_norm` / `native_batch_norm_backward`",
+        "aten::native_batch_norm_backward.default": "`aten::native_batch_norm` / `native_batch_norm_backward`",
+        "aten::nll_loss_forward.default": "`aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward`",
+        "aten::nll_loss_backward.default": "`aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward`",
         "aten::neg.default": "unary `neg`/`abs`/`relu`",
         "aten::abs.default": "unary `neg`/`abs`/`relu`",
         "aten::relu.default": "unary `neg`/`abs`/`relu`",
@@ -279,8 +296,11 @@ def _matrix_schema_set(matrix, label):
         rf"Vulkan conformance {label} schemas:\s*(.*?)\s*-->", matrix, re.DOTALL
     )
     assert marker is not None
-    return frozenset(item.strip() for item in marker.group(1).replace("\n", "").split(",")
-                     if item.strip())
+    return frozenset(
+        item.strip()
+        for item in marker.group(1).replace("\n", "").split(",")
+        if item.strip()
+    )
 
 
 def test_conformance_declaration_ids_match_matrix_in_both_directions():
@@ -295,26 +315,29 @@ def test_conformance_declaration_ids_match_matrix_in_both_directions():
     # A schema can have both a supported overload and a rejected overload in
     # the executable case registry; deferred schemas remain separate from the
     # supported source manifest and are checked independently below.
-    assert {case.declaration_id for case in ALL_CASES} <= supported | rejected | deferred
+    assert {
+        case.declaration_id for case in ALL_CASES
+    } <= supported | rejected | deferred
     assert all(case.declaration_id.startswith("aten::") for case in ALL_CASES)
 
 
 def test_registration_parser_accepts_formatting_variants():
-    source = '''
+    source = """
     TORCH_LIBRARY_IMPL ( aten, PrivateUse1, m ) {
       m . impl ( "aten::view", &view );
       if (enabled) { m.impl("linear", &linear); }
     }
-    '''
+    """
     blocks = _extract_privateuse1_blocks(source)
     assert len(blocks) == 1
     assert _parse_m_impl_schemas(blocks[0]) == {
-        "aten::view.default", "aten::linear.default"
+        "aten::view.default",
+        "aten::linear.default",
     }
 
 
 def test_registration_parser_ignores_comments_and_allows_comments_between_tokens():
-    source = '''
+    source = """
     // TORCH_LIBRARY_IMPL(aten, PrivateUse1, ignored) {
     //   m.impl("commented_out", &reject_commented_out);
     // }
@@ -324,18 +347,19 @@ def test_registration_parser_ignores_comments_and_allows_comments_between_tokens
       /* m.impl("block_commented", &reject_block_commented); */
       m.impl("linear", /* handler */ &linear);
     }
-    '''
+    """
     blocks = _extract_privateuse1_blocks(source)
     assert len(blocks) == 1
     assert _parse_m_impl_schemas(blocks[0]) == {
-        "aten::view.default", "aten::linear.default"
+        "aten::view.default",
+        "aten::linear.default",
     }
 
 
 def test_registration_discovery_includes_non_cpp_source_files(tmp_path):
     source = tmp_path / "registration.hpp"
     source.write_text(
-        'TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {\n'
+        "TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {\n"
         '  m.impl("header_only", &header_only);\n}\n'
     )
     assert _source_registration_inventory(tmp_path) == {"aten::header_only.default"}
@@ -351,9 +375,7 @@ def test_source_registrations_cannot_be_supported_without_a_declaration():
     """Every source registration must be supported, rejected, or roadmap-deferred."""
     assert not _undeclared_source_registrations()
     source_inventory, explicit_rejected = _source_registration_classifications()
-    source_supported = (
-        source_inventory - ROADMAP_DEFERRED_SCHEMAS - explicit_rejected
-    )
+    source_supported = source_inventory - ROADMAP_DEFERRED_SCHEMAS - explicit_rejected
     assert source_supported == DECLARED_OPERATION_MANIFEST
     assert {
         case.declaration_id for case in ALL_CASES if case.supported
@@ -374,9 +396,13 @@ def test_every_deferred_roadmap_schema_has_an_explicit_reason():
 
 
 def test_deferred_operations_are_explicitly_separate_from_declared_manifest():
-    deferred = frozenset({
-        "aten::exp.default", "aten::double_add", "aten::double_mul",
-    })
+    deferred = frozenset(
+        {
+            "aten::exp.default",
+            "aten::double_add",
+            "aten::double_mul",
+        }
+    )
     assert not DECLARED_OPERATION_MANIFEST & deferred
 
 
@@ -469,7 +495,9 @@ def test_model_matrix_declares_fixed_phase_6_slices():
 
 def test_matrix_separates_public_inplace_forms_from_optimizer_updates():
     matrix = Path("docs/vulkan_operator_capability_matrix.md").read_text()
-    assert "generic public pointwise in-place forms (`add_`, `sub_`, and `mul_`)" in matrix
+    assert (
+        "generic public pointwise in-place forms (`add_`, `sub_`, and `mul_`)" in matrix
+    )
     assert "rejected outside an active Vulkan optimizer/training step" in matrix
     assert "internal update path" in matrix
     assert "aten::add_.Tensor" in DECLARED_OPERATION_MANIFEST
@@ -485,9 +513,12 @@ def test_public_inplace_pointwise_rejects_no_grad_and_inference_mode(
     other = torch.full_like(tensor, 2.0)
     pytorch_vulkan._C.reset_execution_counters()
 
-    with mode(), pytest.raises(
-        RuntimeError,
-        match=rf"Vulkan {operation}.*in-place operations are unsupported",
+    with (
+        mode(),
+        pytest.raises(
+            RuntimeError,
+            match=rf"Vulkan {operation}.*in-place operations are unsupported",
+        ),
     ):
         if operation == "mul_":
             getattr(tensor, operation)(2.0)
@@ -613,7 +644,11 @@ def test_supported_and_rejected_operations_do_not_count_as_fallback(vulkan_backe
 @pytest.mark.parametrize("operation", [torch.neg, torch.abs, torch.relu, torch.sub])
 def test_unsupported_bool_operator_is_rejected(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.bool, device=vulkan_backend)
-    inputs = (tensor,) if operation in [torch.neg, torch.abs, torch.relu] else (tensor, tensor)
+    inputs = (
+        (tensor,)
+        if operation in [torch.neg, torch.abs, torch.relu]
+        else (tensor, tensor)
+    )
 
     assert_vulkan_capability(
         operation,
@@ -680,7 +715,9 @@ def test_unary_float32_layout_shape_and_explicit_transfer_contract(
     assert result.shape == non_contiguous.shape
 
     zero_dimensional = torch.empty((), dtype=torch.float32, device=vulkan_backend)
-    zero_result = assert_vulkan_capability(operation, (zero_dimensional,), supported=True)
+    zero_result = assert_vulkan_capability(
+        operation, (zero_dimensional,), supported=True
+    )
     assert zero_result.dim() == 0
 
     source = torch.tensor([1.0, -2.0], dtype=torch.float32, device=vulkan_backend)

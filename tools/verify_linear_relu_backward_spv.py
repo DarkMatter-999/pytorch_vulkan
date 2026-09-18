@@ -17,10 +17,21 @@ def digest(data):
 
 source = SOURCE.read_text(encoding="ascii")
 required = [
-    "binding = 0", "binding = 1", "binding = 2", "binding = 3",
-    "binding = 4", "binding = 5", "binding = 6", "binding = 7",
-    "dInput", "dWeight", "dBias", "activation_value > 0.0",
-    "input_region_offset", "weight_region_offset", "bias_region_offset",
+    "binding = 0",
+    "binding = 1",
+    "binding = 2",
+    "binding = 3",
+    "binding = 4",
+    "binding = 5",
+    "binding = 6",
+    "binding = 7",
+    "dInput",
+    "dWeight",
+    "dBias",
+    "activation_value > 0.0",
+    "input_region_offset",
+    "weight_region_offset",
+    "bias_region_offset",
 ]
 for token in required:
     if token not in source:
@@ -28,7 +39,9 @@ for token in required:
 if "masked_gradient" in source or "masked_grad" in source:
     raise SystemExit("shader contract contains an intermediate masked gradient")
 
-expected = dict(line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines())
+expected = dict(
+    line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines()
+)
 with tempfile.TemporaryDirectory() as directory:
     binary = pathlib.Path(directory) / "linear_relu_backward.comp.spv"
     subprocess.run(["glslc", "-Os", "-o", str(binary), str(SOURCE)], check=True)

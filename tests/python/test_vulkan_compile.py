@@ -31,7 +31,9 @@ def _mnist_model(device):
 
 def _compile_and_check(model, cpu_model, cpu_input, device):
     torch._dynamo.reset()
-    compiled = torch.compile(model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True)
+    compiled = torch.compile(
+        model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True
+    )
     vk_input = cpu_input.to(device)
     pytorch_vulkan._C.reset_execution_counters()
     first = compiled(vk_input)
@@ -82,7 +84,12 @@ def _compile_and_check(model, cpu_model, cpu_input, device):
 def test_compile_linear_relu_linear_replays_on_vulkan_without_transfer(vulkan_device):
     cpu_model = _mlp("cpu")
     model = _mlp(vulkan_device)
-    model.load_state_dict({name: value.to(vulkan_device) for name, value in cpu_model.state_dict().items()})
+    model.load_state_dict(
+        {
+            name: value.to(vulkan_device)
+            for name, value in cpu_model.state_dict().items()
+        }
+    )
     _compile_and_check(model, cpu_model, torch.randn(2, 8), vulkan_device)
     assert pytorch_vulkan.compiler_stats()["fusion_applied"] is True
 
@@ -103,7 +110,9 @@ def test_compile_same_module_sequence_with_altered_wiring_is_not_fused(vulkan_de
     torch.manual_seed(17)
     model = AlteredWiring().to(device=vulkan_device, dtype=torch.float32)
     torch._dynamo.reset()
-    compiled = torch.compile(model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True)
+    compiled = torch.compile(
+        model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True
+    )
     compiled(torch.randn(2, 8).to(vulkan_device))
 
     assert pytorch_vulkan.compiler_stats()["fusion_applied"] is False
@@ -126,10 +135,14 @@ def test_compile_valid_chain_with_earlier_output_is_not_fused(vulkan_device):
     torch.manual_seed(17)
     model = EarlierOutput().to(device=vulkan_device, dtype=torch.float32)
     cpu_model = EarlierOutput()
-    cpu_model.load_state_dict({name: value.cpu() for name, value in model.state_dict().items()})
+    cpu_model.load_state_dict(
+        {name: value.cpu() for name, value in model.state_dict().items()}
+    )
     cpu_input = torch.randn(2, 8)
     torch._dynamo.reset()
-    compiled = torch.compile(model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True)
+    compiled = torch.compile(
+        model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True
+    )
     result = compiled(cpu_input.to(vulkan_device))
 
     torch.testing.assert_close(result.cpu(), cpu_model(cpu_input))
@@ -139,7 +152,12 @@ def test_compile_valid_chain_with_earlier_output_is_not_fused(vulkan_device):
 def test_compile_mnist_shaped_graph_replays_on_vulkan_without_transfer(vulkan_device):
     cpu_model = _mnist_model("cpu")
     model = _mnist_model(vulkan_device)
-    model.load_state_dict({name: value.to(vulkan_device) for name, value in cpu_model.state_dict().items()})
+    model.load_state_dict(
+        {
+            name: value.to(vulkan_device)
+            for name, value in cpu_model.state_dict().items()
+        }
+    )
     _compile_and_check(model, cpu_model, torch.randn(2, 1, 28, 28), vulkan_device)
     assert pytorch_vulkan.compiler_stats()["fusion_applied"] is True
 
@@ -161,6 +179,8 @@ def test_vulkan_backend_rejects_dynamic_symbolic_shapes(vulkan_device):
         model, backend=pytorch_vulkan.vulkan_backend, fullgraph=True, dynamic=True
     )
     vk_input = torch.randn(2, 1, 28, 28).to(vulkan_device)
-    with pytest.raises((VulkanCompilerError, torch._dynamo.exc.BackendCompilerFailed),
-                       match="dynamic symbolic shapes are unsupported"):
+    with pytest.raises(
+        (VulkanCompilerError, torch._dynamo.exc.BackendCompilerFailed),
+        match="dynamic symbolic shapes are unsupported",
+    ):
         compiled(vk_input)

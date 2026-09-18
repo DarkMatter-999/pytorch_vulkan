@@ -110,14 +110,18 @@ def test_bool_invalid_device_index_is_rejected(vulkan_backend):
     )
 
 
-def test_float16_contiguous_allocation_is_rejected_before_materialization(vulkan_backend):
+def test_float16_contiguous_allocation_is_rejected_before_materialization(
+    vulkan_backend,
+):
     _assert_rejected(
         lambda: torch.empty((2,), dtype=torch.float16, device=vulkan_backend),
         _exact_error(FLOAT16_ALLOCATION_ERROR),
     )
 
 
-def test_float16_non_contiguous_allocation_is_rejected_before_materialization(vulkan_backend):
+def test_float16_non_contiguous_allocation_is_rejected_before_materialization(
+    vulkan_backend,
+):
     _assert_rejected(
         lambda: torch.empty_strided(
             (2, 2), (1, 2), dtype=torch.float16, device=vulkan_backend
@@ -129,7 +133,9 @@ def test_float16_non_contiguous_allocation_is_rejected_before_materialization(vu
 def test_float16_cpu_to_vulkan_transfer_is_rejected_before_dispatch(vulkan_backend):
     source = torch.empty((2,), dtype=torch.float16)
     pytorch_vulkan._C.reset_execution_counters()
-    _assert_rejected(lambda: source.to(vulkan_backend), _exact_error(FLOAT16_ALLOCATION_ERROR))
+    _assert_rejected(
+        lambda: source.to(vulkan_backend), _exact_error(FLOAT16_ALLOCATION_ERROR)
+    )
     _assert_no_vulkan_work()
 
 
@@ -138,7 +144,9 @@ def test_float16_non_contiguous_cpu_to_vulkan_transfer_is_rejected(
 ):
     source = torch.empty((2, 2), dtype=torch.float16).t()
     assert not source.is_contiguous()
-    _assert_rejected(lambda: source.to(vulkan_backend), _exact_error(FLOAT16_ALLOCATION_ERROR))
+    _assert_rejected(
+        lambda: source.to(vulkan_backend), _exact_error(FLOAT16_ALLOCATION_ERROR)
+    )
 
 
 def test_float16_vulkan_to_cpu_transfer_is_rejected_at_allocation_boundary(
@@ -246,7 +254,9 @@ def test_float16_cpu_promotion_observations(operation, expected_dtype, expected_
 
 def test_float16_operator_request_is_rejected_before_dispatch(vulkan_backend):
     _assert_rejected(
-        lambda: torch.neg(torch.empty((2,), dtype=torch.float16, device=vulkan_backend)),
+        lambda: torch.neg(
+            torch.empty((2,), dtype=torch.float16, device=vulkan_backend)
+        ),
         _exact_error(FLOAT16_ALLOCATION_ERROR),
     )
 

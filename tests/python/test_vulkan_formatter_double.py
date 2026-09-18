@@ -21,7 +21,9 @@ def assert_double_tensor(result, expected):
     assert result.storage_offset() == 0
     assert result.numel() == expected.numel()
     actual = [value.item() for value in result.reshape(-1).unbind()]
-    torch.testing.assert_close(torch.tensor(actual, dtype=torch.float64), expected.reshape(-1))
+    torch.testing.assert_close(
+        torch.tensor(actual, dtype=torch.float64), expected.reshape(-1)
+    )
 
 
 def test_formatter_double_abs(double_tensor):
@@ -39,8 +41,9 @@ def test_formatter_double_min_and_max(double_tensor):
 
 
 def test_formatter_double_scalar_division(double_tensor):
-    assert_double_tensor(double_tensor / double_tensor.abs().max(),
-                         CPU_VALUES / CPU_VALUES.abs().max())
+    assert_double_tensor(
+        double_tensor / double_tensor.abs().max(), CPU_VALUES / CPU_VALUES.abs().max()
+    )
 
 
 def test_formatter_double_scalar_comparisons(double_tensor):
@@ -52,7 +55,9 @@ def test_formatter_double_scalar_comparisons(double_tensor):
     assert not_equal.dtype == torch.bool
     assert greater.dtype == torch.bool
     cpu_value = CPU_VALUES.min()
-    torch.testing.assert_close(torch.tensor(not_equal.cpu().item()), cpu_value.ne(cpu_value.ceil()))
+    torch.testing.assert_close(
+        torch.tensor(not_equal.cpu().item()), cpu_value.ne(cpu_value.ceil())
+    )
     torch.testing.assert_close(torch.tensor(greater.cpu().item()), cpu_value.gt(1.0e8))
 
 
@@ -74,18 +79,38 @@ def test_formatter_double_scalar_extraction(double_tensor):
     assert double_tensor.min().item() == pytest.approx(CPU_VALUES.min().item())
 
 
-@pytest.mark.parametrize("operation", [lambda tensor: tensor + tensor, lambda tensor: tensor * tensor])
+@pytest.mark.parametrize(
+    "operation", [lambda tensor: tensor + tensor, lambda tensor: tensor * tensor]
+)
 def test_formatter_double_rejects_unrelated_arithmetic(double_tensor, operation):
-    with pytest.raises((RuntimeError, NotImplementedError), match="Double|unsupported|not exist"):
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match="Double|unsupported|not exist"
+    ):
         operation(double_tensor)
 
 
 def test_formatter_double_rejects_unregistered_comparison_forms(double_tensor):
-    with pytest.raises((RuntimeError, NotImplementedError), match="Double|float32|not exist"):
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match="Double|float32|not exist"
+    ):
         double_tensor.ne(0.0)
-    with pytest.raises((RuntimeError, NotImplementedError), match="Double|float32|not exist"):
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match="Double|float32|not exist"
+    ):
         torch.isfinite(double_tensor)
-    with pytest.raises((RuntimeError, NotImplementedError), match="Double|float32|not exist"):
-        torch.ne(double_tensor, 0.0, out=torch.empty(double_tensor.shape, dtype=torch.bool, device="vk:0"))
-    with pytest.raises((RuntimeError, NotImplementedError), match="Double|float32|not exist|aten::lt"):
-        torch.lt(double_tensor, 1.0e-4, out=torch.empty(double_tensor.shape, dtype=torch.bool, device="vk:0"))
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match="Double|float32|not exist"
+    ):
+        torch.ne(
+            double_tensor,
+            0.0,
+            out=torch.empty(double_tensor.shape, dtype=torch.bool, device="vk:0"),
+        )
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match="Double|float32|not exist|aten::lt"
+    ):
+        torch.lt(
+            double_tensor,
+            1.0e-4,
+            out=torch.empty(double_tensor.shape, dtype=torch.bool, device="vk:0"),
+        )

@@ -26,7 +26,11 @@ def _command(command: list[str]) -> dict[str, str]:
             text=True,
             timeout=15,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         if isinstance(exc, subprocess.CalledProcessError):
             detail = (exc.stderr or exc.stdout or "command failed").strip()
         elif isinstance(exc, subprocess.TimeoutExpired):
@@ -71,7 +75,11 @@ def _torch() -> dict[str, object]:
     try:
         import torch
     except Exception as exc:  # Optional for provenance on incomplete environments.
-        return {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}", "supported_2_4": None}
+        return {
+            "status": "unavailable",
+            "error": f"{type(exc).__name__}: {exc}",
+            "supported_2_4": None,
+        }
 
     version = str(torch.__version__)
     supported = version.startswith("2.4.")

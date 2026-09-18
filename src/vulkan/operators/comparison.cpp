@@ -3,16 +3,16 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
-#include "vulkan_platform.h"
 #include "vulkan_layout.h"
+#include "vulkan_platform.h"
 
+#include <ATen/MemoryOverlap.h>
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
-#include <ATen/MemoryOverlap.h>
 #include <torch/library.h>
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 
@@ -38,14 +38,15 @@ void validate_output(const at::Tensor &input, at::Tensor &out, const char *name)
                 "Vulkan ", name, " requires a strided output with equal shape");
     const auto layout = inspect_vulkan_tensor_layout(out, name);
     TORCH_CHECK(layout.rank <= 8, "Vulkan ", name, " supports ranks up to 8");
-    TORCH_CHECK(at::has_internal_overlap(out) == at::MemOverlap::No,
-                "Vulkan ", name, " output has internal overlap");
+    TORCH_CHECK(at::has_internal_overlap(out) == at::MemOverlap::No, "Vulkan ", name,
+                " output has internal overlap");
     const auto overlap = at::get_overlap_status(input, out);
     TORCH_CHECK(overlap != at::MemOverlapStatus::Partial &&
                     overlap != at::MemOverlapStatus::TooHard,
                 "Vulkan ", name, " output partially overlaps an input");
     if (overlap == at::MemOverlapStatus::Full)
-        TORCH_CHECK(input.data_ptr() == out.data_ptr() && input.strides().equals(out.strides()) &&
+        TORCH_CHECK(input.data_ptr() == out.data_ptr() &&
+                        input.strides().equals(out.strides()) &&
                         input.storage_offset() == out.storage_offset(),
                     "Vulkan ", name, " permits only exact full-tensor output aliases");
     const auto &input_data = input.storage().data_ptr();
@@ -89,12 +90,13 @@ at::Tensor &dispatch(const at::Tensor &input, at::Tensor &out, bool finite,
     TORCH_CHECK(&platform == &allocation_platform(out_data), "Vulkan ", name,
                 " requires one Vulkan platform");
     if (finite) {
-        platform.compute().isfinite(allocation_buffer(input_data).buffer(), input_layout,
-                                     allocation_buffer(out_data).buffer(), output_layout);
+        platform.compute().isfinite(allocation_buffer(input_data).buffer(),
+                                    input_layout, allocation_buffer(out_data).buffer(),
+                                    output_layout);
     } else {
-        platform.compute().comparison_scalar(allocation_buffer(input_data).buffer(), input_layout,
-                                             allocation_buffer(out_data).buffer(), output_layout,
-                                             scalar);
+        platform.compute().comparison_scalar(
+            allocation_buffer(input_data).buffer(), input_layout,
+            allocation_buffer(out_data).buffer(), output_layout, scalar);
     }
     return out;
 }
@@ -147,23 +149,22 @@ at::Tensor &eq_tensor_out(const at::Tensor &self, const at::Tensor &other,
     TORCH_CHECK(&platform == &allocation_platform(rhs) &&
                     &platform == &allocation_platform(result),
                 "Vulkan eq.Tensor_out requires one Vulkan platform");
-    platform.compute().comparison_tensor(allocation_buffer(lhs).buffer(), lhs_layout,
-                                         allocation_buffer(rhs).buffer(), rhs_layout,
-                                         allocation_buffer(result).buffer(), output_layout);
+    platform.compute().comparison_tensor(
+        allocation_buffer(lhs).buffer(), lhs_layout, allocation_buffer(rhs).buffer(),
+        rhs_layout, allocation_buffer(result).buffer(), output_layout);
     return out;
 }
 
 at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &other,
                                    at::Tensor &out) {
-    TORCH_CHECK(self.device().type() == c10::DeviceType::PrivateUse1 &&
-                    other.device() == self.device() && out.device() == self.device() &&
-                    self.scalar_type() == at::kBool &&
-                    other.scalar_type() == at::kBool &&
-                     out.scalar_type() == at::kBool &&
-                     self.sizes().equals(other.sizes()) &&
-                     self.sizes().equals(out.sizes()),
-                 "Vulkan bitwise_and.Tensor_out requires equal-shape bool "
-                 "vk:0 tensors");
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1 &&
+            other.device() == self.device() && out.device() == self.device() &&
+            self.scalar_type() == at::kBool && other.scalar_type() == at::kBool &&
+            out.scalar_type() == at::kBool && self.sizes().equals(other.sizes()) &&
+            self.sizes().equals(out.sizes()),
+        "Vulkan bitwise_and.Tensor_out requires equal-shape bool "
+        "vk:0 tensors");
     const auto &lhs = self.storage().data_ptr();
     const auto &rhs = other.storage().data_ptr();
     const auto &result = out.storage().data_ptr();
@@ -171,9 +172,11 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
     const auto rhs_layout = inspect_vulkan_tensor_layout(other, "bitwise_and rhs");
     const auto output_layout = inspect_vulkan_tensor_layout(out, "bitwise_and output");
     for (const auto *layout : {&lhs_layout, &rhs_layout, &output_layout}) {
-        TORCH_CHECK(layout->rank <= 8, "Vulkan bitwise_and.Tensor_out supports ranks up to 8");
-        TORCH_CHECK(layout->numel <= std::numeric_limits<uint32_t>::max(),
-                    "Vulkan bitwise_and.Tensor_out element count exceeds the supported range");
+        TORCH_CHECK(layout->rank <= 8,
+                    "Vulkan bitwise_and.Tensor_out supports ranks up to 8");
+        TORCH_CHECK(
+            layout->numel <= std::numeric_limits<uint32_t>::max(),
+            "Vulkan bitwise_and.Tensor_out element count exceeds the supported range");
     }
     TORCH_CHECK(at::has_internal_overlap(out) == at::MemOverlap::No,
                 "Vulkan bitwise_and.Tensor_out output has internal overlap");
@@ -183,11 +186,12 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
                         overlap != at::MemOverlapStatus::TooHard,
                     "Vulkan bitwise_and.Tensor_out output partially overlaps an input");
         if (overlap == at::MemOverlapStatus::Full)
-            TORCH_CHECK(input->data_ptr() == out.data_ptr() &&
-                            input->sizes().equals(out.sizes()) &&
-                            input->strides().equals(out.strides()) &&
-                            input->storage_offset() == out.storage_offset(),
-                        "Vulkan bitwise_and.Tensor_out permits only exact full-tensor aliases");
+            TORCH_CHECK(
+                input->data_ptr() == out.data_ptr() &&
+                    input->sizes().equals(out.sizes()) &&
+                    input->strides().equals(out.strides()) &&
+                    input->storage_offset() == out.storage_offset(),
+                "Vulkan bitwise_and.Tensor_out permits only exact full-tensor aliases");
     }
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(self.numel() * sizeof(bool));
     validate_allocation(lhs, bytes, "bitwise_and lhs");
@@ -199,8 +203,8 @@ at::Tensor &bitwise_and_tensor_out(const at::Tensor &self, const at::Tensor &oth
                     platform.supports_bool_pointwise(),
                 "Vulkan bitwise_and.Tensor_out requires bool pointwise capability");
     platform.compute().tensor_tensor(
-        allocation_buffer(lhs).buffer(), lhs_layout, allocation_buffer(rhs).buffer(), rhs_layout,
-        allocation_buffer(result).buffer(), output_layout, 2, true);
+        allocation_buffer(lhs).buffer(), lhs_layout, allocation_buffer(rhs).buffer(),
+        rhs_layout, allocation_buffer(result).buffer(), output_layout, 2, true);
     return out;
 }
 
@@ -215,7 +219,8 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     TORCH_CHECK(
         mask.storage_offset() == 0,
         "Vulkan masked_select does not support non-zero storage_offset() on the mask");
-    const auto value_layout = inspect_vulkan_tensor_layout(self, "masked_select values");
+    const auto value_layout =
+        inspect_vulkan_tensor_layout(self, "masked_select values");
     const auto mask_layout = inspect_vulkan_tensor_layout(mask, "masked_select mask");
     TORCH_CHECK(value_layout.internal_overlap == VulkanOverlap::No,
                 "Vulkan masked_select values have internal overlap");
@@ -237,7 +242,8 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     // The shader consumes a densely packed logical sequence.  Validation above
     // must remain side-effect free; only then may a supported value view be
     // materialized on Vulkan.
-    const bool materializes_values = !self.is_contiguous() || self.storage_offset() != 0;
+    const bool materializes_values =
+        !self.is_contiguous() || self.storage_offset() != 0;
     at::Tensor values = materializes_values ? self.contiguous() : self;
     if (values.storage_offset() != 0)
         values = values.clone();

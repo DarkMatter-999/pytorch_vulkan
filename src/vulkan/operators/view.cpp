@@ -24,8 +24,8 @@ namespace {
 int64_t requested_numel(at::IntArrayRef sizes, const char *name) {
     int64_t result = 1;
     for (const int64_t size : sizes) {
-        TORCH_CHECK(size >= 0 &&
-                        (size == 0 || result <= std::numeric_limits<int64_t>::max() / size),
+        TORCH_CHECK(size >= 0 && (size == 0 ||
+                                  result <= std::numeric_limits<int64_t>::max() / size),
                     "Vulkan ", name, " view size is invalid");
         result *= size;
     }
@@ -34,8 +34,8 @@ int64_t requested_numel(at::IntArrayRef sizes, const char *name) {
 
 at::Tensor metadata_only_view(const at::Tensor &self, at::IntArrayRef sizes,
                               at::IntArrayRef strides,
-                              std::optional<int64_t> storage_offset,
-                              const char *name, bool require_view_compatibility) {
+                              std::optional<int64_t> storage_offset, const char *name,
+                              bool require_view_compatibility) {
     if (pytorch_vulkan::is_fake_tensor(self)) {
         std::vector<c10::SymInt> symbolic_sizes;
         std::vector<c10::SymInt> symbolic_strides;
@@ -48,11 +48,11 @@ at::Tensor metadata_only_view(const at::Tensor &self, at::IntArrayRef sizes,
         return at::_ops::as_strided::redispatch(
             c10::DispatchKeySet(c10::DispatchKey::Meta), self, symbolic_sizes,
             symbolic_strides,
-            storage_offset.has_value() ? std::optional<c10::SymInt>(storage_offset.value())
-                                       : std::nullopt);
+            storage_offset.has_value()
+                ? std::optional<c10::SymInt>(storage_offset.value())
+                : std::nullopt);
     }
-    const auto source_layout =
-        pytorch_vulkan::inspect_vulkan_tensor_layout(self, name);
+    const auto source_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(self, name);
     TORCH_CHECK(sizes.size() == strides.size(), "Vulkan ", name,
                 " sizes and strides must have matching ranks");
     const int64_t numel = requested_numel(sizes, name);
@@ -62,11 +62,12 @@ at::Tensor metadata_only_view(const at::Tensor &self, at::IntArrayRef sizes,
                     (self.storage_offset() == 0 && self.is_contiguous() &&
                      at::has_internal_overlap(self) == at::MemOverlap::No),
                 "Vulkan ", name,
-                " requires a contiguous source with storage_offset == 0 and no internal overlap");
-    TORCH_CHECK(!require_view_compatibility || source_layout.numel == numel, "Vulkan ", name,
-                " view size must preserve the number of elements");
-    (void)pytorch_vulkan::inspect_vulkan_view_layout(
-        self, sizes, strides, requested_offset, name);
+                " requires a contiguous source with storage_offset == 0 and no "
+                "internal overlap");
+    TORCH_CHECK(!require_view_compatibility || source_layout.numel == numel, "Vulkan ",
+                name, " view size must preserve the number of elements");
+    (void)pytorch_vulkan::inspect_vulkan_view_layout(self, sizes, strides,
+                                                     requested_offset, name);
     if (require_view_compatibility) {
         TORCH_CHECK(at::geometry_is_contiguous(sizes, strides), "Vulkan ", name,
                     " requires contiguous view metadata");
@@ -82,16 +83,15 @@ class VulkanReshapeCopyAutogradFunction final
     : public torch::autograd::Function<VulkanReshapeCopyAutogradFunction> {
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
-                              const at::Tensor &self,
-                              std::vector<int64_t> sizes) {
+                              const at::Tensor &self, std::vector<int64_t> sizes) {
         at::AutoDispatchBelowAutograd guard;
         ctx->save_for_backward({self});
         return pytorch_vulkan::vulkan_contiguous_copy(self).view(sizes).detach();
     }
 
-    static torch::autograd::variable_list backward(
-        torch::autograd::AutogradContext *ctx,
-        torch::autograd::variable_list grads) {
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grads) {
         at::AutoDispatchBelowAutograd guard;
         if (!grads[0].defined())
             return {at::Tensor(), at::Tensor()};
@@ -115,7 +115,8 @@ at::Tensor as_strided_tensor(const at::Tensor &self, at::IntArrayRef size,
 
 at::Tensor view_tensor(const at::Tensor &self, at::IntArrayRef size) {
     const auto inferred_size = at::infer_size_dv(size, self.numel());
-    const auto stride = at::detail::computeStride(self.sizes(), self.strides(), inferred_size);
+    const auto stride =
+        at::detail::computeStride(self.sizes(), self.strides(), inferred_size);
     TORCH_CHECK(stride.has_value(),
                 "view size is not compatible with input tensor's size and stride "
                 "(at least one dimension spans across two contiguous subspaces). "
@@ -130,7 +131,8 @@ at::Tensor reshape_alias_tensor(const at::Tensor &self, at::IntArrayRef size,
 
 at::Tensor reshape_tensor(const at::Tensor &self, at::IntArrayRef size) {
     const auto inferred_size = at::infer_size_dv(size, self.numel());
-    const auto stride = at::detail::computeStride(self.sizes(), self.strides(), inferred_size);
+    const auto stride =
+        at::detail::computeStride(self.sizes(), self.strides(), inferred_size);
     if (stride.has_value()) {
         // computeStride is reshape's compatibility contract; unlike view, it
         // also accepts compatible non-contiguous source layouts.

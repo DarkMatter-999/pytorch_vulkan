@@ -57,7 +57,8 @@ int main(int argc, char **argv) {
         std::cout << "Storage/dispatch limits: "
                   << (device.storage_dispatch_limits ? "satisfied" : "missing") << "\n";
         std::cout << "Memory: "
-                  << (device.host_visible_memory ? "host-visible storage supported" : "missing")
+                  << (device.host_visible_memory ? "host-visible storage supported"
+                                                 : "missing")
                   << "\n";
         std::cout << "Shader capabilities: "
                   << (device.shader_capabilities ? "satisfied" : "missing") << "\n";

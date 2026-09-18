@@ -12,8 +12,10 @@ def vulkan_backend():
 
 
 def _vk(values, backend, requires_grad=False):
-    return torch.tensor(values, dtype=torch.float32).to(backend).requires_grad_(
-        requires_grad
+    return (
+        torch.tensor(values, dtype=torch.float32)
+        .to(backend)
+        .requires_grad_(requires_grad)
     )
 
 
@@ -39,13 +41,23 @@ def test_binary_tensor_gradients_match_cpu(vulkan_backend, operation):
 def test_binary_tensor_single_operand_gradient_matches_cpu(
     vulkan_backend, operation, requires_grad_operand
 ):
-    cpu_lhs = torch.tensor([1.5, -2.0, 0.25], requires_grad=requires_grad_operand == "lhs")
-    cpu_rhs = torch.tensor([-3.0, 4.0, 2.0], requires_grad=requires_grad_operand == "rhs")
-    vk_lhs = cpu_lhs.detach().clone().to(vulkan_backend).requires_grad_(
-        requires_grad_operand == "lhs"
+    cpu_lhs = torch.tensor(
+        [1.5, -2.0, 0.25], requires_grad=requires_grad_operand == "lhs"
     )
-    vk_rhs = cpu_rhs.detach().clone().to(vulkan_backend).requires_grad_(
-        requires_grad_operand == "rhs"
+    cpu_rhs = torch.tensor(
+        [-3.0, 4.0, 2.0], requires_grad=requires_grad_operand == "rhs"
+    )
+    vk_lhs = (
+        cpu_lhs.detach()
+        .clone()
+        .to(vulkan_backend)
+        .requires_grad_(requires_grad_operand == "lhs")
+    )
+    vk_rhs = (
+        cpu_rhs.detach()
+        .clone()
+        .to(vulkan_backend)
+        .requires_grad_(requires_grad_operand == "rhs")
     )
 
     cpu_result = operation(cpu_lhs, cpu_rhs)
@@ -114,7 +126,9 @@ def test_binary_rejections_remain_explicit(vulkan_backend):
 def test_binary_inplace_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
     tensor = _vk([1.0, 2.0], vulkan_backend)
     other = _vk([3.0, 4.0], vulkan_backend)
-    with pytest.raises(RuntimeError, match=r"Vulkan mul_.*in-place operations are unsupported"):
+    with pytest.raises(
+        RuntimeError, match=r"Vulkan mul_.*in-place operations are unsupported"
+    ):
         tensor.mul_(other)
 
 

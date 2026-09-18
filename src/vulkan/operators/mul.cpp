@@ -1,5 +1,5 @@
-#include "binary.h"
 #include "autograd.h"
+#include "binary.h"
 #include "out.h"
 
 #include <torch/library.h>
@@ -23,7 +23,8 @@ at::Tensor &mul_out(const at::Tensor &lhs, const at::Tensor &rhs, at::Tensor &ou
 at::Tensor &mul_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
                            at::Tensor &out) {
     return pytorch_vulkan::dispatch_tensor_scalar_out(
-        tensor, scalar, at::Scalar(1), out, pytorch_vulkan::PointwiseOperation::Mul, "mul");
+        tensor, scalar, at::Scalar(1), out, pytorch_vulkan::PointwiseOperation::Mul,
+        "mul");
 }
 
 at::Tensor &mul_inplace_tensor(at::Tensor &self, const at::Tensor &other) {

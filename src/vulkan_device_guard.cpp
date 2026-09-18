@@ -67,9 +67,7 @@ std::shared_ptr<VulkanPlatform> platform() {
     return platform_instance;
 }
 
-c10::DeviceType VulkanDeviceGuard::type() const {
-    return c10::DeviceType::PrivateUse1;
-}
+c10::DeviceType VulkanDeviceGuard::type() const { return c10::DeviceType::PrivateUse1; }
 
 c10::Device VulkanDeviceGuard::exchangeDevice(c10::Device device) const {
     check_device(device);
@@ -78,9 +76,7 @@ c10::Device VulkanDeviceGuard::exchangeDevice(c10::Device device) const {
     return previous;
 }
 
-c10::Device VulkanDeviceGuard::getDevice() const {
-    return current;
-}
+c10::Device VulkanDeviceGuard::getDevice() const { return current; }
 
 void VulkanDeviceGuard::setDevice(c10::Device device) const {
     check_device(device);
@@ -94,9 +90,9 @@ void VulkanDeviceGuard::uncheckedSetDevice(c10::Device device) const noexcept {
 }
 
 c10::Stream VulkanDeviceGuard::getStream(c10::Device device) const noexcept {
-    TORCH_INTERNAL_ASSERT(
-        device.type() == c10::DeviceType::PrivateUse1 && device.index() == 0,
-        "Vulkan backend supports only device index 0");
+    TORCH_INTERNAL_ASSERT(device.type() == c10::DeviceType::PrivateUse1 &&
+                              device.index() == 0,
+                          "Vulkan backend supports only device index 0");
     return device == current ? stream : c10::Stream(c10::Stream::DEFAULT, device);
 }
 
@@ -135,9 +131,7 @@ void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
     TORCH_CHECK(result == VK_SUCCESS, "Could not synchronize Vulkan compute queue");
 }
 
-c10::Device current_device() {
-    return current;
-}
+c10::Device current_device() { return current; }
 
 void set_device(c10::DeviceIndex index) {
     VulkanDeviceGuard guard;

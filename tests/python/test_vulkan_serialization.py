@@ -27,7 +27,10 @@ def test_explicit_round_trip_preserves_views_and_shared_storage():
     assert tuple(restored["base"].stride()) == (4, 1)
     assert restored["view"].storage_offset() == 1
     assert tuple(restored["view"].stride()) == (1, 2)
-    assert restored["view"].untyped_storage()._cdata == restored["base"].untyped_storage()._cdata
+    assert (
+        restored["view"].untyped_storage()._cdata
+        == restored["base"].untyped_storage()._cdata
+    )
     torch.testing.assert_close(restored["base"], source.cpu(), rtol=0, atol=0)
     expected_view = source.cpu().as_strided((2, 2), (1, 2), 1)
     torch.testing.assert_close(restored["view"], expected_view, rtol=0, atol=0)
@@ -35,7 +38,10 @@ def test_explicit_round_trip_preserves_views_and_shared_storage():
     buffer.seek(0)
     restored_vk = pytorch_vulkan.load(buffer, map_location="vk")
     assert restored_vk["base"].device == torch.device("vk:0")
-    assert restored_vk["view"].untyped_storage()._cdata == restored_vk["base"].untyped_storage()._cdata
+    assert (
+        restored_vk["view"].untyped_storage()._cdata
+        == restored_vk["base"].untyped_storage()._cdata
+    )
     torch.testing.assert_close(
         restored_vk["base"].cpu().as_strided((2, 2), (1, 2), 1),
         expected_view,
@@ -87,7 +93,10 @@ def test_explicit_round_trip_preserves_chained_view_metadata():
     assert tuple(restored["view"].shape) == tuple(view.shape)
     assert tuple(restored["view"].stride()) == tuple(view.stride())
     assert restored["view"].storage_offset() == view.storage_offset()
-    assert restored["view"].untyped_storage()._cdata == restored["source"].untyped_storage()._cdata
+    assert (
+        restored["view"].untyped_storage()._cdata
+        == restored["source"].untyped_storage()._cdata
+    )
     torch.testing.assert_close(restored["view"].cpu(), view.cpu(), rtol=0, atol=0)
 
 
@@ -109,8 +118,11 @@ def test_load_rejects_malformed_metadata_before_vulkan_restore():
         "format": "pytorch_vulkan",
         "version": 1,
         "storages": [{"dtype": "float32", "nbytes": 4, "data": torch.zeros(1)}],
-        "object": ("pytorch_vulkan.node.v1", "tensor",
-                   (0, "float64", [1], [1], 0, "vk:0", False)),
+        "object": (
+            "pytorch_vulkan.node.v1",
+            "tensor",
+            (0, "float64", [1], [1], 0, "vk:0", False),
+        ),
     }
     source = io.BytesIO()
     torch.save(payload, source)
@@ -137,9 +149,16 @@ def test_save_rejects_unsupported_and_cyclic_objects():
 
 
 def test_user_dictionary_marker_collision_is_not_a_tensor():
-    value = {"__pytorch_vulkan_tensor__": "tensor-v1", "storage": 0,
-             "dtype": "float32", "sizes": [1], "strides": [1],
-             "storage_offset": 0, "device": "vk:0", "requires_grad": False}
+    value = {
+        "__pytorch_vulkan_tensor__": "tensor-v1",
+        "storage": 0,
+        "dtype": "float32",
+        "sizes": [1],
+        "strides": [1],
+        "storage_offset": 0,
+        "device": "vk:0",
+        "requires_grad": False,
+    }
     source = io.BytesIO()
     pytorch_vulkan.save(value, source)
     source.seek(0)
@@ -149,8 +168,12 @@ def test_user_dictionary_marker_collision_is_not_a_tensor():
 def test_load_rejects_cyclic_and_unsupported_graphs():
     cyclic = []
     cyclic.append(cyclic)
-    payload = {"format": "pytorch_vulkan", "version": 1,
-               "storages": [], "object": cyclic}
+    payload = {
+        "format": "pytorch_vulkan",
+        "version": 1,
+        "storages": [],
+        "object": cyclic,
+    }
     source = io.BytesIO()
     torch.save(payload, source)
     source.seek(0)
@@ -158,23 +181,37 @@ def test_load_rejects_cyclic_and_unsupported_graphs():
         pytorch_vulkan.load(source, map_location="cpu")
 
     source = io.BytesIO()
-    torch.save({"format": "pytorch_vulkan", "version": 1,
-                "storages": [], "object": {"unsupported": 1}}, source)
+    torch.save(
+        {
+            "format": "pytorch_vulkan",
+            "version": 1,
+            "storages": [],
+            "object": {"unsupported": 1},
+        },
+        source,
+    )
     source.seek(0)
     with pytest.raises(ValueError, match="unsupported encoded"):
         pytorch_vulkan.load(source, map_location="cpu")
 
 
-@pytest.mark.parametrize("sizes, strides, offset", [
-    ([1.0], [1], 0),
-    ([1], ["1"], 0),
-    ([1], [1], False),
-])
+@pytest.mark.parametrize(
+    "sizes, strides, offset",
+    [
+        ([1.0], [1], 0),
+        ([1], ["1"], 0),
+        ([1], [1], False),
+    ],
+)
 def test_load_rejects_non_integer_layout_metadata(sizes, strides, offset):
-    node = ("pytorch_vulkan.node.v1", "tensor",
-            (0, "float32", sizes, strides, offset, "vk:0", False))
+    node = (
+        "pytorch_vulkan.node.v1",
+        "tensor",
+        (0, "float32", sizes, strides, offset, "vk:0", False),
+    )
     payload = {
-        "format": "pytorch_vulkan", "version": 1,
+        "format": "pytorch_vulkan",
+        "version": 1,
         "storages": [{"dtype": "float32", "nbytes": 4, "data": torch.zeros(1)}],
         "object": node,
     }
@@ -199,14 +236,19 @@ def test_load_rejects_invalid_storage_byte_count():
         pytorch_vulkan.load(source, map_location="vk")
 
 
-@pytest.mark.skipif(not pytorch_vulkan.is_available(), reason="requires a Vulkan device")
+@pytest.mark.skipif(
+    not pytorch_vulkan.is_available(), reason="requires a Vulkan device"
+)
 def test_default_restore_rejects_unavailable_vulkan(monkeypatch):
     payload = {
         "format": "pytorch_vulkan",
         "version": 1,
         "storages": [{"dtype": "float32", "nbytes": 4, "data": torch.zeros(1)}],
-        "object": ("pytorch_vulkan.node.v1", "tensor",
-                   (0, "float32", [], [], 0, "vk:0", False)),
+        "object": (
+            "pytorch_vulkan.node.v1",
+            "tensor",
+            (0, "float32", [], [], 0, "vk:0", False),
+        ),
     }
     source = io.BytesIO()
     torch.save(payload, source)

@@ -3,10 +3,10 @@
 #include "vulkan_platform.h"
 
 #include <array>
+#include <chrono>
 #include <exception>
 #include <stdexcept>
 #include <string>
-#include <chrono>
 
 namespace {
 struct QuarantinedExecution {
@@ -26,11 +26,16 @@ void check_result(VkResult result, const char *operation) {
                                  std::to_string(static_cast<int>(result)));
 }
 
-std::exception_ptr execute_callbacks(
-    std::vector<std::function<void()>> &callbacks) noexcept {
+std::exception_ptr
+execute_callbacks(std::vector<std::function<void()>> &callbacks) noexcept {
     std::exception_ptr error;
     for (auto &callback : callbacks) {
-        try { callback(); } catch (...) { if (!error) error = std::current_exception(); }
+        try {
+            callback();
+        } catch (...) {
+            if (!error)
+                error = std::current_exception();
+        }
     }
     callbacks.clear();
     return error;
@@ -43,7 +48,8 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
     if (device_ == VK_NULL_HANDLE || queue_ == VK_NULL_HANDLE ||
         command_pool_ == VK_NULL_HANDLE)
         throw std::invalid_argument("Vulkan execution context requires valid handles");
-    VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    VkCommandBufferAllocateInfo allocation{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     allocation.commandPool = command_pool_;
     allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocation.commandBufferCount = kRingSize;
@@ -57,7 +63,8 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
             VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
             check_result(vkCreateFence(device_, &fence_info, nullptr, &ring_[i].fence),
                          "Could not create Vulkan execution fence");
-            VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            VkSemaphoreCreateInfo semaphore_info{
+                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             check_result(vkCreateSemaphore(device_, &semaphore_info, nullptr,
                                            &ring_[i].signal_semaphore),
                          "Could not create Vulkan execution semaphore");
@@ -264,7 +271,10 @@ void VulkanExecutionContext::cancel() {
     lock.unlock();
     execute_callbacks(callbacks);
     lock.lock();
-    try { reset_reusable_resources(ring_[active_slot_]); } catch (...) {}
+    try {
+        reset_reusable_resources(ring_[active_slot_]);
+    } catch (...) {
+    }
 }
 
 bool VulkanExecutionContext::recording() const {
@@ -355,9 +365,9 @@ void VulkanExecutionContext::recreate_signal_semaphore(InFlightRecord &record) {
     record.signal_semaphore = VK_NULL_HANDLE;
     latest_signal_semaphore_ = VK_NULL_HANDLE;
     VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    check_result(vkCreateSemaphore(device_, &semaphore_info, nullptr,
-                                   &record.signal_semaphore),
-                 "Could not recreate Vulkan execution semaphore");
+    check_result(
+        vkCreateSemaphore(device_, &semaphore_info, nullptr, &record.signal_semaphore),
+        "Could not recreate Vulkan execution semaphore");
 }
 
 void VulkanExecutionContext::reset_reusable_resources(InFlightRecord &record) {
@@ -367,10 +377,11 @@ void VulkanExecutionContext::reset_reusable_resources(InFlightRecord &record) {
                  "Could not reset Vulkan execution fence");
 }
 
-void VulkanExecutionContext::wait_and_retire(
-    InFlightRecord &record, std::unique_lock<std::mutex> &lock) {
+void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
+                                             std::unique_lock<std::mutex> &lock) {
     const auto wait_start = std::chrono::steady_clock::now();
-    const VkResult result = vkWaitForFences(device_, 1, &record.fence, VK_TRUE, UINT64_MAX);
+    const VkResult result =
+        vkWaitForFences(device_, 1, &record.fence, VK_TRUE, UINT64_MAX);
     if (result != VK_SUCCESS) {
         check_result(vkQueueWaitIdle(queue_),
                      "Could not confirm Vulkan execution completion");
@@ -388,14 +399,18 @@ void VulkanExecutionContext::wait_and_retire(
     retire(record, lock);
 }
 
-[[noreturn]] void VulkanExecutionContext::abandon_recording(
-    std::exception_ptr original, std::unique_lock<std::mutex> &lock) {
+[[noreturn]] void
+VulkanExecutionContext::abandon_recording(std::exception_ptr original,
+                                          std::unique_lock<std::mutex> &lock) {
     recording_ = false;
     std::vector<std::function<void()>> callbacks;
     callbacks.swap(deferred_callbacks_);
     lock.unlock();
     execute_callbacks(callbacks);
     lock.lock();
-    try { reset_reusable_resources(ring_[active_slot_]); } catch (...) {}
+    try {
+        reset_reusable_resources(ring_[active_slot_]);
+    } catch (...) {
+    }
     std::rethrow_exception(original);
 }

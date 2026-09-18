@@ -29,8 +29,10 @@ def test_cpu_only_mul_scalar_remains_normal_pytorch_behavior():
 
 def _vulkan_scalar_operation(operation, tensor, scalar, scalar_left=False):
     if operation is torch.add:
-        return torch.add(scalar, tensor, alpha=1.0) if scalar_left else torch.add(
-            tensor, scalar, alpha=1.0
+        return (
+            torch.add(scalar, tensor, alpha=1.0)
+            if scalar_left
+            else torch.add(tensor, scalar, alpha=1.0)
         )
     if operation is torch.sub:
         return torch.sub(scalar, tensor) if scalar_left else torch.sub(tensor, scalar)
@@ -60,11 +62,13 @@ def vulkan_backend():
 def test_add_equal_shape_tensors_preserves_metadata(
     vulkan_backend, shape, left_values, right_values, expected
 ):
-    lhs = torch.tensor(left_values, dtype=torch.float32).reshape(shape).to(
-        vulkan_backend
+    lhs = (
+        torch.tensor(left_values, dtype=torch.float32).reshape(shape).to(vulkan_backend)
     )
-    rhs = torch.tensor(right_values, dtype=torch.float32).reshape(shape).to(
-        vulkan_backend
+    rhs = (
+        torch.tensor(right_values, dtype=torch.float32)
+        .reshape(shape)
+        .to(vulkan_backend)
     )
 
     result = torch.add(lhs, rhs)
@@ -74,7 +78,8 @@ def test_add_equal_shape_tensors_preserves_metadata(
     assert result.dtype is torch.float32
     assert result.is_contiguous()
     torch.testing.assert_close(
-        result.cpu(), torch.tensor(expected, dtype=torch.float32).reshape(shape),
+        result.cpu(),
+        torch.tensor(expected, dtype=torch.float32).reshape(shape),
         rtol=0,
         atol=0,
     )
@@ -93,15 +98,16 @@ def test_add_operator_keeps_inputs_and_allocates_new_storage(vulkan_backend):
     assert result.data_ptr() != rhs.data_ptr()
     torch.testing.assert_close(lhs.cpu(), lhs_cpu, rtol=0, atol=0)
     torch.testing.assert_close(rhs.cpu(), rhs_cpu, rtol=0, atol=0)
-    torch.testing.assert_close(
-        result.cpu(), torch.tensor([[4.0, 2.0]]), rtol=0, atol=0
-    )
+    torch.testing.assert_close(result.cpu(), torch.tensor([[4.0, 2.0]]), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("operation, expected", [
-    (torch.sub, [[-2.0, -6.0]]),
-    (torch.mul, [[3.0, -8.0]]),
-])
+@pytest.mark.parametrize(
+    "operation, expected",
+    [
+        (torch.sub, [[-2.0, -6.0]]),
+        (torch.mul, [[3.0, -8.0]]),
+    ],
+)
 def test_tensor_tensor_sub_and_mul_keep_inputs_and_allocate_new_storage(
     vulkan_backend, operation, expected
 ):
@@ -183,7 +189,7 @@ def test_repeated_add_operations_are_independent(vulkan_backend):
         value = torch.add(value, value)
 
     torch.testing.assert_close(
-        value.cpu(), torch.tensor([2.0**32, -2.0**33]), rtol=0, atol=0
+        value.cpu(), torch.tensor([2.0**32, -(2.0**33)]), rtol=0, atol=0
     )
 
 
@@ -206,7 +212,9 @@ def _assert_add_rejected(operation, message):
 
 
 def _scalar_rejection_pattern(operation, add_pattern):
-    return rf"({add_pattern}|scalar operand|float32|contiguous|broadcast|same device|out)"
+    return (
+        rf"({add_pattern}|scalar operand|float32|contiguous|broadcast|same device|out)"
+    )
 
 
 def test_mixed_device_add_is_rejected(vulkan_backend):
@@ -219,7 +227,9 @@ def test_mixed_device_add_is_rejected(vulkan_backend):
 def test_mixed_cpu_vulkan_add_does_not_fallback(vulkan_backend, vulkan_first):
     vulkan_tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     cpu_tensor = torch.empty((2,), dtype=torch.float32)
-    operands = (vulkan_tensor, cpu_tensor) if vulkan_first else (cpu_tensor, vulkan_tensor)
+    operands = (
+        (vulkan_tensor, cpu_tensor) if vulkan_first else (cpu_tensor, vulkan_tensor)
+    )
     _assert_add_rejected(lambda: torch.add(*operands), "same device")
 
 
@@ -267,12 +277,8 @@ def test_non_default_alpha_matches_cpu(vulkan_backend):
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_non_contiguous_pointwise_operands_match_cpu(vulkan_backend, operation):
-    lhs_cpu = torch.tensor(
-        [[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]], dtype=torch.float32
-    )
-    rhs_cpu = torch.tensor(
-        [[2.0, 3.0, 4.0], [-1.0, 2.0, 5.0]], dtype=torch.float32
-    )
+    lhs_cpu = torch.tensor([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]], dtype=torch.float32)
+    rhs_cpu = torch.tensor([[2.0, 3.0, 4.0], [-1.0, 2.0, 5.0]], dtype=torch.float32)
     lhs_base = lhs_cpu.to(vulkan_backend)
     rhs_base = rhs_cpu.to(vulkan_backend)
     cpu_views = [
@@ -334,7 +340,9 @@ def test_add_out_is_supported(vulkan_backend):
 def test_inplace_add_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
     lhs = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
     rhs = torch.tensor([3.0, 4.0], dtype=torch.float32, device=vulkan_backend)
-    with pytest.raises(RuntimeError, match=r"Vulkan add_.*in-place operations are unsupported"):
+    with pytest.raises(
+        RuntimeError, match=r"Vulkan add_.*in-place operations are unsupported"
+    ):
         lhs.add_(rhs)
 
 
@@ -352,13 +360,17 @@ def test_cpu_zero_dim_tensor_is_not_accepted_as_python_scalar(
 ):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     scalar_tensor = torch.tensor(1.0, dtype=torch.float32)
-    with pytest.raises((RuntimeError, NotImplementedError), match=r"scalar operand|Could not run"):
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match=r"scalar operand|Could not run"
+    ):
         operands = (scalar_tensor, tensor) if scalar_left else (tensor, scalar_tensor)
         operation(*operands)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
-@pytest.mark.parametrize("scalar", [float("nan"), float("inf"), -float("inf"), 1e40, -1e40, 1e-50, -1e-50])
+@pytest.mark.parametrize(
+    "scalar", [float("nan"), float("inf"), -float("inf"), 1e40, -1e40, 1e-50, -1e-50]
+)
 def test_unsupported_scalar_values_are_rejected(vulkan_backend, operation, scalar):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     with pytest.raises(RuntimeError, match=r"non-finite|outside float32|underflows"):
@@ -379,6 +391,7 @@ def test_invalid_scalar_tensor_metadata_is_rejected(vulkan_backend, operation):
     )
     result = operation(non_contiguous, 1.0)
     assert result.shape == non_contiguous.shape
+
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_scalar_vulkan_operand_on_wrong_device_is_rejected(vulkan_backend, operation):
@@ -408,7 +421,9 @@ def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
-def test_scalar_out_is_supported_but_inplace_variant_is_rejected(vulkan_backend, operation):
+def test_scalar_out_is_supported_but_inplace_variant_is_rejected(
+    vulkan_backend, operation
+):
     tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
     assert operation(tensor, 1.0, out=output) is output

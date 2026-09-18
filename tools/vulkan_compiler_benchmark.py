@@ -80,12 +80,20 @@ def state_cpu(model):
 
 def snapshot_training_state(model, optimizer):
     return {
-        "parameters": [parameter.detach().cpu().clone() for parameter in model.parameters()],
-        "gradients": [None if parameter.grad is None else parameter.grad.detach().cpu().clone()
-                       for parameter in model.parameters()],
+        "parameters": [
+            parameter.detach().cpu().clone() for parameter in model.parameters()
+        ],
+        "gradients": [
+            None if parameter.grad is None else parameter.grad.detach().cpu().clone()
+            for parameter in model.parameters()
+        ],
         "optimizer": [
-            {name: value.detach().cpu().clone() if isinstance(value, torch.Tensor) else value
-             for name, value in optimizer.state[parameter].items()}
+            {
+                name: value.detach().cpu().clone()
+                if isinstance(value, torch.Tensor)
+                else value
+                for name, value in optimizer.state[parameter].items()
+            }
             for parameter in model.parameters()
         ],
     }
@@ -93,13 +101,17 @@ def snapshot_training_state(model, optimizer):
 
 def restore_training_state(model, optimizer, snapshot):
     with torch.no_grad():
-        for parameter, value, gradient in zip(model.parameters(), snapshot["parameters"], snapshot["gradients"]):
+        for parameter, value, gradient in zip(
+            model.parameters(), snapshot["parameters"], snapshot["gradients"]
+        ):
             parameter.copy_(value.to("vk:0"))
             parameter.grad = None if gradient is None else gradient.to("vk:0")
     optimizer.state.clear()
     for parameter, state in zip(model.parameters(), snapshot["optimizer"]):
         optimizer.state[parameter] = {
-            name: value.to("vk:0") if isinstance(value, torch.Tensor) and name != "step" else value
+            name: value.to("vk:0")
+            if isinstance(value, torch.Tensor) and name != "step"
+            else value
             for name, value in state.items()
         }
 
@@ -122,7 +134,9 @@ def run_workload(kind, mode, backward_mode, steps, batch_size, seed, learning_ra
     initial_model = make_model(kind, "cpu", seed)
     cpu_model, cpu_loss = cpu_reference(kind, steps, batch_size, seed, learning_rate)
     model = make_model(kind, "vk:0", seed)
-    model.load_state_dict({name: value.to("vk:0") for name, value in initial_model.state_dict().items()})
+    model.load_state_dict(
+        {name: value.to("vk:0") for name, value in initial_model.state_dict().items()}
+    )
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     cpu_inputs, cpu_targets = make_data(kind, seed + 1, batch_size)
     upload_start = time.monotonic()
@@ -161,8 +175,9 @@ def run_workload(kind, mode, backward_mode, steps, batch_size, seed, learning_ra
         # The first measured step initializes optimizer state. The combined
         # backward path uses 28 steady-state dispatches; the separate path
         # retains the historical 32-dispatch count.
-        expected_dispatches = (28 * steps - 8 if backward_mode == "fused"
-                               else 32 * steps - 8)
+        expected_dispatches = (
+            28 * steps - 8 if backward_mode == "fused" else 32 * steps - 8
+        )
         if measured_counters["dispatches"] != expected_dispatches:
             raise RuntimeError(
                 f"MLP fusion dispatch gate failed: expected {expected_dispatches}, "
@@ -170,8 +185,10 @@ def run_workload(kind, mode, backward_mode, steps, batch_size, seed, learning_ra
             )
     result_state = state_cpu(model)
     expected_state = state_cpu(cpu_model)
-    final_state_parity = all(torch.allclose(result_state[name], expected_state[name], rtol=1e-4, atol=1e-4)
-                       for name in expected_state)
+    final_state_parity = all(
+        torch.allclose(result_state[name], expected_state[name], rtol=1e-4, atol=1e-4)
+        for name in expected_state
+    )
     final_loss = float(last_loss.cpu())
     stats = pytorch_vulkan.compiler_stats() if mode == "compiler-fused" else None
     if stats is not None:
@@ -181,8 +198,12 @@ def run_workload(kind, mode, backward_mode, steps, batch_size, seed, learning_ra
             "setup_time": stats["setup_time"],
             "replay_time": stats["replay_time"],
             "fusion_applied": stats["fusion_applied"],
-            "first_call_metrics": stats["call_metrics"][0] if stats["call_metrics"] else None,
-            "last_call_metrics": stats["call_metrics"][-1] if stats["call_metrics"] else None,
+            "first_call_metrics": stats["call_metrics"][0]
+            if stats["call_metrics"]
+            else None,
+            "last_call_metrics": stats["call_metrics"][-1]
+            if stats["call_metrics"]
+            else None,
         }
     return {
         "workload": kind,
@@ -213,7 +234,9 @@ def run_workload(kind, mode, backward_mode, steps, batch_size, seed, learning_ra
 
 def telemetry():
     try:
-        completed = subprocess.run(["rocm-smi"], capture_output=True, text=True, timeout=30)
+        completed = subprocess.run(
+            ["rocm-smi"], capture_output=True, text=True, timeout=30
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired) as error:
         return {"command": "rocm-smi", "available": False, "error": str(error)}
     return {
@@ -233,7 +256,9 @@ def main():
     parser.add_argument("--mnist-batch-size", type=int, default=512)
     parser.add_argument("--mlp-lr", type=float, default=1e-5)
     parser.add_argument("--mnist-lr", type=float, default=1e-7)
-    parser.add_argument("--backward-mode", choices=("fused", "unfused"), default="fused")
+    parser.add_argument(
+        "--backward-mode", choices=("fused", "unfused"), default="fused"
+    )
     parser.add_argument("--json-out", type=str)
     args = parser.parse_args()
     if not pytorch_vulkan.is_available():
@@ -245,8 +270,15 @@ def main():
         batch_size = args.mlp_batch_size if kind == "mlp" else args.mnist_batch_size
         learning_rate = args.mlp_lr if kind == "mlp" else args.mnist_lr
         for mode in MODES:
-            row = run_workload(kind, mode, args.backward_mode, args.steps, batch_size, 17,
-                               learning_rate)
+            row = run_workload(
+                kind,
+                mode,
+                args.backward_mode,
+                args.steps,
+                batch_size,
+                17,
+                learning_rate,
+            )
             rows.append(row)
     report = {"schema": 1, "device": "vk:0", "rows": rows, "rocm_smi": telemetry()}
     encoded = json.dumps(report, allow_nan=False, indent=2, sort_keys=True)

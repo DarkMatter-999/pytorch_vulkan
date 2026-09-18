@@ -12,8 +12,7 @@ bool formatter_double_supported();
 void validate_unary_dtype(c10::ScalarType dtype, PointwiseOperation operation,
                           const char *operation_name);
 void validate_binary_dtypes(c10::ScalarType lhs, c10::ScalarType rhs,
-                            PointwiseOperation operation,
-                            const char *operation_name);
+                            PointwiseOperation operation, const char *operation_name);
 void validate_scalar_dtype(c10::ScalarType dtype, PointwiseOperation operation,
                            const char *operation_name);
 void validate_output_dtype(c10::ScalarType dtype, PointwiseOperation operation,

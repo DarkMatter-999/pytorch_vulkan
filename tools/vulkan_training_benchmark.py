@@ -24,8 +24,10 @@ def make_model(kind, device, seed):
         modules = (torch.nn.Linear(8, 16), torch.nn.ReLU(), torch.nn.Linear(16, 4))
     else:
         modules = (
-            torch.nn.Flatten(start_dim=1), torch.nn.Linear(784, 32),
-            torch.nn.ReLU(), torch.nn.Linear(32, 10),
+            torch.nn.Flatten(start_dim=1),
+            torch.nn.Linear(784, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 10),
         )
     return torch.nn.Sequential(*modules).to(device=device, dtype=torch.float32)
 
@@ -66,8 +68,9 @@ def _summary(samples):
     median = statistics.median(samples)
     variance = statistics.pvariance(samples) if len(samples) > 1 else 0.0
     deviation = statistics.pstdev(samples) if len(samples) > 1 else 0.0
-    outliers = [value for value in samples
-                if deviation and abs(value - mean) > 2.0 * deviation]
+    outliers = [
+        value for value in samples if deviation and abs(value - mean) > 2.0 * deviation
+    ]
     return {
         "mean_seconds": mean,
         "median_seconds": median,
@@ -85,8 +88,18 @@ def _cpu_threads():
     }
 
 
-def run(kind, mode, backward_mode, device, warmups, repetitions, steps, batch_size, seed,
-        initial_state=None):
+def run(
+    kind,
+    mode,
+    backward_mode,
+    device,
+    warmups,
+    repetitions,
+    steps,
+    batch_size,
+    seed,
+    initial_state=None,
+):
     if device.startswith("vk"):
         if backward_mode == "unfused":
             os.environ["PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD"] = "1"
@@ -94,8 +107,12 @@ def run(kind, mode, backward_mode, device, warmups, repetitions, steps, batch_si
             os.environ.pop("PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD", None)
     model = make_model(kind, device, seed)
     if initial_state is not None:
-        model.load_state_dict({name: value.detach().clone().to(device)
-                               for name, value in initial_state.items()})
+        model.load_state_dict(
+            {
+                name: value.detach().clone().to(device)
+                for name, value in initial_state.items()
+            }
+        )
     learning_rate = 0.01 if kind == "mlp" else 0.0001
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     cpu_inputs, cpu_targets = make_data(kind, seed + 1, batch_size)
@@ -118,8 +135,12 @@ def run(kind, mode, backward_mode, device, warmups, repetitions, steps, batch_si
     submitted = []
     completed = []
     waits = []
-    component_samples = {"allocation": [], "recording": [],
-                          "submit_wait": [], "compute": []}
+    component_samples = {
+        "allocation": [],
+        "recording": [],
+        "submit_wait": [],
+        "compute": [],
+    }
     last_loss = None
     for _ in range(repetitions):
         if device.startswith("vk"):
@@ -135,16 +156,23 @@ def run(kind, mode, backward_mode, device, warmups, repetitions, steps, batch_si
         if device.startswith("vk"):
             counters = _C.execution_counter_snapshot()
             timing = _C.timing_snapshot()
-            dispatches.append(counters[0]); copies.append(counters[1])
-            transfers.append(counters[2]); fallbacks.append(counters[3])
+            dispatches.append(counters[0])
+            copies.append(counters[1])
+            transfers.append(counters[2])
+            fallbacks.append(counters[3])
             submitted.append(_C.compute_submitted_count())
             completed.append(_C.compute_completed_count())
             waits.append(_C.compute_wait_count())
             for name, value in zip(component_samples, timing):
                 component_samples[name].append(value)
         else:
-            dispatches.append(0); copies.append(0); transfers.append(0); fallbacks.append(0)
-            submitted.append(0); completed.append(0); waits.append(0)
+            dispatches.append(0)
+            copies.append(0)
+            transfers.append(0)
+            fallbacks.append(0)
+            submitted.append(0)
+            completed.append(0)
+            waits.append(0)
             for values in component_samples.values():
                 values.append(0.0)
 
@@ -166,12 +194,16 @@ def run(kind, mode, backward_mode, device, warmups, repetitions, steps, batch_si
         "optimizer": f"SGD(lr={learning_rate})",
         "cpu_threads": _cpu_threads(),
         "synchronization_boundaries": (
-            "one training-scope submit/wait per step" if scoped else
-            "per-operation synchronous submit/wait" if device.startswith("vk") else
-            "CPU operation completion"
+            "one training-scope submit/wait per step"
+            if scoped
+            else "per-operation synchronous submit/wait"
+            if device.startswith("vk")
+            else "CPU operation completion"
         ),
         "wall_time": _summary(samples),
-        "component_timings": {name: _summary(values) for name, values in component_samples.items()},
+        "component_timings": {
+            name: _summary(values) for name, values in component_samples.items()
+        },
         "dispatches": dispatches,
         "vulkan_copies": copies,
         "explicit_transfers": transfers,
@@ -190,7 +222,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workload", choices=("mlp", "mnist", "both"), default="both")
     parser.add_argument("--mode", choices=("sync", "step", "both"), default="both")
-    parser.add_argument("--backward-mode", choices=("fused", "unfused"), default="fused")
+    parser.add_argument(
+        "--backward-mode", choices=("fused", "unfused"), default="fused"
+    )
     parser.add_argument("--mlp-steps", type=int, default=10)
     parser.add_argument("--mnist-steps", type=int, default=2)
     parser.add_argument("--warmups", type=int, default=2)
@@ -199,8 +233,12 @@ def main():
     parser.add_argument("--cpu-intraop-threads", type=int, default=1)
     parser.add_argument("--cpu-interop-threads", type=int, default=1)
     args = parser.parse_args()
-    if (args.warmups < 0 or args.repetitions < 1 or args.cpu_intraop_threads < 1 or
-            args.cpu_interop_threads < 1):
+    if (
+        args.warmups < 0
+        or args.repetitions < 1
+        or args.cpu_intraop_threads < 1
+        or args.cpu_interop_threads < 1
+    ):
         parser.error("warmups/repetitions/thread counts are out of range")
     workloads = ("mlp", "mnist") if args.workload == "both" else (args.workload,)
     modes = ("sync", "step") if args.mode == "both" else (args.mode,)
@@ -212,19 +250,37 @@ def main():
         baseline = make_model(kind, "cpu", 17).state_dict()
         for mode in modes:
             cpu_result, cpu_model, _, _ = run(
-                kind, mode, args.backward_mode, "cpu", args.warmups, args.repetitions,
-                steps, batch, 17, baseline,
+                kind,
+                mode,
+                args.backward_mode,
+                "cpu",
+                args.warmups,
+                args.repetitions,
+                steps,
+                batch,
+                17,
+                baseline,
             )
             print(json.dumps(cpu_result, allow_nan=False, sort_keys=True))
             if not pytorch_vulkan.is_available():
                 continue
             vk_result, vk_model, _, _ = run(
-                kind, mode, args.backward_mode, "vk:0", args.warmups, args.repetitions,
-                steps, batch, 17, baseline,
+                kind,
+                mode,
+                args.backward_mode,
+                "vk:0",
+                args.warmups,
+                args.repetitions,
+                steps,
+                batch,
+                17,
+                baseline,
             )
             vk_result["cpu_comparison"] = {
                 "final_loss": cpu_result["final_loss"],
-                "loss_abs_difference": abs(vk_result["final_loss"] - cpu_result["final_loss"]),
+                "loss_abs_difference": abs(
+                    vk_result["final_loss"] - cpu_result["final_loss"]
+                ),
                 "parameter_max_abs_difference": max(
                     float((a.detach().cpu() - b.detach().cpu()).abs().max())
                     for a, b in zip(vk_model.parameters(), cpu_model.parameters())

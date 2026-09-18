@@ -202,10 +202,14 @@ def test_unary_out_exact_alias(vulkan_backend, operation, reference):
 def test_out_rejects_invalid_metadata_overlap_and_parameters(vulkan_backend):
     lhs = torch.empty((2,), device=vulkan_backend)
     rhs = torch.empty((2,), device=vulkan_backend)
-    with pytest.raises((RuntimeError, NotImplementedError), match="Vulkan output tensor"):
+    with pytest.raises(
+        (RuntimeError, NotImplementedError), match="Vulkan output tensor"
+    ):
         torch.add(lhs, rhs, out=torch.empty(2))
     with pytest.raises((RuntimeError, NotImplementedError), match="dtype Double"):
-        torch.add(lhs, rhs, out=torch.empty(2, dtype=torch.float64, device=vulkan_backend))
+        torch.add(
+            lhs, rhs, out=torch.empty(2, dtype=torch.float64, device=vulkan_backend)
+        )
     non_contiguous = torch.empty_strided((2, 2), (1, 2), device=vulkan_backend)
     assert torch.add(lhs, rhs, out=non_contiguous) is non_contiguous
     internally_overlapping = torch.empty_strided((2,), (0,), device=vulkan_backend)
