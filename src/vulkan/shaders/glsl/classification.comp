@@ -1,0 +1,34 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Grad { float grad[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Logits { float logits[]; };
+layout(set = 0, binding = 2, std430) readonly buffer Labels { int64_t labels[]; };
+layout(set = 0, binding = 3, std430) readonly buffer Total { float total[]; };
+layout(set = 0, binding = 4, std430) writeonly buffer Out0 { float out0[]; };
+layout(set = 0, binding = 5, std430) writeonly buffer Out1 { float out1[]; };
+layout(push_constant, std430) uniform Params {
+  uint mode; uint batch; uint channels; uint spatial; uint classes;
+  int ignore_index; uint padding0; uint padding1; float momentum; float eps;
+} p;
+float logsum(uint n) {
+  float mx = logits[n * p.classes];
+  for (uint c = 1u; c < p.classes; ++c) mx = max(mx, logits[n * p.classes + c]);
+  float sum = 0.0;
+  for (uint c = 0u; c < p.classes; ++c) sum += exp(logits[n * p.classes + c] - mx);
+  return mx + log(sum);
+}
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (p.mode == 2u) {
+    if (index != 0u) return;
+    float loss = 0.0; float count = 0.0;
+    for (uint n = 0u; n < p.batch; ++n) { int64_t label = labels[n]; if (label == int64_t(p.ignore_index)) continue; loss -= logits[n * p.classes + uint(label)] - logsum(n); count += 1.0; }
+    out0[0] = count == 0.0 ? 0.0 : loss / count; out1[0] = count;
+  } else if (p.mode == 3u) {
+    if (index >= p.batch * p.classes) return;
+    uint n = index / p.classes; uint c = index % p.classes; int64_t label = labels[n];
+    if (label == int64_t(p.ignore_index)) { out0[index] = 0.0; return; }
+    out0[index] = c == uint(label) ? -grad[0] / total[0] : 0.0;
+  }
+}

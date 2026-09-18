@@ -22,6 +22,8 @@ DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::linear.default", "aten::convolution.default",
     "aten::convolution_backward.default", "aten::_adaptive_avg_pool2d.default",
     "aten::_adaptive_avg_pool2d_backward.default", "aten::neg.default",
+    "aten::native_batch_norm.default", "aten::native_batch_norm_backward.default",
+    "aten::nll_loss_forward.default", "aten::nll_loss_backward.default",
     "aten::abs.default", "aten::relu.default", "aten::add.Tensor",
     "aten::sub.Tensor", "aten::mul.Tensor", "aten::as_strided.default",
     "aten::view.default", "aten::_reshape_alias.default", "aten::reshape.default",
@@ -77,14 +79,10 @@ ROADMAP_OPERATION_FAMILIES = {
         "aten::_upsample_nearest_exact2d_backward.grad_input",
     }),
     "normalization": frozenset({
-        "aten::native_batch_norm.default", "aten::native_batch_norm_backward.default",
         "aten::native_layer_norm.default", "aten::native_layer_norm_backward.default",
     }),
     # Cross-entropy is represented by the deferred log-softmax and NLL pieces.
-    "cross-entropy/NLL": frozenset({
-        "aten::_log_softmax_backward_data.out",
-        "aten::nll_loss_forward.output", "aten::nll_loss_backward.grad_input",
-    }),
+    "cross-entropy/NLL": frozenset(),
 }
 
 ROADMAP_DEFERRED_SCHEMAS = frozenset().union(*ROADMAP_OPERATION_FAMILIES.values())
@@ -534,6 +532,63 @@ def _adaptive_pool_backward(grad, value):
     return torch.ops.aten._adaptive_avg_pool2d_backward.default(grad, value)
 
 
+def _normalization(*, requires_grad=False):
+    return (
+        torch.randn(2, 4, dtype=torch.float32, requires_grad=requires_grad),
+        torch.ones(4, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32), torch.ones(4, dtype=torch.float32),
+    )
+
+
+def _native_batch_norm_output(input, weight, bias, running_mean, running_var):
+    return torch.ops.aten.native_batch_norm.default(
+        input, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+    )[0]
+
+
+def _normalization_backward(*, requires_grad=False):
+    input, weight, bias, running_mean, running_var = _normalization()
+    _, save_mean, save_inv = torch.ops.aten.native_batch_norm.default(
+        input, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+    )
+    return (torch.ones_like(input), input, weight, running_mean, running_var,
+            save_mean, save_inv)
+
+
+def _native_batch_norm_backward_output(grad, input, weight, running_mean, running_var,
+                                       save_mean, save_inv):
+    return torch.ops.aten.native_batch_norm_backward.default(
+        grad, input, weight, running_mean, running_var, save_mean, save_inv,
+        True, 1e-5, [True, True, True]
+    )[0]
+
+
+def _nll_forward(*, requires_grad=False):
+    return (torch.randn(2, 3, dtype=torch.float32, requires_grad=requires_grad),
+            torch.tensor([1, 2], dtype=torch.int64))
+
+
+def _nll_forward_output(logits, labels):
+    return torch.ops.aten.nll_loss_forward.default(
+        torch.log_softmax(logits, dim=1), labels, None, 1, -100
+    )[0]
+
+
+def _nll_backward(*, requires_grad=False):
+    logits = torch.randn(2, 3, dtype=torch.float32)
+    labels = torch.tensor([1, 2], dtype=torch.int64)
+    log_probs = torch.log_softmax(logits, dim=1)
+    _, total = torch.ops.aten.nll_loss_forward.default(log_probs, labels, None, 1, -100)
+    return torch.ones(1, dtype=torch.float32), log_probs, labels, total.reshape(1)
+
+
+def _nll_backward_output(grad, log_probs, labels, total):
+    return torch.ops.aten.nll_loss_backward.default(
+        grad.reshape(()), log_probs, labels, None, 1, -100, total.reshape(())
+    )
+
+
 def _cpu_neg(value):
     return torch.neg(value)
 
@@ -771,6 +826,10 @@ DECLARATION_ID_BY_CASE = {
     "aten._adaptive_avg_pool2d.global": "aten::_adaptive_avg_pool2d.default",
     "aten._adaptive_avg_pool2d.global.strided": "aten::_adaptive_avg_pool2d.default",
     "aten._adaptive_avg_pool2d.backward": "aten::_adaptive_avg_pool2d_backward.default",
+    "normalization.native-batch-norm": "aten::native_batch_norm.default",
+    "normalization.native-batch-norm-backward": "aten::native_batch_norm_backward.default",
+    "classification.nll-forward": "aten::nll_loss_forward.default",
+    "classification.nll-backward": "aten::nll_loss_backward.default",
     "unary.neg.bool.rejected": "aten::neg.default",
     "unary.neg.float16.rejected": "aten::neg.default",
     "binary.add.double.rejected": "aten::add.Tensor",
@@ -1087,7 +1146,17 @@ ALL_CASES = (
           _adaptive_pool_backward_inputs,
           cpu_reference=lambda grad, value: torch.ops.aten._adaptive_avg_pool2d_backward.default(
               grad, value
-          ), expected_shape=(2, 4, 3, 5)),
+           ), expected_shape=(2, 4, 3, 5)),
+     _case("normalization.native-batch-norm", "normalization",
+           _native_batch_norm_output, _normalization, cpu_reference=_native_batch_norm_output,
+           expected_shape=(2, 4)),
+     _case("normalization.native-batch-norm-backward", "normalization",
+           _native_batch_norm_backward_output, _normalization_backward,
+           cpu_reference=_native_batch_norm_backward_output, expected_shape=(2, 4)),
+     _case("classification.nll-forward", "cross-entropy/NLL", _nll_forward_output,
+           _nll_forward, cpu_reference=_nll_forward_output, expected_shape=()),
+     _case("classification.nll-backward", "cross-entropy/NLL", _nll_backward_output,
+           _nll_backward, cpu_reference=_nll_backward_output, expected_shape=(2, 3)),
     _case("unary.neg.bool.rejected", "unary", torch.neg, _bool_unary, supported=False,
           cpu_reference=_cpu_neg,
            error_pattern=r"supports only float32 tensors"),

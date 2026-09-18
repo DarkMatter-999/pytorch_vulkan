@@ -1,0 +1,59 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) buffer I0 { float a[]; };
+layout(set = 0, binding = 1, std430) buffer I1 { float b[]; };
+layout(set = 0, binding = 2, std430) buffer I2 { float c[]; };
+layout(set = 0, binding = 3, std430) buffer I3 { float d[]; };
+layout(set = 0, binding = 4, std430) buffer I4 { float e[]; };
+layout(set = 0, binding = 5, std430) buffer O0 { float f[]; };
+layout(set = 0, binding = 6, std430) buffer O1 { float g[]; };
+layout(set = 0, binding = 7, std430) buffer O2 { float h[]; };
+layout(set = 0, binding = 8, std430) buffer I5 { float i[]; };
+layout(set = 0, binding = 9, std430) buffer I6 { float j[]; };
+layout(push_constant, std430) uniform Params {
+  uint mode; uint batch; uint channels; uint spatial; uint classes;
+  uint ignore_index; uint padding0; uint padding1; float momentum; float eps;
+} p;
+
+uint xidx(uint n, uint ch, uint s) { return (n * p.channels + ch) * p.spatial + s; }
+float mean(uint ch) {
+  float v = 0.0;
+  for (uint n = 0u; n < p.batch; ++n)
+    for (uint s = 0u; s < p.spatial; ++s) v += a[xidx(n, ch, s)];
+  return v / float(p.batch * p.spatial);
+}
+float variance(uint ch, float m) {
+  float v = 0.0;
+  for (uint n = 0u; n < p.batch; ++n)
+    for (uint s = 0u; s < p.spatial; ++s) {
+      float q = a[xidx(n, ch, s)] - m; v += q * q;
+    }
+  return v / float(p.batch * p.spatial);
+}
+
+void batch_norm_forward(uint index) {
+  uint ch = index % p.channels;
+  float m = mean(ch); float v = variance(ch, m); float r = 1.0 / sqrt(v + p.eps);
+  if (index < p.channels) { g[index] = m; h[index] = r; d[index] = p.momentum * m + (1.0 - p.momentum) * d[index]; e[index] = p.momentum * (v * float(p.batch * p.spatial) / float(p.batch * p.spatial - 1u)) + (1.0 - p.momentum) * e[index]; }
+  if (index < p.batch * p.channels * p.spatial) f[index] = (a[index] - m) * r * b[ch] + c[ch];
+}
+
+void batch_norm_backward(uint index) {
+  uint ch = index % p.channels;
+  float m = f[ch]; float r = g[ch]; float sum_dy = 0.0; float sum_xdy = 0.0;
+  for (uint n = 0u; n < p.batch; ++n) for (uint s = 0u; s < p.spatial; ++s) {
+    uint q = xidx(n, ch, s); float dy = a[q]; sum_dy += dy; sum_xdy += (b[q] - m) * dy;
+  }
+  if (index < p.channels) { i[index] = sum_xdy * r; j[index] = sum_dy; }
+  if (index < p.batch * p.channels * p.spatial) {
+    float dy = a[index]; float dx = (float(p.batch * p.spatial) * dy - sum_dy - (b[index] - m) * r * r * sum_xdy) * r * c[ch] / float(p.batch * p.spatial);
+    h[index] = dx;
+  }
+}
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (p.mode == 0u) batch_norm_forward(index);
+  else if (p.mode == 1u) batch_norm_backward(index);
+}

@@ -282,7 +282,7 @@ def test_float64_transfer_is_rejected(vulkan_backend):
 
 def test_integer_transfer_is_rejected(vulkan_backend):
     _assert_transfer_rejected(
-        lambda: torch.ones((2,), dtype=torch.int64).to(vulkan_backend),
+        lambda: torch.ones((2,), dtype=torch.int32).to(vulkan_backend),
         "float32",
     )
 

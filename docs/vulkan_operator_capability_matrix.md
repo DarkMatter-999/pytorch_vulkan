@@ -19,6 +19,8 @@ universal operator support.
 | `aten::linear` | F32 | F32 | 2-D strided input/weight with matching features; strided 1-D bias; non-overlapping output with no operand alias | first-order | explicit fixed-shape contract |
 | `aten::convolution` / `aten::convolution_backward` | F32 | F32 | fixed F32 shapes `(2,1,8,8)` + `(4,1,3,3)` + bias `(4,)` -> `(2,4,8,8)`; strided operands; stride/padding/dilation `[1,1]`, groups `1`, non-transposed, output padding `[0,0]`; backward requires output mask `[true,true,true]` | first-order | empty and unsupported backward forms rejected |
 | `aten::_adaptive_avg_pool2d` / `_adaptive_avg_pool2d_backward` | F32 | F32 | nonempty rank-4 NCHW strided, non-overlapping input; output size `(1, 1)`; backward grad shape `(N,C,1,1)` | first-order | empty and non-global forms rejected |
+| `aten::native_batch_norm` / `native_batch_norm_backward` | F32 | F32 | fixed contiguous training inputs `(2,4)` or `(2,4,2,2)`; affine F32 `(4,)`; Vulkan running mean/variance; momentum `0.1`, eps `1e-5`; backward output mask `[true,true,true]` | first-order | eval, partial affine, missing stats, other shapes, and masks rejected |
+| `aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward` | F32 logits, I64 labels | F32 | contiguous Vulkan logits `(2,3)`, class dimension `1`, contiguous Vulkan I64 labels `(2,)`, no weight, reduction `mean`, `ignore_index=-100` | first-order | other reductions, weights, labels, shapes, and class dimensions rejected |
 | unary `neg`/`abs`/`relu` | F32 (formatter Double exceptions documented below) | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; fresh output | first-order | empty output supported |
 | pointwise `add`/`sub`/`mul` | F32 | F32 | same-device strided tensors with equal shapes, or documented Python scalar forms; `add` accepts finite representable tensor-tensor `alpha`; unsupported overlap/broadcasting rejected | first-order | empty output supported |
 | `aten::as_strided` | F32 | F32 | Metadata-only on `vk:0`; requested sizes/strides must be non-negative and reference a valid in-allocation range. Non-zero offsets, non-contiguous layouts, overlap, and changed logical element counts are permitted. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
@@ -90,7 +92,7 @@ are removed from this inventory.
 | reductions/indexing | `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.out`, `prod.Dimname_out`, `sum.IntList_out`, `sum.default` |
 | sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input`, `sigmoid.out`, `sigmoid_`, `tanh.out`, `tanh_` |
 | convolution/pooling backward | `avg_pool2d_backward.grad_input`, `convolution_backward_overrideable`, `max_pool2d_with_indices`, `max_pool2d_with_indices_backward`, `upsample_bilinear2d_backward.grad_input`, `upsample_nearest2d_backward.grad_input`, `_upsample_nearest_exact2d_backward.grad_input` |
-| normalization | `native_batch_norm`, `native_batch_norm_backward`, `native_layer_norm`, `native_layer_norm_backward` |
+| normalization | `native_layer_norm`, `native_layer_norm_backward` |
 | cross-entropy/NLL | `nll_loss_forward.output`, `nll_loss_backward.grad_input` |
 
 The cross-entropy/NLL row inventories the deferred log-softmax and NLL pieces
@@ -121,7 +123,10 @@ permits intentional Vulkan-to-Vulkan value-view materialization and forbids hidd
  aten::_softmax_backward_data.out,aten::_log_softmax_backward_data.out,
  aten::linear.default,
   aten::convolution.default,aten::convolution_backward.default,aten::_adaptive_avg_pool2d.default,
-  aten::_adaptive_avg_pool2d_backward.default,aten::mse_loss.default,
+    aten::_adaptive_avg_pool2d_backward.default,aten::mse_loss.default,
+  aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
+  aten::_log_softmax.default,aten::_log_softmax_backward_data.out,
+  aten::nll_loss_forward.default,aten::nll_loss_backward.default,
  aten::mse_loss_backward.default,aten::neg.default,
  aten::abs.default,aten::relu.default,aten::sigmoid.default,aten::tanh.default,
  aten::gelu.default,aten::sigmoid_backward.grad_input,aten::tanh_backward.grad_input,
@@ -166,13 +171,13 @@ aten::log_sigmoid_backward.grad_input,aten::log_sigmoid_forward.default,aten::lo
 aten::logit.default,aten::logit.out,aten::lt.Scalar,aten::lt.Scalar_out,aten::lt.Tensor_out,aten::max.default,
 aten::max_pool2d_with_indices.default,aten::maximum.out,aten::mean.default,aten::mean.out,aten::min.default,
  aten::minimum.out,aten::mm.out,
-aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
 aten::native_dropout.default,aten::native_dropout_backward.default,aten::native_layer_norm.default,
 aten::native_layer_norm_backward.default,aten::ne.Scalar_out,aten::ne.Tensor,aten::ne.Tensor_out,aten::neg.out,
-aten::nll_loss_backward.grad_input,aten::nll_loss_forward.output,aten::normal_.default,
+  aten::normal_.default,
  aten::pow.Tensor_Scalar_out,aten::reciprocal.out,aten::relu.out,aten::resize_.default,
 aten::round.out,aten::set_.source_Storage,
- aten::set_.source_Storage_storage_offset,aten::sgn.out,aten::sigmoid.out,
+  aten::set_.source_Storage_storage_offset,aten::sgn.out,aten::sigmoid.out,
+  aten::nll_loss_forward.output,aten::nll_loss_backward.grad_input,
  aten::sigmoid_.default,aten::silu.out,aten::silu_backward.grad_input,
 aten::sum.IntList_out,aten::sum.default,
  aten::tanh.out,aten::tanh_.default,

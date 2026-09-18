@@ -79,12 +79,13 @@ class VulkanCompute final {
                    VkBuffer output, const VulkanTensorLayout &output_layout,
                    uint32_t reduce_mask, uint32_t reduce_numel, uint32_t output_numel,
                    uint32_t operation, uint32_t reduce_dim = 0) const;
-    void reduction_backward(const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
-                            const VulkanBuffer *forward, const VulkanTensorLayout &forward_layout,
-                            const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
-                            const VulkanBuffer *grad_input, const VulkanTensorLayout &grad_input_layout,
-                            uint32_t reduce_mask, uint32_t reduce_numel,
-                             uint32_t reduce_dim, uint32_t operation, bool keepdim) const;
+    void reduction_backward(
+        const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+        const VulkanBuffer *forward, const VulkanTensorLayout &forward_layout,
+        const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
+        const VulkanBuffer *grad_input, const VulkanTensorLayout &grad_input_layout,
+        uint32_t reduce_mask, uint32_t reduce_numel, uint32_t reduce_dim,
+        uint32_t operation, bool keepdim) const;
     void mse_loss(const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
                   const VulkanBuffer *target, const VulkanTensorLayout &target_layout,
                   const VulkanBuffer *aux, const VulkanTensorLayout &aux_layout,
@@ -100,20 +101,26 @@ class VulkanCompute final {
                 const VulkanTensorLayout &input_layout,
                 const VulkanTensorLayout &weight_layout,
                 const VulkanTensorLayout &bias_layout,
-                 const VulkanTensorLayout &output_layout, uint32_t rows,
-                 uint32_t features, uint32_t outputs, bool transposed_weight = false,
-                 bool has_bias = true, uint32_t operation = 0) const;
+                const VulkanTensorLayout &output_layout, uint32_t rows,
+                uint32_t features, uint32_t outputs, bool transposed_weight = false,
+                bool has_bias = true, uint32_t operation = 0) const;
     void linear_relu_backward_input(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
-                                    const VulkanTensorLayout &, const VulkanTensorLayout &,
-                                    const VulkanTensorLayout &, const VulkanTensorLayout &,
-                                    uint32_t, uint32_t, uint32_t) const;
+                                    const VulkanTensorLayout &,
+                                    const VulkanTensorLayout &,
+                                    const VulkanTensorLayout &,
+                                    const VulkanTensorLayout &, uint32_t, uint32_t,
+                                    uint32_t) const;
     void linear_relu_backward_weight(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
-                                     const VulkanTensorLayout &, const VulkanTensorLayout &,
-                                     const VulkanTensorLayout &, const VulkanTensorLayout &,
-                                     uint32_t, uint32_t, uint32_t) const;
+                                     const VulkanTensorLayout &,
+                                     const VulkanTensorLayout &,
+                                     const VulkanTensorLayout &,
+                                     const VulkanTensorLayout &, uint32_t, uint32_t,
+                                     uint32_t) const;
     void linear_relu_backward_bias(VkBuffer, VkBuffer, VkBuffer,
-                                   const VulkanTensorLayout &, const VulkanTensorLayout &,
-                                   const VulkanTensorLayout &, uint32_t, uint32_t) const;
+                                   const VulkanTensorLayout &,
+                                   const VulkanTensorLayout &,
+                                   const VulkanTensorLayout &, uint32_t,
+                                   uint32_t) const;
     // Records the shared multi-output backward invocation.  The shader and
     // operator integration are intentionally supplied by a later task.
     void linear_relu_backward(
@@ -136,6 +143,13 @@ class VulkanCompute final {
                  const VulkanTensorLayout &output_layout, uint32_t batch,
                  uint32_t channels, uint32_t height, uint32_t width,
                  uint32_t operation = 0) const;
+    void compute_multi_output(const VulkanBuffer *const *inputs,
+                              const VulkanTensorLayout *const *input_layouts,
+                              const VulkanBuffer *const *outputs,
+                              const VulkanTensorLayout *const *output_layouts,
+                              uint32_t input_count, uint32_t output_count,
+                              uint32_t invocation_count, const void *params,
+                              uint32_t params_size, bool classification) const;
     void f32_to_double(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
                        VkDeviceSize output_bytes, uint32_t element_count) const;
     void formatter_double(VkBuffer input, VkBuffer rhs, VkBuffer output,
@@ -183,18 +197,19 @@ class VulkanCompute final {
                         VkPipeline pipeline = VK_NULL_HANDLE,
                         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE,
                         VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE,
-                         const void *metadata = nullptr,
-                         VkDeviceSize metadata_size = 0) const;
-    void dispatch_multi_output(
-        const VulkanBuffer *const *inputs,
-        const VulkanTensorLayout *const *input_layouts,
-        const VulkanBuffer *const *outputs,
-        const VulkanTensorLayout *const *output_layouts,
-         const void *params, uint32_t params_size, const void *metadata,
-         VkDeviceSize metadata_size, VkPipeline pipeline,
-         VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_layout,
-         uint32_t invocation_count, uint32_t input_count = 4,
-         uint32_t output_count = 3) const;
+                        const void *metadata = nullptr,
+                        VkDeviceSize metadata_size = 0) const;
+    void dispatch_multi_output(const VulkanBuffer *const *inputs,
+                               const VulkanTensorLayout *const *input_layouts,
+                               const VulkanBuffer *const *outputs,
+                               const VulkanTensorLayout *const *output_layouts,
+                               const void *params, uint32_t params_size,
+                               const void *metadata, VkDeviceSize metadata_size,
+                               VkPipeline pipeline, VkPipelineLayout pipeline_layout,
+                               VkDescriptorSetLayout descriptor_layout,
+                               uint32_t invocation_count, uint32_t input_count = 4,
+                               uint32_t output_count = 3,
+                               uint32_t descriptor_capacity = 0) const;
     void dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer output,
                          VkBuffer counter, uint32_t element_count,
                          VkDeviceSize output_bytes, VkPipeline pipeline,
@@ -252,6 +267,14 @@ class VulkanCompute final {
     VkPipelineLayout pooling_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule pooling_shader_ = VK_NULL_HANDLE;
     VkPipeline pooling_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout normalization_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout normalization_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule normalization_shader_ = VK_NULL_HANDLE;
+    VkPipeline normalization_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout classification_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout classification_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule classification_shader_ = VK_NULL_HANDLE;
+    VkPipeline classification_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout masked_count_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout masked_count_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule masked_count_shader_ = VK_NULL_HANDLE;

@@ -30,8 +30,10 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/generated/f32_to_double_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
-                    src/vulkan/shaders/generated/loss_spv.h
-                    src/vulkan/shaders/generated/loss_spv.sha256
+                     src/vulkan/shaders/generated/loss_spv.h
+                     src/vulkan/shaders/generated/loss_spv.sha256
+                     src/vulkan/shaders/generated/operator_spv.h
+                     src/vulkan/shaders/generated/operator_spv.sha256
                      src/vulkan/shaders/generated/formatter_double_spv.h
                      src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
@@ -40,8 +42,10 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/glsl/broadcast.comp
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp
-                       src/vulkan/shaders/glsl/pooling.comp
-                       src/vulkan/shaders/glsl/loss.comp)
+                        src/vulkan/shaders/glsl/pooling.comp
+                        src/vulkan/shaders/glsl/loss.comp
+                        src/vulkan/shaders/glsl/normalization.comp
+                        src/vulkan/shaders/glsl/classification.comp)
         add_custom_target(vulkan_linear_relu_backward_shader_integrity
                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
@@ -78,7 +82,19 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/loss.comp)
           add_dependencies(vulkan_platform vulkan_loss_shader_generate
-                           vulkan_loss_shader_integrity)
+                            vulkan_loss_shader_integrity)
+          add_custom_command(
+             OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
+                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp
+            VERBATIM)
+          add_custom_target(vulkan_operator_shader_generate DEPENDS
+                             ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
+                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
+          add_dependencies(vulkan_platform vulkan_operator_shader_generate)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -193,9 +209,11 @@ if(BUILD_PYTHON_EXTENSION)
            src/vulkan/operators/indexing.h src/vulkan/operators/linear.cpp
            src/vulkan/operators/linear.h src/vulkan/operators/convolution.cpp
            src/vulkan/operators/convolution.h src/vulkan/operators/pooling.cpp
-             src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
-              src/vulkan/operators/comparison.h src/vulkan/operators/optimizer.h
-               src/vulkan/operators/f32_to_double.cpp
+              src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
+               src/vulkan/operators/comparison.h src/vulkan/operators/optimizer.h
+                src/vulkan/operators/normalization.cpp src/vulkan/operators/normalization.h
+                src/vulkan/operators/classification.cpp src/vulkan/operators/classification.h
+                src/vulkan/operators/f32_to_double.cpp
               src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
@@ -268,7 +286,15 @@ if(BUILD_PYTHON_EXTENSION)
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pointwise_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pointwise_spv.sha256
-                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pointwise.comp)
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pointwise.comp)
+       add_custom_target(vulkan_operator_shader_integrity
+                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py
+                         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
       if(BUILD_TESTING)
           add_test(NAME vulkan_reduction_shader_integrity
                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
@@ -282,8 +308,10 @@ if(BUILD_PYTHON_EXTENSION)
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
            add_test(NAME vulkan_formatter_double_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
-            add_test(NAME vulkan_pointwise_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
+             add_test(NAME vulkan_pointwise_shader_integrity
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
+             add_test(NAME vulkan_operator_shader_integrity
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py)
             add_test(NAME vulkan_linear_relu_backward_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
       endif()

@@ -25,6 +25,12 @@ class VulkanIndexOutputAllocationGuard {
     ~VulkanIndexOutputAllocationGuard();
     VulkanIndexOutputAllocationGuard(const VulkanIndexOutputAllocationGuard &) = delete;
 };
+class VulkanLabelAllocationGuard {
+  public:
+    VulkanLabelAllocationGuard();
+    ~VulkanLabelAllocationGuard();
+    VulkanLabelAllocationGuard(const VulkanLabelAllocationGuard &) = delete;
+};
 
 // These accessors borrow objects owned by the DataPtr.  The DataPtr must remain
 // alive for the duration of every use of either returned object.

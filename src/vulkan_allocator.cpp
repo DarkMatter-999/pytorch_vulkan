@@ -12,8 +12,8 @@
 #include <c10/util/Exception.h>
 #include <torch/library.h>
 
-#include <memory>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 
@@ -37,8 +37,7 @@ struct VulkanAllocation {
 std::string allocation_context(c10::Device device, size_t nbytes) {
     std::ostringstream message;
     message << "requested " << nbytes << " bytes for "
-            << device_type_name(device.type())
-            << " device index "
+            << device_type_name(device.type()) << " device index "
             << static_cast<int>(device.index());
     return message.str();
 }
@@ -49,7 +48,6 @@ void check_device(c10::Device device) {
                 "Vulkan allocator received device of type ", device.type());
     TORCH_CHECK(device.index() == 0,
                 "Vulkan backend supports only device index 0, got ", device.index());
-
 }
 
 void delete_allocation(void *context) noexcept {
@@ -76,6 +74,7 @@ void delete_allocation(void *context) noexcept {
 VulkanAllocator allocator;
 thread_local c10::optional<c10::Device> allocation_device_override;
 thread_local bool allow_index_output_allocation = false;
+thread_local bool allow_label_allocation = false;
 
 struct AllocationDeviceOverrideGuard {
     const c10::optional<c10::Device> previous;
@@ -98,7 +97,8 @@ std::size_t vulkan_storage_bytes(c10::ScalarType dtype) {
     }
     if (dtype == at::kDouble) {
         TORCH_CHECK(formatter_double_supported(),
-                    "Vulkan formatter Double support requires the shaderFloat64 device feature");
+                    "Vulkan formatter Double support requires the shaderFloat64 device "
+                    "feature");
         return sizeof(double);
     }
     validate_vulkan_dtype(dtype, "storage");
@@ -115,6 +115,16 @@ VulkanIndexOutputAllocationGuard::~VulkanIndexOutputAllocationGuard() {
     allow_index_output_allocation = false;
 }
 
+VulkanLabelAllocationGuard::VulkanLabelAllocationGuard() {
+    TORCH_CHECK(!allow_label_allocation,
+                "Vulkan label allocation guard cannot be nested");
+    allow_label_allocation = true;
+}
+
+VulkanLabelAllocationGuard::~VulkanLabelAllocationGuard() {
+    allow_label_allocation = false;
+}
+
 void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
                          const char *label) {
     TORCH_CHECK(data.get_context() != nullptr &&
@@ -123,10 +133,9 @@ void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
     auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
     TORCH_CHECK(allocation->platform != nullptr && allocation->buffer != nullptr,
                 "Vulkan add ", label, " allocation payload is incomplete");
-    TORCH_CHECK(required_bytes <= allocation->buffer->size(),
-                "Vulkan add ", label, " allocation is undersized (required ",
-                required_bytes, " bytes, allocation is ", allocation->buffer->size(),
-                " bytes)");
+    TORCH_CHECK(required_bytes <= allocation->buffer->size(), "Vulkan add ", label,
+                " allocation is undersized (required ", required_bytes,
+                " bytes, allocation is ", allocation->buffer->size(), " bytes)");
 }
 
 bool is_vulkan_allocation(const at::DataPtr &data) {
@@ -158,8 +167,8 @@ const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
 } // namespace pytorch_vulkan
 
 at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
-    const c10::Device device = allocation_device_override.value_or(
-        pytorch_vulkan::current_device());
+    const c10::Device device =
+        allocation_device_override.value_or(pytorch_vulkan::current_device());
     const std::string context = allocation_context(device, nbytes);
     constexpr size_t kMaximumAllocationSize = size_t{1} << 40;
     if (nbytes > kMaximumAllocationSize) {
@@ -175,13 +184,14 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
             return at::DataPtr(payload, payload, delete_allocation, device);
         }
         allocation->platform = pytorch_vulkan::platform();
-        allocation->buffer = std::make_unique<VulkanBuffer>(*allocation->platform, nbytes);
+        allocation->buffer =
+            std::make_unique<VulkanBuffer>(*allocation->platform, nbytes);
     } catch (const VulkanUnavailable &error) {
-        throw VulkanUnavailable("Vulkan allocation failed (" + context + "): " +
-                                error.what());
+        throw VulkanUnavailable("Vulkan allocation failed (" + context +
+                                "): " + error.what());
     } catch (const std::exception &error) {
-        throw std::runtime_error("Vulkan allocation failed (" + context + "): " +
-                                 error.what());
+        throw std::runtime_error("Vulkan allocation failed (" + context +
+                                 "): " + error.what());
     }
     VulkanAllocation *payload = allocation.release();
     return at::DataPtr(payload, payload, delete_allocation, device);
@@ -195,8 +205,7 @@ VulkanAllocator *vulkan_allocator_instance() { return &allocator; }
 
 namespace {
 
-at::Tensor vulkan_empty(c10::SymIntArrayRef size,
-                        c10::optional<at::ScalarType> dtype,
+at::Tensor vulkan_empty(c10::SymIntArrayRef size, c10::optional<at::ScalarType> dtype,
                         c10::optional<at::Layout> layout,
                         c10::optional<c10::Device> device,
                         c10::optional<bool> pin_memory,
@@ -206,26 +215,29 @@ at::Tensor vulkan_empty(c10::SymIntArrayRef size,
     TORCH_CHECK(!pin_memory || !*pin_memory,
                 "Vulkan allocator does not support pinned memory");
     const c10::Device requested = device.value_or(pytorch_vulkan::current_device());
-    const c10::Device target(
-        requested.type(), requested.index() == c10::DeviceIndex(-1)
-                               ? c10::DeviceIndex(0)
-                               : requested.index());
+    const c10::Device target(requested.type(), requested.index() == c10::DeviceIndex(-1)
+                                                   ? c10::DeviceIndex(0)
+                                                   : requested.index());
     check_device(target);
-    const auto allocation_dtype = dtype.value_or(c10::get_default_dtype_as_scalartype());
-    TORCH_CHECK((allocation_dtype == at::kLong && allow_index_output_allocation) ||
-                    (pytorch_vulkan::validate_vulkan_dtype(allocation_dtype, "allocation"), true),
-                "Vulkan allocation dtype is unsupported");
+    const auto allocation_dtype =
+        dtype.value_or(c10::get_default_dtype_as_scalartype());
+    TORCH_CHECK((allocation_dtype == at::kLong &&
+                 (allow_index_output_allocation || allow_label_allocation)) ||
+                    allocation_dtype != at::kLong,
+                "Vulkan allocation dtype int64 is limited to indices and labels; "
+                "supports only float32 and bool tensors, got Long");
+    if (allocation_dtype != at::kLong)
+        pytorch_vulkan::validate_vulkan_dtype(allocation_dtype, "allocation");
     AllocationDeviceOverrideGuard override(target);
     return at::detail::empty_generic_symint(
         size, vulkan_allocator_instance(),
         c10::DispatchKeySet(target.type() == c10::DeviceType::Vulkan
                                 ? c10::DispatchKey::Vulkan
                                 : c10::DispatchKey::PrivateUse1),
-         allocation_dtype, memory_format);
+        allocation_dtype, memory_format);
 }
 
-at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size,
-                                c10::SymIntArrayRef stride,
+at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size, c10::SymIntArrayRef stride,
                                 c10::optional<at::ScalarType> dtype,
                                 c10::optional<c10::Layout> layout,
                                 c10::optional<c10::Device> device,
@@ -235,22 +247,26 @@ at::Tensor vulkan_empty_strided(c10::SymIntArrayRef size,
     TORCH_CHECK(!pin_memory || !*pin_memory,
                 "Vulkan allocator does not support pinned memory");
     const c10::Device requested = device.value_or(pytorch_vulkan::current_device());
-    const c10::Device target(
-        requested.type(), requested.index() == c10::DeviceIndex(-1)
-                               ? c10::DeviceIndex(0)
-                               : requested.index());
+    const c10::Device target(requested.type(), requested.index() == c10::DeviceIndex(-1)
+                                                   ? c10::DeviceIndex(0)
+                                                   : requested.index());
     check_device(target);
-    const auto allocation_dtype = dtype.value_or(c10::get_default_dtype_as_scalartype());
-    TORCH_CHECK((allocation_dtype == at::kLong && allow_index_output_allocation) ||
-                    (pytorch_vulkan::validate_vulkan_dtype(allocation_dtype, "allocation"), true),
-                "Vulkan allocation dtype is unsupported");
+    const auto allocation_dtype =
+        dtype.value_or(c10::get_default_dtype_as_scalartype());
+    TORCH_CHECK((allocation_dtype == at::kLong &&
+                 (allow_index_output_allocation || allow_label_allocation)) ||
+                    allocation_dtype != at::kLong,
+                "Vulkan allocation dtype int64 is limited to indices and labels; "
+                "supports only float32 and bool tensors, got Long");
+    if (allocation_dtype != at::kLong)
+        pytorch_vulkan::validate_vulkan_dtype(allocation_dtype, "allocation");
     AllocationDeviceOverrideGuard override(target);
     return at::detail::empty_strided_symint_generic(
         size, stride, vulkan_allocator_instance(),
         c10::DispatchKeySet(target.type() == c10::DeviceType::Vulkan
                                 ? c10::DispatchKey::Vulkan
                                 : c10::DispatchKey::PrivateUse1),
-         allocation_dtype);
+        allocation_dtype);
 }
 
 at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destination,

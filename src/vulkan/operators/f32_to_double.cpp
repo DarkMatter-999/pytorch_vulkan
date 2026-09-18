@@ -14,8 +14,7 @@
 
 namespace {
 
-at::Tensor f32_to_double(const at::Tensor &input,
-                         c10::optional<c10::ScalarType> dtype,
+at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType> dtype,
                          c10::optional<at::Layout> layout,
                          c10::optional<c10::Device> device,
                          c10::optional<bool> pin_memory, bool non_blocking,
@@ -28,18 +27,28 @@ at::Tensor f32_to_double(const at::Tensor &input,
                     "Vulkan formatter Double payload readback to CPU is unsupported");
         TORCH_CHECK(requested_dtype == input.scalar_type(),
                     "Vulkan _to_copy requested dtype does not match source dtype");
-        auto output = at::empty(input.sizes(),
-                                input.options().dtype(requested_dtype).device(output_device));
+        auto output =
+            at::empty(input.sizes(),
+                      input.options().dtype(requested_dtype).device(output_device));
         pytorch_vulkan::copy_tensor(output, input, non_blocking);
         return output;
     }
     if (input.device().is_cpu()) {
         TORCH_CHECK(requested_dtype != at::kDouble,
-                    "Vulkan formatter conversion supports only Vulkan float32 to Vulkan Double");
+                    "Vulkan formatter conversion supports only Vulkan float32 to "
+                    "Vulkan Double");
         TORCH_CHECK(requested_dtype == input.scalar_type(),
                     "Vulkan _to_copy requested dtype does not match source dtype");
-        auto output = at::empty(input.sizes(),
-                                input.options().dtype(requested_dtype).device(output_device));
+        TORCH_CHECK(
+            requested_dtype == at::kFloat || requested_dtype == at::kBool ||
+                requested_dtype == at::kLong || requested_dtype == at::kHalf,
+            "Vulkan _to_copy supports only float32, bool, and traced int64 labels");
+        c10::optional<pytorch_vulkan::VulkanLabelAllocationGuard> label_guard;
+        if (requested_dtype == at::kLong)
+            label_guard.emplace();
+        auto output =
+            at::empty(input.sizes(),
+                      input.options().dtype(requested_dtype).device(output_device));
         pytorch_vulkan::copy_tensor(output, input, non_blocking);
         return output;
     }
@@ -56,7 +65,8 @@ at::Tensor f32_to_double(const at::Tensor &input,
                     "Vulkan _to_copy does not support pinned memory");
         TORCH_CHECK(!memory_format || *memory_format == at::MemoryFormat::Contiguous,
                     "Vulkan _to_copy requires contiguous output");
-        TORCH_CHECK(!non_blocking, "Vulkan _to_copy does not support non_blocking=True");
+        TORCH_CHECK(!non_blocking,
+                    "Vulkan _to_copy does not support non_blocking=True");
         TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
                         input.device().index() == 0,
                     "Vulkan _to_copy requires a Vulkan device index 0 input");
@@ -66,8 +76,9 @@ at::Tensor f32_to_double(const at::Tensor &input,
         pytorch_vulkan::copy_tensor(output, input, false);
         return output;
     }
-    TORCH_CHECK(input.scalar_type() == at::kFloat,
-                "Vulkan formatter conversion supports only Vulkan float32 to Vulkan Double");
+    TORCH_CHECK(
+        input.scalar_type() == at::kFloat,
+        "Vulkan formatter conversion supports only Vulkan float32 to Vulkan Double");
     TORCH_CHECK(!device || !device->is_cpu(),
                 "Vulkan formatter conversion requires a Vulkan output device");
     TORCH_CHECK(!layout || *layout == at::kStrided,
@@ -76,16 +87,19 @@ at::Tensor f32_to_double(const at::Tensor &input,
                 "Vulkan formatter conversion does not support pinned memory");
     TORCH_CHECK(!memory_format || *memory_format == at::MemoryFormat::Contiguous,
                 "Vulkan formatter conversion requires contiguous output");
-    TORCH_CHECK(!non_blocking, "Vulkan formatter conversion does not support non_blocking=True");
+    TORCH_CHECK(!non_blocking,
+                "Vulkan formatter conversion does not support non_blocking=True");
     TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
                     input.device().index() == 0,
                 "Vulkan formatter conversion requires a Vulkan device index 0 input");
     TORCH_CHECK(input.layout() == at::kStrided && input.is_contiguous(),
                 "Vulkan formatter conversion requires a contiguous input");
     TORCH_CHECK(input.storage_offset() == 0,
-                "Vulkan formatter conversion does not support tensors with non-zero storage_offset()");
-    TORCH_CHECK(pytorch_vulkan::formatter_double_supported(),
-                "Vulkan formatter Double support requires the shaderFloat64 device feature");
+                "Vulkan formatter conversion does not support tensors with non-zero "
+                "storage_offset()");
+    TORCH_CHECK(
+        pytorch_vulkan::formatter_double_supported(),
+        "Vulkan formatter Double support requires the shaderFloat64 device feature");
     TORCH_CHECK(input.numel() >= 0,
                 "Vulkan formatter conversion has a negative element count");
     TORCH_CHECK(static_cast<uint64_t>(input.numel()) <=
@@ -126,6 +140,4 @@ at::Tensor f32_to_double(const at::Tensor &input,
 
 } // namespace
 
-TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
-    m.impl("_to_copy", &f32_to_double);
-}
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) { m.impl("_to_copy", &f32_to_double); }

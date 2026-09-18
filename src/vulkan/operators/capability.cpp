@@ -22,6 +22,7 @@ void validate_vulkan_dtype(c10::ScalarType dtype, const char *operation) {
                     "Vulkan formatter Double support requires the shaderFloat64 device feature");
         return;
     }
+    if (dtype == at::kLong) return;
     TORCH_CHECK(dtype == at::kFloat || dtype == at::kBool,
                 "Vulkan ", operation,
                 " supports only float32 and bool tensors, got ", dtype);

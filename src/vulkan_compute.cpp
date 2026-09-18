@@ -7,6 +7,7 @@
 #include "vulkan/shaders/generated/loss_spv.h"
 #include "vulkan/shaders/generated/masked_select_spv.h"
 #include "vulkan/shaders/generated/model_spv.h"
+#include "vulkan/shaders/generated/operator_spv.h"
 #include "vulkan/shaders/generated/pointwise_spv.h"
 #include "vulkan/shaders/generated/pooling_spv.h"
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
@@ -14,8 +15,8 @@
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
 
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -24,6 +25,19 @@
 #include <string>
 
 namespace {
+
+struct OperatorParams {
+    uint32_t mode;
+    uint32_t batch;
+    uint32_t channels;
+    uint32_t spatial;
+    uint32_t classes;
+    int32_t ignore_index;
+    uint32_t padding0;
+    uint32_t padding1;
+    float momentum;
+    float eps;
+};
 
 void check_result(VkResult result, const char *operation) {
     if (result != VK_SUCCESS) {
@@ -64,12 +78,15 @@ struct ReductionParams {
     uint32_t reduce_dim;
 };
 struct ReductionBackwardParams {
-    uint32_t rank, input_numel, reduce_numel, reduce_mask, reduce_dim, operation, keepdim;
+    uint32_t rank, input_numel, reduce_numel, reduce_mask, reduce_dim, operation,
+        keepdim;
     uint32_t sizes[8];
     uint32_t strides[8];
     uint32_t storage_offset;
 };
-struct LossParams { uint32_t element_count, reduction, backward, padding; };
+struct LossParams {
+    uint32_t element_count, reduction, backward, padding;
+};
 
 struct IndexingParams {
     uint32_t rank, output_numel, reduce_dim, reduce_size;
@@ -412,6 +429,18 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
              nullptr},
             {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+             nullptr},
+            {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+             nullptr},
+            {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+             nullptr},
+            {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+             nullptr},
+            {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+             nullptr},
+            {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+             nullptr},
+            {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
              nullptr}};
         const auto create_extra = [&](VkDescriptorSetLayout &descriptor_layout,
                                       VkShaderModule &module,
@@ -457,12 +486,12 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_extra(reduction_descriptor_layout_, reduction_shader_,
                      reduction_pipeline_layout_, reduction_pipeline_,
                      vulkan_reduction_shader::kReductionCode,
-                      vulkan_reduction_shader::kReductionCodeSize);
+                     vulkan_reduction_shader::kReductionCodeSize);
         create_extra(reduction_backward_descriptor_layout_, reduction_backward_shader_,
                      reduction_backward_pipeline_layout_, reduction_backward_pipeline_,
                      vulkan_reduction_shader::kReductionBackwardCode,
                      vulkan_reduction_shader::kReductionBackwardCodeSize,
-                      sizeof(ReductionBackwardParams), 4);
+                     sizeof(ReductionBackwardParams), 4);
         create_extra(loss_descriptor_layout_, loss_shader_, loss_pipeline_layout_,
                      loss_pipeline_, vulkan_loss_shader::kCode,
                      vulkan_loss_shader::kCodeSize, sizeof(LossParams), 4);
@@ -478,6 +507,16 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                      pooling_pipeline_layout_, pooling_pipeline_,
                      vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize,
                      sizeof(PoolingParams), 3);
+        create_extra(normalization_descriptor_layout_, normalization_shader_,
+                     normalization_pipeline_layout_, normalization_pipeline_,
+                     vulkan_normalization_shader::kCode,
+                     vulkan_normalization_shader::kCodeSize, sizeof(OperatorParams),
+                     10);
+        create_extra(classification_descriptor_layout_, classification_shader_,
+                     classification_pipeline_layout_, classification_pipeline_,
+                     vulkan_classification_shader::kCode,
+                     vulkan_classification_shader::kCodeSize, sizeof(OperatorParams),
+                     6);
         if (platform.supports_formatter_double()) {
             create_extra(f32_to_double_descriptor_layout_, f32_to_double_shader_,
                          f32_to_double_pipeline_layout_, f32_to_double_pipeline_,
@@ -584,9 +623,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         // This layout is deliberately independent of model_descriptor_layout_.
         VkDescriptorSetLayoutBinding backward_bindings[8]{};
         for (uint32_t binding = 0; binding < 8; ++binding) {
-            backward_bindings[binding] = {
-                binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+            backward_bindings[binding] = {binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                          VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
         }
         VkDescriptorSetLayoutCreateInfo backward_layout{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -602,16 +640,15 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                           &backward_shader_),
                      "could not create backward shader module");
         VkPushConstantRange backward_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                           sizeof(MultiOutputParams)};
+                                          sizeof(MultiOutputParams)};
         VkPipelineLayoutCreateInfo backward_pipeline_layout_info{
             VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         backward_pipeline_layout_info.setLayoutCount = 1;
         backward_pipeline_layout_info.pSetLayouts = &backward_descriptor_layout_;
         backward_pipeline_layout_info.pushConstantRangeCount = 1;
         backward_pipeline_layout_info.pPushConstantRanges = &backward_push;
-        check_result(vkCreatePipelineLayout(
-                         device_, &backward_pipeline_layout_info, nullptr,
-                          &backward_pipeline_layout_),
+        check_result(vkCreatePipelineLayout(device_, &backward_pipeline_layout_info,
+                                            nullptr, &backward_pipeline_layout_),
                      "could not create backward pipeline layout");
         VkPipelineShaderStageCreateInfo backward_stage{
             VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -782,6 +819,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
         if (masked_compact_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
+        if (normalization_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, normalization_shader_, nullptr);
+        if (classification_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, classification_shader_, nullptr);
         for (auto layout : pipeline_layouts_) {
             if (layout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(device_, layout, nullptr);
@@ -794,7 +835,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         if (reduction_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, reduction_pipeline_layout_, nullptr);
         if (reduction_backward_pipeline_layout_ != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(device_, reduction_backward_pipeline_layout_, nullptr);
+            vkDestroyPipelineLayout(device_, reduction_backward_pipeline_layout_,
+                                    nullptr);
         if (loss_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, loss_pipeline_layout_, nullptr);
         if (indexing_pipeline_layout_ != VK_NULL_HANDLE)
@@ -813,6 +855,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipelineLayout(device_, masked_count_pipeline_layout_, nullptr);
         if (masked_compact_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, masked_compact_pipeline_layout_, nullptr);
+        if (normalization_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, normalization_pipeline_layout_, nullptr);
+        if (classification_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, classification_pipeline_layout_, nullptr);
         for (auto layout : descriptor_set_layouts_) {
             if (layout != VK_NULL_HANDLE) {
                 vkDestroyDescriptorSetLayout(device_, layout, nullptr);
@@ -826,7 +872,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyDescriptorSetLayout(device_, reduction_descriptor_layout_,
                                          nullptr);
         if (reduction_backward_descriptor_layout_ != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device_, reduction_backward_descriptor_layout_, nullptr);
+            vkDestroyDescriptorSetLayout(device_, reduction_backward_descriptor_layout_,
+                                         nullptr);
         if (loss_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, loss_descriptor_layout_, nullptr);
         if (indexing_descriptor_layout_ != VK_NULL_HANDLE)
@@ -848,6 +895,12 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                          nullptr);
         if (masked_compact_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, masked_compact_descriptor_layout_,
+                                         nullptr);
+        if (normalization_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, normalization_descriptor_layout_,
+                                         nullptr);
+        if (classification_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, classification_descriptor_layout_,
                                          nullptr);
         throw contextual_error("initialization failed", error);
     }
@@ -885,6 +938,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, masked_count_pipeline_, nullptr);
     if (masked_compact_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, masked_compact_pipeline_, nullptr);
+    if (normalization_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, normalization_pipeline_, nullptr);
+    if (classification_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, classification_pipeline_, nullptr);
     if (f32_to_double_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, f32_to_double_pipeline_, nullptr);
     if (formatter_double_pipeline_ != VK_NULL_HANDLE)
@@ -920,6 +977,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
     if (masked_compact_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
+    if (normalization_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, normalization_shader_, nullptr);
+    if (classification_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, classification_shader_, nullptr);
     if (f32_to_double_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, f32_to_double_shader_, nullptr);
     if (formatter_double_shader_ != VK_NULL_HANDLE)
@@ -955,6 +1016,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, masked_count_pipeline_layout_, nullptr);
     if (masked_compact_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, masked_compact_pipeline_layout_, nullptr);
+    if (normalization_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, normalization_pipeline_layout_, nullptr);
+    if (classification_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, classification_pipeline_layout_, nullptr);
     if (f32_to_double_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, f32_to_double_pipeline_layout_, nullptr);
     if (formatter_double_pipeline_layout_ != VK_NULL_HANDLE)
@@ -973,7 +1038,8 @@ VulkanCompute::~VulkanCompute() {
     if (loss_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, loss_descriptor_layout_, nullptr);
     if (reduction_backward_descriptor_layout_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorSetLayout(device_, reduction_backward_descriptor_layout_, nullptr);
+        vkDestroyDescriptorSetLayout(device_, reduction_backward_descriptor_layout_,
+                                     nullptr);
     if (indexing_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, indexing_descriptor_layout_, nullptr);
     if (broadcast_descriptor_layout_ != VK_NULL_HANDLE)
@@ -990,6 +1056,12 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyDescriptorSetLayout(device_, masked_count_descriptor_layout_, nullptr);
     if (masked_compact_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, masked_compact_descriptor_layout_,
+                                     nullptr);
+    if (normalization_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, normalization_descriptor_layout_,
+                                     nullptr);
+    if (classification_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, classification_descriptor_layout_,
                                      nullptr);
     if (f32_to_double_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, f32_to_double_descriptor_layout_,
@@ -1137,8 +1209,8 @@ void VulkanCompute::masked_select_compact(VkBuffer input, VkBuffer mask,
 void VulkanCompute::reduction(VkBuffer input, const VulkanTensorLayout &input_layout,
                               VkBuffer output, const VulkanTensorLayout &output_layout,
                               uint32_t reduce_mask, uint32_t reduce_numel,
-                               uint32_t output_numel, uint32_t operation,
-                               uint32_t reduce_dim) const {
+                              uint32_t output_numel, uint32_t operation,
+                              uint32_t reduce_dim) const {
     ReductionParams params{};
     fill_layout_metadata(params, input_layout, "reduction");
     params.output_numel = output_numel;
@@ -1153,11 +1225,12 @@ void VulkanCompute::reduction(VkBuffer input, const VulkanTensorLayout &input_la
 }
 
 void VulkanCompute::reduction_backward(
-    const VulkanBuffer *input, const VulkanTensorLayout &input_layout, const VulkanBuffer *forward,
-    const VulkanTensorLayout &forward_layout, const VulkanBuffer *grad_output,
-    const VulkanTensorLayout &grad_output_layout, const VulkanBuffer *grad_input,
-    const VulkanTensorLayout &grad_input_layout, uint32_t reduce_mask,
-    uint32_t reduce_numel, uint32_t reduce_dim, uint32_t operation, bool keepdim) const {
+    const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+    const VulkanBuffer *forward, const VulkanTensorLayout &forward_layout,
+    const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
+    const VulkanBuffer *grad_input, const VulkanTensorLayout &grad_input_layout,
+    uint32_t reduce_mask, uint32_t reduce_numel, uint32_t reduce_dim,
+    uint32_t operation, bool keepdim) const {
     ReductionBackwardParams params{};
     fill_layout_metadata(params, input_layout, "reduction backward");
     params.input_numel = static_cast<uint32_t>(input_layout.numel);
@@ -1171,26 +1244,27 @@ void VulkanCompute::reduction_backward(
                                            &grad_output_layout};
     const VulkanBuffer *outputs[] = {grad_input};
     const VulkanTensorLayout *output_layouts[] = {&grad_input_layout};
-    dispatch_multi_output(inputs, layouts, outputs, output_layouts, &params, sizeof(params),
-                          nullptr, 0, reduction_backward_pipeline_,
-                          reduction_backward_pipeline_layout_,
-                           reduction_backward_descriptor_layout_, params.input_numel, 3, 1);
+    dispatch_multi_output(
+        inputs, layouts, outputs, output_layouts, &params, sizeof(params), nullptr, 0,
+        reduction_backward_pipeline_, reduction_backward_pipeline_layout_,
+        reduction_backward_descriptor_layout_, params.input_numel, 3, 1);
 }
 
-void VulkanCompute::mse_loss(const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
-                             const VulkanBuffer *target, const VulkanTensorLayout &target_layout,
-                             const VulkanBuffer *aux, const VulkanTensorLayout &aux_layout,
-                             const VulkanBuffer *output, const VulkanTensorLayout &output_layout,
-                             uint32_t element_count, uint32_t reduction, bool backward) const {
+void VulkanCompute::mse_loss(
+    const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+    const VulkanBuffer *target, const VulkanTensorLayout &target_layout,
+    const VulkanBuffer *aux, const VulkanTensorLayout &aux_layout,
+    const VulkanBuffer *output, const VulkanTensorLayout &output_layout,
+    uint32_t element_count, uint32_t reduction, bool backward) const {
     LossParams params{element_count, reduction, backward ? 1U : 0U, 0U};
     const VulkanBuffer *inputs[] = {input, target, aux};
     const VulkanTensorLayout *layouts[] = {&input_layout, &target_layout, &aux_layout};
     const VulkanBuffer *outputs[] = {output};
     const VulkanTensorLayout *output_layouts[] = {&output_layout};
-    dispatch_multi_output(inputs, layouts, outputs, output_layouts, &params, sizeof(params),
-                          nullptr, 0, loss_pipeline_, loss_pipeline_layout_,
-                          loss_descriptor_layout_, backward ? element_count :
-                          (reduction == 0 ? element_count : 1U), 3, 1);
+    dispatch_multi_output(
+        inputs, layouts, outputs, output_layouts, &params, sizeof(params), nullptr, 0,
+        loss_pipeline_, loss_pipeline_layout_, loss_descriptor_layout_,
+        backward ? element_count : (reduction == 0 ? element_count : 1U), 3, 1);
 }
 
 void VulkanCompute::argmax(VkBuffer input, const VulkanTensorLayout &input_layout,
@@ -1254,22 +1328,25 @@ void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
             "Vulkan linear output count multiplication overflows uint64");
     const uint64_t output_numel64 = operation == 5
                                         ? static_cast<uint64_t>(features) * outputs64
-                                        : operation == 6 ? outputs64 : rows64 * outputs64;
+                                    : operation == 6 ? outputs64
+                                                     : rows64 * outputs64;
     if (output_numel64 > std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("Vulkan linear output count overflow");
     const uint64_t input_numel64 = rows64 * static_cast<uint64_t>(features);
     const uint64_t weight_numel64 = static_cast<uint64_t>(features) * outputs64;
     const uint64_t bias_numel64 = has_bias ? outputs64 : 1;
     const uint64_t expected_input_numel =
-        operation == 2 ? static_cast<uint64_t>(features) * rows64
+        operation == 2   ? static_cast<uint64_t>(features) * rows64
         : operation == 4 ? rows64 * static_cast<uint64_t>(features)
-        : operation == 5 ? rows64 * outputs64 : input_numel64;
+        : operation == 5 ? rows64 * outputs64
+                         : input_numel64;
     const uint64_t expected_weight_numel =
         operation == 5 || operation == 6 ? rows64 * static_cast<uint64_t>(features)
                                          : weight_numel64;
     const uint64_t expected_bias_numel =
-        operation == 4 ? rows64 * static_cast<uint64_t>(features)
-        : operation == 5 || operation == 6 ? rows64 * outputs64 : bias_numel64;
+        operation == 4                     ? rows64 * static_cast<uint64_t>(features)
+        : operation == 5 || operation == 6 ? rows64 * outputs64
+                                           : bias_numel64;
     if (input_layout.numel != static_cast<int64_t>(expected_input_numel) ||
         weight_layout.numel != static_cast<int64_t>(expected_weight_numel) ||
         bias_layout.numel != static_cast<int64_t>(expected_bias_numel) ||
@@ -1293,8 +1370,8 @@ void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
 void VulkanCompute::linear_relu_backward_input(
     VkBuffer grad_output, VkBuffer weight, VkBuffer activation, VkBuffer output,
     const VulkanTensorLayout &go, const VulkanTensorLayout &w,
-    const VulkanTensorLayout &a, const VulkanTensorLayout &out,
-    uint32_t rows, uint32_t output_features, uint32_t input_features) const {
+    const VulkanTensorLayout &a, const VulkanTensorLayout &out, uint32_t rows,
+    uint32_t output_features, uint32_t input_features) const {
     linear(grad_output, weight, activation, output, go, w, a, out, rows,
            output_features, input_features, false, false, 4);
 }
@@ -1302,16 +1379,18 @@ void VulkanCompute::linear_relu_backward_input(
 void VulkanCompute::linear_relu_backward_weight(
     VkBuffer grad_output, VkBuffer input, VkBuffer activation, VkBuffer output,
     const VulkanTensorLayout &go, const VulkanTensorLayout &x,
-    const VulkanTensorLayout &a, const VulkanTensorLayout &out,
-    uint32_t rows, uint32_t features, uint32_t outputs) const {
+    const VulkanTensorLayout &a, const VulkanTensorLayout &out, uint32_t rows,
+    uint32_t features, uint32_t outputs) const {
     linear(grad_output, input, activation, output, go, x, a, out, rows, features,
            outputs, false, false, 5);
 }
 
-void VulkanCompute::linear_relu_backward_bias(
-    VkBuffer grad_output, VkBuffer activation, VkBuffer output,
-    const VulkanTensorLayout &go, const VulkanTensorLayout &a,
-    const VulkanTensorLayout &out, uint32_t rows, uint32_t outputs) const {
+void VulkanCompute::linear_relu_backward_bias(VkBuffer grad_output, VkBuffer activation,
+                                              VkBuffer output,
+                                              const VulkanTensorLayout &go,
+                                              const VulkanTensorLayout &a,
+                                              const VulkanTensorLayout &out,
+                                              uint32_t rows, uint32_t outputs) const {
     linear(grad_output, activation, activation, output, go, a, a, out, rows, outputs,
            outputs, false, false, 6);
 }
@@ -1323,8 +1402,8 @@ void VulkanCompute::linear_relu_backward(
     const VulkanBuffer *activation, const VulkanTensorLayout &activation_layout,
     const VulkanBuffer *d_input, const VulkanTensorLayout &d_input_layout,
     const VulkanBuffer *d_weight, const VulkanTensorLayout &d_weight_layout,
-    const VulkanBuffer *d_bias, const VulkanTensorLayout &d_bias_layout,
-    uint32_t rows, uint32_t features, uint32_t outputs) const {
+    const VulkanBuffer *d_bias, const VulkanTensorLayout &d_bias_layout, uint32_t rows,
+    uint32_t features, uint32_t outputs) const {
     const uint64_t input_numel = checked_product(rows, features, "backward input");
     const uint64_t weight_numel = checked_product(features, outputs, "backward weight");
     const uint64_t gradient_numel = checked_product(rows, outputs, "backward gradient");
@@ -1346,8 +1425,8 @@ void VulkanCompute::linear_relu_backward(
             "Vulkan multi-output backward metadata does not match dimensions");
     const auto has_shape = [](const VulkanTensorLayout &layout, uint32_t rank,
                               std::initializer_list<uint32_t> shape) {
-        if (layout.rank != static_cast<int64_t>(rank) ||
-            layout.sizes.size() != rank || layout.strides.size() != rank)
+        if (layout.rank != static_cast<int64_t>(rank) || layout.sizes.size() != rank ||
+            layout.strides.size() != rank)
             return false;
         uint32_t index = 0;
         for (uint32_t size : shape)
@@ -1367,7 +1446,7 @@ void VulkanCompute::linear_relu_backward(
 
     MultiOutputMetadata metadata{};
     const VulkanTensorLayout *layouts[] = {
-        &grad_output_layout, &input_layout, &weight_layout, &activation_layout,
+        &grad_output_layout, &input_layout,    &weight_layout, &activation_layout,
         &d_input_layout,     &d_weight_layout, &d_bias_layout};
     for (uint32_t i = 0; i < 7; ++i)
         fill_layout_metadata(metadata.tensors[i], *layouts[i], "backward tensor");
@@ -1383,15 +1462,15 @@ void VulkanCompute::linear_relu_backward(
         outputs,
     };
     const VulkanBuffer *inputs[] = {grad_output, input, weight, activation};
-    const VulkanTensorLayout *input_layouts[] = {
-        &grad_output_layout, &input_layout, &weight_layout, &activation_layout};
+    const VulkanTensorLayout *input_layouts[] = {&grad_output_layout, &input_layout,
+                                                 &weight_layout, &activation_layout};
     const VulkanBuffer *outputs_buffers[] = {d_input, d_weight, d_bias};
-    const VulkanTensorLayout *output_layouts[] = {
-        &d_input_layout, &d_weight_layout, &d_bias_layout};
-    dispatch_multi_output(inputs, input_layouts, outputs_buffers, output_layouts, &params,
-                          sizeof(params), &metadata, sizeof(metadata), backward_pipeline_,
-                          backward_pipeline_layout_, backward_descriptor_layout_,
-                          static_cast<uint32_t>(invocation_count));
+    const VulkanTensorLayout *output_layouts[] = {&d_input_layout, &d_weight_layout,
+                                                  &d_bias_layout};
+    dispatch_multi_output(
+        inputs, input_layouts, outputs_buffers, output_layouts, &params, sizeof(params),
+        &metadata, sizeof(metadata), backward_pipeline_, backward_pipeline_layout_,
+        backward_descriptor_layout_, static_cast<uint32_t>(invocation_count));
 }
 
 void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
@@ -1504,7 +1583,8 @@ void VulkanCompute::dispatch_model(
         if (metadata) {
             metadata_holder = std::make_shared<VulkanBuffer>(
                 platform_, metadata_size,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
         const uint32_t descriptor_count = 5;
         VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1562,35 +1642,35 @@ void VulkanCompute::dispatch_model(
 
 void VulkanCompute::dispatch_multi_output(
     const VulkanBuffer *const *inputs, const VulkanTensorLayout *const *input_layouts,
-    const VulkanBuffer *const *outputs,
-    const VulkanTensorLayout *const *output_layouts,
+    const VulkanBuffer *const *outputs, const VulkanTensorLayout *const *output_layouts,
     const void *params, uint32_t params_size, const void *metadata,
-    VkDeviceSize metadata_size, VkPipeline pipeline,
-    VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_layout,
-    uint32_t invocation_count, uint32_t input_count, uint32_t output_count) const {
+    VkDeviceSize metadata_size, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
+    VkDescriptorSetLayout descriptor_layout, uint32_t invocation_count,
+    uint32_t input_count, uint32_t output_count, uint32_t descriptor_capacity) const {
     if (inputs == nullptr || input_layouts == nullptr || outputs == nullptr ||
-        output_layouts == nullptr ||
-        params == nullptr || params_size == 0 ||
+        output_layouts == nullptr || params == nullptr || params_size == 0 ||
         params_size > max_push_constants_size_ ||
         (metadata == nullptr && metadata_size != 0) ||
         (metadata != nullptr && metadata_size != sizeof(MultiOutputMetadata)) ||
         metadata_size > max_storage_buffer_range_ || pipeline == VK_NULL_HANDLE ||
         pipeline_layout == VK_NULL_HANDLE || descriptor_layout == VK_NULL_HANDLE ||
         invocation_count == 0)
-        throw std::invalid_argument("Vulkan multi-output backward has invalid metadata");
+        throw std::invalid_argument(
+            "Vulkan multi-output backward has invalid metadata");
 
     const auto validate = [&](const VulkanBuffer *buffer,
                               const VulkanTensorLayout *layout) {
-        if (buffer == nullptr || layout == nullptr || buffer->platform() != &platform_ ||
-            buffer->buffer() == VK_NULL_HANDLE ||
+        if (buffer == nullptr || layout == nullptr ||
+            buffer->platform() != &platform_ || buffer->buffer() == VK_NULL_HANDLE ||
             layout->allocation_bytes == 0 ||
             layout->allocation_bytes > max_storage_buffer_range_ ||
             layout->byte_range == 0 || layout->byte_offset > layout->allocation_bytes ||
             layout->byte_range > layout->allocation_bytes - layout->byte_offset ||
             layout->internal_overlap != pytorch_vulkan::VulkanOverlap::No)
-            throw std::invalid_argument("Vulkan multi-output backward has an invalid range");
+            throw std::invalid_argument(
+                "Vulkan multi-output backward has an invalid range");
     };
-    if (input_count == 0 || input_count > 4 || output_count == 0 || output_count > 3)
+    if (input_count == 0 || input_count > 10 || output_count == 0 || output_count > 3)
         throw std::invalid_argument("Vulkan multi-output backward has invalid counts");
     for (uint32_t i = 0; i < input_count; ++i)
         validate(inputs[i], input_layouts[i]);
@@ -1599,22 +1679,21 @@ void VulkanCompute::dispatch_multi_output(
     for (uint32_t output = 0; output < output_count; ++output) {
         for (uint32_t other = output + 1; other < output_count; ++other) {
             if (ranges_overlap(outputs[output]->buffer(), *output_layouts[output],
-                               outputs[other]->buffer(),
-                               *output_layouts[other]))
+                               outputs[other]->buffer(), *output_layouts[other]))
                 throw std::invalid_argument(
                     "Vulkan multi-output backward outputs overlap");
         }
         for (uint32_t input = 0; input < input_count; ++input) {
             if (ranges_overlap(outputs[output]->buffer(), *output_layouts[output],
-                               inputs[input]->buffer(),
-                               *input_layouts[input]))
+                               inputs[input]->buffer(), *input_layouts[input]))
                 throw std::invalid_argument(
                     "Vulkan multi-output backward output aliases input");
         }
     }
     const uint64_t dispatch_groups = checked_dispatch_groups(invocation_count);
     if (dispatch_groups == 0 || dispatch_groups > max_compute_workgroup_count_x_)
-        throw std::invalid_argument("Vulkan multi-output backward dispatch count overflows");
+        throw std::invalid_argument(
+            "Vulkan multi-output backward dispatch count overflows");
 
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -1630,11 +1709,14 @@ void VulkanCompute::dispatch_multi_output(
         if (metadata) {
             metadata_holder = std::make_shared<VulkanBuffer>(
                 platform_, metadata_size,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
-        const uint32_t descriptor_count = input_count + output_count + (metadata ? 1u : 0u);
-        const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                             descriptor_count};
+        const uint32_t descriptor_count =
+            input_count + output_count + (metadata ? 1u : 0u);
+        const VkDescriptorPoolSize pool_size{
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            std::max(descriptor_count, descriptor_capacity)};
         VkDescriptorPoolCreateInfo pool_info{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pool_info.maxSets = 1;
@@ -1649,14 +1731,17 @@ void VulkanCompute::dispatch_multi_output(
         set_info.pSetLayouts = &descriptor_layout;
         check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
                      "could not allocate multi-output descriptor set");
-        if (metadata) metadata_holder->write(metadata, metadata_size);
+        if (metadata)
+            metadata_holder->write(metadata, metadata_size);
         VkDescriptorBufferInfo infos[descriptor_count]{};
         for (uint32_t i = 0; i < input_count; ++i)
             infos[i] = {inputs[i]->buffer(), 0, input_layouts[i]->allocation_bytes};
         for (uint32_t i = 0; i < output_count; ++i)
             infos[input_count + i] = {outputs[i]->buffer(), 0,
-                            output_layouts[i]->allocation_bytes};
-        if (metadata) infos[input_count + output_count] = {metadata_holder->buffer(), 0, metadata_size};
+                                      output_layouts[i]->allocation_bytes};
+        if (metadata)
+            infos[input_count + output_count] = {metadata_holder->buffer(), 0,
+                                                 metadata_size};
         VkWriteDescriptorSet writes[descriptor_count]{};
         for (uint32_t i = 0; i < descriptor_count; ++i) {
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1684,6 +1769,23 @@ void VulkanCompute::dispatch_multi_output(
         cleanup();
         throw contextual_error("multi-output dispatch failed", error);
     }
+}
+
+void VulkanCompute::compute_multi_output(
+    const VulkanBuffer *const *inputs, const VulkanTensorLayout *const *input_layouts,
+    const VulkanBuffer *const *outputs, const VulkanTensorLayout *const *output_layouts,
+    uint32_t input_count, uint32_t output_count, uint32_t invocation_count,
+    const void *params, uint32_t params_size, bool classification) const {
+    const auto *pipeline =
+        classification ? &classification_pipeline_ : &normalization_pipeline_;
+    const auto *pipeline_layout = classification ? &classification_pipeline_layout_
+                                                 : &normalization_pipeline_layout_;
+    const auto *descriptor_layout = classification ? &classification_descriptor_layout_
+                                                   : &normalization_descriptor_layout_;
+    dispatch_multi_output(inputs, input_layouts, outputs, output_layouts, params,
+                          params_size, nullptr, 0, *pipeline, *pipeline_layout,
+                          *descriptor_layout, invocation_count, input_count,
+                          output_count, classification ? 6 : 10);
 }
 
 void VulkanCompute::dispatch_extra(

@@ -454,6 +454,49 @@ def test_user_facing_vulkan_inplace_add_remains_rejected(vulkan_backend):
         value.add_(1.0)
 
 
+def test_batch_norm_classification_training_matches_cpu(vulkan_backend):
+    class FixedClassifier(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(4))
+            self.bias = torch.nn.Parameter(torch.zeros(4))
+            self.register_buffer("running_mean", torch.zeros(4))
+            self.register_buffer("running_var", torch.ones(4))
+            self.classifier = torch.nn.Linear(4, 3)
+
+        def forward(self, value):
+            value = torch.ops.aten.native_batch_norm.default(
+                value, self.weight, self.bias, self.running_mean, self.running_var,
+                True, 0.1, 1e-5
+            )[0]
+            return self.classifier(value)
+
+    torch.manual_seed(419)
+    cpu_model = FixedClassifier()
+    vk_model = FixedClassifier().to(vulkan_backend)
+    vk_model.load_state_dict({name: value.detach().clone().to(vulkan_backend)
+                              for name, value in cpu_model.state_dict().items()})
+    cpu_input = torch.randn(2, 4, requires_grad=True)
+    cpu_labels = torch.tensor([1, 2], dtype=torch.int64)
+    vk_input = cpu_input.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_labels = cpu_labels.to(vulkan_backend)
+    cpu_optimizer = torch.optim.SGD(cpu_model.parameters(), lr=0.01)
+    vk_optimizer = torch.optim.SGD(vk_model.parameters(), lr=0.01)
+    cpu_loss = torch.nn.functional.cross_entropy(cpu_model(cpu_input), cpu_labels)
+    cpu_loss.backward(); cpu_optimizer.step()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_loss = torch.nn.functional.cross_entropy(vk_model(vk_input), vk_labels)
+        vk_loss.backward(); vk_optimizer.step()
+        pytorch_vulkan._C.end_training_step()
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    torch.testing.assert_close(vk_loss.cpu(), cpu_loss.detach(), rtol=2e-4, atol=2e-4)
+    for actual, expected in zip(vk_model.parameters(), cpu_model.parameters()):
+        torch.testing.assert_close(actual.cpu(), expected, rtol=2e-4, atol=2e-4)
+
+
 def run_training_step(model, optimizer, inputs, targets):
     parameters = list(model.parameters())
     if not parameters:

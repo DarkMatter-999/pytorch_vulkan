@@ -53,7 +53,9 @@ void main() {
   if (index >= params.input_numel) return;
   uint input_index = input_offset(index);
   uint output_index_value = output_index(index);
-  float grad = grad_output[output_index_value];
+  float grad = (params.operation == 3u || params.operation == 4u)
+                   ? grad_output[input_index]
+                   : grad_output[output_index_value];
   if (params.operation == 3u || params.operation == 4u) {
     uint remainder = index;
     uint coordinate = 0u;
