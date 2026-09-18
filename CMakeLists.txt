@@ -33,7 +33,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/generated/formatter_double_spv.h
                      src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
-                  src/vulkan/shaders/glsl/reduction.comp src/vulkan/shaders/glsl/indexing.comp
+                     src/vulkan/shaders/glsl/reduction.comp src/vulkan/shaders/glsl/reduction_backward.comp
+                     src/vulkan/shaders/glsl/indexing.comp
                     src/vulkan/shaders/glsl/broadcast.comp
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp

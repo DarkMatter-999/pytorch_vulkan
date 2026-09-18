@@ -6,7 +6,8 @@ import hashlib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / "src/vulkan/shaders/generated/reduction_indexing_spv.h"
 MANIFEST = ROOT / "src/vulkan/shaders/generated/reduction_indexing_spv.sha256"
-SHADERS = [("kReductionCode", "reduction.comp"), ("kIndexingCode", "indexing.comp"),
+SHADERS = [("kReductionCode", "reduction.comp"), ("kReductionBackwardCode", "reduction_backward.comp"),
+           ("kIndexingCode", "indexing.comp"),
            ("kBroadcastCode", "broadcast.comp")]
 
 with OUT.open("w", encoding="ascii") as header:

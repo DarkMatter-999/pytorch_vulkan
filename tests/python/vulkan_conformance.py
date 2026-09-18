@@ -15,6 +15,10 @@ TensorFactory = Callable[[], tuple[Any, ...]]
 # the capability tests rather than inferred from registry case names.
 DECLARED_OPERATION_MANIFEST = frozenset({
     "aten::sum.dim_IntList", "aten::mean.dim", "aten::argmax.default",
+    "aten::amax.default", "aten::amax.out", "aten::amin.default", "aten::amin.out",
+    "aten::prod.dim_int", "aten::prod.int_out",
+    "aten::_softmax.default", "aten::_softmax.out", "aten::_log_softmax.default", "aten::_log_softmax.out",
+    "aten::_softmax_backward_data.out", "aten::_log_softmax_backward_data.out",
     "aten::linear.default", "aten::convolution.default",
     "aten::_adaptive_avg_pool2d.default", "aten::neg.default",
     "aten::abs.default", "aten::relu.default", "aten::add.Tensor",
@@ -48,9 +52,9 @@ ROADMAP_OPERATION_FAMILIES = {
         "aten::log.out",
     }),
     "reductions/indexing": frozenset({
-        "aten::amax.out", "aten::amin.out", "aten::argmax.out",
+        "aten::argmax.out",
         "aten::max.default", "aten::mean.default", "aten::mean.out",
-        "aten::min.default", "aten::prod.int_out", "aten::sum.IntList_out",
+        "aten::min.default", "aten::sum.IntList_out",
         "aten::sum.default",
     }),
     "MSE loss": frozenset({
@@ -77,7 +81,7 @@ ROADMAP_OPERATION_FAMILIES = {
     }),
     # Cross-entropy is represented by the deferred log-softmax and NLL pieces.
     "cross-entropy/NLL": frozenset({
-        "aten::_log_softmax.out", "aten::_log_softmax_backward_data.out",
+        "aten::_log_softmax_backward_data.out",
         "aten::nll_loss_forward.output", "aten::nll_loss_backward.grad_input",
     }),
 }
@@ -525,6 +529,55 @@ def _cpu_argmax(value, dim=None, keepdim=False):
     return torch.argmax(value, dim=dim, keepdim=keepdim)
 
 
+def _cpu_prod(value, dim, keepdim=False):
+    return torch.prod(value, dim=dim, keepdim=keepdim)
+
+
+def _softmax(value, dim):
+    return torch.softmax(value, dim=dim)
+
+
+def _log_softmax(value, dim):
+    return torch.log_softmax(value, dim=dim)
+
+
+def _amax_out(value, dim):
+    return torch.ops.aten.amax.out(value, [dim], False, out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device))
+
+
+def _amin_out(value, dim):
+    return torch.ops.aten.amin.out(value, [dim], False, out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device))
+
+
+def _prod_int_out(value, dim):
+    return torch.ops.aten.prod.int_out(value, dim, False, dtype=value.dtype,
+                                       out=torch.empty((value.size(0),), dtype=value.dtype, device=value.device))
+
+
+def _softmax_out(value, dim):
+    return torch.ops.aten._softmax.out(value, dim, False, out=torch.empty_like(value))
+
+
+def _log_softmax_out(value, dim):
+    return torch.ops.aten._log_softmax.out(value, dim, False, out=torch.empty_like(value))
+
+
+def _softmax_backward_inputs(*, requires_grad=False):
+    output = torch.softmax(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32), dim=1)
+    grad = torch.ones_like(output)
+    return grad, output
+
+
+def _softmax_backward_out(grad, output):
+    return torch.ops.aten._softmax_backward_data.out(
+        grad, output, 1, torch.float32, grad_input=torch.empty_like(output))
+
+
+def _log_softmax_backward_out(grad, output):
+    return torch.ops.aten._log_softmax_backward_data.out(
+        grad, output, 1, torch.float32, out=torch.empty_like(output))
+
+
 def _cpu_reshape(value, shape):
     return torch.reshape(value, shape)
 
@@ -578,6 +631,18 @@ DECLARATION_ID_BY_CASE = {
     "reduction.mean.optional-dim": "aten::mean.dim",
     "reduction.sum.empty-dim": "aten::sum.dim_IntList",
     "reduction.mean.empty-dim": "aten::mean.dim",
+    "reduction.amax.dim": "aten::amax.out",
+    "reduction.amax.default": "aten::amax.default",
+    "reduction.amin.dim": "aten::amin.out",
+    "reduction.amin.default": "aten::amin.default",
+    "reduction.prod.dim": "aten::prod.int_out",
+    "reduction.prod.default": "aten::prod.dim_int",
+    "reduction.softmax.dim": "aten::_softmax.out",
+    "reduction.softmax.default": "aten::_softmax.default",
+    "reduction.log-softmax.dim": "aten::_log_softmax.out",
+    "reduction.log-softmax.default": "aten::_log_softmax.default",
+    "reduction.softmax.backward": "aten::_softmax_backward_data.out",
+    "reduction.log-softmax.backward": "aten::_log_softmax_backward_data.out",
     "indexing.argmax.dim": "aten::argmax.default",
     "indexing.argmax.optional-dim.keepdim": "aten::argmax.default",
     "indexing.argmax.strided": "aten::argmax.default",
@@ -781,6 +846,32 @@ ALL_CASES = (
     _case("reduction.mean.empty-dim", "reduction", torch.mean, _empty_reduction,
            args=(0,), cpu_reference=_cpu_mean, expected_shape=(3,), execution_mode="empty",
            rtol=0, atol=0),
+    _case("reduction.amax.dim", "reduction", _amax_out, _reduction, args=(1,),
+           cpu_reference=torch.amax, expected_shape=(2,)),
+    _case("reduction.amax.default", "reduction", torch.amax, _reduction, args=(1,),
+           cpu_reference=torch.amax, expected_shape=(2,)),
+    _case("reduction.amin.dim", "reduction", _amin_out, _reduction, args=(1,),
+           cpu_reference=torch.amin, expected_shape=(2,)),
+    _case("reduction.amin.default", "reduction", torch.amin, _reduction, args=(1,),
+           cpu_reference=torch.amin, expected_shape=(2,)),
+    _case("reduction.prod.dim", "reduction", _prod_int_out, _reduction, args=(1,),
+           cpu_reference=_cpu_prod, expected_shape=(2,)),
+    _case("reduction.prod.default", "reduction", torch.prod, _reduction, args=(1,),
+           cpu_reference=_cpu_prod, expected_shape=(2,)),
+    _case("reduction.softmax.dim", "reduction", _softmax_out, _reduction, args=(1,),
+           cpu_reference=_softmax, expected_shape=(2, 2), execution_mode="copy"),
+    _case("reduction.softmax.default", "reduction", _softmax, _reduction, args=(1,),
+           cpu_reference=_softmax, expected_shape=(2, 2)),
+    _case("reduction.log-softmax.dim", "reduction", _log_softmax_out, _reduction, args=(1,),
+           cpu_reference=_log_softmax, expected_shape=(2, 2), execution_mode="copy"),
+    _case("reduction.log-softmax.default", "reduction", _log_softmax, _reduction, args=(1,),
+           cpu_reference=_log_softmax, expected_shape=(2, 2)),
+    _case("reduction.softmax.backward", "reduction", _softmax_backward_out,
+           _softmax_backward_inputs, cpu_reference=lambda grad, output: torch.ops.aten._softmax_backward_data(
+               grad, output, 1, torch.float32), expected_shape=(2, 2), execution_mode="copy"),
+    _case("reduction.log-softmax.backward", "reduction", _log_softmax_backward_out,
+           _softmax_backward_inputs, cpu_reference=lambda grad, output: torch.ops.aten._log_softmax_backward_data(
+               grad, output, 1, torch.float32, ), expected_shape=(2, 2), execution_mode="copy"),
     _case("indexing.argmax.dim", "indexing", torch.argmax, _indexing, args=(1,),
           cpu_reference=_cpu_argmax, expected_dtype=torch.int64, expected_shape=(2,)),
     _case("indexing.argmax.optional-dim.keepdim", "indexing", torch.argmax, _indexing,

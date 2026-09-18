@@ -7,7 +7,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GENERATED = ROOT / "src/vulkan/shaders/generated/reduction_indexing_spv.h"
 MANIFEST = ROOT / "src/vulkan/shaders/generated/reduction_indexing_spv.sha256"
-SHADERS = ["reduction.comp", "indexing.comp", "broadcast.comp"]
+SHADERS = ["reduction.comp", "reduction_backward.comp", "indexing.comp", "broadcast.comp"]
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()

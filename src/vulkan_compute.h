@@ -78,7 +78,13 @@ class VulkanCompute final {
     void reduction(VkBuffer input, const VulkanTensorLayout &input_layout,
                    VkBuffer output, const VulkanTensorLayout &output_layout,
                    uint32_t reduce_mask, uint32_t reduce_numel, uint32_t output_numel,
-                   bool mean) const;
+                   uint32_t operation, uint32_t reduce_dim = 0) const;
+    void reduction_backward(const VulkanBuffer *input, const VulkanTensorLayout &input_layout,
+                            const VulkanBuffer *forward, const VulkanTensorLayout &forward_layout,
+                            const VulkanBuffer *grad_output, const VulkanTensorLayout &grad_output_layout,
+                            const VulkanBuffer *grad_input, const VulkanTensorLayout &grad_input_layout,
+                            uint32_t reduce_mask, uint32_t reduce_numel,
+                            uint32_t reduce_dim, uint32_t operation, bool keepdim) const;
     void argmax(VkBuffer input, const VulkanTensorLayout &input_layout, VkBuffer output,
                 const VulkanTensorLayout &output_layout, uint32_t dim,
                 uint32_t reduce_size, uint32_t output_numel) const;
@@ -179,10 +185,11 @@ class VulkanCompute final {
         const VulkanTensorLayout *const *input_layouts,
         const VulkanBuffer *const *outputs,
         const VulkanTensorLayout *const *output_layouts,
-        const void *params, uint32_t params_size, const void *metadata,
-        VkDeviceSize metadata_size, VkPipeline pipeline,
-        VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_layout,
-        uint32_t invocation_count) const;
+         const void *params, uint32_t params_size, const void *metadata,
+         VkDeviceSize metadata_size, VkPipeline pipeline,
+         VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_layout,
+         uint32_t invocation_count, uint32_t input_count = 4,
+         uint32_t output_count = 3) const;
     void dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer output,
                          VkBuffer counter, uint32_t element_count,
                          VkDeviceSize output_bytes, VkPipeline pipeline,
@@ -207,6 +214,10 @@ class VulkanCompute final {
     VkPipelineLayout reduction_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule reduction_shader_ = VK_NULL_HANDLE;
     VkPipeline reduction_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout reduction_backward_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout reduction_backward_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule reduction_backward_shader_ = VK_NULL_HANDLE;
+    VkPipeline reduction_backward_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout indexing_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout indexing_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule indexing_shader_ = VK_NULL_HANDLE;

@@ -10,7 +10,8 @@ layout(push_constant, std430) uniform Params {
   uint sizes[8];
   uint strides[8];
   uint storage_offset;
-  uint mean;
+  uint operation;
+  uint reduce_dim;
 }
 params;
 void main() {
@@ -19,6 +20,27 @@ void main() {
     return;
   uint remainder = output_index;
   uint base = params.storage_offset;
+  if (params.operation >= 5u) {
+    uint coordinate = 0u;
+    for (int d = int(params.rank) - 1; d >= 0; --d) {
+      uint dim = uint(d);
+      uint current = remainder % params.sizes[dim];
+      remainder /= params.sizes[dim];
+      if (dim == params.reduce_dim) coordinate = current;
+      base += current * params.strides[dim];
+    }
+    base -= coordinate * params.strides[params.reduce_dim];
+    float maximum = -3.402823466e+38;
+    for (uint index = 0u; index < params.reduce_numel; ++index)
+      maximum = max(maximum, input_data[base + index * params.strides[params.reduce_dim]]);
+    float total = 0.0;
+    for (uint index = 0u; index < params.reduce_numel; ++index)
+      total += exp(input_data[base + index * params.strides[params.reduce_dim]] - maximum);
+    float value = input_data[base + coordinate * params.strides[params.reduce_dim]];
+    output_data[output_index] = params.operation == 5u
+        ? exp(value - maximum) / total : value - maximum - log(total);
+    return;
+  }
   for (int d = int(params.rank) - 1; d >= 0; --d) {
     uint dim = uint(d);
     if ((params.reduce_mask & (1u << dim)) == 0u) {
@@ -27,7 +49,9 @@ void main() {
       base += coordinate * params.strides[dim];
     }
   }
-  float value = 0.0;
+  float value = params.operation == 4u ? 1.0 :
+                (params.operation == 2u ? -3.402823466e+38 :
+                 (params.operation == 3u ? 3.402823466e+38 : 0.0));
   uint reduced = params.reduce_numel;
   for (uint index = 0u; index < reduced; ++index) {
     uint reduced_remainder = index;
@@ -40,7 +64,11 @@ void main() {
         input_index += coordinate * params.strides[dim];
       }
     }
-    value += input_data[input_index];
+    float candidate = input_data[input_index];
+    if (params.operation == 0u || params.operation == 1u) value += candidate;
+    else if (params.operation == 2u) value = max(value, candidate);
+    else if (params.operation == 3u) value = min(value, candidate);
+    else value *= candidate;
   }
-  output_data[output_index] = params.mean != 0u ? value / float(reduced) : value;
+  output_data[output_index] = params.operation == 1u ? value / float(reduced) : value;
 }

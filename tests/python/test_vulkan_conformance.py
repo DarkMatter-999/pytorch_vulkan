@@ -76,7 +76,13 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
         assert pytorch_vulkan._C.vulkan_copy_count() == 0
     elif case.execution_mode == "copy":
         assert pytorch_vulkan._C.vulkan_copy_count() > 0
-        if case.name != "masked-select.strided-value-view":
+        if case.name not in {
+            "masked-select.strided-value-view",
+            "reduction.softmax.dim",
+            "reduction.log-softmax.dim",
+            "reduction.softmax.backward",
+            "reduction.log-softmax.backward",
+        }:
             assert pytorch_vulkan._C.compute_dispatch_count() == 0
     else:
         assert pytorch_vulkan._C.compute_dispatch_count() == 0

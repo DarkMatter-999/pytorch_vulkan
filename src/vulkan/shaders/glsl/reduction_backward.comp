@@ -1,0 +1,118 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Forward { float forward_data[]; };
+layout(set = 0, binding = 2, std430) readonly buffer GradOutput { float grad_output[]; };
+layout(set = 0, binding = 3, std430) writeonly buffer GradInput { float grad_input[]; };
+layout(push_constant, std430) uniform Params {
+  uint rank;
+  uint input_numel;
+  uint reduce_numel;
+  uint reduce_mask;
+  uint reduce_dim;
+  uint operation;
+  uint keepdim;
+  uint sizes[8];
+  uint strides[8];
+  uint storage_offset;
+}
+params;
+
+uint input_offset(uint index) {
+  uint remainder = index;
+  uint offset = params.storage_offset;
+  for (int d = int(params.rank) - 1; d >= 0; --d) {
+    uint dim = uint(d);
+    uint coordinate = remainder % params.sizes[dim];
+    remainder /= params.sizes[dim];
+    offset += coordinate * params.strides[dim];
+  }
+  return offset;
+}
+
+uint output_index(uint index) {
+  uint remainder = index;
+  uint result = 0u;
+  uint multiplier = 1u;
+  for (int d = int(params.rank) - 1; d >= 0; --d) {
+    uint dim = uint(d);
+    uint coordinate = remainder % params.sizes[dim];
+    remainder /= params.sizes[dim];
+    if ((params.reduce_mask & (1u << dim)) == 0u) {
+      result += coordinate * multiplier;
+      multiplier *= params.sizes[dim];
+    } else if (params.keepdim != 0u) {
+      multiplier *= 1u;
+    }
+  }
+  return result;
+}
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= params.input_numel) return;
+  uint input_index = input_offset(index);
+  uint output_index_value = output_index(index);
+  float grad = grad_output[output_index_value];
+  if (params.operation == 3u || params.operation == 4u) {
+    uint remainder = index;
+    uint coordinate = 0u;
+    uint base = params.storage_offset;
+    for (int d = int(params.rank) - 1; d >= 0; --d) {
+      uint dim = uint(d);
+      uint current = remainder % params.sizes[dim];
+      remainder /= params.sizes[dim];
+      if (dim == params.reduce_dim) coordinate = current;
+      base += current * params.strides[dim];
+    }
+    base -= coordinate * params.strides[params.reduce_dim];
+    float total = 0.0;
+    for (uint i = 0u; i < params.reduce_numel; ++i) {
+      float y = forward_data[base + i * params.strides[params.reduce_dim]];
+      float g = grad_output[base + i * params.strides[params.reduce_dim]];
+      total += params.operation == 3u ? g * y : g;
+    }
+    float y = forward_data[input_index];
+    grad_input[index] = params.operation == 3u ? y * (grad - total) : grad - exp(y) * total;
+    return;
+  }
+  float selected = forward_data[output_index_value];
+  if (params.operation == 2u) {
+    uint remainder = index;
+    uint coordinate = 0u;
+    uint base = params.storage_offset;
+    for (int d = int(params.rank) - 1; d >= 0; --d) {
+      uint dim = uint(d);
+      uint current = remainder % params.sizes[dim];
+      remainder /= params.sizes[dim];
+      if ((params.reduce_mask & (1u << dim)) != 0u) coordinate = current;
+      base += current * params.strides[dim];
+    }
+    base -= coordinate * params.strides[params.reduce_dim];
+    uint zeros = 0u;
+    float product = 1.0;
+    for (uint i = 0u; i < params.reduce_numel; ++i) {
+      float value = input_data[base + i * params.strides[params.reduce_dim]];
+      if (value == 0.0) zeros++;
+      else product *= value;
+    }
+    float value = input_data[input_index];
+    grad_input[index] = zeros > 1u ? 0.0 : zeros == 1u ? (value == 0.0 ? grad * product : 0.0) : grad * selected / value;
+    return;
+  }
+  uint matches = 0u;
+  uint remainder = index;
+  uint base = params.storage_offset;
+  uint coordinate = 0u;
+  for (int d = int(params.rank) - 1; d >= 0; --d) {
+    uint dim = uint(d);
+    uint current = remainder % params.sizes[dim];
+    remainder /= params.sizes[dim];
+    if (dim == params.reduce_dim) coordinate = current;
+    base += current * params.strides[dim];
+  }
+  base -= coordinate * params.strides[params.reduce_dim];
+  for (uint i = 0u; i < params.reduce_numel; ++i)
+    if (input_data[base + i * params.strides[params.reduce_dim]] == selected) matches++;
+  grad_input[index] = input_data[input_index] == selected ? grad / float(matches) : 0.0;
+}
