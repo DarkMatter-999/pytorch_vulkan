@@ -1,14 +1,21 @@
 # Development Build
 
+This is the canonical Linux source-build procedure for the active Vulkan
+backend. It qualifies PyTorch 2.4.0, F32 workloads on `vk:0`; it does not claim
+wheel/package distribution or general Vulkan device support.
+
 The supported extension verification configuration is Linux with
 `BUILD_VULKAN_PROBE=ON` and `BUILD_PYTHON_EXTENSION=ON`. The default remains a
 CPU-only project shell, and the standalone Vulkan device probe is optional.
+The selected device must expose a Vulkan compute queue; unsupported operations
+are rejected explicitly with no CPU fallback, and device loss is a failed run.
 The legacy OpenCL sources and `dlprimitives` submodule remain in the checkout
 as reference material, but are not entered by the active root build.
 
 ## Environment
 
-Install `uv`, Python 3.12, a C++17 compiler, CMake, Vulkan headers and loader,
+Install `uv`, Python 3.12, a C++17 compiler, CMake, the Vulkan loader and
+Vulkan headers,
 and the Vulkan validation layer. The supported Python environment uses
 PyTorch **2.4.0**, `pybind11==2.13.6`, `numpy`, and `pytest`; use the CPU
 PyTorch wheel for the host Python environment. Create it with:
@@ -33,9 +40,9 @@ The default build does not discover Vulkan or OpenCL and produces the CPU-only
 project shell:
 
 ```bash
-cmake -S . -B build/cpu \
+cmake -S . -B build \
   -DBUILD_VULKAN_PROBE=OFF
-cmake --build build/cpu
+cmake --build build
 ```
 
 ## Vulkan Probe
@@ -44,12 +51,12 @@ Build the optional probe when Vulkan development files and a suitable device
 are available:
 
 ```bash
-cmake -S . -B build/vulkan \
+cmake -S . -B build \
   -DBUILD_VULKAN_PROBE=ON \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build/vulkan --target vulkan_device_probe
-build/vulkan/vulkan_device_probe
-build/vulkan/vulkan_device_probe --validation
+cmake --build build --target vulkan_device_probe
+build/vulkan_device_probe
+build/vulkan_device_probe --validation
 ```
 
 The probe validates Vulkan instance creation, physical-device and compute queue
@@ -69,7 +76,7 @@ pytest -q tests/test_cpu_only_build.py \
 Run the CTest probe after configuring with `BUILD_VULKAN_PROBE=ON`:
 
 ```bash
-ctest --test-dir build/vulkan --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
 The Vulkan hardware tests skip when no suitable device is available. The
@@ -81,26 +88,26 @@ Python assertions and import failures remain real failures, not skips.
 Build the opt-in Python extension and its PrivateUse1 allocator together:
 
 ```bash
-cmake -S . -B build/vulkan \
+cmake -S . -B build \
   -DBUILD_VULKAN_PROBE=ON \
   -DBUILD_PYTHON_EXTENSION=ON \
   -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
   -Dpybind11_DIR="$(.venv/bin/python -m pybind11 --cmakedir)" \
   -DCMAKE_PREFIX_PATH="$(.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')"
-cmake --build build/vulkan -j10
+cmake --build build -j10
 VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
-PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
+PYTHONPATH=build .venv/bin/python -m pytest \
   -q -rs tests/python
 
 # The same configured Python suite is the supported CTest gate:
-ctest --test-dir build/vulkan --output-on-failure
+ctest --test-dir build --output-on-failure
 
 # Record tool, Python/Torch, repository, and submodule provenance.
 .venv/bin/python tools/record_vulkan_environment.py \
-  > build/vulkan/vulkan-environment.json
+  --output /tmp/vulkan-environment.json
 
 # Manual clean-extension build and compile-probe check:
-PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
+PYTHONPATH=build .venv/bin/python -m pytest \
   tests/manual_python_extension.py -q
 ```
 
@@ -113,6 +120,18 @@ convention. Prefix CTest or pytest with
 The recorder reports unavailable optional tools explicitly as
 `{"status": "unavailable"}` and never fabricates a version.
 
+Write provenance to a reproducible artifact with the explicit output option:
+
+```bash
+.venv/bin/python tools/record_vulkan_environment.py \
+  --output /tmp/vulkan-environment.json
+```
+
+The output records the Python executable, PyTorch version, build tools,
+optional Vulkan tools, repository revision, and submodule revisions. An
+unavailable optional tool is recorded as unavailable rather than treated as a
+successful probe.
+
 The custom PrivateUse1 device name is `vk`; Vulkan API and runtime terminology
 remains unchanged. The allocation contract covers `torch.empty` metadata and
 tensor lifetimes. The public `Tensor.copy_` transfer contract is synchronous
@@ -123,14 +142,14 @@ and other unsupported forms are rejected explicitly. The supported transfer
 smoke test is a CPU→Vulkan→CPU round trip:
 
 ```bash
-cmake -S . -B build/vulkan \
+cmake -S . -B build \
   -DBUILD_VULKAN_PROBE=ON \
   -DBUILD_PYTHON_EXTENSION=ON \
   -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
   -Dpybind11_DIR="$(.venv/bin/python -m pybind11 --cmakedir)" \
   -DCMAKE_PREFIX_PATH="$(.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')"
-cmake --build build/vulkan --target pytorch_vulkan_python
-PYTHONPATH=build/vulkan .venv/bin/python -m pytest \
+cmake --build build --target pytorch_vulkan_python
+PYTHONPATH=build .venv/bin/python -m pytest \
   tests/python/test_vulkan_transfer.py -q
 ```
 
@@ -159,7 +178,7 @@ advanced operators remain deferred.
 
 ## Fixed model slices
 
-The accepted Phase 6 model gate covers PyTorch 2.4's fixed F32 workloads:
+The accepted Phase 6 model gate covers PyTorch 2.4.0's fixed F32 workloads:
 
 - MLP: two `aten::linear` layers with ReLU, shapes `(2, 8) -> (2, 16) -> (2, 4)`.
 - CNN: fixed `aten::convolution`, ReLU, and global
@@ -168,7 +187,7 @@ The accepted Phase 6 model gate covers PyTorch 2.4's fixed F32 workloads:
 Every intermediate, output, and first-order gradient is contiguous F32 on
 `vk:0`. The implementation dispatches directly through Vulkan and does not
 use CPU fallback, payload readback, or `dlprimitives`. CPU transfers in model
-tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4
+tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4.0
 semantics and compare with the existing floating-point test tolerances.
 
 The fixed MLP training contract runs the forward pass, squared-error loss,
@@ -269,7 +288,7 @@ setup time, replay time, and per-call dispatch/submission/completion/wait and
 transfer deltas.
 
 The C++ FakeTensor redispatch branches in the supported operator files are
-required because PyTorch 2.4 Dynamo executes PrivateUse1 kernels on FakeTensors
+required because PyTorch 2.4.0 Dynamo executes PrivateUse1 kernels on FakeTensors
 before calling the backend. They are limited to the actual zero-payload
 FakeTensor predicate and Meta redispatch; real Vulkan allocations still use the
 normal validation and execution paths.
@@ -370,7 +389,7 @@ differentiable, capturable, non-F32, non-`vk:0`, unsupported layouts, and
 mixed-device or non-contiguous optimizer tensors before Vulkan dispatch. No
 implicit CPU payload transfer or fallback is used by an optimizer update.
 
-The exact supported baseline is PyTorch 2.4 scalar, non-capturable SGD and
+The exact supported baseline is PyTorch 2.4.0 scalar, non-capturable SGD and
 Adam with contiguous `float32` parameters and gradients on `vk:0`. Supported
 SGD options are the scalar defaults used by `torch.optim.SGD` plus momentum,
 dampening, and coupled weight decay with `nesterov=False`, `maximize=False`,
@@ -471,7 +490,7 @@ consuming-operator support.
 
 ## Serialization And Multiprocessing
 
-On PyTorch 2.4, generic `torch.save(vulkan_tensor)` is unsafe: the standard
+On PyTorch 2.4.0, generic `torch.save(vulkan_tensor)` is unsafe: the standard
 storage path reaches an unsupported `aten::set_.source_Storage` operation for
 the opaque Vulkan `DataPtr`. Use the explicit backend API instead:
 
@@ -508,7 +527,7 @@ Python extension in an isolated temporary directory. Run it explicitly when
 validating a clean extension build or compile-probe integration:
 
 ```text
-PYTHONPATH=build/vulkan .venv/bin/python -m pytest -q tests/manual_python_extension.py
+PYTHONPATH=build .venv/bin/python -m pytest -q tests/manual_python_extension.py
 ```
 
 The normal regression command uses the already-built extension and does not

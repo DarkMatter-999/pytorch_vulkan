@@ -14,6 +14,7 @@ struct QuarantinedExecution {
     std::array<VkCommandBuffer, 2> command_buffers{};
     std::array<VkFence, 2> fences{};
     std::array<VkSemaphore, 2> signal_semaphores{};
+    VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
     std::vector<std::function<void()>> callbacks;
 };
 constexpr std::size_t kQuarantineCapacity = 16;
@@ -24,6 +25,11 @@ void check_result(VkResult result, const char *operation) {
     if (result != VK_SUCCESS)
         throw std::runtime_error(std::string(operation) + " failed with VkResult " +
                                  std::to_string(static_cast<int>(result)));
+}
+
+[[noreturn]] void throw_device_lost(VkResult result) {
+    throw VulkanDeviceLost("Vulkan device lost; execution state invalidated (VkResult " +
+                           std::to_string(static_cast<int>(result)) + ")");
 }
 
 std::exception_ptr
@@ -93,6 +99,7 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
                                                VulkanPlatform *platform)
     : VulkanExecutionContext(device, queue, command_pool) {
     platform_ = platform;
+    initialize_timestamp_queries();
 }
 
 VulkanExecutionContext::~VulkanExecutionContext() noexcept {
@@ -110,6 +117,7 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
                 slot.fences[i] = ring_[i].fence;
                 slot.signal_semaphores[i] = ring_[i].signal_semaphore;
             }
+            slot.timestamp_query_pool = timestamp_query_pool_;
             slot.callbacks = std::move(deferred_callbacks_);
             for (auto &record : ring_) {
                 for (auto &callback : record.callbacks)
@@ -125,6 +133,7 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
                 record.signal_semaphore = VK_NULL_HANDLE;
             }
             latest_signal_semaphore_ = VK_NULL_HANDLE;
+            timestamp_query_pool_ = VK_NULL_HANDLE;
             return;
         }
         // Completion is unknown and no allocation-free owner remains: leak safely.
@@ -153,10 +162,13 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
         if (record.command_buffer != VK_NULL_HANDLE)
             vkFreeCommandBuffers(device_, command_pool_, 1, &record.command_buffer);
     }
+    if (timestamp_query_pool_ != VK_NULL_HANDLE)
+        vkDestroyQueryPool(device_, timestamp_query_pool_, nullptr);
 }
 
-void VulkanExecutionContext::begin() {
+void VulkanExecutionContext::begin(const char *scope) {
     std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
     if (recording_)
         throw std::logic_error("Vulkan execution context is already recording");
     active_slot_ = (active_slot_ + 1) % kRingSize;
@@ -170,6 +182,19 @@ void VulkanExecutionContext::begin() {
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check_result(vkBeginCommandBuffer(ring_[active_slot_].command_buffer, &info),
                  "Could not begin Vulkan execution command buffer");
+    ring_[active_slot_].timestamp_scope = scope == nullptr ? "operator" : scope;
+    ring_[active_slot_].timestamp_recorded = false;
+    if (timestamp_queries_supported_) {
+        const uint32_t query_base = static_cast<uint32_t>(active_slot_ * 2);
+        vkCmdResetQueryPool(ring_[active_slot_].command_buffer, timestamp_query_pool_,
+                            query_base, 2);
+        vkCmdWriteTimestamp(ring_[active_slot_].command_buffer,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_,
+                            query_base);
+        ring_[active_slot_].timestamp_begin = query_base;
+        ring_[active_slot_].timestamp_end = query_base + 1;
+        ring_[active_slot_].timestamp_recorded = true;
+    }
     if (platform_)
         platform_->record_timing(
             VulkanTimingCategory::Allocation,
@@ -188,10 +213,16 @@ VkCommandBuffer VulkanExecutionContext::command_buffer() const {
 
 void VulkanExecutionContext::submit() {
     std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
     if (!recording_)
         throw std::logic_error("Vulkan execution context is not recording");
     try {
         const auto recording_start = std::chrono::steady_clock::now();
+        if (ring_[active_slot_].timestamp_recorded)
+            vkCmdWriteTimestamp(ring_[active_slot_].command_buffer,
+                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool_,
+                                ring_[active_slot_].timestamp_end);
         check_result(vkEndCommandBuffer(ring_[active_slot_].command_buffer),
                      "Could not end Vulkan execution command buffer");
         if (platform_)
@@ -213,8 +244,13 @@ void VulkanExecutionContext::submit() {
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &ring_[active_slot_].signal_semaphore;
         const auto submit_start = std::chrono::steady_clock::now();
-        check_result(vkQueueSubmit(queue_, 1, &submit, ring_[active_slot_].fence),
-                     "Could not submit Vulkan execution command buffer");
+        const VkResult submit_result =
+            vkQueueSubmit(queue_, 1, &submit, ring_[active_slot_].fence);
+        if (submit_result == VK_ERROR_DEVICE_LOST) {
+            invalidate(submit_result, lock);
+            throw_device_lost(submit_result);
+        }
+        check_result(submit_result, "Could not submit Vulkan execution command buffer");
         if (platform_) {
             platform_->record_compute_submitted();
             platform_->record_timing(
@@ -224,16 +260,20 @@ void VulkanExecutionContext::submit() {
                     .count());
         }
         ring_[active_slot_].callbacks = std::move(deferred_callbacks_);
+        ring_[active_slot_].submission_id = ++next_submission_id_;
         ring_[active_slot_].submitted = true;
         latest_signal_semaphore_ = ring_[active_slot_].signal_semaphore;
         recording_ = false;
     } catch (...) {
+        if (invalidated_)
+            throw;
         abandon_recording(std::current_exception(), lock);
     }
 }
 
 void VulkanExecutionContext::wait() {
     std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
     if (recording_)
         throw std::logic_error("Cannot wait while Vulkan execution is recording");
     bool found = false;
@@ -250,12 +290,21 @@ void VulkanExecutionContext::synchronize() { wait(); }
 
 void VulkanExecutionContext::retire_completed() {
     std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
     if (recording_)
         throw std::logic_error("Cannot retire while Vulkan execution is recording");
     for (auto &record : ring_) {
-        if (record.submitted && vkGetFenceStatus(device_, record.fence) == VK_SUCCESS) {
+        const VkResult status = record.submitted
+                                    ? vkGetFenceStatus(device_, record.fence)
+                                    : VK_NOT_READY;
+        if (status == VK_ERROR_DEVICE_LOST) {
+            invalidate(status, lock);
+            throw_device_lost(status);
+        }
+        if (record.submitted && status == VK_SUCCESS) {
             if (platform_)
                 platform_->record_compute_completed();
+            resolve_timestamp(record);
             retire(record, lock);
         }
     }
@@ -263,6 +312,10 @@ void VulkanExecutionContext::retire_completed() {
 
 void VulkanExecutionContext::cancel() {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (invalidated_) {
+        recording_ = false;
+        return;
+    }
     if (!recording_)
         return;
     recording_ = false;
@@ -280,6 +333,11 @@ void VulkanExecutionContext::cancel() {
 bool VulkanExecutionContext::recording() const {
     std::scoped_lock lock(mutex_);
     return recording_;
+}
+
+bool VulkanExecutionContext::invalidated() const {
+    std::scoped_lock lock(mutex_);
+    return invalidated_;
 }
 
 void VulkanExecutionContext::defer_destruction(std::function<void()> callback) {
@@ -334,6 +392,49 @@ std::size_t VulkanExecutionContext::pending_count() const {
     return count;
 }
 
+bool VulkanExecutionContext::timestamp_queries_supported() const {
+    std::scoped_lock lock(mutex_);
+    return timestamp_queries_supported_;
+}
+
+std::string VulkanExecutionContext::timestamp_query_support_reason() const {
+    std::scoped_lock lock(mutex_);
+    return timestamp_query_support_reason_;
+}
+
+std::vector<VulkanTimestampSample> VulkanExecutionContext::timestamp_samples() const {
+    std::scoped_lock lock(mutex_);
+    return timestamp_samples_;
+}
+
+void VulkanExecutionContext::reset_timestamp_samples() {
+    std::scoped_lock lock(mutex_);
+    timestamp_samples_.clear();
+}
+
+std::size_t VulkanExecutionContext::timestamp_query_capacity() const {
+    std::scoped_lock lock(mutex_);
+    return timestamp_queries_supported_ ? kRingSize * 2 : 0;
+}
+
+std::size_t VulkanExecutionContext::timestamp_query_in_use() const {
+    std::scoped_lock lock(mutex_);
+    if (!timestamp_queries_supported_)
+        return 0;
+    std::size_t in_use = 0;
+    for (const auto &record : ring_) {
+        if (record.timestamp_recorded && (record.submitted ||
+                                          (&record == &ring_[active_slot_] && recording_)))
+            in_use += 2;
+    }
+    return in_use;
+}
+
+bool VulkanExecutionContext::timestamp_query_quarantined() const {
+    std::scoped_lock lock(mutex_);
+    return timestamp_query_quarantined_;
+}
+
 void VulkanExecutionContext::retire(InFlightRecord &record,
                                     std::unique_lock<std::mutex> &lock) {
     std::vector<std::function<void()>> callbacks;
@@ -377,14 +478,71 @@ void VulkanExecutionContext::reset_reusable_resources(InFlightRecord &record) {
                  "Could not reset Vulkan execution fence");
 }
 
+void VulkanExecutionContext::initialize_timestamp_queries() {
+    if (platform_ == nullptr)
+        return;
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(platform_->physical_device(), &properties);
+    uint32_t queue_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(platform_->physical_device(), &queue_count,
+                                             nullptr);
+    std::vector<VkQueueFamilyProperties> queues(queue_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(platform_->physical_device(), &queue_count,
+                                             queues.data());
+    const uint32_t queue_family = platform_->device_info().compute_queue_family;
+    timestamp_period_ = properties.limits.timestampPeriod;
+    if (!properties.limits.timestampComputeAndGraphics || timestamp_period_ <= 0.0F ||
+        queue_family >= queues.size() || queues[queue_family].timestampValidBits == 0) {
+        timestamp_query_support_reason_ =
+            "device does not support compute timestamp queries";
+        return;
+    }
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = static_cast<uint32_t>(kRingSize * 2);
+    if (vkCreateQueryPool(device_, &info, nullptr, &timestamp_query_pool_) != VK_SUCCESS) {
+        timestamp_query_support_reason_ = "timestamp query pool creation failed";
+        return;
+    }
+    timestamp_queries_supported_ = true;
+    timestamp_query_support_reason_ = "supported";
+}
+
+void VulkanExecutionContext::resolve_timestamp(InFlightRecord &record) {
+    if (!record.timestamp_recorded || !timestamp_queries_supported_)
+        return;
+    uint64_t values[4]{};
+    const VkResult result = vkGetQueryPoolResults(
+        device_, timestamp_query_pool_, record.timestamp_begin, 2, sizeof(values), values,
+        sizeof(uint64_t) * 2, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS && result != VK_NOT_READY)
+        return;
+    VulkanTimestampSample sample;
+    sample.available = result == VK_SUCCESS && values[1] != 0 && values[3] != 0;
+    sample.submission_id = record.submission_id;
+    sample.scope = record.timestamp_scope;
+    if (sample.available && values[2] >= values[0])
+        sample.gpu_time_ns = static_cast<uint64_t>(
+            static_cast<double>(values[2] - values[0]) * timestamp_period_);
+    timestamp_samples_.push_back(std::move(sample));
+}
+
 void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
-                                             std::unique_lock<std::mutex> &lock) {
+                                              std::unique_lock<std::mutex> &lock) {
     const auto wait_start = std::chrono::steady_clock::now();
     const VkResult result =
         vkWaitForFences(device_, 1, &record.fence, VK_TRUE, UINT64_MAX);
+    if (result == VK_ERROR_DEVICE_LOST) {
+        invalidate(result, lock);
+        throw_device_lost(result);
+    }
     if (result != VK_SUCCESS) {
-        check_result(vkQueueWaitIdle(queue_),
-                     "Could not confirm Vulkan execution completion");
+        const VkResult recovery_result = vkQueueWaitIdle(queue_);
+        if (recovery_result == VK_ERROR_DEVICE_LOST) {
+            invalidate(recovery_result, lock);
+            throw_device_lost(recovery_result);
+        }
+        check_result(recovery_result, "Could not confirm Vulkan execution completion");
         check_result(result, "Could not wait for Vulkan execution fence");
     }
     const double wait_seconds =
@@ -395,6 +553,7 @@ void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
         platform_->record_compute_completed();
         platform_->record_timing(VulkanTimingCategory::HostFenceWait, wait_seconds);
     }
+    resolve_timestamp(record);
     retire(record, lock);
 }
 
@@ -407,9 +566,74 @@ VulkanExecutionContext::abandon_recording(std::exception_ptr original,
     lock.unlock();
     execute_callbacks(callbacks);
     lock.lock();
-    try {
-        reset_reusable_resources(ring_[active_slot_]);
-    } catch (...) {
+    if (!invalidated_) {
+        try {
+            reset_reusable_resources(ring_[active_slot_]);
+        } catch (...) {
+        }
     }
     std::rethrow_exception(original);
+}
+
+void VulkanExecutionContext::throw_if_invalidated(
+    std::unique_lock<std::mutex> &lock) {
+    if (invalidated_) {
+        throw_device_lost(invalidation_result_);
+    }
+    if (platform_ && platform_->device_lost()) {
+        invalidate(VK_ERROR_DEVICE_LOST, lock);
+        throw_device_lost(VK_ERROR_DEVICE_LOST);
+    }
+}
+
+void VulkanExecutionContext::invalidate(VkResult result,
+                                        std::unique_lock<std::mutex> &lock) {
+    if (invalidated_)
+        return;
+    invalidated_ = true;
+    invalidation_result_ = result;
+    recording_ = false;
+    if (platform_)
+        platform_->mark_device_lost(result);
+
+    std::scoped_lock quarantine_lock(quarantine_mutex);
+    for (auto &slot : quarantined) {
+        if (slot.occupied)
+            continue;
+        slot.occupied = true;
+        for (std::size_t i = 0; i < kRingSize; ++i) {
+            slot.command_buffers[i] = ring_[i].command_buffer;
+            slot.fences[i] = ring_[i].fence;
+            slot.signal_semaphores[i] = ring_[i].signal_semaphore;
+        }
+        slot.callbacks = std::move(deferred_callbacks_);
+        slot.timestamp_query_pool = timestamp_query_pool_;
+        for (auto &record : ring_) {
+            for (auto &callback : record.callbacks)
+                slot.callbacks.push_back(std::move(callback));
+            record.callbacks.clear();
+            record.command_buffer = VK_NULL_HANDLE;
+            record.fence = VK_NULL_HANDLE;
+            record.signal_semaphore = VK_NULL_HANDLE;
+            record.submitted = false;
+        }
+        for (auto &callback : completion_callbacks_)
+            slot.callbacks.push_back(std::move(callback));
+        completion_callbacks_.clear();
+        latest_signal_semaphore_ = VK_NULL_HANDLE;
+        timestamp_query_pool_ = VK_NULL_HANDLE;
+        timestamp_query_quarantined_ = true;
+        device_ = VK_NULL_HANDLE;
+        queue_ = VK_NULL_HANDLE;
+        command_pool_ = VK_NULL_HANDLE;
+        (void)lock;
+        return;
+    }
+    for (auto &record : ring_)
+        record.submitted = false;
+    // The quarantine table is bounded. If it is full, leak the handles rather
+    // than letting the destructor attempt to use an invalid device.
+    device_ = VK_NULL_HANDLE;
+    queue_ = VK_NULL_HANDLE;
+    command_pool_ = VK_NULL_HANDLE;
 }

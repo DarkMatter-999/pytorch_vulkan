@@ -59,6 +59,14 @@ def test_training_benchmark_phases_preserve_scope_and_residency(vulkan_backend):
     assert set(results) == set(expected)
     for phase, fields in expected.items():
         assert results[phase]["phase"] == phase
+        assert "host_total_ns" in results[phase]
+        assert "gpu_time_ns" in results[phase]
+        assert "warmup" in results[phase]
+        assert "transfer_time_ns" in results[phase]
+        assert results[phase]["timing_status"] == "available"
+        assert results[phase]["timing_reason"] == "timestamp queries completed"
+        assert results[phase]["transfer_time_semantics"].startswith("zero means")
+        assert results[phase]["scope"] == phase
         assert len(results[phase]["dispatches"]) == 1
         assert results[phase]["dispatches"][0] > 0
         for field, value in fields.items():

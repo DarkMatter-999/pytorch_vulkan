@@ -171,6 +171,10 @@ class VulkanCompute final {
     std::size_t descriptor_pool_creation_count() const;
     std::size_t descriptor_set_allocation_count() const;
     std::size_t descriptor_set_reuse_count() const;
+    std::size_t live_descriptor_pool_count() const;
+    std::size_t live_descriptor_set_count() const;
+    std::size_t pipeline_count() const;
+    std::size_t shader_module_count() const;
     void reset_descriptor_resource_counters() const;
     void begin_training_step() const;
     void end_training_step() const;
@@ -227,7 +231,7 @@ class VulkanCompute final {
                          VkPipelineLayout pipeline_layout,
                          VkDescriptorSetLayout descriptor_layout,
                          uint32_t descriptor_count) const;
-    void record_dispatch() const;
+    void record_dispatch(const char *scope = "operator") const;
     void finish_dispatch() const;
     void cancel_recording() const;
     void reset_gemm_descriptor_pool() const;

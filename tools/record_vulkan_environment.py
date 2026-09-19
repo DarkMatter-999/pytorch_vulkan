@@ -82,13 +82,17 @@ def _torch() -> dict[str, object]:
         }
 
     version = str(torch.__version__)
-    supported = version.startswith("2.4.")
+    supported = _supported_torch_version(version)
     return {
         "status": "available",
         "version": version,
         "supported_2_4": supported,
         "cuda": getattr(torch.version, "cuda", None),
     }
+
+
+def _supported_torch_version(version: str) -> bool:
+    return version.split("+", 1)[0] == "2.4.0"
 
 
 def record(extra_commands: list[str]) -> dict[str, object]:
@@ -118,8 +122,12 @@ def record(extra_commands: list[str]) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe-command", action="append", default=[])
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    print(json.dumps(record(args.probe_command), indent=2, sort_keys=True))
+    payload = json.dumps(record(args.probe_command), indent=2, sort_keys=True)
+    if args.output:
+        args.output.write_text(payload + "\n")
+    print(payload)
     return 0
 
 

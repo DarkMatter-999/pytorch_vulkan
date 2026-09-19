@@ -117,8 +117,14 @@ c10::DeviceIndex VulkanDeviceGuard::deviceCount() const noexcept {
 bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {
     check_device(stream.device());
     const auto owner = platform();
+    owner->throw_if_device_lost();
     std::scoped_lock lock(owner->queue_mutex());
+    owner->throw_if_device_lost();
     const VkResult result = vkQueueWaitIdle(owner->compute_queue());
+    if (result == VK_ERROR_DEVICE_LOST) {
+        owner->mark_device_lost(result);
+        owner->throw_if_device_lost();
+    }
     TORCH_CHECK(result == VK_SUCCESS, "Could not query Vulkan compute queue");
     return true;
 }
@@ -126,8 +132,14 @@ bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {
 void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
     check_device(stream.device());
     const auto owner = platform();
+    owner->throw_if_device_lost();
     std::scoped_lock lock(owner->queue_mutex());
+    owner->throw_if_device_lost();
     const VkResult result = vkQueueWaitIdle(owner->compute_queue());
+    if (result == VK_ERROR_DEVICE_LOST) {
+        owner->mark_device_lost(result);
+        owner->throw_if_device_lost();
+    }
     TORCH_CHECK(result == VK_SUCCESS, "Could not synchronize Vulkan compute queue");
 }
 

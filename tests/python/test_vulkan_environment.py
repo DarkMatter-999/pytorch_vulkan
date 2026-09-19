@@ -1,7 +1,10 @@
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from tools.record_vulkan_environment import _supported_torch_version
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +22,20 @@ def _record_environment(*extra_args):
     return json.loads(result.stdout)
 
 
+def test_environment_recorder_writes_requested_output_file():
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "environment.json"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--output", str(output)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert output.exists()
+        assert json.loads(output.read_text()) == json.loads(result.stdout)
+
+
 def test_environment_record_contains_versions_and_repository_provenance():
     record = _record_environment()
 
@@ -28,7 +45,7 @@ def test_environment_record_contains_versions_and_repository_provenance():
     assert isinstance(record["repository"]["submodules"], list)
     assert record["python"]["version"]
     assert record["torch"]["status"] == "available"
-    assert record["torch"]["version"].startswith("2.4.")
+    assert record["torch"]["version"].split("+", 1)[0] == "2.4.0"
     assert record["torch"]["supported_2_4"] is True
     assert record["tools"]["cmake"]["status"] in {"available", "unavailable"}
     assert record["tools"]["vulkaninfo"]["status"] in {"available", "unavailable"}
@@ -39,3 +56,10 @@ def test_environment_record_reports_unavailable_optional_command():
 
     assert record["probes"]["command-that-does-not-exist"]["status"] == "unavailable"
     assert record["probes"]["command-that-does-not-exist"]["error"]
+
+
+def test_supported_torch_version_requires_exact_2_4_0_base():
+    assert _supported_torch_version("2.4.0") is True
+    assert _supported_torch_version("2.4.0+cpu") is True
+    assert _supported_torch_version("2.4.1") is False
+    assert _supported_torch_version("2.4.0a0") is False

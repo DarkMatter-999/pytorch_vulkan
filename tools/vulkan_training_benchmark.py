@@ -91,6 +91,49 @@ def _cpu_threads():
     }
 
 
+def timing_status(supported, reason):
+    if supported is None:
+        return {"status": "not_applicable", "reason": reason}
+    return {
+        "status": "available" if supported else "unsupported",
+        "reason": reason if not supported else "timestamp queries completed",
+    }
+
+
+def timing_fields(supported, reason, unavailable_reason=None):
+    if supported and unavailable_reason is not None:
+        return {
+            "gpu_time_ns": None,
+            "timing_status": "unavailable",
+            "timing_reason": unavailable_reason,
+        }
+    status = timing_status(supported, reason)
+    return {
+        "gpu_time_ns": [] if supported else None,
+        "timing_status": status["status"],
+        "timing_reason": status["reason"],
+    }
+
+
+def validate_timing_samples(samples, expected_scopes, submission_floor, completed_submissions):
+    if completed_submissions <= 0:
+        return False, "no completed submission is available for timing"
+    candidates = [
+        sample
+        for sample in samples
+        if sample.get("available", False)
+        and sample.get("submission_id", 0) > submission_floor
+    ]
+    if not candidates:
+        return False, "no completed timestamp sample is available"
+    for sample in candidates:
+        if sample.get("scope") not in expected_scopes:
+            return False, "timestamp sample scope is unexpected"
+        if sample.get("gpu_time_ns", -1) < 0:
+            return False, "timestamp sample GPU duration is invalid"
+    return True, "available"
+
+
 def run(
     kind,
     mode,
@@ -125,6 +168,11 @@ def run(
     phase = phase or ("optimizer" if mode == "step" else "forward")
     training = phase != "forward"
     scoped = device.startswith("vk") and training
+    timing_supported = None
+    timing_reason = "timing is not applicable to CPU execution"
+    if device.startswith("vk"):
+        timing_supported = _C.timestamp_queries_supported()
+        timing_reason = _C.timestamp_query_support_reason()
 
     for _ in range(warmups):
         if training:
@@ -143,6 +191,12 @@ def run(
     descriptor_pools = []
     descriptor_sets = []
     descriptor_reuses = []
+    gpu_time_ns = []
+    timing_valid = True
+    timing_failure_reason = None
+    host_total_ns = []
+    transfer_time_ns = []
+    scope_labels = set()
     component_samples = {
         "allocation": [],
         "recording": [],
@@ -153,8 +207,13 @@ def run(
     last_loss = None
     for _ in range(repetitions):
         if device.startswith("vk"):
+            previous_samples = _C.gpu_timing_snapshot()
+            submission_floor = max(
+                (sample["submission_id"] for sample in previous_samples), default=0
+            )
             _C.reset_execution_counters()
             _C.reset_timing()
+            _C.reset_gpu_timing()
             _C.reset_descriptor_resource_counters()
         start = time.monotonic()
         for _ in range(steps):
@@ -162,10 +221,35 @@ def run(
                 last_loss = train_step(model, optimizer, inputs, targets, scoped, phase)
             else:
                 last_loss = forward_step(model, inputs, targets)
-        samples.append(time.monotonic() - start)
+        elapsed = time.monotonic() - start
+        samples.append(elapsed)
+        host_total_ns.append(int(elapsed * 1_000_000_000))
         if device.startswith("vk"):
             counters = _C.execution_counter_snapshot()
             timing = _C.timing_snapshot()
+            gpu_samples = _C.gpu_timing_snapshot()
+            expected_scopes = {"training"} if scoped else {"gemm", "operator"}
+            valid, validation_reason = validate_timing_samples(
+                gpu_samples, expected_scopes, submission_floor, _C.compute_completed_count()
+            )
+            if timing_supported and not valid:
+                timing_valid = False
+                timing_failure_reason = validation_reason
+            scope_labels.update(
+                sample["scope"]
+                for sample in gpu_samples
+                if sample.get("available", False) and sample["submission_id"] > submission_floor
+            )
+            gpu_time_ns.append(
+                sum(
+                    sample["gpu_time_ns"]
+                    for sample in gpu_samples
+                    if sample.get("available", False)
+                    and sample["submission_id"] > submission_floor
+                )
+                if timing_supported and valid
+                else None
+            )
             dispatches.append(counters[0])
             copies.append(counters[1])
             transfers.append(counters[2])
@@ -179,6 +263,7 @@ def run(
             for name, value in zip(component_samples, timing):
                 component_samples[name].append(value)
         else:
+            gpu_time_ns.append(None)
             dispatches.append(0)
             copies.append(0)
             transfers.append(0)
@@ -218,6 +303,16 @@ def run(
             else "CPU operation completion"
         ),
         "wall_time": _summary(samples),
+        "host_total_ns": host_total_ns,
+        "gpu_time_ns": gpu_time_ns,
+        "transfer_time_ns": transfer_time_ns or [0] * repetitions,
+        "transfer_time_semantics": (
+            "zero means transfer activity is excluded from steady-state timing; "
+            "inspect explicit_transfers for observed activity"
+        ),
+        "warmup": {"count": warmups, "excluded_from_steady_state": True},
+        "scope": phase,
+        "scope_labels": sorted(scope_labels) or [phase],
         "component_timings": {
             name: _summary(values) for name, values in component_samples.items()
         },
@@ -235,11 +330,20 @@ def run(
         "final_loss": final_loss if finite_loss else None,
         "diverged": not finite_loss,
     }
+    result.update(
+        timing_fields(
+            timing_supported,
+            timing_reason,
+            timing_failure_reason if timing_supported and not timing_valid else None,
+        )
+    )
+    result["gpu_time_ns"] = gpu_time_ns if timing_supported and timing_valid else None
     return result, model, cpu_inputs, cpu_targets
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default="vk:0")
     parser.add_argument("--workload", choices=("mlp", "mnist", "both"), default="both")
     parser.add_argument("--mode", choices=("sync", "step", "both"), default="both")
     parser.add_argument(
@@ -295,7 +399,7 @@ def main():
                 kind,
                 mode,
                 args.backward_mode,
-                "vk:0",
+                args.device,
                 args.warmups,
                 args.repetitions,
                 steps,

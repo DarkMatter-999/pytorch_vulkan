@@ -1573,7 +1573,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         bias == VK_NULL_HANDLE ? output_layout : bias_layout;
     std::scoped_lock lock(platform_.queue_mutex());
     try {
-        record_dispatch();
+        record_dispatch("gemm");
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
         const VkDescriptorSet set =
             acquire_descriptor_set(gemm_descriptor_layout_, 5,
@@ -2432,7 +2432,7 @@ void VulkanCompute::begin_training_step() const {
     std::scoped_lock lock(platform_.queue_mutex());
     if (training_step_)
         throw std::logic_error("Vulkan training step is already recording");
-    platform_.execution_context().begin();
+    platform_.execution_context().begin("training");
     const VkMemoryBarrier barrier{
         VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
         VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
@@ -2481,10 +2481,11 @@ void VulkanCompute::cancel_training_step() const {
 
 bool VulkanCompute::training_step_active() const { return training_step_; }
 
-void VulkanCompute::record_dispatch() const {
+void VulkanCompute::record_dispatch(const char *scope) const {
     VulkanExecutionContext &context = platform_.execution_context();
+    platform_.throw_if_device_lost();
     if (!context.recording()) {
-        context.begin();
+        context.begin(scope);
         return;
     }
     const VkMemoryBarrier barrier{
@@ -2590,6 +2591,8 @@ VkDescriptorSet VulkanCompute::acquire_descriptor_set(
 }
 
 void VulkanCompute::reset_descriptor_pools() const {
+    if (platform_.device_lost())
+        return;
     for (auto &cache : descriptor_pools_)
         cache.next_set = 0;
 }
@@ -2620,6 +2623,67 @@ std::size_t VulkanCompute::descriptor_set_allocation_count() const {
 
 std::size_t VulkanCompute::descriptor_set_reuse_count() const {
     return descriptor_set_reuse_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanCompute::live_descriptor_pool_count() const {
+    return descriptor_pools_.size();
+}
+
+std::size_t VulkanCompute::live_descriptor_set_count() const {
+    std::size_t count = 0;
+    for (const auto &cache : descriptor_pools_)
+        count += cache.sets.size();
+    return count;
+}
+
+std::size_t VulkanCompute::pipeline_count() const {
+    std::size_t count = 0;
+    for (const auto pipeline : pipelines_)
+        count += pipeline != VK_NULL_HANDLE;
+    for (const auto pipeline : compound_pipelines_)
+        count += pipeline != VK_NULL_HANDLE;
+    count += reduction_pipeline_ != VK_NULL_HANDLE;
+    count += reduction_backward_pipeline_ != VK_NULL_HANDLE;
+    count += loss_pipeline_ != VK_NULL_HANDLE;
+    count += indexing_pipeline_ != VK_NULL_HANDLE;
+    count += broadcast_pipeline_ != VK_NULL_HANDLE;
+    count += model_pipeline_ != VK_NULL_HANDLE;
+    count += backward_pipeline_ != VK_NULL_HANDLE;
+    count += convolution_pipeline_ != VK_NULL_HANDLE;
+    count += pooling_pipeline_ != VK_NULL_HANDLE;
+    count += normalization_pipeline_ != VK_NULL_HANDLE;
+    count += classification_pipeline_ != VK_NULL_HANDLE;
+    count += masked_count_pipeline_ != VK_NULL_HANDLE;
+    count += masked_compact_pipeline_ != VK_NULL_HANDLE;
+    count += f32_to_double_pipeline_ != VK_NULL_HANDLE;
+    count += formatter_double_pipeline_ != VK_NULL_HANDLE;
+    count += gemm_pipeline_ != VK_NULL_HANDLE;
+    return count;
+}
+
+std::size_t VulkanCompute::shader_module_count() const {
+    std::size_t count = 0;
+    for (const auto module : shader_modules_)
+        count += module != VK_NULL_HANDLE;
+    for (const auto module : compound_shader_modules_)
+        count += module != VK_NULL_HANDLE;
+    count += reduction_shader_ != VK_NULL_HANDLE;
+    count += reduction_backward_shader_ != VK_NULL_HANDLE;
+    count += loss_shader_ != VK_NULL_HANDLE;
+    count += indexing_shader_ != VK_NULL_HANDLE;
+    count += broadcast_shader_ != VK_NULL_HANDLE;
+    count += model_shader_ != VK_NULL_HANDLE;
+    count += backward_shader_ != VK_NULL_HANDLE;
+    count += convolution_shader_ != VK_NULL_HANDLE;
+    count += pooling_shader_ != VK_NULL_HANDLE;
+    count += normalization_shader_ != VK_NULL_HANDLE;
+    count += classification_shader_ != VK_NULL_HANDLE;
+    count += masked_count_shader_ != VK_NULL_HANDLE;
+    count += masked_compact_shader_ != VK_NULL_HANDLE;
+    count += f32_to_double_shader_ != VK_NULL_HANDLE;
+    count += formatter_double_shader_ != VK_NULL_HANDLE;
+    count += gemm_shader_ != VK_NULL_HANDLE;
+    return count;
 }
 
 void VulkanCompute::reset_descriptor_resource_counters() const {

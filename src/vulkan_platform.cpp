@@ -618,7 +618,7 @@ void VulkanPlatform::cleanup() noexcept {
     }
     std::scoped_lock lock(queue_mutex_);
     if (device_ != VK_NULL_HANDLE) {
-        if (vkDeviceWaitIdle(device_) != VK_SUCCESS) {
+        if (device_lost() || vkDeviceWaitIdle(device_) != VK_SUCCESS) {
             std::scoped_lock quarantine_lock(quarantine_mutex);
             if (quarantined_resource_count < kQuarantineCapacity) {
                 QuarantinedVulkanResources &resources =
@@ -709,6 +709,75 @@ VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
 
 VulkanExecutionContext &VulkanPlatform::execution_context() const {
     return *execution_;
+}
+
+void VulkanPlatform::mark_device_lost(VkResult result) const {
+    int expected = static_cast<int>(VK_SUCCESS);
+    device_loss_result_.compare_exchange_strong(expected, static_cast<int>(result),
+                                                 std::memory_order_relaxed);
+}
+
+bool VulkanPlatform::device_lost() const {
+    return device_loss_result_.load(std::memory_order_relaxed) !=
+           static_cast<int>(VK_SUCCESS);
+}
+
+void VulkanPlatform::throw_if_device_lost() const {
+    const int result = device_loss_result_.load(std::memory_order_relaxed);
+    if (result != static_cast<int>(VK_SUCCESS))
+        throw VulkanDeviceLost(
+            "Vulkan device lost; execution state invalidated (VkResult " +
+            std::to_string(result) + ")");
+}
+
+VulkanLiveResourceSnapshot VulkanPlatform::live_resource_snapshot() const {
+    std::scoped_lock lock(queue_mutex_);
+    return {compute_ == nullptr ? 0 : compute_->live_descriptor_pool_count(),
+            compute_ == nullptr ? 0 : compute_->live_descriptor_set_count(),
+            compute_ == nullptr ? 0 : compute_->pipeline_count(),
+            compute_ == nullptr ? 0 : compute_->shader_module_count(),
+            pending_transfer_resources_.size(),
+            execution_ == nullptr ? 0 : execution_->pending_count(),
+            live_allocation_count_.load(std::memory_order_relaxed)};
+}
+
+void VulkanPlatform::record_allocation_created() const {
+    live_allocation_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_allocation_destroyed() const {
+    live_allocation_count_.fetch_sub(1, std::memory_order_relaxed);
+}
+
+bool VulkanPlatform::timestamp_queries_supported() const {
+    return execution_ != nullptr && execution_->timestamp_queries_supported();
+}
+
+std::string VulkanPlatform::timestamp_query_support_reason() const {
+    return execution_ == nullptr ? "Vulkan execution is unavailable"
+                                 : execution_->timestamp_query_support_reason();
+}
+
+std::vector<VulkanTimestampSample> VulkanPlatform::timestamp_samples() const {
+    return execution_ == nullptr ? std::vector<VulkanTimestampSample>{}
+                                 : execution_->timestamp_samples();
+}
+
+void VulkanPlatform::reset_timestamp_samples() const {
+    if (execution_ != nullptr)
+        execution_->reset_timestamp_samples();
+}
+
+std::size_t VulkanPlatform::timestamp_query_capacity() const {
+    return execution_ == nullptr ? 0 : execution_->timestamp_query_capacity();
+}
+
+std::size_t VulkanPlatform::timestamp_query_in_use() const {
+    return execution_ == nullptr ? 0 : execution_->timestamp_query_in_use();
+}
+
+bool VulkanPlatform::timestamp_query_quarantined() const {
+    return execution_ != nullptr && execution_->timestamp_query_quarantined();
 }
 
 VulkanCompute &VulkanPlatform::compute() const { return *compute_; }
@@ -840,7 +909,9 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
     }
 
+    throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
+    throw_if_device_lost();
 
     const auto total_start = std::chrono::steady_clock::now();
     VkCommandBufferAllocateInfo allocation_info{};
@@ -910,16 +981,39 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         // Ensure deferred ownership cannot allocate after submission starts.
         pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
         submission_may_be_pending = true;
-        check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, fence),
-                     "Could not submit Vulkan command buffer");
+        const VkResult submit_result =
+            vkQueueSubmit(compute_queue_, 1, &submit_info, fence);
+        if (submit_result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(submit_result);
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
+        check_result(submit_result, "Could not submit Vulkan command buffer");
         const auto fence_wait_start = std::chrono::steady_clock::now();
         const VkResult wait_result =
             vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (wait_result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(wait_result);
+            defer_resources();
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
         if (wait_result != VK_SUCCESS) {
+            if (device_lost()) {
+                defer_resources();
+                throw VulkanDeviceLost(
+                    "Vulkan device lost; execution state invalidated (VkResult -4)");
+            }
             const VkResult recovery_result = vkQueueWaitIdle(compute_queue_);
             if (recovery_result == VK_SUCCESS) {
                 release_resources();
             } else {
+                if (recovery_result == VK_ERROR_DEVICE_LOST) {
+                    mark_device_lost(recovery_result);
+                    defer_resources();
+                    throw VulkanDeviceLost(
+                        "Vulkan device lost; execution state invalidated (VkResult -4)");
+                }
                 defer_resources();
                 std::ostringstream message;
                 message
@@ -939,11 +1033,21 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
             throw;
         }
+        if (device_lost()) {
+            defer_resources();
+            throw;
+        }
         if (submission_may_be_pending) {
             const VkResult recovery_result = vkQueueWaitIdle(compute_queue_);
             if (recovery_result == VK_SUCCESS) {
                 release_resources();
             } else {
+                if (recovery_result == VK_ERROR_DEVICE_LOST) {
+                    mark_device_lost(recovery_result);
+                    defer_resources();
+                    throw VulkanDeviceLost(
+                        "Vulkan device lost; execution state invalidated (VkResult -4)");
+                }
                 defer_resources();
                 std::ostringstream message;
                 try {
@@ -975,7 +1079,9 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
     if (buffer == VK_NULL_HANDLE || size == 0 || (offset % 4) != 0 || (size % 4) != 0) {
         throw std::invalid_argument("Invalid Vulkan buffer fill arguments");
     }
+    throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
+    throw_if_device_lost();
     VkCommandBufferAllocateInfo allocation_info{};
     allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocation_info.commandPool = command_pool_;
@@ -985,6 +1091,13 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
     check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
                  "Could not allocate Vulkan fill command buffer");
     VkFence fence = VK_NULL_HANDLE;
+    bool submission_may_be_pending = false;
+    const auto defer_resources = [&]() {
+        pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
+        pending_transfer_resources_.push_back({command_buffer, fence});
+        command_buffer = VK_NULL_HANDLE;
+        fence = VK_NULL_HANDLE;
+    };
     try {
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1002,12 +1115,42 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
                      "Could not create Vulkan fill fence");
-        check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, fence),
-                     "Could not submit Vulkan fill command buffer");
-        check_result(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX),
-                     "Could not wait for Vulkan fill fence");
+        pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
+        submission_may_be_pending = true;
+        const VkResult submit_result =
+            vkQueueSubmit(compute_queue_, 1, &submit_info, fence);
+        if (submit_result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(submit_result);
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
+        check_result(submit_result, "Could not submit Vulkan fill command buffer");
+        const VkResult wait_result =
+            vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (wait_result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(wait_result);
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
+        check_result(wait_result, "Could not wait for Vulkan fill fence");
     } catch (...) {
-        vkQueueWaitIdle(compute_queue_);
+        if (device_lost()) {
+            defer_resources();
+            throw;
+        }
+        if (submission_may_be_pending) {
+            const VkResult recovery_result = vkQueueWaitIdle(compute_queue_);
+            if (recovery_result == VK_ERROR_DEVICE_LOST) {
+                mark_device_lost(recovery_result);
+                defer_resources();
+                throw VulkanDeviceLost(
+                    "Vulkan device lost; execution state invalidated (VkResult -4)");
+            }
+            if (recovery_result != VK_SUCCESS) {
+                defer_resources();
+                throw;
+            }
+        }
         if (fence != VK_NULL_HANDLE)
             vkDestroyFence(device_, fence, nullptr);
         vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
@@ -1018,8 +1161,15 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
 }
 
 void VulkanPlatform::wait_for_transfer() const {
+    throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
+    throw_if_device_lost();
     const VkResult result = vkQueueWaitIdle(compute_queue_);
+    if (result == VK_ERROR_DEVICE_LOST) {
+        mark_device_lost(result);
+        throw VulkanDeviceLost(
+            "Vulkan device lost; execution state invalidated (VkResult -4)");
+    }
     if (result != VK_SUCCESS) {
         throw std::runtime_error(
             "Could not wait for Vulkan transfer queue with VkResult " +

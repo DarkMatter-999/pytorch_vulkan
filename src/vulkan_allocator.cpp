@@ -33,7 +33,16 @@ struct VulkanAllocation {
     std::shared_ptr<VulkanPlatform> platform;
     std::unique_ptr<VulkanBuffer> buffer;
     bool validated_label = false;
+    bool counted = false;
 };
+
+void destroy_allocation(VulkanAllocation *allocation) noexcept {
+    if (allocation->platform != nullptr && allocation->counted) {
+        allocation->platform->record_allocation_destroyed();
+        allocation->counted = false;
+    }
+    delete allocation;
+}
 
 std::string allocation_context(c10::Device device, size_t nbytes) {
     std::ostringstream message;
@@ -55,8 +64,11 @@ void delete_allocation(void *context) noexcept {
     auto *allocation = static_cast<VulkanAllocation *>(context);
     if (allocation->platform != nullptr) {
         try {
+            if (allocation->platform->device_lost())
+                return;
             auto &execution = allocation->platform->execution_context();
-            if (execution.retain_until_completion([allocation] { delete allocation; }))
+            if (execution.retain_until_completion(
+                    [allocation] { destroy_allocation(allocation); }))
                 return;
         } catch (...) {
             try {
@@ -69,7 +81,7 @@ void delete_allocation(void *context) noexcept {
             }
         }
     }
-    delete allocation;
+    destroy_allocation(allocation);
 }
 
 VulkanAllocator allocator;
@@ -197,8 +209,11 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
             return at::DataPtr(payload, payload, delete_allocation, device);
         }
         allocation->platform = pytorch_vulkan::platform();
+        allocation->platform->throw_if_device_lost();
         allocation->buffer =
             std::make_unique<VulkanBuffer>(*allocation->platform, nbytes);
+        allocation->platform->record_allocation_created();
+        allocation->counted = true;
         allocation->validated_label = allow_label_allocation;
     } catch (const VulkanUnavailable &error) {
         throw VulkanUnavailable("Vulkan allocation failed (" + context +

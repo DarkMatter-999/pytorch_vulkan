@@ -352,8 +352,17 @@ if(BUILD_PYTHON_EXTENSION)
           "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler_metadata.py"
           "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler_metadata.py" COPYONLY)
 
-     if(BUILD_TESTING)
-         add_test(NAME vulkan_python_suite
+      if(BUILD_TESTING)
+          add_test(NAME vulkan_manifest_validation
+                   COMMAND ${Python3_EXECUTABLE}
+                           ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_capabilities.py)
+          add_test(NAME vulkan_supported_workload_validation
+                   COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
+                           ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_conformance.py)
+          set_tests_properties(vulkan_supported_workload_validation PROPERTIES
+                               WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                               ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation")
+          add_test(NAME vulkan_python_suite
                   COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
                           ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)
          set_tests_properties(vulkan_python_suite PROPERTIES

@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import pytest
 import torch
 import json
@@ -508,9 +509,11 @@ def test_large_gemm_probe_does_not_hide_tensor_setup_failures():
         benchmark._probe_device(FakeTorch, FakeVulkan)
 
 
-def test_timing_report_does_not_label_fence_wait_as_gpu_busy():
-    report = (
-        Path(__file__).resolve().parents[2] / "docs" / "gemm_gpu_utilization_report.md"
-    ).read_text()
-    assert "host fence-wait" in report
-    assert "GPU-busy" not in report
+def test_gemm_benchmark_timing_contract_reports_host_fence_wait():
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
+    spec = importlib.util.spec_from_file_location("vulkan_gemm_benchmark_timing", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    child_source = inspect.getsource(benchmark._child)
+    assert "timing = pytorch_vulkan._C.timing_snapshot()" in child_source
+    assert '"host_fence_wait_seconds": timing[3]' in child_source

@@ -1,293 +1,28 @@
 """Small, executable operator cases shared by Vulkan conformance tests."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import torch
 import pytorch_vulkan
+from tools.validate_vulkan_capabilities import load_manifest
 
 
 TensorFactory = Callable[[], tuple[Any, ...]]
 
 
-# These identifiers are the deliberately narrow operation surface in the
-# capability matrix. Unsupported/deferred schemas are listed separately in
-# the capability tests rather than inferred from registry case names.
+_MANIFEST = load_manifest(Path(__file__).resolve().parents[2] / "docs/vulkan_capabilities.json")
 DECLARED_OPERATION_MANIFEST = frozenset(
-    {
-        "aten::sum.dim_IntList",
-        "aten::mean.dim",
-        "aten::argmax.default",
-        "aten::amax.default",
-        "aten::amax.out",
-        "aten::amin.default",
-        "aten::amin.out",
-        "aten::prod.dim_int",
-        "aten::prod.int_out",
-        "aten::_softmax.default",
-        "aten::_softmax.out",
-        "aten::_log_softmax.default",
-        "aten::_log_softmax.out",
-        "aten::_softmax_backward_data.out",
-        "aten::_log_softmax_backward_data.out",
-        "aten::linear.default",
-        "aten::mm.default",
-        "aten::addmm.default",
-        "aten::addmm.out",
-        "aten::convolution.default",
-        "aten::convolution_backward.default",
-        "aten::_adaptive_avg_pool2d.default",
-        "aten::_adaptive_avg_pool2d_backward.default",
-        "aten::neg.default",
-        "aten::native_batch_norm.default",
-        "aten::native_batch_norm_backward.default",
-        "aten::nll_loss_forward.default",
-        "aten::nll_loss_backward.default",
-        "aten::abs.default",
-        "aten::relu.default",
-        "aten::add.Tensor",
-        "aten::sub.Tensor",
-        "aten::mul.Tensor",
-        "aten::as_strided.default",
-        "aten::view.default",
-        "aten::_reshape_alias.default",
-        "aten::reshape.default",
-        "aten::masked_select.default",
-        "aten::mse_loss.default",
-        "aten::mse_loss_backward.default",
-        "aten::sigmoid.default",
-        "aten::tanh.default",
-        "aten::gelu.default",
-        "aten::sigmoid_backward.grad_input",
-        "aten::tanh_backward.grad_input",
-        "aten::gelu_backward.grad_input",
-        "aten::div.Tensor",
-        "aten::lerp.Scalar_out",
-        "aten::lerp_.Scalar",
-        "aten::add.Scalar",
-        "aten::add.Scalar_out",
-        "aten::add.out",
-        "aten::sub.Scalar",
-        "aten::sub.Scalar_out",
-        "aten::sub.out",
-        "aten::mul.Scalar",
-        "aten::mul.Scalar_out",
-        "aten::mul.out",
-        "aten::rsub.Scalar",
-        "aten::rsub.Scalar_out",
-        "aten::sqrt.out",
-        "aten::add_.Tensor",
-        "aten::mul_.Scalar",
-        "aten::addcmul_.default",
-        "aten::addcdiv_.default",
-        "aten::zero_.default",
-        "aten::_copy_from.default",
-        "aten::_to_copy.default",
-        "aten::copy_.default",
-        "aten::empty.memory_format",
-        "aten::empty_strided.default",
-    }
+    entry["schema"] for entry in _MANIFEST["entries"] if entry["status"] == "supported"
 )
 
-# Roadmap inventory only: these schemas are registered by the backend but remain
-# deferred. Keeping this separate from DECLARED_OPERATION_MANIFEST prevents an
-# inventory entry from being interpreted as a support declaration.
-ROADMAP_OPERATION_FAMILIES = {
-    "transfer/creation": frozenset(
-        {
-            "aten::_copy_from_and_resize.default",
-            "aten::_local_scalar_dense.default",
-            "aten::resize_.default",
-            "aten::set_.source_Storage",
-            "aten::set_.source_Storage_storage_offset",
-        }
-    ),
-    "scalar and out= pointwise": frozenset(
-        {
-            "aten::abs.out",
-            "aten::add_.Scalar",
-            "aten::div.out",
-            "aten::exp.out",
-            "aten::fill_.Scalar",
-            "aten::log.out",
-            "aten::neg.out",
-            "aten::relu.out",
-            "aten::sigmoid.out",
-            "aten::sigmoid_.default",
-            "aten::tanh.out",
-            "aten::tanh_.default",
-            "aten::sub_.Scalar",
-            "aten::sub_.Tensor",
-            "aten::mul_.Tensor",
-        }
-    ),
-    "reductions/indexing": frozenset(
-        {
-            "aten::argmax.out",
-            "aten::max.default",
-            "aten::mean.default",
-            "aten::mean.out",
-            "aten::min.default",
-            "aten::sum.IntList_out",
-            "aten::sum.default",
-            "aten::maximum.out",
-            "aten::minimum.out",
-        }
-    ),
-    "MSE loss": frozenset(
-        {
-            "aten::binary_cross_entropy.default",
-            "aten::binary_cross_entropy_backward.default",
-            "aten::binary_cross_entropy_backward.grad_input",
-        }
-    ),
-    "sigmoid/tanh/GELU": frozenset(
-        {
-            "aten::gelu.out",
-            "aten::silu.out",
-            "aten::silu_backward.grad_input",
-        }
-    ),
-    "convolution/pooling backward": frozenset(
-        {
-            "aten::avg_pool2d.out",
-            "aten::avg_pool2d_backward.grad_input",
-            "aten::convolution_backward_overrideable.default",
-            "aten::convolution_overrideable.default",
-            "aten::max_pool2d_with_indices.default",
-            "aten::upsample_bilinear2d.out",
-            "aten::upsample_bilinear2d_backward.grad_input",
-            "aten::upsample_nearest2d.out",
-            "aten::upsample_nearest2d_backward.grad_input",
-            "aten::_upsample_nearest_exact2d_backward.grad_input",
-            "aten::_upsample_nearest_exact2d.out",
-        }
-    ),
-    "normalization": frozenset(
-        {
-            "aten::native_layer_norm.default",
-            "aten::native_layer_norm_backward.default",
-        }
-    ),
-    # Cross-entropy is represented by the deferred log-softmax and NLL pieces.
-    "cross-entropy/NLL": frozenset(
-        {
-            "aten::nll_loss_forward.output",
-            "aten::nll_loss_backward.grad_input",
-        }
-    ),
-    "attention": frozenset(
-        {
-            "aten::_native_multi_head_attention.default",
-            "aten::_native_multi_head_attention.out",
-            "aten::_transform_bias_rescale_qkv.default",
-        }
-    ),
-    "tensor algebra": frozenset(
-        {
-            "aten::addcdiv.out",
-            "aten::addcmul.out",
-            "aten::bmm.out",
-            "aten::dot.default",
-            "aten::mm.out",
-        }
-    ),
-    "tensor construction and indexing": frozenset(
-        {
-            "aten::_cat.default",
-            "aten::arange.start_out",
-            "aten::cat.out",
-        }
-    ),
-    "comparison and math": frozenset(
-        {
-            "aten::atan.out",
-            "aten::ceil.default",
-            "aten::ceil.out",
-            "aten::clamp.out",
-            "aten::clamp_min.out",
-            "aten::eq.Scalar_out",
-            "aten::eq.Tensor_out",
-            "aten::ge.Scalar_out",
-            "aten::ge.Tensor_out",
-            "aten::gt.Scalar",
-            "aten::gt.Scalar_out",
-            "aten::gt.Tensor_out",
-            "aten::isfinite.out",
-            "aten::le.Scalar_out",
-            "aten::le.Tensor_out",
-            "aten::le.Tensor_out",
-            "aten::logit.default",
-            "aten::logit.out",
-            "aten::lt.Scalar",
-            "aten::lt.Scalar_out",
-            "aten::lt.Tensor_out",
-            "aten::ne.Scalar_out",
-            "aten::ne.Tensor",
-            "aten::ne.Tensor_out",
-            "aten::round.out",
-            "aten::sgn.out",
-        }
-    ),
-    "bitwise and random": frozenset(
-        {
-            "aten::bernoulli_.float",
-            "aten::bitwise_and.Tensor_out",
-            "aten::bitwise_not.out",
-            "aten::bitwise_or.Tensor_out",
-            "aten::bitwise_xor.Tensor_out",
-            "aten::normal_.default",
-            "aten::uniform_.default",
-        }
-    ),
-    "activation and scalar math": frozenset(
-        {
-            "aten::hardsigmoid.out",
-            "aten::hardsigmoid_backward.grad_input",
-            "aten::hardswish_.default",
-            "aten::hardswish_backward.default",
-            "aten::hardtanh.default",
-            "aten::hardtanh_.default",
-            "aten::hardtanh_backward.default",
-            "aten::leaky_relu.out",
-            "aten::leaky_relu_backward.grad_input",
-            "aten::log_sigmoid_backward.default",
-            "aten::log_sigmoid_backward.grad_input",
-            "aten::log_sigmoid_forward.default",
-            "aten::log_sigmoid_forward.output",
-            "aten::pow.Tensor_Scalar_out",
-            "aten::reciprocal.out",
-            "aten::threshold_backward.grad_input",
-        }
-    ),
-    "dropout": frozenset(
-        {
-            "aten::native_dropout.default",
-            "aten::native_dropout_backward.default",
-        }
-    ),
-}
+ROADMAP_DEFERRED_SCHEMAS = frozenset(
+    entry["schema"] for entry in _MANIFEST["entries"] if entry["status"] == "deferred"
+)
 
-ROADMAP_DEFERRED_SCHEMAS = frozenset().union(*ROADMAP_OPERATION_FAMILIES.values())
-
-ROADMAP_DEFERRED_REASON_BY_FAMILY = {
-    "transfer/creation": "storage resizing, alias rebinding, and scalar readback contracts are deferred",
-    "scalar and out= pointwise": "the overload-specific scalar, out, and in-place validation contracts are deferred",
-    "reductions/indexing": "the deferred reduction and indexing shapes, outputs, or empty-input contracts are not implemented",
-    "MSE loss": "binary cross-entropy support and its backward/reduction contracts are deferred",
-    "sigmoid/tanh/GELU": "additional activation overloads and in-place paths are deferred",
-    "convolution/pooling backward": "additional pooling, upsampling, and overrideable convolution forms are deferred",
-    "normalization": "layer-normalization forward and backward contracts are deferred",
-    "cross-entropy/NLL": "the output-form NLL contracts are deferred",
-    "attention": "attention and QKV-rescaling contracts are deferred",
-    "tensor algebra": "matrix, batched-matrix, and compound tensor algebra contracts are deferred",
-    "tensor construction and indexing": "tensor concatenation and range-construction contracts are deferred",
-    "comparison and math": "the additional comparison, clamp, and scalar-math overload contracts are deferred",
-    "bitwise and random": "bitwise and random-generation contracts are deferred",
-    "activation and scalar math": "additional activation backward and scalar-math contracts are deferred",
-    "dropout": "dropout forward and backward contracts are deferred",
-}
-
+ROADMAP_OPERATION_FAMILIES = {"manifest-deferred": ROADMAP_DEFERRED_SCHEMAS}
+ROADMAP_DEFERRED_REASON_BY_FAMILY = {"manifest-deferred": "deferred_contract"}
 
 @dataclass(frozen=True)
 class ConformanceCase:
@@ -1071,106 +806,12 @@ def _cpu_adaptive_pool(value, output_size):
     return torch.nn.functional.adaptive_avg_pool2d(value, output_size)
 
 
-DECLARATION_ID_BY_CASE = {
-    "unary.neg.float32": "aten::neg.default",
-    "unary.neg.float32.strided": "aten::neg.default",
-    "unary.abs.float32": "aten::abs.default",
-    "unary.relu.float32.empty": "aten::relu.default",
-    "unary.sigmoid.float32": "aten::sigmoid.default",
-    "unary.tanh.float32": "aten::tanh.default",
-    "unary.gelu.tanh.float32": "aten::gelu.default",
-    "unary.sigmoid.float32.empty": "aten::sigmoid.default",
-    "unary.sigmoid.backward": "aten::sigmoid_backward.grad_input",
-    "unary.tanh.backward": "aten::tanh_backward.grad_input",
-    "unary.gelu.tanh.backward": "aten::gelu_backward.grad_input",
-    "binary.add.float32": "aten::add.Tensor",
-    "binary.sub.float32.strided": "aten::sub.Tensor",
-    "binary.mul.float32.empty": "aten::mul.Tensor",
-    "scalar.add.float32": "aten::add.Scalar",
-    "scalar.sub.float32": "aten::sub.Scalar",
-    "scalar.mul.float32": "aten::mul.Scalar",
-    "out.add.tensor.float32": "aten::add.out",
-    "out.sub.tensor.float32": "aten::sub.out",
-    "out.mul.tensor.float32": "aten::mul.out",
-    "out.add.scalar.float32": "aten::add.Scalar_out",
-    "out.sub.scalar.float32": "aten::sub.Scalar_out",
-    "out.mul.scalar.float32": "aten::mul.Scalar_out",
-    "scalar.rsub.float32": "aten::rsub.Scalar",
-    "out.rsub.scalar.float32": "aten::rsub.Scalar_out",
-    "reduction.sum.dim": "aten::sum.dim_IntList",
-    "reduction.mean.dim": "aten::mean.dim",
-    "reduction.sum.keepdim.strided": "aten::sum.dim_IntList",
-    "reduction.mean.optional-dim": "aten::mean.dim",
-    "reduction.sum.empty-dim": "aten::sum.dim_IntList",
-    "reduction.mean.empty-dim": "aten::mean.dim",
-    "reduction.amax.dim": "aten::amax.out",
-    "reduction.amax.default": "aten::amax.default",
-    "reduction.amin.dim": "aten::amin.out",
-    "reduction.amin.default": "aten::amin.default",
-    "reduction.prod.dim": "aten::prod.int_out",
-    "reduction.prod.default": "aten::prod.dim_int",
-    "reduction.softmax.dim": "aten::_softmax.out",
-    "reduction.softmax.default": "aten::_softmax.default",
-    "reduction.log-softmax.dim": "aten::_log_softmax.out",
-    "reduction.log-softmax.default": "aten::_log_softmax.default",
-    "reduction.softmax.backward": "aten::_softmax_backward_data.out",
-    "reduction.log-softmax.backward": "aten::_log_softmax_backward_data.out",
-    "indexing.argmax.dim": "aten::argmax.default",
-    "indexing.argmax.optional-dim.keepdim": "aten::argmax.default",
-    "indexing.argmax.strided": "aten::argmax.default",
-    "view.reshape.float32": "aten::reshape.default",
-    "view.as-strided.metadata": "aten::as_strided.default",
-    "view.view.metadata": "aten::view.default",
-    "view.reshape-alias.metadata": "aten::_reshape_alias.default",
-    "linear.forward": "aten::linear.default",
-    "linear.forward.strided": "aten::linear.default",
-    "mm.forward": "aten::mm.default",
-    "addmm.forward": "aten::addmm.default",
-    "addmm.out": "aten::addmm.out",
-    "convolution.forward": "aten::convolution.default",
-    "convolution.forward.strided": "aten::convolution.default",
-    "convolution.backward": "aten::convolution_backward.default",
-    "pooling.max.rejected": "aten::max_pool2d_with_indices.default",
-    "masked-select.bool-mask": "aten::masked_select.default",
-    "loss.mse.none": "aten::mse_loss.default",
-    "loss.mse.sum": "aten::mse_loss.default",
-    "loss.mse.mean": "aten::mse_loss.default",
-    "loss.mse.backward": "aten::mse_loss_backward.default",
-    "masked-select.strided-value-view": "aten::masked_select.default",
-    "optimizer.div.scalar": "aten::div.Tensor",
-    "optimizer.lerp.out": "aten::lerp.Scalar_out",
-    "optimizer.lerp.inplace": "aten::lerp_.Scalar",
-    "optimizer.sqrt.out": "aten::sqrt.out",
-    "optimizer.add.inplace": "aten::add_.Tensor",
-    "optimizer.mul.scalar.inplace": "aten::mul_.Scalar",
-    "optimizer.addcmul.inplace": "aten::addcmul_.default",
-    "optimizer.addcdiv.inplace": "aten::addcdiv_.default",
-    "optimizer.zero.inplace": "aten::zero_.default",
-    "aten._adaptive_avg_pool2d.global": "aten::_adaptive_avg_pool2d.default",
-    "aten._adaptive_avg_pool2d.global.strided": "aten::_adaptive_avg_pool2d.default",
-    "aten._adaptive_avg_pool2d.backward": "aten::_adaptive_avg_pool2d_backward.default",
-    "normalization.native-batch-norm": "aten::native_batch_norm.default",
-    "normalization.native-batch-norm-backward": "aten::native_batch_norm_backward.default",
-    "classification.nll-forward": "aten::nll_loss_forward.default",
-    "classification.nll-backward": "aten::nll_loss_backward.default",
-    "unary.neg.bool.rejected": "aten::neg.default",
-    "unary.neg.float16.rejected": "aten::neg.default",
-    "binary.add.double.rejected": "aten::add.Tensor",
-    "binary.add.mixed-device.rejected": "aten::add.Tensor",
-    "binary.add.broadcast.rejected": "aten::add.Tensor",
-    "reduction.sum.non-contiguous-overlap.rejected": "aten::sum.dim_IntList",
-    "comparison.ne.nonzero-offset-input.rejected": "aten::ne.Tensor",
-    "unary.neg.invalid-out.rejected": "aten::neg.out",
-    "unary.neg.cpu-out.rejected": "aten::neg.out",
-    "pooling.parameters.rejected": "aten::_adaptive_avg_pool2d.default",
-    "convolution.shape.rejected": "aten::convolution.default",
-    "unary.neg_.unsupported-overload.rejected": "aten::neg_.default",
-    "transfer.copy_from.float32": "aten::_copy_from.default",
-    "transfer.to_copy.float32": "aten::_to_copy.default",
-    "transfer.copy.float32": "aten::copy_.default",
-    "transfer.empty.float32": "aten::empty.memory_format",
-    "transfer.empty_strided.float32": "aten::empty_strided.default",
+_MANIFEST_CASES = {
+    case["name"]: (entry["schema"], case["supported"])
+    for entry in _MANIFEST["entries"]
+    for case in entry["test_cases"]
 }
+MANIFEST_CASE_NAMES = frozenset(_MANIFEST_CASES)
 
 
 def _case(
@@ -1197,16 +838,22 @@ def _case(
     convert_inputs=True,
     setup_inputs=None,
 ):
+    manifest_case = _MANIFEST_CASES.get(name)
+    if manifest_case is None:
+        return None
+    declaration_id, manifest_supported = manifest_case
+    if supported != manifest_supported:
+        raise ValueError(f"case {name} support flag disagrees with capability manifest")
     case = ConformanceCase(
         name,
         family,
-        DECLARATION_ID_BY_CASE[name],
+        declaration_id,
         operation,
         factory,
         cpu_reference,
         args,
         kwargs,
-        supported,
+        manifest_supported,
         error_pattern,
         expected_dtype,
         expected_shape,
@@ -1300,7 +947,8 @@ def _rscalar_out(value):
     return torch.ops.aten.rsub.Scalar_out(value, 2.0, 1.0, out=torch.empty_like(value))
 
 
-ALL_CASES = (
+ALL_CASES = tuple(
+    case for case in (
     _case(
         "unary.neg.float32",
         "unary",
@@ -2231,6 +1879,8 @@ ALL_CASES = (
         expected_shape=(0, 2),
         execution_mode="empty",
     ),
+    )
+    if case is not None
 )
 
 

@@ -5,6 +5,11 @@ separates **metadata construction** from **consuming-operator execution**: a
 successful view operation guarantees valid metadata and storage range, not
 universal operator support.
 
+The machine-readable contract is `docs/vulkan_capabilities.json`. Its unique
+schema entries mirror the supported and deferred inventories below; constrained
+negative cases remain rejection boundaries of their supported schema rather
+than duplicate schema entries.
+
 | Operator/capability | Input dtype | Output dtype | Forms/layout contract | Autograd | Empty input |
 | --- | --- | --- | --- | --- | --- |
 | `aten::sum` | F32 | F32 | strided, non-overlapping input; rank within the Vulkan limit; selected dimensions, `keepdim`, contiguous F32 `out=` | first-order | empty input produces a Vulkan-resident identity result (0 for `sum`) |
@@ -134,8 +139,7 @@ permits intentional Vulkan-to-Vulkan value-view materialization and forbids hidd
    aten::linear.default,aten::mm.default,aten::addmm.default,aten::addmm.out,
   aten::convolution.default,aten::convolution_backward.default,aten::_adaptive_avg_pool2d.default,
     aten::_adaptive_avg_pool2d_backward.default,aten::mse_loss.default,
-  aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
-  aten::_log_softmax.default,aten::_log_softmax_backward_data.out,
+   aten::native_batch_norm.default,aten::native_batch_norm_backward.default,
   aten::nll_loss_forward.default,aten::nll_loss_backward.default,
  aten::mse_loss_backward.default,aten::neg.default,
  aten::abs.default,aten::relu.default,aten::sigmoid.default,aten::tanh.default,
@@ -155,6 +159,9 @@ aten::div.Tensor,aten::lerp.Scalar_out,aten::lerp_.Scalar,aten::sqrt.out,
 aten::max_pool2d_with_indices.default,aten::neg.out,aten::ne.Tensor,
 aten::neg_.default,aten::neg.default,aten::add.Tensor,aten::sum.dim_IntList,
 aten::_adaptive_avg_pool2d.default,aten::convolution.default -->
+
+<!-- Vulkan conformance whole-schema rejected schemas:
+aten::abs_.default,aten::neg_.default,aten::relu_.default -->
 
 <!-- Vulkan conformance deferred schemas:
  aten::_cat.default,aten::_copy_from_and_resize.default,

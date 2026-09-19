@@ -1,6 +1,7 @@
 #include "vulkan_allocator.h"
 #include "vulkan_compute.h"
 #include "vulkan_device_guard.h"
+#include "vulkan_execution.h"
 #include "vulkan_platform.h"
 
 #include <pybind11/pybind11.h>
@@ -45,7 +46,14 @@ PYBIND11_MODULE(_C, module) {
     module.def("execution_counter_snapshot", [] {
         const auto snapshot = pytorch_vulkan::platform()->execution_counter_snapshot();
         return py::make_tuple(snapshot.dispatches, snapshot.vulkan_copies,
-                              snapshot.explicit_transfers, snapshot.fallbacks);
+                               snapshot.explicit_transfers, snapshot.fallbacks);
+    });
+    module.def("live_resource_snapshot", [] {
+        const auto snapshot = pytorch_vulkan::platform()->live_resource_snapshot();
+        return py::make_tuple(snapshot.descriptor_pools, snapshot.descriptor_sets,
+                              snapshot.pipelines, snapshot.shader_modules,
+                              snapshot.pending_transfers, snapshot.pending_compute,
+                              snapshot.allocations);
     });
     module.def("begin_training_step",
                [] { pytorch_vulkan::platform()->compute().begin_training_step(); });
@@ -81,6 +89,43 @@ PYBIND11_MODULE(_C, module) {
         const auto timing = pytorch_vulkan::platform()->timing_snapshot();
         return py::make_tuple(timing.allocation, timing.recording, timing.submit,
                               timing.host_fence_wait, timing.total);
+    });
+    module.def("timestamp_queries_supported",
+               [] { return pytorch_vulkan::platform()->timestamp_queries_supported(); });
+    module.def("timestamp_query_support_reason", [] {
+        return pytorch_vulkan::platform()->timestamp_query_support_reason();
+    });
+    module.def("reset_gpu_timing",
+               [] { pytorch_vulkan::platform()->reset_timestamp_samples(); });
+    module.def("gpu_timing_snapshot", [] {
+        py::list samples;
+        for (const auto &sample : pytorch_vulkan::platform()->timestamp_samples()) {
+            py::dict value;
+            value["gpu_time_ns"] = sample.gpu_time_ns;
+            value["available"] = sample.available;
+            value["submission_id"] = sample.submission_id;
+            value["scope"] = sample.scope;
+            samples.append(value);
+        }
+        return samples;
+    });
+    module.def("timestamp_query_snapshot", [] {
+        const auto owner = pytorch_vulkan::platform();
+        return py::make_tuple(owner->timestamp_query_capacity(),
+                              owner->timestamp_query_in_use(),
+                              owner->timestamp_queries_supported(),
+                              owner->timestamp_query_quarantined());
+    });
+    module.def("test_inject_device_loss", [] {
+        auto owner = pytorch_vulkan::platform();
+        owner->mark_device_lost(VK_ERROR_DEVICE_LOST);
+        try {
+            if (owner->execution_context().recording())
+                owner->execution_context().submit();
+            else
+                owner->execution_context().begin("device-loss-test");
+        } catch (const VulkanDeviceLost &) {
+        }
     });
     py::module_::import("atexit").attr("register")(
         py::cpp_function(&pytorch_vulkan::shutdown_platform));

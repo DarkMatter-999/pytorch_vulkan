@@ -1,3 +1,4 @@
+import os
 import re
 
 import pytest
@@ -7,6 +8,9 @@ import pytorch_vulkan
 from vulkan_conformance import (
     ALL_CASES,
     ConformanceCase,
+    DECLARED_OPERATION_MANIFEST,
+    MANIFEST_CASE_NAMES,
+    ROADMAP_DEFERRED_SCHEMAS,
     SUPPORTED_CASES,
     assert_gradients,
     assert_vulkan_result,
@@ -21,7 +25,9 @@ from vulkan_conformance import (
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
         pytest.skip("no suitable Vulkan device is available")
-    device = f"{torch._C._get_privateuse1_backend_name()}:0"
+    device = os.environ.get(
+        "VULKAN_DEVICE", f"{torch._C._get_privateuse1_backend_name()}:0"
+    )
     try:
         torch.ones(1).to(device)
     except (NotImplementedError, RuntimeError) as error:
@@ -38,6 +44,13 @@ def test_registry_cases_are_typed_and_have_cpu_references():
     assert ALL_CASES
     assert all(isinstance(case, ConformanceCase) for case in ALL_CASES)
     assert all(case.cpu_reference is not None for case in ALL_CASES)
+    assert {case.name for case in ALL_CASES} == MANIFEST_CASE_NAMES
+
+
+def test_registry_supported_and_deferred_schemas_match_manifest():
+    supported = {case.declaration_id for case in ALL_CASES if case.supported}
+    assert supported == DECLARED_OPERATION_MANIFEST
+    assert not supported & ROADMAP_DEFERRED_SCHEMAS
 
 
 def test_differentiable_value_cases_declare_gradient_checks():

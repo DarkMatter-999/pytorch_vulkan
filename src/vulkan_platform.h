@@ -15,9 +15,15 @@ class VulkanUnavailable : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+class VulkanDeviceLost : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
 class VulkanCompute;
 class VulkanExecutionContext;
 class VulkanBuffer;
+struct VulkanTimestampSample;
 
 struct VulkanDeviceInfo {
     std::string name;
@@ -33,6 +39,18 @@ struct VulkanExecutionCounterSnapshot {
     std::size_t vulkan_copies = 0;
     std::size_t explicit_transfers = 0;
     std::size_t fallbacks = 0;
+};
+
+struct VulkanLiveResourceSnapshot {
+    // Counts currently owned resources. Deferred and quarantined allocations
+    // remain counted until their destruction callback actually runs.
+    std::size_t descriptor_pools = 0;
+    std::size_t descriptor_sets = 0;
+    std::size_t pipelines = 0;
+    std::size_t shader_modules = 0;
+    std::size_t pending_transfers = 0;
+    std::size_t pending_compute = 0;
+    std::size_t allocations = 0;
 };
 
 struct VulkanTimingSnapshot {
@@ -109,6 +127,19 @@ class VulkanPlatform {
     bool supports_bool_pointwise() const;
     bool supports_formatter_double() const;
     VulkanExecutionContext &execution_context() const;
+    void mark_device_lost(VkResult result) const;
+    bool device_lost() const;
+    void throw_if_device_lost() const;
+    VulkanLiveResourceSnapshot live_resource_snapshot() const;
+    void record_allocation_created() const;
+    void record_allocation_destroyed() const;
+    bool timestamp_queries_supported() const;
+    std::string timestamp_query_support_reason() const;
+    std::vector<VulkanTimestampSample> timestamp_samples() const;
+    void reset_timestamp_samples() const;
+    std::size_t timestamp_query_capacity() const;
+    std::size_t timestamp_query_in_use() const;
+    bool timestamp_query_quarantined() const;
 
   private:
     using PendingTransferResources = VulkanPendingTransferResources;
@@ -140,6 +171,8 @@ class VulkanPlatform {
     mutable std::atomic<std::size_t> compute_submitted_count_{0};
     mutable std::atomic<std::size_t> compute_completed_count_{0};
     mutable std::atomic<std::size_t> compute_wait_count_{0};
+    mutable std::atomic<int> device_loss_result_{static_cast<int>(VK_SUCCESS)};
+    mutable std::atomic<std::size_t> live_allocation_count_{0};
     mutable std::unique_ptr<VulkanBuffer> staging_buffer_;
     mutable VulkanTimingSnapshot timing_;
 };
