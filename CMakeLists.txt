@@ -115,7 +115,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/gemm.comp
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
-         add_dependencies(vulkan_platform vulkan_gemm_shader_generate)
+          add_dependencies(vulkan_platform vulkan_gemm_shader_generate
+                           vulkan_gemm_shader_integrity)
          if(BUILD_TESTING)
            add_test(NAME vulkan_gemm_shader_integrity
                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)

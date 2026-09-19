@@ -17,6 +17,7 @@
 #include "vulkan_platform.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -144,6 +145,24 @@ struct GemmParams {
     uint32_t has_bias;
     uint32_t reserved[4];
 };
+static_assert(sizeof(GemmParams) == 64, "GEMM push-constant ABI size mismatch");
+static_assert(offsetof(GemmParams, m) == 0, "GEMM ABI m offset mismatch");
+static_assert(offsetof(GemmParams, n) == 4, "GEMM ABI n offset mismatch");
+static_assert(offsetof(GemmParams, k) == 8, "GEMM ABI k offset mismatch");
+static_assert(offsetof(GemmParams, stride_a) == 12, "GEMM ABI stride_a offset mismatch");
+static_assert(offsetof(GemmParams, stride_b) == 16, "GEMM ABI stride_b offset mismatch");
+static_assert(offsetof(GemmParams, stride_c) == 20, "GEMM ABI stride_c offset mismatch");
+static_assert(offsetof(GemmParams, stride_d) == 24, "GEMM ABI stride_d offset mismatch");
+static_assert(offsetof(GemmParams, stride_bias) == 28,
+              "GEMM ABI stride_bias offset mismatch");
+static_assert(offsetof(GemmParams, matrix_stride) == 32,
+              "GEMM ABI matrix_stride offset mismatch");
+static_assert(offsetof(GemmParams, alpha) == 36, "GEMM ABI alpha offset mismatch");
+static_assert(offsetof(GemmParams, beta) == 40, "GEMM ABI beta offset mismatch");
+static_assert(offsetof(GemmParams, has_bias) == 44,
+              "GEMM ABI has_bias offset mismatch");
+static_assert(offsetof(GemmParams, reserved) == 48,
+              "GEMM ABI reserved offset mismatch");
 struct F32ToDoubleParams {
     uint32_t element_count;
 };
@@ -156,6 +175,7 @@ struct FormatterDoubleParams {
 constexpr uint32_t kAdd = 0;
 constexpr uint32_t kWorkgroupSize = 256;
 constexpr uint32_t kMaxPointwiseRank = 8;
+constexpr uint32_t kGemmDescriptorPoolCapacity = 4096;
 // VulkanTensorLayout stores the ATen ScalarType as its stable integer value.
 constexpr int kFloatScalarType = 6;
 
@@ -1053,6 +1073,10 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, formatter_double_shader_, nullptr);
     if (gemm_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, gemm_shader_, nullptr);
+    for (auto &cache : descriptor_pools_) {
+        if (cache.pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device_, cache.pool, nullptr);
+    }
     for (auto layout : pipeline_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device_, layout, nullptr);
@@ -1548,30 +1572,12 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     const VulkanTensorLayout &effective_bias =
         bias == VK_NULL_HANDLE ? output_layout : bias_layout;
     std::scoped_lock lock(platform_.queue_mutex());
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    const auto cleanup = [&] {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device_, pool, nullptr);
-    };
     try {
         record_dispatch();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
-        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
-                     "could not create GEMM descriptor pool");
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &gemm_descriptor_layout_;
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate GEMM descriptor set");
+        const VkDescriptorSet set =
+            acquire_descriptor_set(gemm_descriptor_layout_, 5,
+                                   kGemmDescriptorPoolCapacity);
         const VkDescriptorBufferInfo buffers[] = {
             {a, a_layout.byte_offset, a_layout.byte_range},
             {b, b_layout.byte_offset, b_layout.byte_range},
@@ -1608,19 +1614,10 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
                            sizeof(params), &params);
         vkCmdDispatch(cmd, static_cast<uint32_t>(n_groups),
                       static_cast<uint32_t>(m_groups), 1);
-        platform_.execution_context().retain(pool);
-        pool = VK_NULL_HANDLE;
-        // GEMM is a synchronous primitive even while a training step is active.
-        // Do not use finish_dispatch(), which intentionally leaves training work
-        // recorded for end_training_step().
-        platform_.execution_context().submit();
-        platform_.execution_context().wait();
-        submission_count_.fetch_add(1, std::memory_order_relaxed);
+        finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
-        cleanup();
+        cancel_recording();
         throw contextual_error("GEMM dispatch failed", error);
     }
 }
@@ -1827,14 +1824,8 @@ void VulkanCompute::dispatch_model(
         metadata_size > max_storage_buffer_range_)
         throw std::invalid_argument("Vulkan model compute has invalid metadata");
     std::scoped_lock lock(platform_.queue_mutex());
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
-    const auto cleanup = [&] {
-        if (pool)
-            vkDestroyDescriptorPool(device_, pool, nullptr);
-    };
     try {
         record_dispatch();
         cmd = platform_.execution_context().command_buffer();
@@ -1845,22 +1836,8 @@ void VulkanCompute::dispatch_model(
                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
         const uint32_t descriptor_count = 5;
-        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       descriptor_count};
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
-                     "could not create model descriptor pool");
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &descriptor_layout;
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate model descriptor set");
+        const VkDescriptorSet set =
+            acquire_descriptor_set(descriptor_layout, descriptor_count);
         if (metadata)
             metadata_holder->write(metadata, metadata_size);
         VkDescriptorBufferInfo infos[] = {
@@ -1886,14 +1863,10 @@ void VulkanCompute::dispatch_model(
                            params_size, params);
         vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
-        platform_.execution_context().retain(pool);
-        pool = VK_NULL_HANDLE;
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
-        cleanup();
+        cancel_recording();
         throw contextual_error("model dispatch failed", error);
     }
 }
@@ -1954,13 +1927,7 @@ void VulkanCompute::dispatch_multi_output(
             "Vulkan multi-output backward dispatch count overflows");
 
     std::scoped_lock lock(platform_.queue_mutex());
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
-    const auto cleanup = [&] {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device_, pool, nullptr);
-    };
     try {
         record_dispatch();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
@@ -1972,23 +1939,8 @@ void VulkanCompute::dispatch_multi_output(
         }
         const uint32_t descriptor_count =
             input_count + output_count + (metadata ? 1u : 0u);
-        const VkDescriptorPoolSize pool_size{
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            std::max(descriptor_count, descriptor_capacity)};
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
-                     "could not create multi-output descriptor pool");
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &descriptor_layout;
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate multi-output descriptor set");
+        const VkDescriptorSet set = acquire_descriptor_set(
+            descriptor_layout, std::max(descriptor_count, descriptor_capacity));
         if (metadata)
             metadata_holder->write(metadata, metadata_size);
         VkDescriptorBufferInfo infos[descriptor_count]{};
@@ -2017,14 +1969,10 @@ void VulkanCompute::dispatch_multi_output(
                            params_size, params);
         vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
-        platform_.execution_context().retain(pool);
-        pool = VK_NULL_HANDLE;
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
-        cleanup();
+        cancel_recording();
         throw contextual_error("multi-output dispatch failed", error);
     }
 }
@@ -2066,14 +2014,8 @@ void VulkanCompute::dispatch_extra(
         (metadata_size && metadata_size > max_storage_buffer_range_))
         throw std::invalid_argument("Vulkan compute metadata is invalid");
     std::scoped_lock lock(platform_.queue_mutex());
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
-    const auto cleanup = [&] {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device_, pool, nullptr);
-    };
     try {
         record_dispatch();
         cmd = platform_.execution_context().command_buffer();
@@ -2084,22 +2026,8 @@ void VulkanCompute::dispatch_extra(
                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
         const uint32_t descriptor_count = metadata ? 3 : 2;
-        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       descriptor_count};
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
-                     "could not create reduction descriptor pool");
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &descriptor_layout;
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate reduction descriptor set");
+        const VkDescriptorSet set =
+            acquire_descriptor_set(descriptor_layout, descriptor_count);
         if (metadata)
             metadata_holder->write(metadata, metadata_size);
         VkDescriptorBufferInfo buffers[] = {
@@ -2124,14 +2052,10 @@ void VulkanCompute::dispatch_extra(
                            params_size, params);
         vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
-        platform_.execution_context().retain(pool);
-        pool = VK_NULL_HANDLE;
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
-        cleanup();
+        cancel_recording();
         throw contextual_error("reduction dispatch failed", error);
     }
 }
@@ -2208,8 +2132,7 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
         platform_.execution_context().wait();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
+        cancel_recording();
         cleanup();
         throw contextual_error("formatter dispatch failed", error);
     }
@@ -2293,8 +2216,7 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         platform_.execution_context().wait();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
+        cancel_recording();
         cleanup();
         throw contextual_error("masked-select dispatch failed", error);
     }
@@ -2362,15 +2284,8 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
         throw std::invalid_argument("Vulkan compute pointwise exceeds workgroup limit");
 
     std::scoped_lock lock(platform_.queue_mutex());
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
-    const auto cleanup = [&] {
-        if (pool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(device_, pool, nullptr);
-        }
-    };
     try {
         record_dispatch();
         cmd = platform_.execution_context().command_buffer();
@@ -2382,22 +2297,9 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
                                            ? (mode == 0 ? 7U : (mode == 1 ? 5U : 6U))
                                            : mode + (bool_dtype ? 4 : 0);
         const uint32_t descriptor_count = 4;
-        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       descriptor_count};
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
-                     "could not create pointwise descriptor pool");
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &descriptor_set_layouts_[pipeline_mode];
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate pointwise descriptor set");
+        const VkDescriptorSet set =
+            acquire_descriptor_set(descriptor_set_layouts_[pipeline_mode],
+                                   descriptor_count);
         VkDescriptorBufferInfo buffers[] = {
             {lhs, 0, lhs_layout ? lhs_layout->allocation_bytes : 0},
             {rhs, 0, rhs_layout ? rhs_layout->allocation_bytes : 0},
@@ -2428,14 +2330,10 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
         vkCmdDispatch(cmd, groups, 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
-        platform_.execution_context().retain(pool);
-        pool = VK_NULL_HANDLE;
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
-        cleanup();
+        cancel_recording();
         throw contextual_error("dispatch failed", error);
     }
 }
@@ -2487,34 +2385,15 @@ void VulkanCompute::dispatch_compound(
         throw std::invalid_argument("Vulkan compute compound exceeds workgroup limit");
 
     std::scoped_lock lock(platform_.queue_mutex());
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
     auto metadata_holder = std::make_shared<VulkanBuffer>(
         platform_, sizeof(metadata),
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     metadata_holder->write(&metadata, sizeof(metadata));
-    const auto cleanup = [&] {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device_, pool, nullptr);
-    };
     try {
         record_dispatch();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
-        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
-        VkDescriptorPoolCreateInfo pool_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool),
-                     "could not create compound descriptor pool");
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &compound_descriptor_layouts_[operation];
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate compound descriptor set");
+        const VkDescriptorSet set =
+            acquire_descriptor_set(compound_descriptor_layouts_[operation], 5);
         VkDescriptorBufferInfo buffers[] = {
             {self, 0, self_layout.allocation_bytes},
             {tensor1, 0, tensor1_layout.allocation_bytes},
@@ -2541,14 +2420,10 @@ void VulkanCompute::dispatch_compound(
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
         vkCmdDispatch(cmd, groups, 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
-        platform_.execution_context().retain(pool);
-        pool = VK_NULL_HANDLE;
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        if (platform_.execution_context().recording())
-            platform_.execution_context().cancel();
-        cleanup();
+        cancel_recording();
         throw contextual_error("compound dispatch failed", error);
     }
 }
@@ -2586,9 +2461,11 @@ void VulkanCompute::end_training_step() const {
                              nullptr, 0, nullptr);
         platform_.execution_context().submit();
         platform_.execution_context().wait();
+        reset_gemm_descriptor_pool();
         submission_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {
         training_step_ = false;
+        cancel_recording();
         throw;
     }
     training_step_ = false;
@@ -2599,7 +2476,7 @@ void VulkanCompute::cancel_training_step() const {
     if (!training_step_)
         return;
     training_step_ = false;
-    platform_.execution_context().cancel();
+    cancel_recording();
 }
 
 bool VulkanCompute::training_step_active() const { return training_step_; }
@@ -2618,13 +2495,103 @@ void VulkanCompute::record_dispatch() const {
                          nullptr, 0, nullptr);
 }
 
+void VulkanCompute::cancel_recording() const {
+    VulkanExecutionContext &context = platform_.execution_context();
+    if (context.recording())
+        context.cancel();
+    if (context.pending_count() == 0)
+        reset_gemm_descriptor_pool();
+}
+
 void VulkanCompute::finish_dispatch() const {
     if (training_step_)
         return;
     VulkanExecutionContext &context = platform_.execution_context();
     context.submit();
     context.wait();
+    reset_gemm_descriptor_pool();
     submission_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanCompute::reset_gemm_descriptor_pool() const { reset_descriptor_pools(); }
+
+VkDescriptorSet VulkanCompute::acquire_descriptor_set(
+    VkDescriptorSetLayout descriptor_layout, uint32_t descriptor_count,
+    uint32_t pool_capacity) const {
+    if (descriptor_layout == VK_NULL_HANDLE || descriptor_count == 0)
+        throw std::invalid_argument("Vulkan compute descriptor cache has invalid layout");
+    if (pool_capacity == 0 ||
+        static_cast<uint64_t>(descriptor_count) * pool_capacity >
+            std::numeric_limits<uint32_t>::max())
+        throw std::invalid_argument("Vulkan compute descriptor cache has invalid capacity");
+
+    for (auto &cache : descriptor_pools_) {
+        if (cache.layout != descriptor_layout || cache.descriptor_count < descriptor_count ||
+            cache.capacity != pool_capacity)
+            continue;
+        if (cache.next_set < cache.sets.size()) {
+            descriptor_set_reuse_count_.fetch_add(1, std::memory_order_relaxed);
+            return cache.sets[cache.next_set++];
+        }
+        if (cache.sets.size() < cache.capacity) {
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            VkDescriptorSetAllocateInfo set_info{
+                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            set_info.descriptorPool = cache.pool;
+            set_info.descriptorSetCount = 1;
+            set_info.pSetLayouts = &cache.layout;
+            check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
+                         "could not allocate reusable descriptor set");
+            cache.sets.push_back(set);
+            ++cache.next_set;
+            descriptor_set_allocation_count_.fetch_add(1, std::memory_order_relaxed);
+            return set;
+        }
+    }
+
+    DescriptorPoolCache cache;
+    cache.layout = descriptor_layout;
+    cache.descriptor_count = descriptor_count;
+    cache.capacity = pool_capacity;
+    const VkDescriptorPoolSize pool_size{
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count * pool_capacity};
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = pool_capacity;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &cache.pool),
+                 "could not create reusable descriptor pool");
+    descriptor_pool_creation_count_.fetch_add(1, std::memory_order_relaxed);
+    bool inserted = false;
+    try {
+        descriptor_pools_.push_back(std::move(cache));
+        inserted = true;
+        auto &stored = descriptor_pools_.back();
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDescriptorSetAllocateInfo set_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        set_info.descriptorPool = stored.pool;
+        set_info.descriptorSetCount = 1;
+        set_info.pSetLayouts = &stored.layout;
+        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
+                     "could not allocate reusable descriptor set");
+        stored.sets.push_back(set);
+        stored.next_set = 1;
+        descriptor_set_allocation_count_.fetch_add(1, std::memory_order_relaxed);
+        return set;
+    } catch (...) {
+        if (inserted) {
+            vkDestroyDescriptorPool(device_, descriptor_pools_.back().pool, nullptr);
+            descriptor_pools_.pop_back();
+        } else
+            vkDestroyDescriptorPool(device_, cache.pool, nullptr);
+        throw;
+    }
+}
+
+void VulkanCompute::reset_descriptor_pools() const {
+    for (auto &cache : descriptor_pools_)
+        cache.next_set = 0;
 }
 
 std::size_t VulkanCompute::dispatch_count() const {
@@ -2641,4 +2608,22 @@ std::size_t VulkanCompute::submission_count() const {
 
 void VulkanCompute::reset_submission_count() const {
     submission_count_.store(0, std::memory_order_relaxed);
+}
+
+std::size_t VulkanCompute::descriptor_pool_creation_count() const {
+    return descriptor_pool_creation_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanCompute::descriptor_set_allocation_count() const {
+    return descriptor_set_allocation_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanCompute::descriptor_set_reuse_count() const {
+    return descriptor_set_reuse_count_.load(std::memory_order_relaxed);
+}
+
+void VulkanCompute::reset_descriptor_resource_counters() const {
+    descriptor_pool_creation_count_.store(0, std::memory_order_relaxed);
+    descriptor_set_allocation_count_.store(0, std::memory_order_relaxed);
+    descriptor_set_reuse_count_.store(0, std::memory_order_relaxed);
 }

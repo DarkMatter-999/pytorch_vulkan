@@ -910,9 +910,9 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         // Ensure deferred ownership cannot allocate after submission starts.
         pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
         submission_may_be_pending = true;
-        const auto submit_wait_start = std::chrono::steady_clock::now();
         check_result(vkQueueSubmit(compute_queue_, 1, &submit_info, fence),
                      "Could not submit Vulkan command buffer");
+        const auto fence_wait_start = std::chrono::steady_clock::now();
         const VkResult wait_result =
             vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
         if (wait_result != VK_SUCCESS) {
@@ -932,9 +932,9 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
             }
             check_result(wait_result, "Could not wait for Vulkan transfer fence");
         }
-        timing_.submit_wait += std::chrono::duration<double>(
-                                   std::chrono::steady_clock::now() - submit_wait_start)
-                                   .count();
+        timing_.host_fence_wait += std::chrono::duration<double>(
+                                        std::chrono::steady_clock::now() - fence_wait_start)
+                                        .count();
     } catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
             throw;
@@ -1068,11 +1068,11 @@ void VulkanPlatform::record_timing(VulkanTimingCategory category,
     case VulkanTimingCategory::Recording:
         timing_.recording += seconds;
         break;
-    case VulkanTimingCategory::SubmitWait:
-        timing_.submit_wait += seconds;
+    case VulkanTimingCategory::Submit:
+        timing_.submit += seconds;
         break;
-    case VulkanTimingCategory::Compute:
-        timing_.compute += seconds;
+    case VulkanTimingCategory::HostFenceWait:
+        timing_.host_fence_wait += seconds;
         break;
     }
 }

@@ -30,6 +30,18 @@ PYBIND11_MODULE(_C, module) {
     // Compatibility name: this historically reported completed submissions.
     module.def("compute_submission_count",
                [] { return pytorch_vulkan::platform()->compute_completed_count(); });
+    module.def("descriptor_pool_creation_count", [] {
+        return pytorch_vulkan::platform()->compute().descriptor_pool_creation_count();
+    });
+    module.def("descriptor_set_allocation_count", [] {
+        return pytorch_vulkan::platform()->compute().descriptor_set_allocation_count();
+    });
+    module.def("descriptor_set_reuse_count", [] {
+        return pytorch_vulkan::platform()->compute().descriptor_set_reuse_count();
+    });
+    module.def("reset_descriptor_resource_counters", [] {
+        pytorch_vulkan::platform()->compute().reset_descriptor_resource_counters();
+    });
     module.def("execution_counter_snapshot", [] {
         const auto snapshot = pytorch_vulkan::platform()->execution_counter_snapshot();
         return py::make_tuple(snapshot.dispatches, snapshot.vulkan_copies,
@@ -67,8 +79,8 @@ PYBIND11_MODULE(_C, module) {
     module.def("reset_timing", [] { pytorch_vulkan::platform()->reset_timing(); });
     module.def("timing_snapshot", [] {
         const auto timing = pytorch_vulkan::platform()->timing_snapshot();
-        return py::make_tuple(timing.allocation, timing.recording, timing.submit_wait,
-                              timing.compute, timing.total);
+        return py::make_tuple(timing.allocation, timing.recording, timing.submit,
+                              timing.host_fence_wait, timing.total);
     });
     py::module_::import("atexit").attr("register")(
         py::cpp_function(&pytorch_vulkan::shutdown_platform));

@@ -274,6 +274,72 @@ void test_platform_pending_compute_count(VulkanPlatform &platform) {
            "platform retained compute work after training step completion");
 }
 
+void test_descriptor_cache_rollover_and_cancellation(VulkanPlatform &platform) {
+    VulkanBuffer lhs(platform, 64,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer rhs(platform, 64,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer output(platform, 64,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    const pytorch_vulkan::VulkanTensorLayout pointwise_layout{
+        1, {16}, {1}, 0, sizeof(float), 0, 16, 0, 64, 64,
+        pytorch_vulkan::VulkanOverlap::No};
+
+    platform.compute().reset_descriptor_resource_counters();
+    platform.compute().begin_training_step();
+    for (int i = 0; i < 65; ++i) {
+        platform.compute().add(lhs.buffer(), pointwise_layout, rhs.buffer(),
+                               pointwise_layout, output.buffer(), pointwise_layout);
+    }
+    platform.compute().cancel_training_step();
+    expect(platform.compute().descriptor_pool_creation_count() == 1,
+           "generic descriptor cache did not roll over at pool capacity");
+
+    platform.compute().reset_descriptor_resource_counters();
+    platform.compute().begin_training_step();
+    for (int i = 0; i < 64; ++i) {
+        platform.compute().add(lhs.buffer(), pointwise_layout, rhs.buffer(),
+                               pointwise_layout, output.buffer(), pointwise_layout);
+    }
+    platform.compute().cancel_training_step();
+    platform.compute().begin_training_step();
+    for (int i = 0; i < 64; ++i) {
+        platform.compute().add(lhs.buffer(), pointwise_layout, rhs.buffer(),
+                               pointwise_layout, output.buffer(), pointwise_layout);
+    }
+    platform.compute().cancel_training_step();
+    expect(platform.compute().descriptor_pool_creation_count() == 0,
+           "cancelled recording did not reset generic descriptor cursors");
+
+    VulkanBuffer a(platform, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer b(platform, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer c(platform, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer gemm_output(platform, 4,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    const pytorch_vulkan::VulkanTensorLayout matrix_layout{
+        2, {1, 1}, {1, 1}, 6, sizeof(float), 0, 1, 0, 4, 4,
+        pytorch_vulkan::VulkanOverlap::No};
+
+    platform.compute().reset_descriptor_resource_counters();
+    platform.compute().begin_training_step();
+    for (int i = 0; i < 4097; ++i) {
+        platform.compute().gemm(a.buffer(), matrix_layout, b.buffer(), matrix_layout,
+                                c.buffer(), matrix_layout, gemm_output.buffer(),
+                                matrix_layout, VK_NULL_HANDLE, matrix_layout, 1, 1, 1,
+                                1.0F, 0.0F, false);
+    }
+    platform.compute().cancel_training_step();
+    expect(platform.compute().descriptor_pool_creation_count() == 2,
+           "GEMM descriptor cache did not roll over at pool capacity");
+}
+
 void test_execution_counters_and_timing(VulkanPlatform &platform) {
     platform.reset_execution_counters();
     platform.reset_timing();
@@ -290,8 +356,9 @@ void test_execution_counters_and_timing(VulkanPlatform &platform) {
     const auto timing = platform.timing_snapshot();
     expect(timing.allocation > 0.0, "execution allocation timing was not recorded");
     expect(timing.recording > 0.0, "execution recording timing was not recorded");
-    expect(timing.submit_wait > 0.0, "execution submit/wait timing was not recorded");
-    expect(timing.compute > 0.0, "execution compute timing was not recorded");
+    expect(timing.submit > 0.0, "execution submit timing was not recorded");
+    expect(timing.host_fence_wait > 0.0,
+           "execution host fence-wait timing was not recorded");
 }
 
 void test_bounded_platform_lifetimes() {
@@ -324,6 +391,7 @@ int main() {
         test_fill(platform);
         test_retained_descriptor_pool(platform);
         test_platform_pending_compute_count(platform);
+        test_descriptor_cache_rollover_and_cancellation(platform);
         test_execution_counters_and_timing(platform);
         test_bounded_platform_lifetimes();
         std::cout << "Vulkan execution lifecycle tests passed\n";

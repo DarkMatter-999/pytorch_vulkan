@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from tools.verify_gemm_spv import verify_source, verify_spirv
+from tools.verify_gemm_spv import decode_embedded_spirv, verify_source, verify_spirv
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -110,3 +110,18 @@ def test_gemm_verifier_checks_compiled_spirv_descriptor_contract():
         verify_spirv(text.replace("DescriptorSet 0", "DescriptorSet 1", 1))
     with pytest.raises(SystemExit, match="storage-buffer descriptor"):
         verify_spirv(text.replace("BufferBlock", "Block", 1))
+
+
+def test_gemm_verifier_decodes_embedded_spirv_words_exactly():
+    header = (ROOT / "src/vulkan/shaders/generated/gemm_spv.h").read_text(
+        encoding="ascii"
+    )
+    embedded = decode_embedded_spirv(header)
+    with tempfile.TemporaryDirectory() as directory:
+        binary = pathlib.Path(directory) / "gemm.comp.spv"
+        subprocess.run(
+            ["glslc", "-Os", "-o", str(binary), str(ROOT / "src/vulkan/shaders/glsl/gemm.comp")],
+            check=True,
+        )
+        assert embedded == binary.read_bytes()
+        subprocess.run(["spirv-val", str(binary)], check=True)

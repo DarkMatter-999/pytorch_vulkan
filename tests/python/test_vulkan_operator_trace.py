@@ -53,7 +53,7 @@ def test_linear_relu_training_trace_has_stable_operator_metadata(tmp_path):
         )
 
 
-def test_gemm_trace_identifies_frontend_and_excludes_cpu_fallback(tmp_path):
+def test_gemm_trace_identifies_cpu_schema_reference_execution(tmp_path):
     repository = Path(__file__).resolve().parents[2]
     artifact = tmp_path / "gemm_forward.json"
     result = subprocess.run(
@@ -73,10 +73,15 @@ def test_gemm_trace_identifies_frontend_and_excludes_cpu_fallback(tmp_path):
 
     trace = json.loads(artifact.read_text())
     assert trace["workload"] == "gemm_forward"
-    assert trace["frontend"] == "vulkan_gemm"
-    assert trace["cpu_fallback"] is False
+    assert trace["execution"] == "cpu_schema_reference"
+    assert "frontend" not in trace
+    assert "cpu_fallback" not in trace
     assert [operator["schema"] for operator in trace["operators"]] == [
         "aten::mm",
         "aten::addmm",
         "aten::linear",
     ]
+    assert all(
+        operator["execution"] == "cpu_schema_reference"
+        for operator in trace["operators"]
+    )

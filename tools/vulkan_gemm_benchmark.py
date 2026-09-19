@@ -8,7 +8,8 @@ import time
 from pathlib import Path
 
 
-MATRIX_SHAPE = (2048, 4096)
+LEFT_SHAPE = (2048, 4096)
+RIGHT_SHAPE = (4096, 2048)
 
 
 def _probe_device(torch, pytorch_vulkan):
@@ -31,25 +32,14 @@ def _child(result_path):
         result_path.write_text(json.dumps({"status": "skipped", "reason": skip_reason}))
         return
 
-    try:
-        torch.manual_seed(47)
-        left = torch.randn(*MATRIX_SHAPE, device=device)
-        right = torch.randn(*MATRIX_SHAPE, device=device).t()
-    except (NotImplementedError, RuntimeError) as error:
-        result_path.write_text(
-            json.dumps(
-                {
-                    "status": "skipped",
-                    "reason": f"Vulkan GEMM tensor setup is unavailable: {error}",
-                }
-            )
-        )
-        return
+    torch.manual_seed(47)
+    left = torch.randn(*LEFT_SHAPE).to(device)
+    right = torch.randn(*RIGHT_SHAPE).to(device)
     pytorch_vulkan._C.reset_execution_counters()
     start = time.monotonic()
     output = torch.mm(left, right)
     elapsed = time.monotonic() - start
-    expected_shape = (MATRIX_SHAPE[0], MATRIX_SHAPE[0])
+    expected_shape = (LEFT_SHAPE[0], RIGHT_SHAPE[1])
     if tuple(output.shape) != expected_shape:
         raise RuntimeError(
             f"large GEMM produced shape {tuple(output.shape)}, expected {expected_shape}"
@@ -58,6 +48,7 @@ def _child(result_path):
     submissions = pytorch_vulkan._C.compute_submitted_count()
     completions = pytorch_vulkan._C.compute_completed_count()
     waits = pytorch_vulkan._C.compute_wait_count()
+    timing = pytorch_vulkan._C.timing_snapshot()
     if counters != (1, 0, 0, 0) or (submissions, completions, waits) != (1, 1, 1):
         raise RuntimeError(
             "large GEMM counter contract failed: "
@@ -70,6 +61,7 @@ def _child(result_path):
                 "status": "completed",
                 "shape": list(expected_shape),
                 "seconds": elapsed,
+                "host_fence_wait_seconds": timing[3],
                 "dispatches": counters[0],
                 "submissions": submissions,
                 "completions": completions,

@@ -45,6 +45,27 @@ def test_mm_and_addmm_use_one_gemm_dispatch(vulkan_backend):
         )
 
 
+def test_gemm_training_scope_defers_submission_until_step_end(vulkan_backend):
+    a = torch.randn(16, 16).to(vulkan_backend)
+    b = torch.randn(16, 16).to(vulkan_backend)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        first = torch.mm(a, b)
+        second = torch.mm(a, b)
+        assert first.shape == second.shape
+        assert pytorch_vulkan._C.compute_submitted_count() == 0
+        assert pytorch_vulkan._C.compute_wait_count() == 0
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    assert pytorch_vulkan._C.compute_submitted_count() == 1
+    assert pytorch_vulkan._C.compute_wait_count() == 1
+
+
 def test_addmm_out_uses_gemm_and_preserves_identity(vulkan_backend):
     torch.manual_seed(42)
     self_cpu = torch.randn(7, 11)
@@ -102,6 +123,44 @@ def test_mm_supports_non_tile_aligned_dimensions(vulkan_backend):
     )
 
 
+def test_mm_and_addmm_support_zero_inner_dimension_without_gemm_dispatch(vulkan_backend):
+    a = torch.empty(5, 0).to(vulkan_backend)
+    b = torch.empty(0, 7).to(vulkan_backend)
+    self_cpu = torch.randn(5, 7)
+    self_vk = self_cpu.to(vulkan_backend)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    actual_mm = torch.mm(a, b)
+    actual_addmm = torch.addmm(self_vk, a, b, beta=0.25, alpha=2.0)
+    bias_cpu = torch.randn(7)
+    actual_bias_addmm = torch.addmm(bias_cpu.to(vulkan_backend), a, b, beta=0.5)
+    empty_mm = torch.mm(torch.empty(0, 3).to(vulkan_backend),
+                        torch.empty(3, 7).to(vulkan_backend))
+    empty_addmm = torch.addmm(torch.empty(0, 7).to(vulkan_backend),
+                              torch.empty(0, 3).to(vulkan_backend),
+                              torch.empty(3, 7).to(vulkan_backend))
+
+    assert pytorch_vulkan._C.compute_dispatch_count() == 3
+    torch.testing.assert_close(actual_mm.cpu(), torch.zeros(5, 7))
+    torch.testing.assert_close(actual_addmm.cpu(), self_cpu * 0.25)
+    torch.testing.assert_close(actual_bias_addmm.cpu(), bias_cpu.expand(5, 7) * 0.5)
+    assert empty_mm.shape == (0, 7)
+    assert empty_addmm.shape == (0, 7)
+
+
+def test_mm_and_addmm_reject_gradient_requiring_operands(vulkan_backend):
+    a = torch.randn(3, 2).to(vulkan_backend).requires_grad_()
+    b = torch.randn(2, 4).to(vulkan_backend)
+    self_tensor = torch.randn(3, 4).to(vulkan_backend)
+
+    with pytest.raises(RuntimeError, match="does not support autograd"):
+        torch.mm(a, b)
+    with pytest.raises(RuntimeError, match="does not support autograd"):
+        torch.addmm(self_tensor, a.detach(), b.requires_grad_())
+    with pytest.raises(RuntimeError, match="does not support autograd"):
+        torch.addmm(self_tensor.requires_grad_(), a.detach(), b.detach())
+
+
 def test_large_gemm_completes_in_a_clean_process(tmp_path):
     result = tmp_path / "large-gemm.json"
     script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
@@ -117,6 +176,7 @@ def test_large_gemm_completes_in_a_clean_process(tmp_path):
         pytest.skip(record["reason"])
     assert record["status"] == "completed"
     assert record["shape"] == [2048, 2048]
+    assert record["host_fence_wait_seconds"] >= 0.0
     assert record["dispatches"] == 1
     assert record["submissions"] == 1
     assert record["completions"] == 1
@@ -130,3 +190,14 @@ def test_large_gemm_benchmark_has_no_payload_readback():
     assert ".cpu(" not in source
     assert '"submissions"' in source
     assert '"completions"' in source
+    assert '"host_fence_wait_seconds"' in source
+    assert "MATRIX_SHAPE" not in source
+    assert "Vulkan GEMM tensor setup is unavailable" not in source
+    assert "torch.randn(*LEFT_SHAPE).to(device)" in source
+    assert "torch.randn(*RIGHT_SHAPE).to(device)" in source
+
+
+def test_timing_report_does_not_label_fence_wait_as_gpu_busy():
+    report = (Path(__file__).resolve().parents[2] / "docs" / "gemm_gpu_utilization_report.md").read_text()
+    assert "host fence-wait" in report
+    assert "GPU-busy" not in report

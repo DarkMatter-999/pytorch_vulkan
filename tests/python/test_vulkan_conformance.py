@@ -157,10 +157,11 @@ def test_execution_counters_count_dispatch_and_explicit_cpu_transfer(vulkan_back
 def test_gemm_frontends_complete_one_synchronous_dispatch(vulkan_backend, case_name):
     case = next(case for case in ALL_CASES if case.name == case_name)
     run_and_compare(case, vulkan_backend)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 1
-    assert pytorch_vulkan._C.compute_submitted_count() == 1
-    assert pytorch_vulkan._C.compute_completed_count() == 1
-    assert pytorch_vulkan._C.compute_wait_count() == 1
+    expected = 2 if case_name == "linear.forward" else 1
+    assert pytorch_vulkan._C.compute_dispatch_count() == expected
+    assert pytorch_vulkan._C.compute_submitted_count() == expected
+    assert pytorch_vulkan._C.compute_completed_count() == expected
+    assert pytorch_vulkan._C.compute_wait_count() == expected
     assert pytorch_vulkan._C.fallback_count() == 0
 
 

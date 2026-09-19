@@ -38,8 +38,8 @@ struct VulkanExecutionCounterSnapshot {
 struct VulkanTimingSnapshot {
     double allocation = 0.0;
     double recording = 0.0;
-    double submit_wait = 0.0;
-    double compute = 0.0;
+    double submit = 0.0;
+    double host_fence_wait = 0.0;
     double total = 0.0;
 };
 
@@ -48,7 +48,7 @@ struct VulkanPendingTransferResources {
     VkFence fence = VK_NULL_HANDLE;
 };
 
-enum class VulkanTimingCategory { Allocation, Recording, SubmitWait, Compute };
+enum class VulkanTimingCategory { Allocation, Recording, Submit, HostFenceWait };
 
 class VulkanPlatform {
   public:

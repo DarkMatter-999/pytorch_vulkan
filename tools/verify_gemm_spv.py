@@ -2,6 +2,7 @@
 import hashlib
 import pathlib
 import re
+import struct
 import subprocess
 import tempfile
 
@@ -149,6 +150,21 @@ def verify_spirv(disassembly):
         fail(f"push-constant offsets {offsets}")
 
 
+def decode_embedded_spirv(header):
+    match = re.search(
+        r"kCode\[\]\s*=\s*\{(?P<words>.*?)\};", header, re.DOTALL
+    )
+    if not match:
+        fail("embedded kCode array")
+    words = [
+        int(word, 16)
+        for word in re.findall(r"0x([0-9a-fA-F]+)U", match.group("words"))
+    ]
+    if not words:
+        fail("embedded kCode is empty")
+    return b"".join(struct.pack("<I", word) for word in words)
+
+
 def main():
     source_bytes = SOURCE.read_bytes()
     verify_source(source_bytes.decode("ascii"))
@@ -156,6 +172,8 @@ def main():
         raise SystemExit(
             "gemm shader artifact missing: run tools/generate_gemm_spv.py in Task 2"
         )
+    header = GENERATED.read_bytes()
+    embedded = decode_embedded_spirv(header.decode("ascii"))
     with tempfile.TemporaryDirectory() as directory:
         binary = pathlib.Path(directory) / "gemm.comp.spv"
         contract_binary = pathlib.Path(directory) / "gemm.contract.spv"
@@ -167,19 +185,28 @@ def main():
         )
         verify_spirv(disassembly.read_text(encoding="ascii"))
         spirv = binary.read_bytes()
+        embedded_binary = pathlib.Path(directory) / "gemm.embedded.spv"
+        embedded_binary.write_bytes(embedded)
+        subprocess.run(["spirv-val", str(embedded_binary)], check=True)
     manifest = dict(
         line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines()
     )
-    header = GENERATED.read_bytes()
+    if embedded != spirv:
+        fail("embedded SPIR-V bytes differ from freshly compiled SPIR-V")
     actual = {
         "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
         "spirv_sha256": hashlib.sha256(spirv).hexdigest(),
+        "embedded_spirv_sha256": hashlib.sha256(embedded).hexdigest(),
         "header_sha256": hashlib.sha256(header).hexdigest(),
     }
     for key, value in actual.items():
-        if manifest.get(key) != value:
+        if key == "embedded_spirv_sha256":
+            expected = manifest.get("spirv_sha256")
+        else:
+            expected = manifest.get(key)
+        if expected != value:
             raise SystemExit(
-                f"{key} mismatch: expected {manifest.get(key)}, got {value}"
+                f"{key} mismatch: expected {expected}, got {value}"
             )
         print(f"{key}={value}")
     print("gemm shader contract=ok")

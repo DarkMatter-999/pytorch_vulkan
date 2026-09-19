@@ -218,7 +218,7 @@ void VulkanExecutionContext::submit() {
         if (platform_) {
             platform_->record_compute_submitted();
             platform_->record_timing(
-                VulkanTimingCategory::SubmitWait,
+                VulkanTimingCategory::Submit,
                 std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                               submit_start)
                     .count());
@@ -393,8 +393,7 @@ void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
     if (platform_) {
         platform_->record_compute_wait();
         platform_->record_compute_completed();
-        platform_->record_timing(VulkanTimingCategory::SubmitWait, wait_seconds);
-        platform_->record_timing(VulkanTimingCategory::Compute, wait_seconds);
+        platform_->record_timing(VulkanTimingCategory::HostFenceWait, wait_seconds);
     }
     retire(record, lock);
 }

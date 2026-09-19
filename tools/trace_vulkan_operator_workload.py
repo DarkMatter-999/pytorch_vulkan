@@ -70,7 +70,7 @@ def _gemm_forward():
         return {
             "schema": schema,
             "overload": "default",
-            "frontend": "vulkan_gemm",
+            "execution": "cpu_schema_reference",
             "inputs": [_tensor_metadata(item) for item in inputs],
             "outputs": [_tensor_metadata(output)],
             "backward": [],
@@ -102,8 +102,7 @@ def main():
         "operators": operators,
     }
     if arguments.workload == "gemm_forward":
-        trace["frontend"] = "vulkan_gemm"
-        trace["cpu_fallback"] = False
+        trace["execution"] = "cpu_schema_reference"
     arguments.output.write_text(json.dumps(trace, indent=2) + "\n")
 
 

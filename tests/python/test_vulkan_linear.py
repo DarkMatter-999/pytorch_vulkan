@@ -38,7 +38,7 @@ def test_linear_forward_matches_cpu_and_returns_contiguous_f32(vulkan_backend):
     assert result.dtype is torch.float32
     assert result.shape == (2, 16)
     assert result.is_contiguous()
-    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    assert pytorch_vulkan._C.compute_dispatch_count() == 2
     torch.testing.assert_close(
         result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)
     )

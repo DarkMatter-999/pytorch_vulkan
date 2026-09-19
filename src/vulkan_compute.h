@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <vector>
 
 class VulkanPlatform;
 class VulkanBuffer;
@@ -167,6 +168,10 @@ class VulkanCompute final {
     void reset_dispatch_count() const;
     std::size_t submission_count() const;
     void reset_submission_count() const;
+    std::size_t descriptor_pool_creation_count() const;
+    std::size_t descriptor_set_allocation_count() const;
+    std::size_t descriptor_set_reuse_count() const;
+    void reset_descriptor_resource_counters() const;
     void begin_training_step() const;
     void end_training_step() const;
     void cancel_training_step() const;
@@ -224,6 +229,21 @@ class VulkanCompute final {
                          uint32_t descriptor_count) const;
     void record_dispatch() const;
     void finish_dispatch() const;
+    void cancel_recording() const;
+    void reset_gemm_descriptor_pool() const;
+    VkDescriptorSet acquire_descriptor_set(VkDescriptorSetLayout descriptor_layout,
+                                           uint32_t descriptor_count,
+                                           uint32_t pool_capacity = 64) const;
+    void reset_descriptor_pools() const;
+
+    struct DescriptorPoolCache {
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        uint32_t descriptor_count = 0;
+        uint32_t capacity = 0;
+        std::vector<VkDescriptorSet> sets;
+        std::size_t next_set = 0;
+    };
     const VulkanPlatform &platform_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
@@ -308,5 +328,9 @@ class VulkanCompute final {
     uint32_t max_compute_shared_memory_size_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
     mutable std::atomic<std::size_t> submission_count_{0};
+    mutable std::atomic<std::size_t> descriptor_pool_creation_count_{0};
+    mutable std::atomic<std::size_t> descriptor_set_allocation_count_{0};
+    mutable std::atomic<std::size_t> descriptor_set_reuse_count_{0};
+    mutable std::vector<DescriptorPoolCache> descriptor_pools_;
     mutable bool training_step_ = false;
 };

@@ -135,17 +135,22 @@ def run(
     submitted = []
     completed = []
     waits = []
+    descriptor_pools = []
+    descriptor_sets = []
+    descriptor_reuses = []
     component_samples = {
         "allocation": [],
         "recording": [],
-        "submit_wait": [],
-        "compute": [],
+        "submit": [],
+        "host_fence_wait": [],
+        "total": [],
     }
     last_loss = None
     for _ in range(repetitions):
         if device.startswith("vk"):
             _C.reset_execution_counters()
             _C.reset_timing()
+            _C.reset_descriptor_resource_counters()
         start = time.monotonic()
         for _ in range(steps):
             if training:
@@ -163,6 +168,9 @@ def run(
             submitted.append(_C.compute_submitted_count())
             completed.append(_C.compute_completed_count())
             waits.append(_C.compute_wait_count())
+            descriptor_pools.append(_C.descriptor_pool_creation_count())
+            descriptor_sets.append(_C.descriptor_set_allocation_count())
+            descriptor_reuses.append(_C.descriptor_set_reuse_count())
             for name, value in zip(component_samples, timing):
                 component_samples[name].append(value)
         else:
@@ -173,6 +181,9 @@ def run(
             submitted.append(0)
             completed.append(0)
             waits.append(0)
+            descriptor_pools.append(0)
+            descriptor_sets.append(0)
+            descriptor_reuses.append(0)
             for values in component_samples.values():
                 values.append(0.0)
 
@@ -211,6 +222,9 @@ def run(
         "submitted": submitted,
         "completed": completed,
         "waits": waits,
+        "descriptor_pool_creations": descriptor_pools,
+        "descriptor_set_allocations": descriptor_sets,
+        "descriptor_set_reuses": descriptor_reuses,
         "finite_loss": finite_loss,
         "final_loss": final_loss if finite_loss else None,
         "diverged": not finite_loss,
