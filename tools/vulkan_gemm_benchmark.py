@@ -16,10 +16,7 @@ def _probe_device(torch, pytorch_vulkan):
     if not pytorch_vulkan.is_available():
         return None, "no suitable Vulkan device is available"
     device = f"{torch._C._get_privateuse1_backend_name()}:0"
-    try:
-        torch.ones(1).to(device)
-    except (NotImplementedError, RuntimeError) as error:
-        return None, f"Vulkan tensor setup is unavailable: {error}"
+    torch.ones(1).to(device)
     return device, None
 
 

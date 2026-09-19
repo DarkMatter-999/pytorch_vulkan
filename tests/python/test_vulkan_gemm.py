@@ -1,3 +1,4 @@
+import importlib.util
 import pytest
 import torch
 import json
@@ -42,6 +43,121 @@ def test_mm_and_addmm_use_one_gemm_dispatch(vulkan_backend):
             torch.addmm(self_cpu, a, b, alpha=alpha, beta=beta),
             rtol=2e-3,
             atol=2e-3,
+        )
+
+
+def test_mm_backward_matches_cpu_reference(vulkan_backend):
+    torch.manual_seed(43)
+    cpu_mat1 = torch.randn(5, 7, requires_grad=True)
+    cpu_mat2 = torch.randn(7, 3, requires_grad=True)
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_output = torch.mm(cpu_mat1, cpu_mat2)
+    cpu_output.sum().backward()
+
+    vk_output = torch.mm(vk_mat1, vk_mat2)
+    vk_output.sum().backward()
+
+    torch.testing.assert_close(
+        vk_output.cpu(), cpu_output.detach(), rtol=2e-3, atol=2e-3
+    )
+    torch.testing.assert_close(vk_mat1.grad.cpu(), cpu_mat1.grad, rtol=2e-3, atol=2e-3)
+    torch.testing.assert_close(vk_mat2.grad.cpu(), cpu_mat2.grad, rtol=2e-3, atol=2e-3)
+
+
+def test_mm_backward_materializes_non_square_transposes_in_training_scope(
+    vulkan_backend,
+):
+    torch.manual_seed(44)
+    cpu_mat1 = torch.randn(3, 5, requires_grad=True)
+    cpu_mat2 = torch.randn(5, 7, requires_grad=True)
+    cpu_grad = torch.randn(3, 7)
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_grad = cpu_grad.to(vulkan_backend)
+
+    cpu_output = torch.mm(cpu_mat1, cpu_mat2)
+    cpu_output.backward(cpu_grad)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_output = torch.mm(vk_mat1, vk_mat2)
+        vk_output.backward(vk_grad)
+        # Forward GEMM plus two broadcast transpose materializations and two
+        # backward GEMMs.  The helper must not submit or wait inside the scope.
+        assert pytorch_vulkan._C.compute_dispatch_count() == 5
+        assert pytorch_vulkan._C.compute_submitted_count() == 0
+        assert pytorch_vulkan._C.compute_wait_count() == 0
+    except Exception:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    assert pytorch_vulkan._C.compute_submitted_count() == 1
+    assert pytorch_vulkan._C.compute_wait_count() == 1
+    torch.testing.assert_close(
+        vk_output.cpu(), cpu_output.detach(), rtol=2e-3, atol=2e-3
+    )
+    torch.testing.assert_close(vk_mat1.grad.cpu(), cpu_mat1.grad, rtol=2e-3, atol=2e-3)
+    torch.testing.assert_close(vk_mat2.grad.cpu(), cpu_mat2.grad, rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.parametrize("alpha,beta", [(1.0, 1.0), (0.5, 0.0), (-1.25, 2.0)])
+def test_addmm_backward_matches_cpu_reference(vulkan_backend, alpha, beta):
+    torch.manual_seed(47)
+    cpu_self = torch.randn(5, 3, requires_grad=True)
+    cpu_mat1 = torch.randn(5, 7, requires_grad=True)
+    cpu_mat2 = torch.randn(7, 3, requires_grad=True)
+    vk_self = cpu_self.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_output = torch.addmm(cpu_self, cpu_mat1, cpu_mat2, alpha=alpha, beta=beta)
+    cpu_output.sum().backward()
+
+    vk_output = torch.addmm(vk_self, vk_mat1, vk_mat2, alpha=alpha, beta=beta)
+    vk_output.sum().backward()
+
+    torch.testing.assert_close(
+        vk_output.cpu(), cpu_output.detach(), rtol=2e-3, atol=2e-3
+    )
+    for vk_value, cpu_value in (
+        (vk_self.grad, cpu_self.grad),
+        (vk_mat1.grad, cpu_mat1.grad),
+        (vk_mat2.grad, cpu_mat2.grad),
+    ):
+        torch.testing.assert_close(vk_value.cpu(), cpu_value, rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.parametrize("operation", ["mm", "addmm"])
+def test_zero_dimension_gemm_backward_matches_cpu_reference(vulkan_backend, operation):
+    cpu_mat1 = torch.empty(2, 0, requires_grad=True)
+    cpu_mat2 = torch.empty(0, 3, requires_grad=True)
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+
+    if operation == "mm":
+        cpu_output = torch.mm(cpu_mat1, cpu_mat2)
+        vk_output = torch.mm(vk_mat1, vk_mat2)
+    else:
+        cpu_self = torch.randn(2, 3, requires_grad=True)
+        vk_self = cpu_self.detach().clone().to(vulkan_backend).requires_grad_()
+        cpu_output = torch.addmm(cpu_self, cpu_mat1, cpu_mat2, alpha=1.0, beta=2.0)
+        vk_output = torch.addmm(vk_self, vk_mat1, vk_mat2, alpha=1.0, beta=2.0)
+
+    assert torch.isfinite(vk_output.cpu()).all()
+    cpu_output.sum().backward()
+    vk_output.sum().backward()
+    torch.testing.assert_close(
+        vk_output.cpu(), cpu_output.detach(), rtol=2e-3, atol=2e-3
+    )
+    torch.testing.assert_close(vk_mat1.grad.cpu(), cpu_mat1.grad, rtol=2e-3, atol=2e-3)
+    torch.testing.assert_close(vk_mat2.grad.cpu(), cpu_mat2.grad, rtol=2e-3, atol=2e-3)
+    if operation == "addmm":
+        torch.testing.assert_close(
+            vk_self.grad.cpu(), cpu_self.grad, rtol=2e-3, atol=2e-3
         )
 
 
@@ -123,7 +239,9 @@ def test_mm_supports_non_tile_aligned_dimensions(vulkan_backend):
     )
 
 
-def test_mm_and_addmm_support_zero_inner_dimension_without_gemm_dispatch(vulkan_backend):
+def test_mm_and_addmm_support_zero_inner_dimension_without_gemm_dispatch(
+    vulkan_backend,
+):
     a = torch.empty(5, 0).to(vulkan_backend)
     b = torch.empty(0, 7).to(vulkan_backend)
     self_cpu = torch.randn(5, 7)
@@ -134,11 +252,14 @@ def test_mm_and_addmm_support_zero_inner_dimension_without_gemm_dispatch(vulkan_
     actual_addmm = torch.addmm(self_vk, a, b, beta=0.25, alpha=2.0)
     bias_cpu = torch.randn(7)
     actual_bias_addmm = torch.addmm(bias_cpu.to(vulkan_backend), a, b, beta=0.5)
-    empty_mm = torch.mm(torch.empty(0, 3).to(vulkan_backend),
-                        torch.empty(3, 7).to(vulkan_backend))
-    empty_addmm = torch.addmm(torch.empty(0, 7).to(vulkan_backend),
-                              torch.empty(0, 3).to(vulkan_backend),
-                              torch.empty(3, 7).to(vulkan_backend))
+    empty_mm = torch.mm(
+        torch.empty(0, 3).to(vulkan_backend), torch.empty(3, 7).to(vulkan_backend)
+    )
+    empty_addmm = torch.addmm(
+        torch.empty(0, 7).to(vulkan_backend),
+        torch.empty(0, 3).to(vulkan_backend),
+        torch.empty(3, 7).to(vulkan_backend),
+    )
 
     assert pytorch_vulkan._C.compute_dispatch_count() == 3
     torch.testing.assert_close(actual_mm.cpu(), torch.zeros(5, 7))
@@ -148,17 +269,180 @@ def test_mm_and_addmm_support_zero_inner_dimension_without_gemm_dispatch(vulkan_
     assert empty_addmm.shape == (0, 7)
 
 
-def test_mm_and_addmm_reject_gradient_requiring_operands(vulkan_backend):
+@pytest.mark.parametrize("shape_a,shape_b", [((0, 3), (3, 4)), ((5, 3), (3, 0))])
+def test_mm_and_addmm_support_empty_output_dimensions_without_zero_work_dispatch(
+    vulkan_backend, shape_a, shape_b
+):
+    a = torch.randn(*shape_a).to(vulkan_backend).requires_grad_()
+    b = torch.randn(*shape_b).to(vulkan_backend).requires_grad_()
+    self_cpu = torch.randn(shape_a[0], shape_b[1], requires_grad=True)
+    self_vk = self_cpu.detach().clone().to(vulkan_backend).requires_grad_()
+
+    pytorch_vulkan._C.reset_execution_counters()
+    mm_output = torch.mm(a, b)
+    addmm_output = torch.addmm(self_vk, a, b, alpha=1.5, beta=-0.25)
+    assert mm_output.shape == (shape_a[0], shape_b[1])
+    assert addmm_output.shape == (shape_a[0], shape_b[1])
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+
+    mm_output.backward(torch.ones_like(mm_output))
+    assert a.grad.shape == shape_a
+    assert b.grad.shape == shape_b
+    assert pytorch_vulkan._C.compute_dispatch_count() == 2
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(mm_output.cpu(), torch.mm(a.cpu(), b.cpu()))
+    torch.testing.assert_close(
+        addmm_output.cpu(),
+        torch.addmm(self_cpu, a.cpu(), b.cpu(), alpha=1.5, beta=-0.25).detach(),
+    )
+
+
+@pytest.mark.parametrize("shape_a,shape_b", [((0, 3), (3, 4)), ((5, 3), (3, 0))])
+def test_addmm_empty_output_backward_matches_cpu_without_zero_work_dispatch(
+    vulkan_backend, shape_a, shape_b
+):
+    cpu_self = torch.randn(shape_a[0], shape_b[1], requires_grad=True)
+    cpu_mat1 = torch.randn(*shape_a, requires_grad=True)
+    cpu_mat2 = torch.randn(*shape_b, requires_grad=True)
+    vk_self = cpu_self.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_output = torch.addmm(cpu_self, cpu_mat1, cpu_mat2, alpha=1.5, beta=-0.25)
+    vk_output = torch.addmm(vk_self, vk_mat1, vk_mat2, alpha=1.5, beta=-0.25)
+    vk_grad = torch.ones_like(vk_output)
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output.backward(vk_grad)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 3
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+    cpu_output.backward(torch.ones_like(cpu_output))
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
+    for vk_value, cpu_value in (
+        (vk_self.grad, cpu_self.grad),
+        (vk_mat1.grad, cpu_mat1.grad),
+        (vk_mat2.grad, cpu_mat2.grad),
+    ):
+        assert vk_value.shape == cpu_value.shape
+        torch.testing.assert_close(vk_value.cpu(), cpu_value)
+
+
+@pytest.mark.parametrize("shape_a,shape_b", [((0, 3), (3, 4)), ((5, 3), (3, 0))])
+def test_addmm_empty_output_backward_with_1d_bias_matches_cpu(
+    vulkan_backend, shape_a, shape_b
+):
+    cpu_bias = torch.randn(shape_b[1], requires_grad=True)
+    cpu_mat1 = torch.randn(*shape_a, requires_grad=True)
+    cpu_mat2 = torch.randn(*shape_b, requires_grad=True)
+    vk_bias = cpu_bias.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+    poison = torch.full_like(vk_bias, 17.0)
+    del poison
+
+    cpu_output = torch.addmm(cpu_bias, cpu_mat1, cpu_mat2, alpha=1.5, beta=-0.25)
+    vk_output = torch.addmm(vk_bias, vk_mat1, vk_mat2, alpha=1.5, beta=-0.25)
+    vk_grad = torch.ones_like(vk_output)
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output.backward(vk_grad)
+    # Non-empty saved operands may still require transpose materialization. A
+    # non-empty bias gradient also needs an explicit Vulkan zero operation.
+    assert pytorch_vulkan._C.compute_dispatch_count() == 3 + int(shape_b[1] > 0)
+    assert pytorch_vulkan._C.fallback_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+
+    cpu_output.backward(torch.ones_like(cpu_output))
+    for vk_value, cpu_value in (
+        (vk_bias.grad, cpu_bias.grad),
+        (vk_mat1.grad, cpu_mat1.grad),
+        (vk_mat2.grad, cpu_mat2.grad),
+    ):
+        assert vk_value is not None
+        assert tuple(vk_value.shape) == tuple(cpu_value.shape)
+        assert torch.isfinite(vk_value.cpu()).all()
+        torch.testing.assert_close(vk_value.cpu(), cpu_value)
+
+
+@pytest.mark.parametrize(
+    "alpha,beta", [(float("nan"), 1.0), (float("inf"), 1.0), (1.0, float("nan"))]
+)
+def test_addmm_empty_output_1d_bias_rejects_nonfinite_scalars(
+    vulkan_backend, alpha, beta
+):
+    bias = torch.zeros(4, device=vulkan_backend)
+    mat1 = torch.empty(0, 3, device=vulkan_backend)
+    mat2 = torch.empty(3, 4, device=vulkan_backend)
+    with pytest.raises(RuntimeError, match="finite|representable"):
+        torch.addmm(bias, mat1, mat2, alpha=alpha, beta=beta)
+
+
+def test_addmm_empty_output_1d_bias_validates_operand_contract(vulkan_backend):
+    bias = torch.empty(4, dtype=torch.float64, device=vulkan_backend)
+    mat1 = torch.empty(0, 3, device=vulkan_backend)
+    mat2 = torch.empty(3, 4, device=vulkan_backend)
+    with pytest.raises(RuntimeError, match="float32"):
+        torch.addmm(bias, mat1, mat2)
+
+
+def test_shared_empty_operands_accumulate_gradients_like_cpu(vulkan_backend):
+    cpu_mat1 = torch.empty(0, 3, requires_grad=True)
+    cpu_mat2 = torch.empty(3, 0, requires_grad=True)
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_first = torch.mm(cpu_mat1, cpu_mat2)
+    cpu_second = torch.mm(cpu_mat1, cpu_mat2)
+    vk_first = torch.mm(vk_mat1, vk_mat2)
+    vk_second = torch.mm(vk_mat1, vk_mat2)
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_first.backward(torch.ones_like(vk_first), retain_graph=True)
+    vk_second.backward(torch.ones_like(vk_second))
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+
+    cpu_first.backward(torch.ones_like(cpu_first), retain_graph=True)
+    cpu_second.backward(torch.ones_like(cpu_second))
+    for vk_value, cpu_value in (
+        (vk_mat1.grad, cpu_mat1.grad),
+        (vk_mat2.grad, cpu_mat2.grad),
+    ):
+        assert vk_value is not None
+        assert tuple(vk_value.shape) == tuple(cpu_value.shape)
+        assert torch.isfinite(vk_value.cpu()).all()
+        torch.testing.assert_close(vk_value.cpu(), cpu_value)
+
+
+def test_addmm_zero_inner_dimension_preserves_scaling_for_broadcast_bias(
+    vulkan_backend,
+):
+    cpu_mat1 = torch.empty(4, 0, requires_grad=True)
+    cpu_mat2 = torch.empty(0, 6, requires_grad=True)
+    cpu_bias = torch.randn(6, requires_grad=True)
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_bias = cpu_bias.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_output = torch.addmm(cpu_bias, cpu_mat1, cpu_mat2, alpha=-2.0, beta=0.75)
+    vk_output = torch.addmm(vk_bias, vk_mat1, vk_mat2, alpha=-2.0, beta=0.75)
+    cpu_output.sum().backward()
+    vk_output.sum().backward()
+
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
+    torch.testing.assert_close(vk_bias.grad.cpu(), cpu_bias.grad)
+    torch.testing.assert_close(vk_mat1.grad.cpu(), cpu_mat1.grad)
+    torch.testing.assert_close(vk_mat2.grad.cpu(), cpu_mat2.grad)
+
+
+def test_mm_and_addmm_accept_gradient_requiring_operands(vulkan_backend):
     a = torch.randn(3, 2).to(vulkan_backend).requires_grad_()
     b = torch.randn(2, 4).to(vulkan_backend)
     self_tensor = torch.randn(3, 4).to(vulkan_backend)
 
-    with pytest.raises(RuntimeError, match="does not support autograd"):
-        torch.mm(a, b)
-    with pytest.raises(RuntimeError, match="does not support autograd"):
-        torch.addmm(self_tensor, a.detach(), b.requires_grad_())
-    with pytest.raises(RuntimeError, match="does not support autograd"):
-        torch.addmm(self_tensor.requires_grad_(), a.detach(), b.detach())
+    mm_output = torch.mm(a, b)
+    addmm_output = torch.addmm(self_tensor, a, b)
+    assert mm_output.requires_grad
+    assert addmm_output.requires_grad
 
 
 def test_large_gemm_completes_in_a_clean_process(tmp_path):
@@ -197,7 +481,36 @@ def test_large_gemm_benchmark_has_no_payload_readback():
     assert "torch.randn(*RIGHT_SHAPE).to(device)" in source
 
 
+def test_large_gemm_probe_does_not_hide_tensor_setup_failures():
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
+    spec = importlib.util.spec_from_file_location("vulkan_gemm_benchmark", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+
+    class FakeTorchC:
+        @staticmethod
+        def _get_privateuse1_backend_name():
+            return "vk"
+
+    class FakeTorch:
+        _C = FakeTorchC()
+
+        @staticmethod
+        def ones(_size):
+            raise RuntimeError("tensor setup failed")
+
+    class FakeVulkan:
+        @staticmethod
+        def is_available():
+            return True
+
+    with pytest.raises(RuntimeError, match="tensor setup failed"):
+        benchmark._probe_device(FakeTorch, FakeVulkan)
+
+
 def test_timing_report_does_not_label_fence_wait_as_gpu_busy():
-    report = (Path(__file__).resolve().parents[2] / "docs" / "gemm_gpu_utilization_report.md").read_text()
+    report = (
+        Path(__file__).resolve().parents[2] / "docs" / "gemm_gpu_utilization_report.md"
+    ).read_text()
     assert "host fence-wait" in report
     assert "GPU-busy" not in report

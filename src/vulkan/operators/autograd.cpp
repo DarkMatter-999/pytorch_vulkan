@@ -89,6 +89,93 @@ class LinearAutogradFunction final
                                                      : at::Tensor()};
     }
 };
+
+class MmAutogradFunction final : public torch::autograd::Function<MmAutogradFunction> {
+  public:
+    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
+                              const at::Tensor &mat1, const at::Tensor &mat2) {
+        at::AutoDispatchBelowAutograd guard;
+        ctx->save_for_backward({mat1, mat2});
+        return pytorch_vulkan::mm(mat1, mat2);
+    }
+
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
+        at::AutoDispatchBelowAutograd guard;
+        if (!grad_outputs[0].defined())
+            return {at::Tensor(), at::Tensor()};
+        const auto saved = ctx->get_saved_variables();
+        const at::Tensor &grad = grad_outputs[0];
+        return {ctx->needs_input_grad(0)
+                    ? pytorch_vulkan::mm(
+                          grad, pytorch_vulkan::transpose_contiguous_2d(saved[1]))
+                    : at::Tensor(),
+                ctx->needs_input_grad(1)
+                    ? pytorch_vulkan::mm(
+                          pytorch_vulkan::transpose_contiguous_2d(saved[0]), grad)
+                    : at::Tensor()};
+    }
+};
+
+class AddmmAutogradFunction final
+    : public torch::autograd::Function<AddmmAutogradFunction> {
+  public:
+    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
+                              const at::Tensor &self, const at::Tensor &mat1,
+                              const at::Tensor &mat2, const at::Scalar &beta,
+                              const at::Scalar &alpha) {
+        at::AutoDispatchBelowAutograd guard;
+        ctx->save_for_backward({self, mat1, mat2});
+        ctx->saved_data["beta"] = beta;
+        ctx->saved_data["alpha"] = alpha;
+        return pytorch_vulkan::addmm(self, mat1, mat2, beta, alpha);
+    }
+
+    static torch::autograd::variable_list
+    backward(torch::autograd::AutogradContext *ctx,
+             torch::autograd::variable_list grad_outputs) {
+        at::AutoDispatchBelowAutograd guard;
+        if (!grad_outputs[0].defined())
+            return {at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor(),
+                    at::Tensor()};
+        const auto saved = ctx->get_saved_variables();
+        const at::Tensor &grad = grad_outputs[0];
+        const at::Scalar beta = ctx->saved_data["beta"].toScalar();
+        const at::Scalar alpha = ctx->saved_data["alpha"].toScalar();
+        auto scaled = [](const at::Tensor &tensor, const at::Scalar &scalar) {
+            return pointwise_tensor_scalar(tensor, scalar, PointwiseOperation::Mul,
+                                           false, "addmm backward scaling");
+        };
+        at::Tensor grad_mat1;
+        at::Tensor grad_mat2;
+        if (ctx->needs_input_grad(1)) {
+            grad_mat1 =
+                scaled(pytorch_vulkan::mm(
+                           grad, pytorch_vulkan::transpose_contiguous_2d(saved[2])),
+                       alpha);
+        }
+        if (ctx->needs_input_grad(2)) {
+            grad_mat2 =
+                scaled(pytorch_vulkan::mm(
+                           pytorch_vulkan::transpose_contiguous_2d(saved[1]), grad),
+                       alpha);
+        }
+        at::Tensor grad_self;
+        if (ctx->needs_input_grad(0)) {
+            if (grad.numel() == 0) {
+                grad_self = at::zeros(saved[0].sizes(), grad.options());
+            } else {
+                grad_self = scaled(grad, beta);
+                if (saved[0].dim() == 1)
+                    grad_self = at::sum(grad_self, {0});
+            }
+        }
+        return {grad_self, ctx->needs_input_grad(1) ? grad_mat1 : at::Tensor(),
+                ctx->needs_input_grad(2) ? grad_mat2 : at::Tensor(), at::Tensor(),
+                at::Tensor()};
+    }
+};
 class LinearReluAutogradFunction final
     : public torch::autograd::Function<LinearReluAutogradFunction> {
   public:
@@ -144,6 +231,16 @@ class AdaptiveAvgPoolAutogradFunction final
 at::Tensor autograd_linear(const at::Tensor &input, const at::Tensor &weight,
                            const c10::optional<at::Tensor> &bias) {
     return LinearAutogradFunction::apply(input, weight, bias);
+}
+
+at::Tensor autograd_mm(const at::Tensor &mat1, const at::Tensor &mat2) {
+    return MmAutogradFunction::apply(mat1, mat2);
+}
+
+at::Tensor autograd_addmm(const at::Tensor &self, const at::Tensor &mat1,
+                          const at::Tensor &mat2, const at::Scalar &beta,
+                          const at::Scalar &alpha) {
+    return AddmmAutogradFunction::apply(self, mat1, mat2, beta, alpha);
 }
 
 at::Tensor autograd_linear_relu(const at::Tensor &input, const at::Tensor &weight,

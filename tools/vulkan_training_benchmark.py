@@ -41,15 +41,18 @@ def make_data(kind, seed, batch_size):
     return inputs, torch.nn.functional.one_hot(labels, 10).float()
 
 
-def train_step(model, optimizer, inputs, targets, scoped):
+def train_step(model, optimizer, inputs, targets, scoped, phase="optimizer"):
     if scoped:
         _C.begin_training_step()
     try:
-        optimizer.zero_grad(set_to_none=False)
+        if phase != "forward":
+            optimizer.zero_grad(set_to_none=False)
         output = model(inputs)
         loss = squared_error(output, targets)
-        loss.backward()
-        optimizer.step()
+        if phase != "forward":
+            loss.backward()
+        if phase == "optimizer":
+            optimizer.step()
         if scoped:
             _C.end_training_step()
     except BaseException:
@@ -99,6 +102,7 @@ def run(
     batch_size,
     seed,
     initial_state=None,
+    phase=None,
 ):
     if device.startswith("vk"):
         if backward_mode == "unfused":
@@ -118,12 +122,13 @@ def run(
     cpu_inputs, cpu_targets = make_data(kind, seed + 1, batch_size)
     inputs = cpu_inputs.to(device)
     targets = cpu_targets.to(device)
-    training = mode == "step"
+    phase = phase or ("optimizer" if mode == "step" else "forward")
+    training = phase != "forward"
     scoped = device.startswith("vk") and training
 
     for _ in range(warmups):
         if training:
-            train_step(model, optimizer, inputs, targets, scoped)
+            train_step(model, optimizer, inputs, targets, scoped, phase)
         else:
             forward_step(model, inputs, targets)
 
@@ -154,7 +159,7 @@ def run(
         start = time.monotonic()
         for _ in range(steps):
             if training:
-                last_loss = train_step(model, optimizer, inputs, targets, scoped)
+                last_loss = train_step(model, optimizer, inputs, targets, scoped, phase)
             else:
                 last_loss = forward_step(model, inputs, targets)
         samples.append(time.monotonic() - start)
@@ -197,6 +202,7 @@ def run(
         "shape": list(inputs.shape),
         "batch": batch_size,
         "mode": mode if device.startswith("vk") else "cpu",
+        "phase": phase,
         "backward_mode": backward_mode if device.startswith("vk") else "native",
         "warmups": warmups,
         "repetitions": repetitions,
@@ -255,14 +261,20 @@ def main():
     ):
         parser.error("warmups/repetitions/thread counts are out of range")
     workloads = ("mlp", "mnist") if args.workload == "both" else (args.workload,)
-    modes = ("sync", "step") if args.mode == "both" else (args.mode,)
+    if args.mode == "both":
+        phases = ("forward", "backward", "optimizer")
+    elif args.mode == "sync":
+        phases = ("forward",)
+    else:
+        phases = ("optimizer",)
     torch.set_num_threads(args.cpu_intraop_threads)
     torch.set_num_interop_threads(args.cpu_interop_threads)
     for kind in workloads:
         steps = args.mlp_steps if kind == "mlp" else args.mnist_steps
         batch = 3 if kind == "mlp" else args.mnist_batch_size
         baseline = make_model(kind, "cpu", 17).state_dict()
-        for mode in modes:
+        for phase in phases:
+            mode = "sync" if phase == "forward" else "step"
             cpu_result, cpu_model, _, _ = run(
                 kind,
                 mode,
@@ -274,6 +286,7 @@ def main():
                 batch,
                 17,
                 baseline,
+                phase,
             )
             print(json.dumps(cpu_result, allow_nan=False, sort_keys=True))
             if not pytorch_vulkan.is_available():
@@ -289,6 +302,7 @@ def main():
                 batch,
                 17,
                 baseline,
+                phase,
             )
             vk_result["cpu_comparison"] = {
                 "final_loss": cpu_result["final_loss"],

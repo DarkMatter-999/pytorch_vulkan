@@ -165,6 +165,48 @@ def test_gemm_frontends_complete_one_synchronous_dispatch(vulkan_backend, case_n
     assert pytorch_vulkan._C.fallback_count() == 0
 
 
+def test_zero_dimension_mm_and_addmm_gradients_are_finite(vulkan_backend):
+    cpu_mat1 = torch.empty(2, 0, requires_grad=True)
+    cpu_mat2 = torch.empty(0, 3, requires_grad=True)
+    cpu_self = torch.ones(2, 3, requires_grad=True)
+    cpu_addmm_mat1 = cpu_mat1.detach().clone().requires_grad_()
+    cpu_addmm_mat2 = cpu_mat2.detach().clone().requires_grad_()
+    vk_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_addmm_mat1 = cpu_mat1.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_addmm_mat2 = cpu_mat2.detach().clone().to(vulkan_backend).requires_grad_()
+    vk_self = cpu_self.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_mm = torch.mm(cpu_mat1, cpu_mat2)
+    cpu_addmm = torch.addmm(cpu_self, cpu_addmm_mat1, cpu_addmm_mat2, beta=2.0)
+    vk_mm = torch.mm(vk_mat1, vk_mat2)
+    vk_addmm = torch.addmm(vk_self, vk_addmm_mat1, vk_addmm_mat2, beta=2.0)
+
+    assert torch.isfinite(vk_mm.cpu()).all()
+    assert torch.isfinite(vk_addmm.cpu()).all()
+    cpu_mm.sum().backward()
+    cpu_addmm.sum().backward()
+    vk_mm.sum().backward()
+    vk_addmm.sum().backward()
+    torch.testing.assert_close(vk_mm.cpu(), cpu_mm, rtol=2e-3, atol=2e-3)
+    torch.testing.assert_close(vk_addmm.cpu(), cpu_addmm, rtol=2e-3, atol=2e-3)
+    for vk_gradient, cpu_gradient in (
+        (vk_mat1.grad, cpu_mat1.grad),
+        (vk_mat2.grad, cpu_mat2.grad),
+        (vk_addmm_mat1.grad, cpu_addmm_mat1.grad),
+        (vk_addmm_mat2.grad, cpu_addmm_mat2.grad),
+    ):
+        assert vk_gradient is not None
+        assert cpu_gradient is not None
+        assert torch.isfinite(vk_gradient.cpu()).all()
+        torch.testing.assert_close(
+            vk_gradient.cpu(), cpu_gradient, rtol=2e-3, atol=2e-3
+        )
+    assert vk_self.grad is not None
+    assert torch.isfinite(vk_self.grad.cpu()).all()
+    torch.testing.assert_close(vk_self.grad.cpu(), cpu_self.grad, rtol=2e-3, atol=2e-3)
+
+
 def test_execution_counter_snapshot_accounts_for_fallbacks(vulkan_backend):
     source = torch.tensor([-2.0, 0.5, 3.0], dtype=torch.float32).to(vulkan_backend)
     pytorch_vulkan._C.set_strict_mode(True)

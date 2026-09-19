@@ -1,6 +1,7 @@
 #include "linear.h"
 
 #include "autograd.h"
+#include "binary.h"
 #include "capability.h"
 #include "fake_tensor.h"
 #include "unary.h"
@@ -17,19 +18,11 @@
 #include <torch/library.h>
 
 #include <cmath>
-#include <initializer_list>
 #include <limits>
 #include <vector>
 
 namespace pytorch_vulkan {
 namespace {
-void reject_gemm_autograd(const char *name, std::initializer_list<at::Tensor> tensors) {
-    for (const auto &tensor : tensors) {
-        TORCH_CHECK(!tensor.requires_grad(), "Vulkan ", name,
-                    " does not support autograd for gradient-requiring operands");
-    }
-}
-
 VkDeviceSize checked_bytes(const at::Tensor &tensor, const char *name) {
     TORCH_CHECK(tensor.numel() >= 0, "Vulkan ", name, " has a negative element count");
     const uint64_t elements = static_cast<uint64_t>(tensor.numel());
@@ -191,15 +184,16 @@ at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
                         "Vulkan linear output may not alias a GEMM input");
             {
                 at::Tensor weight_t = weight.t();
-                const auto src_layout = inspect_vulkan_tensor_layout(
-                    weight_t, "linear weight transpose");
+                const auto src_layout =
+                    inspect_vulkan_tensor_layout(weight_t, "linear weight transpose");
                 TORCH_CHECK(src_layout.numel == k * n,
                             "Vulkan linear transpose element count mismatch");
                 const uint64_t elements =
                     static_cast<uint64_t>(k) * static_cast<uint64_t>(n);
                 TORCH_CHECK(elements <= std::numeric_limits<uint32_t>::max(),
                             "Vulkan linear transpose exceeds dispatch limits");
-                TORCH_CHECK(&platform == &allocation_platform(weight.storage().data_ptr()),
+                TORCH_CHECK(&platform ==
+                                &allocation_platform(weight.storage().data_ptr()),
                             "Vulkan linear requires one Vulkan platform");
                 platform.compute().broadcast(
                     allocation_buffer(weight.storage().data_ptr()).buffer(), src_layout,
@@ -226,7 +220,6 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
     if (is_fake_tensor(mat1))
         return at::_ops::mm::redispatch(c10::DispatchKeySet(c10::DispatchKey::Meta),
                                         mat1, mat2);
-    reject_gemm_autograd("mm", {mat1, mat2});
     TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2 && mat1.size(1) == mat2.size(0),
                 "Vulkan mm requires matching 2-D matrices");
     TORCH_CHECK(mat1.device() == mat2.device() && mat1.scalar_type() == at::kFloat &&
@@ -241,9 +234,12 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
     if (k == 0) {
         const auto output_layout = inspect_vulkan_tensor_layout(output, "mm output");
         const auto &platform = allocation_platform(output.storage().data_ptr());
+        validate_allocation(output.storage().data_ptr(), output_layout.allocation_bytes,
+                            "mm output");
         platform.compute().fill_alias(
             allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
-            allocation_buffer(output.storage().data_ptr()).buffer(), output_layout, 0.0F);
+            allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
+            0.0F);
         return output;
     }
     const auto a_layout = validate_gemm_2d(mat1, {m, k}, "mm mat1");
@@ -262,6 +258,35 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
         out_layout, allocation_buffer(output.storage().data_ptr()).buffer(), out_layout,
         VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(m), static_cast<uint32_t>(n),
         static_cast<uint32_t>(k));
+    return output;
+}
+
+at::Tensor transpose_contiguous_2d(const at::Tensor &input) {
+    TORCH_CHECK(input.dim() == 2 && input.scalar_type() == at::kFloat &&
+                    input.layout() == at::kStrided && input.is_contiguous(),
+                "Vulkan GEMM transpose requires a contiguous float32 2-D tensor");
+    at::Tensor output = at::empty({input.size(1), input.size(0)}, input.options());
+    if (input.numel() == 0)
+        return output;
+
+    const at::Tensor input_transposed = input.t();
+    const auto source =
+        inspect_vulkan_tensor_layout(input_transposed, "GEMM transpose input");
+    const auto destination = validate_gemm_2d(output, {input.size(1), input.size(0)},
+                                              "GEMM transpose output");
+    const auto &platform = allocation_platform(input.storage().data_ptr());
+    TORCH_CHECK(&platform == &allocation_platform(output.storage().data_ptr()),
+                "Vulkan GEMM transpose requires one Vulkan platform");
+    validate_allocation(input.storage().data_ptr(), source.allocation_bytes,
+                        "GEMM transpose input");
+    validate_allocation(output.storage().data_ptr(), destination.allocation_bytes,
+                        "GEMM transpose output");
+    TORCH_CHECK(input.numel() <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan GEMM transpose exceeds dispatch limits");
+    platform.compute().broadcast(
+        allocation_buffer(input.storage().data_ptr()).buffer(), source,
+        allocation_buffer(output.storage().data_ptr()).buffer(), destination,
+        static_cast<uint32_t>(input.numel()), 1.0F);
     return output;
 }
 
@@ -497,8 +522,6 @@ linear_relu_backward(const at::Tensor &grad_output, const at::Tensor &input,
 
 at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tensor &mat2,
                  const at::Scalar &beta, const at::Scalar &alpha) {
-    if (!is_fake_tensor(mat1))
-        reject_gemm_autograd("addmm", {self, mat1, mat2});
     if (!is_fake_tensor(mat1) && self.dim() == 2 && mat1.dim() == 2 &&
         mat2.dim() == 2 && self.size(0) == mat1.size(0) &&
         self.size(1) == mat2.size(1) && mat1.size(1) == mat2.size(0) &&
@@ -507,24 +530,33 @@ at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tenso
         mat2.scalar_type() == at::kFloat && self.device() == mat1.device() &&
         mat1.device() == mat2.device()) {
         const int64_t m = mat1.size(0), n = mat2.size(1), k = mat1.size(1);
+        const float beta_value = checked_scalar(beta, "addmm beta");
+        const float alpha_value = checked_scalar(alpha, "addmm alpha");
         at::Tensor output = at::empty({m, n}, self.options());
         if (m == 0 || n == 0)
             return output;
         if (k == 0) {
             const auto self_layout = inspect_vulkan_tensor_layout(self, "addmm self");
-            const auto output_layout = inspect_vulkan_tensor_layout(output, "addmm output");
+            const auto output_layout =
+                inspect_vulkan_tensor_layout(output, "addmm output");
             const auto &platform = allocation_platform(self.storage().data_ptr());
-            const float beta_value = checked_scalar(beta, "addmm beta");
+            TORCH_CHECK(&platform == &allocation_platform(output.storage().data_ptr()),
+                        "Vulkan addmm requires one Vulkan platform");
+            validate_allocation(self.storage().data_ptr(), self_layout.allocation_bytes,
+                                "addmm self");
+            validate_allocation(output.storage().data_ptr(),
+                                output_layout.allocation_bytes, "addmm output");
             if (beta_value == 0.0F) {
                 platform.compute().fill_alias(
-                    allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
-                    allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
-                    0.0F);
+                    allocation_buffer(output.storage().data_ptr()).buffer(),
+                    output_layout,
+                    allocation_buffer(output.storage().data_ptr()).buffer(),
+                    output_layout, 0.0F);
             } else {
                 platform.compute().tensor_scalar(
                     allocation_buffer(self.storage().data_ptr()).buffer(), self_layout,
-                    allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
-                    beta_value, 2);
+                    allocation_buffer(output.storage().data_ptr()).buffer(),
+                    output_layout, beta_value, 2);
             }
             return output;
         }
@@ -547,31 +579,51 @@ at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tenso
             allocation_buffer(self.storage().data_ptr()).buffer(), c_layout,
             allocation_buffer(output.storage().data_ptr()).buffer(), out_layout,
             VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(m),
-            static_cast<uint32_t>(n), static_cast<uint32_t>(k),
-            checked_scalar(alpha, "addmm alpha"), checked_scalar(beta, "addmm beta"),
+            static_cast<uint32_t>(n), static_cast<uint32_t>(k), alpha_value, beta_value,
             false);
         return output;
     }
+    TORCH_CHECK(self.device().type() == c10::DeviceType::PrivateUse1 &&
+                    self.device().index() == 0 && mat1.device() == self.device() &&
+                    mat2.device() == self.device(),
+                "Vulkan addmm requires all operands on Vulkan device index 0");
+    TORCH_CHECK(self.layout() == at::kStrided && mat1.layout() == at::kStrided &&
+                    mat2.layout() == at::kStrided,
+                "Vulkan addmm requires strided operands");
+    TORCH_CHECK(self.scalar_type() == at::kFloat && mat1.scalar_type() == at::kFloat &&
+                    mat2.scalar_type() == at::kFloat,
+                "Vulkan addmm supports only float32 operands");
     TORCH_CHECK(self.dim() == 1 && mat1.dim() == 2 && mat2.dim() == 2 &&
                     mat1.size(1) == mat2.size(0) && self.size(0) == mat2.size(1),
                 "Vulkan addmm supports a 1-D bias and matching 2-D matrices");
+    const float beta_value = checked_scalar(beta, "addmm beta");
+    const float alpha_value = checked_scalar(alpha, "addmm alpha");
+    const int64_t m = mat1.size(0), n = mat2.size(1);
+    if (m == 0 || n == 0)
+        return at::empty({m, n}, self.options());
     if (mat1.size(1) == 0) {
-        const int64_t m = mat1.size(0), n = mat2.size(1);
         at::Tensor output = at::empty({m, n}, self.options());
         if (m == 0 || n == 0)
             return output;
         const auto bias_matrix = self.expand({m, n});
-        const auto bias_layout = inspect_vulkan_tensor_layout(bias_matrix, "addmm bias");
+        const auto bias_layout =
+            inspect_vulkan_tensor_layout(bias_matrix, "addmm bias");
         const auto output_layout = inspect_vulkan_tensor_layout(output, "addmm output");
         const auto &platform = allocation_platform(self.storage().data_ptr());
+        TORCH_CHECK(&platform == &allocation_platform(output.storage().data_ptr()),
+                    "Vulkan addmm requires one Vulkan platform");
+        validate_allocation(self.storage().data_ptr(), bias_layout.allocation_bytes,
+                            "addmm bias");
+        validate_allocation(output.storage().data_ptr(), output_layout.allocation_bytes,
+                            "addmm output");
         platform.compute().tensor_scalar(
             allocation_buffer(bias_matrix.storage().data_ptr()).buffer(), bias_layout,
             allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
-            checked_scalar(beta, "addmm beta"), 2);
+            beta_value, 2);
         return output;
     }
     TORCH_CHECK(
-        beta.toDouble() == 1.0 && alpha.toDouble() == 1.0,
+        beta_value == 1.0F && alpha_value == 1.0F,
         "Vulkan addmm supports non-default scalars only for contiguous 2-D self");
     return lower_linear(mat1, mat2, self, true);
 }
@@ -628,6 +680,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     m.impl("linear", &pytorch_vulkan::autograd_linear);
+    m.impl("mm", &pytorch_vulkan::autograd_mm);
+    m.impl("addmm", &pytorch_vulkan::autograd_addmm);
 }
 
 TORCH_LIBRARY(pytorch_vulkan, m) {

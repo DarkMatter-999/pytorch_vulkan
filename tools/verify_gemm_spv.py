@@ -151,14 +151,11 @@ def verify_spirv(disassembly):
 
 
 def decode_embedded_spirv(header):
-    match = re.search(
-        r"kCode\[\]\s*=\s*\{(?P<words>.*?)\};", header, re.DOTALL
-    )
+    match = re.search(r"kCode\[\]\s*=\s*\{(?P<words>.*?)\};", header, re.DOTALL)
     if not match:
         fail("embedded kCode array")
     words = [
-        int(word, 16)
-        for word in re.findall(r"0x([0-9a-fA-F]+)U", match.group("words"))
+        int(word, 16) for word in re.findall(r"0x([0-9a-fA-F]+)U", match.group("words"))
     ]
     if not words:
         fail("embedded kCode is empty")
@@ -205,9 +202,7 @@ def main():
         else:
             expected = manifest.get(key)
         if expected != value:
-            raise SystemExit(
-                f"{key} mismatch: expected {expected}, got {value}"
-            )
+            raise SystemExit(f"{key} mismatch: expected {expected}, got {value}")
         print(f"{key}={value}")
     print("gemm shader contract=ok")
 

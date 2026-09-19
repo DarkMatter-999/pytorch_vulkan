@@ -120,7 +120,13 @@ def test_gemm_verifier_decodes_embedded_spirv_words_exactly():
     with tempfile.TemporaryDirectory() as directory:
         binary = pathlib.Path(directory) / "gemm.comp.spv"
         subprocess.run(
-            ["glslc", "-Os", "-o", str(binary), str(ROOT / "src/vulkan/shaders/glsl/gemm.comp")],
+            [
+                "glslc",
+                "-Os",
+                "-o",
+                str(binary),
+                str(ROOT / "src/vulkan/shaders/glsl/gemm.comp"),
+            ],
             check=True,
         )
         assert embedded == binary.read_bytes()

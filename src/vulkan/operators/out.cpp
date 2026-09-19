@@ -378,8 +378,10 @@ at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &oth
                                          const at::Scalar &alpha,
                                          PointwiseOperation operation,
                                          const char *name) {
-    TORCH_CHECK(pytorch_vulkan::platform()->compute().training_step_active(), "Vulkan ",
-                name, " in-place operations are unsupported");
+    if (self.numel() != 0) {
+        TORCH_CHECK(pytorch_vulkan::platform()->compute().training_step_active(),
+                    "Vulkan ", name, " in-place operations are unsupported");
+    }
     const auto self_layout = validate_alias_input(self, name);
     const bool wrapped_scalar = other.device().is_cpu() && other.dim() == 0 &&
                                 other.unsafeGetTensorImpl()->is_wrapped_number();

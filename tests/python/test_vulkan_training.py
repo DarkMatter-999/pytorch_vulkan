@@ -1,7 +1,78 @@
+import importlib.util
+from pathlib import Path
+
 import pytest
 import torch
 
 import pytorch_vulkan
+
+
+def test_training_benchmark_phases_preserve_scope_and_residency(vulkan_backend):
+    script = (
+        Path(__file__).resolve().parents[2] / "tools" / "vulkan_training_benchmark.py"
+    )
+    spec = importlib.util.spec_from_file_location("vulkan_training_benchmark", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    baseline = benchmark.make_model("mlp", "cpu", 17).state_dict()
+
+    results = {}
+    for phase in ("forward", "backward", "optimizer"):
+        result, _, _, _ = benchmark.run(
+            "mlp",
+            "sync" if phase == "forward" else "step",
+            "fused",
+            vulkan_backend,
+            0,
+            1,
+            1,
+            3,
+            17,
+            baseline,
+            phase,
+        )
+        results[phase] = result
+
+    expected = {
+        "forward": {
+            "submitted": "dispatches",
+            "completed": "dispatches",
+            "waits": "dispatches",
+            "explicit_transfers": [0],
+            "fallbacks": [0],
+        },
+        "backward": {
+            "submitted": [1],
+            "completed": [1],
+            "waits": [1],
+            "explicit_transfers": [0],
+            "fallbacks": [0],
+        },
+        "optimizer": {
+            "submitted": [1],
+            "completed": [1],
+            "waits": [1],
+            "explicit_transfers": [0],
+            "fallbacks": [0],
+        },
+    }
+    assert set(results) == set(expected)
+    for phase, fields in expected.items():
+        assert results[phase]["phase"] == phase
+        assert len(results[phase]["dispatches"]) == 1
+        assert results[phase]["dispatches"][0] > 0
+        for field, value in fields.items():
+            if value == "dispatches":
+                value = results[phase]["dispatches"]
+            assert results[phase][field] == value
+
+    assert results["forward"]["synchronization_boundaries"] == (
+        "per-operation synchronous submit/wait"
+    )
+    for phase in ("backward", "optimizer"):
+        assert results[phase]["synchronization_boundaries"] == (
+            "one training-scope submit/wait per step"
+        )
 
 
 def _make_mlp(device, seed):
@@ -327,6 +398,33 @@ def test_training_scope_records_two_dispatches_and_completes_once(vulkan_backend
 
     assert pytorch_vulkan._C.compute_submission_count() == 1
     torch.testing.assert_close(result.cpu(), torch.full((2, 8), -3.0))
+
+
+def test_gemm_forward_backward_training_scope_submits_once(vulkan_backend):
+    torch.manual_seed(131)
+    mat1 = torch.randn(5, 7).to(vulkan_backend).requires_grad_()
+    mat2 = torch.randn(7, 3).to(vulkan_backend).requires_grad_()
+    self_tensor = torch.randn(5, 3).to(vulkan_backend).requires_grad_()
+
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        loss = (
+            torch.mm(mat1, mat2).sum()
+            + torch.addmm(self_tensor, mat1, mat2, alpha=0.5, beta=2.0).sum()
+        )
+        loss.backward()
+        assert pytorch_vulkan._C.compute_submitted_count() == 0
+        assert pytorch_vulkan._C.compute_wait_count() == 0
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    assert pytorch_vulkan._C.compute_submitted_count() == 1
+    assert pytorch_vulkan._C.compute_wait_count() == 1
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
 
 
 def test_fixed_mlp_forward_backward_runs_on_vulkan(vulkan_backend):
