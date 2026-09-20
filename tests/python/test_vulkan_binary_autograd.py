@@ -25,12 +25,40 @@ def test_binary_tensor_gradients_match_cpu(vulkan_backend, operation):
     cpu_rhs = torch.tensor([-3.0, 4.0, 2.0], requires_grad=True)
     vk_lhs = cpu_lhs.detach().clone().to(vulkan_backend).requires_grad_()
     vk_rhs = cpu_rhs.detach().clone().to(vulkan_backend).requires_grad_()
-
     cpu_result = operation(cpu_lhs, cpu_rhs)
+    vk_grad = torch.ones_like(cpu_result).to(vulkan_backend)
+
+    before = pytorch_vulkan._C.live_resource_snapshot()
+    service_before = pytorch_vulkan._C.shared_service_snapshot()
+    pytorch_vulkan._C.reset_descriptor_resource_counters()
+    pytorch_vulkan._C.reset_execution_counters()
+
     vk_result = operation(vk_lhs, vk_rhs)
-    torch.testing.assert_close(vk_result.cpu(), cpu_result)
     cpu_result.backward(torch.ones_like(cpu_result))
-    vk_result.backward(torch.ones_like(cpu_result).to(vulkan_backend))
+    vk_result.backward(vk_grad)
+
+    after = pytorch_vulkan._C.live_resource_snapshot()
+    service_after = pytorch_vulkan._C.shared_service_snapshot()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert after[2] == before[2]
+    assert after[3] == before[3]
+    for key in ("pipeline_entries", "pipeline_hits", "pipeline_misses",
+                "shader_modules", "shader_hits", "shader_misses"):
+        assert service_after[key] == service_before[key]
+    assert service_before["pipeline_entries"] > 0
+    assert service_before["shader_modules"] > 0
+    descriptor_allocations = service_after["descriptor_allocations"] - service_before["descriptor_allocations"]
+    descriptor_reuses = service_after["descriptor_reuses"] - service_before["descriptor_reuses"]
+    assert descriptor_allocations + descriptor_reuses >= 1
+    assert service_after["descriptor_pools"] <= service_after["descriptor_pool_limit"]
+    assert counters[0] == 3
+    assert counters[1] == 0
+    assert counters[2] == 0
+    assert counters[3] == 0
+    assert pytorch_vulkan._C.compute_submitted_count() == 3
+    assert pytorch_vulkan._C.compute_completed_count() == 3
+    assert pytorch_vulkan._C.compute_wait_count() == 3
+    torch.testing.assert_close(vk_result.cpu(), cpu_result)
 
     torch.testing.assert_close(vk_lhs.grad.cpu(), cpu_lhs.grad)
     torch.testing.assert_close(vk_rhs.grad.cpu(), cpu_rhs.grad)

@@ -3,6 +3,8 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
+#include "vulkan/shader_registry.h"
+#include "vulkan/pipeline_cache.h"
 
 #include <algorithm>
 #include <atomic>
@@ -34,6 +36,7 @@ struct DeviceSuitability {
     bool storage_dispatch_limits = false;
     bool host_visible_memory = false;
     bool shader_capabilities = false;
+    bool shader_int64_supported = false;
     bool uses_core_12_features = false;
     bool has_8bit_storage_extension = false;
     bool has_float16_int8_extension = false;
@@ -161,6 +164,7 @@ DeviceSuitability assess_device(VkPhysicalDevice device,
         features.pNext = &core12;
         vkGetPhysicalDeviceFeatures2(device, &features);
         result.formatter_double_supported = features.features.shaderFloat64;
+        result.shader_int64_supported = features.features.shaderInt64;
         result.bool_pointwise_supported =
             core12.shaderInt8 && core12.storageBuffer8BitAccess;
         result.shader_capabilities =
@@ -176,6 +180,7 @@ DeviceSuitability assess_device(VkPhysicalDevice device,
         storage8.pNext = &float16_int8;
         vkGetPhysicalDeviceFeatures2(device, &features);
         result.formatter_double_supported = features.features.shaderFloat64;
+        result.shader_int64_supported = features.features.shaderInt64;
         result.bool_pointwise_supported = result.has_float16_int8_extension &&
                                           float16_int8.shaderInt8 &&
                                           storage8.storageBuffer8BitAccess;
@@ -191,6 +196,8 @@ DeviceSuitability assess_device(VkPhysicalDevice device,
         result.reason = "no host-visible memory is available";
     else if (!result.shader_capabilities)
         result.reason = "required shader capabilities are unavailable";
+    else if (!result.shader_int64_supported)
+        result.reason = "shaderInt64 feature is unavailable";
     return result;
 }
 
@@ -201,6 +208,8 @@ DeviceSuitability assess_device(VkPhysicalDevice device,
 struct QuarantinedVulkanResources {
     std::unique_ptr<VulkanCompute> compute;
     std::unique_ptr<VulkanExecutionContext> execution;
+    std::unique_ptr<VulkanShaderRegistry> shader_registry;
+    std::unique_ptr<VulkanPipelineCache> pipeline_cache;
     VkInstance instance = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkCommandPool command_pool = VK_NULL_HANDLE;
@@ -216,6 +225,8 @@ struct QuarantinedVulkanResources {
     ~QuarantinedVulkanResources() {
         execution.release();
         compute.release();
+        shader_registry.release();
+        pipeline_cache.release();
         staging_buffer.release();
     }
 };
@@ -457,6 +468,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                         quarantined_resources[quarantined_resource_count++];
                     resources.compute = std::move(compute_);
                     resources.execution = std::move(execution_);
+                    resources.shader_registry = std::move(shader_registry_);
+                    resources.pipeline_cache = std::move(pipeline_cache_);
                     resources.instance = instance_;
                     resources.device = device_;
                     resources.command_pool = command_pool_;
@@ -465,6 +478,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                 } else {
                     compute_.release();
                     execution_.release();
+                    shader_registry_.release();
+                    pipeline_cache_.release();
                     staging_buffer_.release();
                 }
                 instance_ = VK_NULL_HANDLE;
@@ -473,6 +488,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                 debug_messenger_ = VK_NULL_HANDLE;
             } else {
                 compute_.reset();
+                pipeline_cache_.reset();
+                shader_registry_.reset();
                 execution_.reset();
                 if (command_pool_ != VK_NULL_HANDLE)
                     vkDestroyCommandPool(device_, command_pool_, nullptr);
@@ -510,6 +527,7 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                         suitability.storage_dispatch_limits;
                     device_info_.host_visible_memory = suitability.host_visible_memory;
                     device_info_.shader_capabilities = suitability.shader_capabilities;
+                    device_info_.shader_int64_supported = suitability.shader_int64_supported;
                     float queue_priority = 1.0F;
                     VkDeviceQueueCreateInfo queue_info{};
                     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -521,6 +539,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                     enabled_features2.features.shaderFloat64 =
                         suitability.formatter_double_supported;
+                    enabled_features2.features.shaderInt64 =
+                        suitability.shader_int64_supported;
                     VkDeviceCreateInfo device_info{};
                     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
                     device_info.queueCreateInfoCount = 1;
@@ -583,6 +603,10 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                                  "Could not create Vulkan command pool");
                     execution_ = std::make_unique<VulkanExecutionContext>(
                         device_, compute_queue_, command_pool_, this);
+                    shader_registry_ = std::make_unique<VulkanShaderRegistry>(
+                        device_, *this, *execution_);
+                    pipeline_cache_ = std::make_unique<VulkanPipelineCache>(
+                        device_, *this, *execution_, 64);
                     compute_ = std::make_unique<VulkanCompute>(*this);
                     return true;
                 } catch (const std::exception &error) {
@@ -614,6 +638,8 @@ void VulkanPlatform::cleanup() noexcept {
         // Do not invoke Vulkan teardown on handles inherited across fork.
         compute_.release();
         execution_.release();
+        shader_registry_.release();
+        pipeline_cache_.release();
         return;
     }
     std::scoped_lock lock(queue_mutex_);
@@ -625,6 +651,8 @@ void VulkanPlatform::cleanup() noexcept {
                     quarantined_resources[quarantined_resource_count++];
                 resources.compute = std::move(compute_);
                 resources.execution = std::move(execution_);
+                resources.shader_registry = std::move(shader_registry_);
+                resources.pipeline_cache = std::move(pipeline_cache_);
                 resources.instance = instance_;
                 resources.device = device_;
                 resources.command_pool = command_pool_;
@@ -637,6 +665,8 @@ void VulkanPlatform::cleanup() noexcept {
                 // the compute object rather than destroying unknown work.
                 compute_.release();
                 execution_.release();
+                shader_registry_.release();
+                pipeline_cache_.release();
                 staging_buffer_.release();
                 pending_transfer_resources_.clear();
             }
@@ -650,8 +680,10 @@ void VulkanPlatform::cleanup() noexcept {
         }
     }
     // Compute owns device objects; wait for all queue work before destroying them.
-    execution_.reset();
     compute_.reset();
+    pipeline_cache_.reset();
+    shader_registry_.reset();
+    execution_.reset();
     staging_buffer_.reset();
     for (const PendingTransferResources &resources : pending_transfer_resources_) {
         if (resources.fence != VK_NULL_HANDLE) {
@@ -711,10 +743,24 @@ VulkanExecutionContext &VulkanPlatform::execution_context() const {
     return *execution_;
 }
 
+VulkanShaderRegistry &VulkanPlatform::shader_registry() const { return *shader_registry_; }
+
+VulkanPipelineCache &VulkanPlatform::pipeline_cache() const { return *pipeline_cache_; }
+
+PipelineCacheSnapshot VulkanPlatform::pipeline_cache_snapshot() const {
+    return pipeline_cache_ == nullptr ? PipelineCacheSnapshot{} : pipeline_cache_->snapshot();
+}
+
 void VulkanPlatform::mark_device_lost(VkResult result) const {
     int expected = static_cast<int>(VK_SUCCESS);
     device_loss_result_.compare_exchange_strong(expected, static_cast<int>(result),
                                                  std::memory_order_relaxed);
+    if (shader_registry_ != nullptr)
+        shader_registry_->invalidate_device_loss();
+    if (pipeline_cache_ != nullptr)
+        pipeline_cache_->invalidate_device_loss();
+    if (compute_ != nullptr)
+        compute_->invalidate_device_loss();
 }
 
 bool VulkanPlatform::device_lost() const {

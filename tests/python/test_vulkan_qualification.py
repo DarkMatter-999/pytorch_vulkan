@@ -28,6 +28,38 @@ def test_classify_unavailable_is_skip_not_pass():
     assert result == "skip"
 
 
+def test_failed_output_with_unavailable_text_is_not_a_skip():
+    result = qualification.classify_result(
+        {"exit_code": 1, "stdout": "device unavailable\n", "stderr": ""},
+        device_dependent=True,
+    )
+
+    assert result == "fail"
+
+
+def test_qualification_artifact_schema_and_shape_consistency():
+    artifact = json.loads(
+        (Path(__file__).resolve().parents[2] / "docs/vulkan-runtime-foundation-qualification.json")
+        .read_text()
+    )
+    assert artifact["schema_version"] == 1
+    assert artifact["status"] == "qualified"
+    assert artifact["performance_claims"] == "timing evidence only; no faster-than-CPU claim"
+    assert set(artifact["workloads"]) == {"small", "medium", "large", "skinny", "irregular"}
+    required = {
+        "shape", "dispatches", "submissions", "completions", "waits", "timing_status",
+        "timing_reason", "gpu_timestamp_sample_count", "gpu_timestamp_intervals_ns",
+        "host_latency_ns", "cache_metrics", "resource_bounds",
+    }
+    for name, workload in artifact["workloads"].items():
+        assert required <= workload.keys(), name
+        assert workload["dispatches"] == workload["submissions"] == workload["completions"]
+        assert workload["waits"] == workload["completions"]
+        assert workload["gpu_timestamp_sample_count"] == len(workload["gpu_timestamp_intervals_ns"])
+        assert len(workload["shape"]) == 3
+        assert workload["resource_bounds"]["pipeline_pending_destructions_after"] == 0
+
+
 def test_run_command_normalizes_bytes_timeout_output(monkeypatch):
     def timeout(*args, **kwargs):
         raise qualification.subprocess.TimeoutExpired(

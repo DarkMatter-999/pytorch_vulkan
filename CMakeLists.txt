@@ -16,8 +16,11 @@ endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   if(NOT TARGET vulkan_platform)
-    add_library(vulkan_platform STATIC src/vulkan_platform.cpp src/vulkan_execution.cpp
-                   src/vulkan_compute.cpp src/vulkan/shaders/generated/pointwise_spv.h
+     add_library(vulkan_platform STATIC src/vulkan_platform.cpp src/vulkan_execution.cpp
+                    src/vulkan/descriptor_arena.cpp
+                     src/vulkan/pipeline_cache.cpp
+                    src/vulkan/shader_registry.cpp
+                    src/vulkan_compute.cpp src/vulkan/shaders/generated/pointwise_spv.h
                    src/vulkan/shaders/generated/reduction_indexing_spv.h
                    src/vulkan/shaders/generated/reduction_indexing_spv.sha256
                    src/vulkan/shaders/generated/model_spv.h
@@ -166,7 +169,34 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
         add_test(NAME vulkan_execution_test COMMAND vulkan_execution_test)
         set_tests_properties(vulkan_execution_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
-endif()
+
+     add_executable(vulkan_shader_registry_test
+                    tests/cpp/vulkan_shader_registry_test.cpp)
+    target_compile_features(vulkan_shader_registry_test PRIVATE cxx_std_17)
+    target_link_libraries(vulkan_shader_registry_test PRIVATE vulkan_platform vulkan_buffer)
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_shader_registry_test COMMAND vulkan_shader_registry_test)
+        set_tests_properties(vulkan_shader_registry_test PROPERTIES SKIP_RETURN_CODE 77)
+     endif()
+
+      add_executable(vulkan_pipeline_cache_test
+                     tests/vulkan_pipeline_cache_test.cpp)
+     target_compile_features(vulkan_pipeline_cache_test PRIVATE cxx_std_17)
+     target_link_libraries(vulkan_pipeline_cache_test PRIVATE vulkan_platform vulkan_buffer)
+     if(BUILD_TESTING)
+         add_test(NAME vulkan_pipeline_cache_test COMMAND vulkan_pipeline_cache_test)
+          set_tests_properties(vulkan_pipeline_cache_test PROPERTIES SKIP_RETURN_CODE 77)
+      endif()
+
+      add_executable(vulkan_descriptor_arena_test
+                     tests/vulkan_descriptor_arena_test.cpp)
+      target_compile_features(vulkan_descriptor_arena_test PRIVATE cxx_std_17)
+      target_link_libraries(vulkan_descriptor_arena_test PRIVATE vulkan_platform vulkan_buffer)
+      if(BUILD_TESTING)
+          add_test(NAME vulkan_descriptor_arena_test COMMAND vulkan_descriptor_arena_test)
+          set_tests_properties(vulkan_descriptor_arena_test PROPERTIES SKIP_RETURN_CODE 77)
+      endif()
+  endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     add_executable(vulkan_multi_output_backward_test
@@ -356,12 +386,19 @@ if(BUILD_PYTHON_EXTENSION)
           add_test(NAME vulkan_manifest_validation
                    COMMAND ${Python3_EXECUTABLE}
                            ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_capabilities.py)
-          add_test(NAME vulkan_supported_workload_validation
-                   COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
-                           ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_conformance.py)
+           add_test(NAME vulkan_supported_workload_validation
+                    COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_conformance.py)
           set_tests_properties(vulkan_supported_workload_validation PROPERTIES
-                               WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                               ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation")
+                                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation")
+           add_test(NAME vulkan_runtime_foundation_validation
+                    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_reliability.py::test_mixed_workload_validation_layer_gate)
+           set_tests_properties(vulkan_runtime_foundation_validation PROPERTIES
+                                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
+                                SKIP_RETURN_CODE 77)
           add_test(NAME vulkan_python_suite
                   COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
                           ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)

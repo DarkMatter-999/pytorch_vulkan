@@ -15,15 +15,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PYTHON = ROOT / ".venv" / "bin" / "python"
-UNAVAILABLE_MARKERS = (
-    "no suitable vulkan device",
-    "no vulkan device",
-    "vulkan unavailable",
-    "device unavailable",
-    "timestamp queries unsupported",
-)
-
-
 def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
     """Run one command without a shell and retain its exact result."""
     try:
@@ -58,8 +49,11 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
 
 def classify_result(result: dict[str, Any], *, device_dependent: bool) -> str:
     output = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
-    unavailable = any(marker in output for marker in UNAVAILABLE_MARKERS)
-    if device_dependent and (result.get("exit_code") == 77 or unavailable):
+    explicit_pytest_skip = result.get("exit_code") == 0 and (
+        re.search(r"(^|\n)\s*skipped\b", output) is not None
+        or re.search(r"\b\d+\s+skipped\b", output) is not None
+    )
+    if device_dependent and (result.get("exit_code") == 77 or explicit_pytest_skip):
         return "skip"
     return "pass" if result.get("exit_code") == 0 else "fail"
 

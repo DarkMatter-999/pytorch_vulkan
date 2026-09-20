@@ -27,24 +27,49 @@ def test_mm_and_addmm_use_one_gemm_dispatch(vulkan_backend):
     a = torch.randn(19, 13)
     b = torch.randn(13, 23)
     vk_a, vk_b = a.to(vulkan_backend), b.to(vulkan_backend)
-
-    pytorch_vulkan._C.reset_execution_counters()
-    actual = torch.mm(vk_a, vk_b)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 1
-    torch.testing.assert_close(actual.cpu(), torch.mm(a, b), rtol=2e-3, atol=2e-3)
-
     self_cpu = torch.randn(19, 23)
     self_vk = self_cpu.to(vulkan_backend)
+    expected_mm = torch.mm(a, b)
+    before = pytorch_vulkan._C.live_resource_snapshot()
+    service_before = pytorch_vulkan._C.shared_service_snapshot()
+    pytorch_vulkan._C.reset_descriptor_resource_counters()
+    pytorch_vulkan._C.reset_execution_counters()
+
+    mm_result = torch.mm(vk_a, vk_b)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+
+    addmm_results = []
     for alpha, beta in ((1.0, 0.0), (0.5, 1.0), (-1.25, 0.25)):
-        pytorch_vulkan._C.reset_execution_counters()
         actual = torch.addmm(self_vk, vk_a, vk_b, alpha=alpha, beta=beta)
-        assert pytorch_vulkan._C.compute_dispatch_count() == 1
-        torch.testing.assert_close(
-            actual.cpu(),
-            torch.addmm(self_cpu, a, b, alpha=alpha, beta=beta),
-            rtol=2e-3,
-            atol=2e-3,
+        addmm_results.append(
+            (actual, torch.addmm(self_cpu, a, b, alpha=alpha, beta=beta))
         )
+    after = pytorch_vulkan._C.live_resource_snapshot()
+    service_after = pytorch_vulkan._C.shared_service_snapshot()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert after[2] == before[2]
+    assert after[3] == before[3]
+    for key in ("pipeline_entries", "pipeline_hits", "pipeline_misses",
+                "shader_modules", "shader_hits", "shader_misses"):
+        assert service_after[key] == service_before[key]
+    assert service_before["pipeline_entries"] > 0
+    assert service_before["shader_modules"] > 0
+    assert (
+        service_after["descriptor_allocations"] - service_before["descriptor_allocations"]
+        + service_after["descriptor_reuses"] - service_before["descriptor_reuses"]
+        >= 1
+    )
+    assert service_after["descriptor_pools"] <= service_after["descriptor_pool_limit"]
+    assert counters[0] == 4
+    assert counters[1] == 0
+    assert counters[2] == 0
+    assert counters[3] == 0
+    assert pytorch_vulkan._C.compute_submitted_count() == 4
+    assert pytorch_vulkan._C.compute_completed_count() == 4
+    assert pytorch_vulkan._C.compute_wait_count() == 4
+    torch.testing.assert_close(mm_result.cpu(), expected_mm, rtol=2e-3, atol=2e-3)
+    for result, expected in addmm_results:
+        torch.testing.assert_close(result.cpu(), expected, rtol=2e-3, atol=2e-3)
 
 
 def test_mm_backward_matches_cpu_reference(vulkan_backend):

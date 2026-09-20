@@ -14,6 +14,9 @@
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
 #include "vulkan_buffer.h"
 #include "vulkan_execution.h"
+#include "vulkan/shader_registry.h"
+#include "vulkan/pipeline_cache.h"
+#include "vulkan/descriptor_arena.h"
 #include "vulkan_platform.h"
 
 #include <algorithm>
@@ -269,7 +272,9 @@ VkDeviceSize checked_bytes(uint64_t elements, const char *name) {
 
 VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
     : platform_(platform), device_(platform.device()), queue_(platform.compute_queue()),
-      command_pool_(platform.command_pool()) {
+      command_pool_(platform.command_pool()),
+      descriptor_arena_(std::make_unique<DescriptorArena>(
+          device_, platform.execution_context())) {
     try {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(platform.physical_device(), &properties);
@@ -358,7 +363,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vulkan_pointwise_shader::kCompoundDivCodeSize,
             vulkan_pointwise_shader::kCompoundDivCode};
 
-        const auto create_mode = [&](uint32_t mode,
+        const auto create_mode = [&](uint32_t mode, const char *name,
                                      const VkDescriptorSetLayoutBinding *bindings,
                                      uint32_t binding_count,
                                      const VkShaderModuleCreateInfo &shader_info) {
@@ -369,31 +374,41 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             check_result(vkCreateDescriptorSetLayout(device_, &layout, nullptr,
                                                      &descriptor_set_layouts_[mode]),
                          "could not create pointwise descriptor-set layout");
-            check_result(vkCreateShaderModule(device_, &shader_info, nullptr,
-                                              &shader_modules_[mode]),
-                         "could not create pointwise shader module");
+            shader_modules_[mode] = platform_.shader_registry().get_or_create(
+                {name, vulkan_shader_code_hash(shader_info.pCode,
+                                               shader_info.codeSize / sizeof(uint32_t))},
+                shader_info.pCode, shader_info.codeSize / sizeof(uint32_t));
         };
-        create_mode(0, tensor_tensor_bindings, 4, tensor_tensor_shader);
-        create_mode(1, tensor_tensor_bindings, 4, tensor_scalar_shader);
-        create_mode(2, tensor_tensor_bindings, 4, scalar_tensor_shader);
-        create_mode(3, tensor_tensor_bindings, 4, unary_shader);
+        create_mode(0, "pointwise_tensor_tensor", tensor_tensor_bindings, 4,
+                    tensor_tensor_shader);
+        create_mode(1, "pointwise_tensor_scalar", tensor_tensor_bindings, 4,
+                    tensor_scalar_shader);
+        create_mode(2, "pointwise_scalar_tensor", tensor_tensor_bindings, 4,
+                    scalar_tensor_shader);
+        create_mode(3, "pointwise_unary", tensor_tensor_bindings, 4, unary_shader);
         if (platform.supports_bool_pointwise()) {
-            create_mode(4, tensor_tensor_bindings, 4, bool_tensor_tensor_shader);
-            create_mode(5, tensor_tensor_bindings, 4, bool_output_tensor_scalar_shader);
-            create_mode(6, tensor_tensor_bindings, 4, bool_output_unary_shader);
-            create_mode(7, tensor_tensor_bindings, 4, bool_output_tensor_tensor_shader);
+            create_mode(4, "pointwise_bool_tensor_tensor", tensor_tensor_bindings, 4,
+                        bool_tensor_tensor_shader);
+            create_mode(5, "pointwise_bool_output_tensor_scalar", tensor_tensor_bindings,
+                        4, bool_output_tensor_scalar_shader);
+            create_mode(6, "pointwise_bool_output_unary", tensor_tensor_bindings, 4,
+                        bool_output_unary_shader);
+            create_mode(7, "pointwise_bool_output_tensor_tensor", tensor_tensor_bindings,
+                        4, bool_output_tensor_tensor_shader);
         }
         VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
-        const auto create_pipeline = [&](uint32_t mode) {
+        const auto create_pipeline = [&](uint32_t mode, const char *name,
+                                         const VkShaderModuleCreateInfo &shader_info) {
             VkPipelineLayoutCreateInfo layout{
                 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             layout.setLayoutCount = 1;
             layout.pSetLayouts = &descriptor_set_layouts_[mode];
             layout.pushConstantRangeCount = 1;
             layout.pPushConstantRanges = &push;
-            check_result(vkCreatePipelineLayout(device_, &layout, nullptr,
-                                                &pipeline_layouts_[mode]),
-                         "could not create pointwise pipeline layout");
+            pipeline_layouts_[mode] = platform_.pipeline_cache().get_or_create_layout(
+                {reinterpret_cast<uint64_t>(descriptor_set_layouts_[mode]),
+                 VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)},
+                layout);
             VkPipelineShaderStageCreateInfo stage{
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
             stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -403,21 +418,26 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                 VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
             pipeline.stage = stage;
             pipeline.layout = pipeline_layouts_[mode];
-            check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipeline,
-                                                  nullptr, &pipelines_[mode]),
-                         "could not create pointwise compute pipeline");
+            pipelines_[mode] = platform_.pipeline_cache().get_or_create(
+                {name, reinterpret_cast<uint64_t>(descriptor_set_layouts_[mode]),
+                 vulkan_shader_code_hash(shader_info.pCode,
+                                         shader_info.codeSize / sizeof(uint32_t)),
+                 {}, 0},
+                pipeline_layouts_[mode], shader_modules_[mode], pipeline);
         };
-        create_pipeline(0);
-        create_pipeline(1);
-        create_pipeline(2);
-        create_pipeline(3);
+        create_pipeline(0, "pointwise_tensor_tensor", tensor_tensor_shader);
+        create_pipeline(1, "pointwise_tensor_scalar", tensor_scalar_shader);
+        create_pipeline(2, "pointwise_scalar_tensor", scalar_tensor_shader);
+        create_pipeline(3, "pointwise_unary", unary_shader);
         if (platform.supports_bool_pointwise()) {
-            create_pipeline(4);
-            create_pipeline(5);
-            create_pipeline(6);
-            create_pipeline(7);
+            create_pipeline(4, "pointwise_bool_tensor_tensor", bool_tensor_tensor_shader);
+            create_pipeline(5, "pointwise_bool_output_tensor_scalar",
+                            bool_output_tensor_scalar_shader);
+            create_pipeline(6, "pointwise_bool_output_unary", bool_output_unary_shader);
+            create_pipeline(7, "pointwise_bool_output_tensor_tensor",
+                            bool_output_tensor_tensor_shader);
         }
-        const auto create_compound = [&](uint32_t index,
+        const auto create_compound = [&](uint32_t index, const char *name,
                                          const VkShaderModuleCreateInfo &shader_info) {
             VkDescriptorSetLayoutCreateInfo layout{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -427,9 +447,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                 vkCreateDescriptorSetLayout(device_, &layout, nullptr,
                                             &compound_descriptor_layouts_[index]),
                 "could not create compound descriptor-set layout");
-            check_result(vkCreateShaderModule(device_, &shader_info, nullptr,
-                                              &compound_shader_modules_[index]),
-                         "could not create compound shader module");
+            compound_shader_modules_[index] = platform_.shader_registry().get_or_create(
+                {name, vulkan_shader_code_hash(shader_info.pCode,
+                                               shader_info.codeSize / sizeof(uint32_t))},
+                shader_info.pCode, shader_info.codeSize / sizeof(uint32_t));
             VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
             VkPipelineLayoutCreateInfo pipeline_layout{
                 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -437,9 +458,11 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             pipeline_layout.pSetLayouts = &compound_descriptor_layouts_[index];
             pipeline_layout.pushConstantRangeCount = 1;
             pipeline_layout.pPushConstantRanges = &push;
-            check_result(vkCreatePipelineLayout(device_, &pipeline_layout, nullptr,
-                                                &compound_pipeline_layouts_[index]),
-                         "could not create compound pipeline layout");
+            compound_pipeline_layouts_[index] =
+                platform_.pipeline_cache().get_or_create_layout(
+                    {reinterpret_cast<uint64_t>(compound_descriptor_layouts_[index]),
+                     VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)},
+                    pipeline_layout);
             VkPipelineShaderStageCreateInfo stage{
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
             stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -449,12 +472,15 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                 VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
             pipeline.stage = stage;
             pipeline.layout = compound_pipeline_layouts_[index];
-            check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipeline,
-                                                  nullptr, &compound_pipelines_[index]),
-                         "could not create compound compute pipeline");
+            compound_pipelines_[index] = platform_.pipeline_cache().get_or_create(
+                {name, reinterpret_cast<uint64_t>(compound_descriptor_layouts_[index]),
+                 vulkan_shader_code_hash(shader_info.pCode,
+                                         shader_info.codeSize / sizeof(uint32_t)),
+                 {}, 0},
+                compound_pipeline_layouts_[index], compound_shader_modules_[index], pipeline);
         };
-        create_compound(0, compound_mul_shader);
-        create_compound(1, compound_div_shader);
+        create_compound(0, "pointwise_compound_mul", compound_mul_shader);
+        create_compound(1, "pointwise_compound_div", compound_div_shader);
         const VkDescriptorSetLayoutBinding reduction_bindings[] = {
             lhs_binding,
             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -475,7 +501,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
              nullptr},
             {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
              nullptr}};
-        const auto create_extra = [&](VkDescriptorSetLayout &descriptor_layout,
+        const auto create_extra = [&](const char *name,
+                                      VkDescriptorSetLayout &descriptor_layout,
                                       VkShaderModule &module,
                                       VkPipelineLayout &pipeline_layout,
                                       VkPipeline &pipeline, const uint32_t *code,
@@ -489,10 +516,9 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             check_result(vkCreateDescriptorSetLayout(device_, &layout, nullptr,
                                                      &descriptor_layout),
                          "could not create reduction descriptor-set layout");
-            VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                            nullptr, 0, code_size, code};
-            check_result(vkCreateShaderModule(device_, &shader, nullptr, &module),
-                         "could not create reduction shader module");
+            module = platform_.shader_registry().get_or_create(
+                {name, vulkan_shader_code_hash(code, code_size / sizeof(uint32_t))}, code,
+                code_size / sizeof(uint32_t));
             VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size};
             VkPipelineLayoutCreateInfo pipeline_layout_info{
                 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -500,9 +526,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             pipeline_layout_info.pSetLayouts = &descriptor_layout;
             pipeline_layout_info.pushConstantRangeCount = 1;
             pipeline_layout_info.pPushConstantRanges = &push;
-            check_result(vkCreatePipelineLayout(device_, &pipeline_layout_info, nullptr,
-                                                &pipeline_layout),
-                         "could not create reduction pipeline layout");
+            pipeline_layout = platform_.pipeline_cache().get_or_create_layout(
+                {reinterpret_cast<uint64_t>(descriptor_layout), VK_SHADER_STAGE_COMPUTE_BIT,
+                 0, push_size},
+                pipeline_layout_info);
             VkPipelineShaderStageCreateInfo stage{
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
             stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -512,46 +539,50 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                 VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
             pipeline_info.stage = stage;
             pipeline_info.layout = pipeline_layout;
-            check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
-                                                  &pipeline_info, nullptr, &pipeline),
-                         "could not create reduction pipeline");
+            pipeline = platform_.pipeline_cache().get_or_create(
+                {name, reinterpret_cast<uint64_t>(descriptor_layout),
+                 vulkan_shader_code_hash(code, code_size / sizeof(uint32_t)), {}, 0},
+                pipeline_layout, module, pipeline_info);
         };
-        create_extra(reduction_descriptor_layout_, reduction_shader_,
+        create_extra("reduction", reduction_descriptor_layout_, reduction_shader_,
                      reduction_pipeline_layout_, reduction_pipeline_,
                      vulkan_reduction_shader::kReductionCode,
                      vulkan_reduction_shader::kReductionCodeSize);
-        create_extra(reduction_backward_descriptor_layout_, reduction_backward_shader_,
+        create_extra("reduction_backward", reduction_backward_descriptor_layout_,
+                     reduction_backward_shader_,
                      reduction_backward_pipeline_layout_, reduction_backward_pipeline_,
                      vulkan_reduction_shader::kReductionBackwardCode,
                      vulkan_reduction_shader::kReductionBackwardCodeSize,
                      sizeof(ReductionBackwardParams), 4);
-        create_extra(loss_descriptor_layout_, loss_shader_, loss_pipeline_layout_,
+        create_extra("loss", loss_descriptor_layout_, loss_shader_, loss_pipeline_layout_,
                      loss_pipeline_, vulkan_loss_shader::kCode,
                      vulkan_loss_shader::kCodeSize, sizeof(LossParams), 4);
-        create_extra(indexing_descriptor_layout_, indexing_shader_,
+        create_extra("indexing", indexing_descriptor_layout_, indexing_shader_,
                      indexing_pipeline_layout_, indexing_pipeline_,
                      vulkan_reduction_shader::kIndexingCode,
                      vulkan_reduction_shader::kIndexingCodeSize);
         create_extra(
+            "broadcast",
             broadcast_descriptor_layout_, broadcast_shader_, broadcast_pipeline_layout_,
             broadcast_pipeline_, vulkan_reduction_shader::kBroadcastCode,
             vulkan_reduction_shader::kBroadcastCodeSize, sizeof(BroadcastParams), 3);
-        create_extra(pooling_descriptor_layout_, pooling_shader_,
+        create_extra("pooling", pooling_descriptor_layout_, pooling_shader_,
                      pooling_pipeline_layout_, pooling_pipeline_,
                      vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize,
                      sizeof(PoolingParams), 3);
-        create_extra(normalization_descriptor_layout_, normalization_shader_,
+        create_extra("normalization", normalization_descriptor_layout_, normalization_shader_,
                      normalization_pipeline_layout_, normalization_pipeline_,
                      vulkan_normalization_shader::kCode,
                      vulkan_normalization_shader::kCodeSize, sizeof(OperatorParams),
                      10);
-        create_extra(classification_descriptor_layout_, classification_shader_,
+        create_extra("classification", classification_descriptor_layout_, classification_shader_,
                      classification_pipeline_layout_, classification_pipeline_,
                      vulkan_classification_shader::kCode,
                      vulkan_classification_shader::kCodeSize, sizeof(OperatorParams),
                      6);
         if (platform.supports_formatter_double()) {
-            create_extra(f32_to_double_descriptor_layout_, f32_to_double_shader_,
+            create_extra("f32_to_double", f32_to_double_descriptor_layout_,
+                         f32_to_double_shader_,
                          f32_to_double_pipeline_layout_, f32_to_double_pipeline_,
                          vulkan_f32_to_double_shader::kCode,
                          vulkan_f32_to_double_shader::kCodeSize,
@@ -802,12 +833,11 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         check_result(vkCreateDescriptorSetLayout(device_, &gemm_layout, nullptr,
                                                  &gemm_descriptor_layout_),
                      "could not create GEMM descriptor-set layout");
-        VkShaderModuleCreateInfo gemm_shader_info{
-            VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
-            vulkan_gemm_shader::kCodeSize, vulkan_gemm_shader::kCode};
-        check_result(
-            vkCreateShaderModule(device_, &gemm_shader_info, nullptr, &gemm_shader_),
-            "could not create GEMM shader module");
+        gemm_shader_ = platform_.shader_registry().get_or_create(
+            {"gemm", vulkan_shader_code_hash(
+                         vulkan_gemm_shader::kCode,
+                         vulkan_gemm_shader::kCodeSize / sizeof(uint32_t))},
+            vulkan_gemm_shader::kCode, vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
         VkPushConstantRange gemm_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                       sizeof(GemmParams)};
         VkPipelineLayoutCreateInfo gemm_pipeline_layout_info{
@@ -816,9 +846,10 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         gemm_pipeline_layout_info.pSetLayouts = &gemm_descriptor_layout_;
         gemm_pipeline_layout_info.pushConstantRangeCount = 1;
         gemm_pipeline_layout_info.pPushConstantRanges = &gemm_push;
-        check_result(vkCreatePipelineLayout(device_, &gemm_pipeline_layout_info,
-                                            nullptr, &gemm_pipeline_layout_),
-                     "could not create GEMM pipeline layout");
+        gemm_pipeline_layout_ = platform_.pipeline_cache().get_or_create_layout(
+            {reinterpret_cast<uint64_t>(gemm_descriptor_layout_), VK_SHADER_STAGE_COMPUTE_BIT,
+             0, sizeof(GemmParams)},
+            gemm_pipeline_layout_info);
         VkPipelineShaderStageCreateInfo gemm_stage{
             VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         gemm_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -828,11 +859,55 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         gemm_pipeline_info.stage = gemm_stage;
         gemm_pipeline_info.layout = gemm_pipeline_layout_;
-        check_result(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
-                                              &gemm_pipeline_info, nullptr,
-                                              &gemm_pipeline_),
-                     "could not create GEMM compute pipeline");
+        gemm_pipeline_ = platform_.pipeline_cache().get_or_create(
+            {"gemm", reinterpret_cast<uint64_t>(gemm_descriptor_layout_),
+             vulkan_shader_code_hash(vulkan_gemm_shader::kCode,
+                                     vulkan_gemm_shader::kCodeSize / sizeof(uint32_t)),
+             {}, 0},
+            gemm_pipeline_layout_, gemm_shader_, gemm_pipeline_info);
     } catch (const std::exception &error) {
+        for (auto &pipeline : pipelines_)
+            pipeline = VK_NULL_HANDLE;
+        compound_pipelines_[0] = VK_NULL_HANDLE;
+        compound_pipelines_[1] = VK_NULL_HANDLE;
+        reduction_pipeline_ = VK_NULL_HANDLE;
+        reduction_backward_pipeline_ = VK_NULL_HANDLE;
+        loss_pipeline_ = VK_NULL_HANDLE;
+        indexing_pipeline_ = VK_NULL_HANDLE;
+        broadcast_pipeline_ = VK_NULL_HANDLE;
+        pooling_pipeline_ = VK_NULL_HANDLE;
+        normalization_pipeline_ = VK_NULL_HANDLE;
+        classification_pipeline_ = VK_NULL_HANDLE;
+        f32_to_double_pipeline_ = VK_NULL_HANDLE;
+        gemm_pipeline_ = VK_NULL_HANDLE;
+        for (auto &layout : pipeline_layouts_)
+            layout = VK_NULL_HANDLE;
+        for (auto &layout : compound_pipeline_layouts_)
+            layout = VK_NULL_HANDLE;
+        reduction_pipeline_layout_ = VK_NULL_HANDLE;
+        reduction_backward_pipeline_layout_ = VK_NULL_HANDLE;
+        loss_pipeline_layout_ = VK_NULL_HANDLE;
+        indexing_pipeline_layout_ = VK_NULL_HANDLE;
+        broadcast_pipeline_layout_ = VK_NULL_HANDLE;
+        pooling_pipeline_layout_ = VK_NULL_HANDLE;
+        normalization_pipeline_layout_ = VK_NULL_HANDLE;
+        classification_pipeline_layout_ = VK_NULL_HANDLE;
+        f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
+        gemm_pipeline_layout_ = VK_NULL_HANDLE;
+        platform_.pipeline_cache().destroy_all();
+        for (uint32_t mode = 0; mode < 8; ++mode)
+            shader_modules_[mode] = VK_NULL_HANDLE;
+        compound_shader_modules_[0] = VK_NULL_HANDLE;
+        compound_shader_modules_[1] = VK_NULL_HANDLE;
+        reduction_shader_ = VK_NULL_HANDLE;
+        reduction_backward_shader_ = VK_NULL_HANDLE;
+        loss_shader_ = VK_NULL_HANDLE;
+        indexing_shader_ = VK_NULL_HANDLE;
+        broadcast_shader_ = VK_NULL_HANDLE;
+        pooling_shader_ = VK_NULL_HANDLE;
+        normalization_shader_ = VK_NULL_HANDLE;
+        classification_shader_ = VK_NULL_HANDLE;
+        f32_to_double_shader_ = VK_NULL_HANDLE;
         for (auto pipeline : pipelines_) {
             if (pipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(device_, pipeline, nullptr);
@@ -897,8 +972,6 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
         if (masked_compact_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
-        if (gemm_shader_ != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, gemm_shader_, nullptr);
         if (normalization_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, normalization_shader_, nullptr);
         if (classification_shader_ != VK_NULL_HANDLE)
@@ -991,6 +1064,35 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
 }
 
 VulkanCompute::~VulkanCompute() {
+    for (auto &pipeline : pipelines_)
+        pipeline = VK_NULL_HANDLE;
+    compound_pipelines_[0] = VK_NULL_HANDLE;
+    compound_pipelines_[1] = VK_NULL_HANDLE;
+    reduction_pipeline_ = VK_NULL_HANDLE;
+    reduction_backward_pipeline_ = VK_NULL_HANDLE;
+    loss_pipeline_ = VK_NULL_HANDLE;
+    indexing_pipeline_ = VK_NULL_HANDLE;
+    broadcast_pipeline_ = VK_NULL_HANDLE;
+    pooling_pipeline_ = VK_NULL_HANDLE;
+    normalization_pipeline_ = VK_NULL_HANDLE;
+    classification_pipeline_ = VK_NULL_HANDLE;
+    f32_to_double_pipeline_ = VK_NULL_HANDLE;
+    gemm_pipeline_ = VK_NULL_HANDLE;
+    for (auto &layout : pipeline_layouts_)
+        layout = VK_NULL_HANDLE;
+    for (auto &layout : compound_pipeline_layouts_)
+        layout = VK_NULL_HANDLE;
+    reduction_pipeline_layout_ = VK_NULL_HANDLE;
+    reduction_backward_pipeline_layout_ = VK_NULL_HANDLE;
+    loss_pipeline_layout_ = VK_NULL_HANDLE;
+    indexing_pipeline_layout_ = VK_NULL_HANDLE;
+    broadcast_pipeline_layout_ = VK_NULL_HANDLE;
+    pooling_pipeline_layout_ = VK_NULL_HANDLE;
+    normalization_pipeline_layout_ = VK_NULL_HANDLE;
+    classification_pipeline_layout_ = VK_NULL_HANDLE;
+    f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
+    gemm_pipeline_layout_ = VK_NULL_HANDLE;
+    platform_.pipeline_cache().destroy_all();
     for (auto pipeline : pipelines_) {
         if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device_, pipeline, nullptr);
@@ -1032,6 +1134,19 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, formatter_double_pipeline_, nullptr);
     if (gemm_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, gemm_pipeline_, nullptr);
+    for (uint32_t mode = 0; mode < 8; ++mode)
+        shader_modules_[mode] = VK_NULL_HANDLE;
+    compound_shader_modules_[0] = VK_NULL_HANDLE;
+    compound_shader_modules_[1] = VK_NULL_HANDLE;
+    reduction_shader_ = VK_NULL_HANDLE;
+    reduction_backward_shader_ = VK_NULL_HANDLE;
+    loss_shader_ = VK_NULL_HANDLE;
+    indexing_shader_ = VK_NULL_HANDLE;
+    broadcast_shader_ = VK_NULL_HANDLE;
+    pooling_shader_ = VK_NULL_HANDLE;
+    normalization_shader_ = VK_NULL_HANDLE;
+    classification_shader_ = VK_NULL_HANDLE;
+    f32_to_double_shader_ = VK_NULL_HANDLE;
     for (auto module : shader_modules_) {
         if (module != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device_, module, nullptr);
@@ -1071,12 +1186,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, f32_to_double_shader_, nullptr);
     if (formatter_double_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, formatter_double_shader_, nullptr);
-    if (gemm_shader_ != VK_NULL_HANDLE)
-        vkDestroyShaderModule(device_, gemm_shader_, nullptr);
-    for (auto &cache : descriptor_pools_) {
-        if (cache.pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device_, cache.pool, nullptr);
-    }
+    gemm_shader_ = VK_NULL_HANDLE;
+    descriptor_arena_.reset();
     for (auto layout : pipeline_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device_, layout, nullptr);
@@ -2461,7 +2572,6 @@ void VulkanCompute::end_training_step() const {
                              nullptr, 0, nullptr);
         platform_.execution_context().submit();
         platform_.execution_context().wait();
-        reset_gemm_descriptor_pool();
         submission_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {
         training_step_ = false;
@@ -2500,8 +2610,6 @@ void VulkanCompute::cancel_recording() const {
     VulkanExecutionContext &context = platform_.execution_context();
     if (context.recording())
         context.cancel();
-    if (context.pending_count() == 0)
-        reset_gemm_descriptor_pool();
 }
 
 void VulkanCompute::finish_dispatch() const {
@@ -2510,91 +2618,17 @@ void VulkanCompute::finish_dispatch() const {
     VulkanExecutionContext &context = platform_.execution_context();
     context.submit();
     context.wait();
-    reset_gemm_descriptor_pool();
     submission_count_.fetch_add(1, std::memory_order_relaxed);
 }
-
-void VulkanCompute::reset_gemm_descriptor_pool() const { reset_descriptor_pools(); }
 
 VkDescriptorSet VulkanCompute::acquire_descriptor_set(
     VkDescriptorSetLayout descriptor_layout, uint32_t descriptor_count,
     uint32_t pool_capacity) const {
-    if (descriptor_layout == VK_NULL_HANDLE || descriptor_count == 0)
-        throw std::invalid_argument("Vulkan compute descriptor cache has invalid layout");
-    if (pool_capacity == 0 ||
-        static_cast<uint64_t>(descriptor_count) * pool_capacity >
-            std::numeric_limits<uint32_t>::max())
-        throw std::invalid_argument("Vulkan compute descriptor cache has invalid capacity");
-
-    for (auto &cache : descriptor_pools_) {
-        if (cache.layout != descriptor_layout || cache.descriptor_count < descriptor_count ||
-            cache.capacity != pool_capacity)
-            continue;
-        if (cache.next_set < cache.sets.size()) {
-            descriptor_set_reuse_count_.fetch_add(1, std::memory_order_relaxed);
-            return cache.sets[cache.next_set++];
-        }
-        if (cache.sets.size() < cache.capacity) {
-            VkDescriptorSet set = VK_NULL_HANDLE;
-            VkDescriptorSetAllocateInfo set_info{
-                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-            set_info.descriptorPool = cache.pool;
-            set_info.descriptorSetCount = 1;
-            set_info.pSetLayouts = &cache.layout;
-            check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                         "could not allocate reusable descriptor set");
-            cache.sets.push_back(set);
-            ++cache.next_set;
-            descriptor_set_allocation_count_.fetch_add(1, std::memory_order_relaxed);
-            return set;
-        }
-    }
-
-    DescriptorPoolCache cache;
-    cache.layout = descriptor_layout;
-    cache.descriptor_count = descriptor_count;
-    cache.capacity = pool_capacity;
-    const VkDescriptorPoolSize pool_size{
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count * pool_capacity};
-    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = pool_capacity;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes = &pool_size;
-    check_result(vkCreateDescriptorPool(device_, &pool_info, nullptr, &cache.pool),
-                 "could not create reusable descriptor pool");
-    descriptor_pool_creation_count_.fetch_add(1, std::memory_order_relaxed);
-    bool inserted = false;
-    try {
-        descriptor_pools_.push_back(std::move(cache));
-        inserted = true;
-        auto &stored = descriptor_pools_.back();
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo set_info{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        set_info.descriptorPool = stored.pool;
-        set_info.descriptorSetCount = 1;
-        set_info.pSetLayouts = &stored.layout;
-        check_result(vkAllocateDescriptorSets(device_, &set_info, &set),
-                     "could not allocate reusable descriptor set");
-        stored.sets.push_back(set);
-        stored.next_set = 1;
-        descriptor_set_allocation_count_.fetch_add(1, std::memory_order_relaxed);
-        return set;
-    } catch (...) {
-        if (inserted) {
-            vkDestroyDescriptorPool(device_, descriptor_pools_.back().pool, nullptr);
-            descriptor_pools_.pop_back();
-        } else
-            vkDestroyDescriptorPool(device_, cache.pool, nullptr);
-        throw;
-    }
-}
-
-void VulkanCompute::reset_descriptor_pools() const {
-    if (platform_.device_lost())
-        return;
-    for (auto &cache : descriptor_pools_)
-        cache.next_set = 0;
+    const VkDescriptorSet set = descriptor_arena_->acquire(
+        descriptor_layout, submission_count_.load(std::memory_order_relaxed), descriptor_count,
+        pool_capacity);
+    descriptor_arena_->release_after_completion(set);
+    return set;
 }
 
 std::size_t VulkanCompute::dispatch_count() const {
@@ -2614,80 +2648,72 @@ void VulkanCompute::reset_submission_count() const {
 }
 
 std::size_t VulkanCompute::descriptor_pool_creation_count() const {
-    return descriptor_pool_creation_count_.load(std::memory_order_relaxed);
+    const auto snapshot = descriptor_arena_->snapshot();
+    return snapshot.pool_creations >= descriptor_pool_baseline_
+               ? snapshot.pool_creations - descriptor_pool_baseline_
+               : 0;
 }
 
 std::size_t VulkanCompute::descriptor_set_allocation_count() const {
-    return descriptor_set_allocation_count_.load(std::memory_order_relaxed);
+    const auto snapshot = descriptor_arena_->snapshot();
+    return snapshot.allocations >= descriptor_allocation_baseline_
+               ? snapshot.allocations - descriptor_allocation_baseline_
+               : 0;
 }
 
 std::size_t VulkanCompute::descriptor_set_reuse_count() const {
-    return descriptor_set_reuse_count_.load(std::memory_order_relaxed);
+    const auto snapshot = descriptor_arena_->snapshot();
+    return snapshot.reuses >= descriptor_reuse_baseline_
+               ? snapshot.reuses - descriptor_reuse_baseline_
+               : 0;
 }
 
 std::size_t VulkanCompute::live_descriptor_pool_count() const {
-    return descriptor_pools_.size();
+    return descriptor_arena_->snapshot().pool_count;
 }
 
 std::size_t VulkanCompute::live_descriptor_set_count() const {
-    std::size_t count = 0;
-    for (const auto &cache : descriptor_pools_)
-        count += cache.sets.size();
-    return count;
+    return descriptor_arena_->snapshot().live_sets;
+}
+
+void VulkanCompute::invalidate_device_loss() const {
+    descriptor_arena_->invalidate_device_loss();
+}
+
+DescriptorArenaSnapshot VulkanCompute::descriptor_arena_snapshot() const {
+    return descriptor_arena_->snapshot();
 }
 
 std::size_t VulkanCompute::pipeline_count() const {
-    std::size_t count = 0;
-    for (const auto pipeline : pipelines_)
-        count += pipeline != VK_NULL_HANDLE;
-    for (const auto pipeline : compound_pipelines_)
-        count += pipeline != VK_NULL_HANDLE;
-    count += reduction_pipeline_ != VK_NULL_HANDLE;
-    count += reduction_backward_pipeline_ != VK_NULL_HANDLE;
-    count += loss_pipeline_ != VK_NULL_HANDLE;
-    count += indexing_pipeline_ != VK_NULL_HANDLE;
-    count += broadcast_pipeline_ != VK_NULL_HANDLE;
+    std::size_t count = platform_.pipeline_cache().snapshot().pipeline_count;
+    // Cached migrated handles and pending deferred destructions are represented
+    // by the cache snapshot above.
+    // Only facade-owned pipelines are added here.
     count += model_pipeline_ != VK_NULL_HANDLE;
     count += backward_pipeline_ != VK_NULL_HANDLE;
     count += convolution_pipeline_ != VK_NULL_HANDLE;
-    count += pooling_pipeline_ != VK_NULL_HANDLE;
-    count += normalization_pipeline_ != VK_NULL_HANDLE;
-    count += classification_pipeline_ != VK_NULL_HANDLE;
     count += masked_count_pipeline_ != VK_NULL_HANDLE;
     count += masked_compact_pipeline_ != VK_NULL_HANDLE;
-    count += f32_to_double_pipeline_ != VK_NULL_HANDLE;
     count += formatter_double_pipeline_ != VK_NULL_HANDLE;
-    count += gemm_pipeline_ != VK_NULL_HANDLE;
     return count;
 }
 
 std::size_t VulkanCompute::shader_module_count() const {
-    std::size_t count = 0;
-    for (const auto module : shader_modules_)
-        count += module != VK_NULL_HANDLE;
-    for (const auto module : compound_shader_modules_)
-        count += module != VK_NULL_HANDLE;
-    count += reduction_shader_ != VK_NULL_HANDLE;
-    count += reduction_backward_shader_ != VK_NULL_HANDLE;
-    count += loss_shader_ != VK_NULL_HANDLE;
-    count += indexing_shader_ != VK_NULL_HANDLE;
-    count += broadcast_shader_ != VK_NULL_HANDLE;
+    std::size_t count = platform_.shader_registry().snapshot().module_count;
+    // Cached migrated handles are represented by the registry count above.
+    // Only facade-owned shader modules are added here.
     count += model_shader_ != VK_NULL_HANDLE;
     count += backward_shader_ != VK_NULL_HANDLE;
     count += convolution_shader_ != VK_NULL_HANDLE;
-    count += pooling_shader_ != VK_NULL_HANDLE;
-    count += normalization_shader_ != VK_NULL_HANDLE;
-    count += classification_shader_ != VK_NULL_HANDLE;
     count += masked_count_shader_ != VK_NULL_HANDLE;
     count += masked_compact_shader_ != VK_NULL_HANDLE;
-    count += f32_to_double_shader_ != VK_NULL_HANDLE;
     count += formatter_double_shader_ != VK_NULL_HANDLE;
-    count += gemm_shader_ != VK_NULL_HANDLE;
     return count;
 }
 
 void VulkanCompute::reset_descriptor_resource_counters() const {
-    descriptor_pool_creation_count_.store(0, std::memory_order_relaxed);
-    descriptor_set_allocation_count_.store(0, std::memory_order_relaxed);
-    descriptor_set_reuse_count_.store(0, std::memory_order_relaxed);
+    const auto snapshot = descriptor_arena_->snapshot();
+    descriptor_pool_baseline_ = snapshot.pool_creations;
+    descriptor_allocation_baseline_ = snapshot.allocations;
+    descriptor_reuse_baseline_ = snapshot.reuses;
 }

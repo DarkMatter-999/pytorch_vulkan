@@ -22,6 +22,9 @@ class VulkanDeviceLost : public std::runtime_error {
 
 class VulkanCompute;
 class VulkanExecutionContext;
+class VulkanShaderRegistry;
+class VulkanPipelineCache;
+struct PipelineCacheSnapshot;
 class VulkanBuffer;
 struct VulkanTimestampSample;
 
@@ -32,6 +35,7 @@ struct VulkanDeviceInfo {
     bool storage_dispatch_limits = false;
     bool host_visible_memory = false;
     bool shader_capabilities = false;
+    bool shader_int64_supported = false;
 };
 
 struct VulkanExecutionCounterSnapshot {
@@ -127,6 +131,9 @@ class VulkanPlatform {
     bool supports_bool_pointwise() const;
     bool supports_formatter_double() const;
     VulkanExecutionContext &execution_context() const;
+    VulkanShaderRegistry &shader_registry() const;
+    VulkanPipelineCache &pipeline_cache() const;
+    PipelineCacheSnapshot pipeline_cache_snapshot() const;
     void mark_device_lost(VkResult result) const;
     bool device_lost() const;
     void throw_if_device_lost() const;
@@ -150,6 +157,8 @@ class VulkanPlatform {
     VkInstance instance_ = VK_NULL_HANDLE;
     mutable std::unique_ptr<VulkanCompute> compute_;
     mutable std::unique_ptr<VulkanExecutionContext> execution_;
+    mutable std::unique_ptr<VulkanShaderRegistry> shader_registry_;
+    mutable std::unique_ptr<VulkanPipelineCache> pipeline_cache_;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue compute_queue_ = VK_NULL_HANDLE;

@@ -4,10 +4,13 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 class VulkanPlatform;
 class VulkanBuffer;
+class DescriptorArena;
+struct DescriptorArenaSnapshot;
 #include "vulkan_tensor_layout.h"
 
 using pytorch_vulkan::VulkanTensorLayout;
@@ -171,8 +174,10 @@ class VulkanCompute final {
     std::size_t descriptor_pool_creation_count() const;
     std::size_t descriptor_set_allocation_count() const;
     std::size_t descriptor_set_reuse_count() const;
-    std::size_t live_descriptor_pool_count() const;
-    std::size_t live_descriptor_set_count() const;
+     std::size_t live_descriptor_pool_count() const;
+     std::size_t live_descriptor_set_count() const;
+     void invalidate_device_loss() const;
+     DescriptorArenaSnapshot descriptor_arena_snapshot() const;
     std::size_t pipeline_count() const;
     std::size_t shader_module_count() const;
     void reset_descriptor_resource_counters() const;
@@ -234,22 +239,12 @@ class VulkanCompute final {
     void record_dispatch(const char *scope = "operator") const;
     void finish_dispatch() const;
     void cancel_recording() const;
-    void reset_gemm_descriptor_pool() const;
     VkDescriptorSet acquire_descriptor_set(VkDescriptorSetLayout descriptor_layout,
                                            uint32_t descriptor_count,
                                            uint32_t pool_capacity = 64) const;
-    void reset_descriptor_pools() const;
-
-    struct DescriptorPoolCache {
-        VkDescriptorPool pool = VK_NULL_HANDLE;
-        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-        uint32_t descriptor_count = 0;
-        uint32_t capacity = 0;
-        std::vector<VkDescriptorSet> sets;
-        std::size_t next_set = 0;
-    };
-    const VulkanPlatform &platform_;
-    VkDevice device_ = VK_NULL_HANDLE;
+     const VulkanPlatform &platform_;
+     VkDevice device_ = VK_NULL_HANDLE;
+     std::unique_ptr<DescriptorArena> descriptor_arena_;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptor_set_layouts_[10]{};
@@ -332,9 +327,8 @@ class VulkanCompute final {
     uint32_t max_compute_shared_memory_size_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
     mutable std::atomic<std::size_t> submission_count_{0};
-    mutable std::atomic<std::size_t> descriptor_pool_creation_count_{0};
-    mutable std::atomic<std::size_t> descriptor_set_allocation_count_{0};
-    mutable std::atomic<std::size_t> descriptor_set_reuse_count_{0};
-    mutable std::vector<DescriptorPoolCache> descriptor_pools_;
-    mutable bool training_step_ = false;
+     mutable std::size_t descriptor_pool_baseline_ = 0;
+     mutable std::size_t descriptor_allocation_baseline_ = 0;
+     mutable std::size_t descriptor_reuse_baseline_ = 0;
+     mutable bool training_step_ = false;
 };

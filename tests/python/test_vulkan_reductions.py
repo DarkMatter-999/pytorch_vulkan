@@ -24,15 +24,41 @@ def test_float32_reduction_matches_cpu_and_preserves_gradient(
     kwargs = {"keepdim": keepdim} if dim is not None else {}
     if dim is not None:
         kwargs["dim"] = dim
-
     cpu_result = operation(cpu_input, **kwargs)
+    vk_grad = torch.ones_like(cpu_result).to(vulkan_backend)
+    before = pytorch_vulkan._C.live_resource_snapshot()
+    service_before = pytorch_vulkan._C.shared_service_snapshot()
+    pytorch_vulkan._C.reset_descriptor_resource_counters()
+    pytorch_vulkan._C.reset_execution_counters()
+
     vk_result = operation(vk_input, **kwargs)
-    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-6, atol=1e-6)
     assert vk_result.dtype is torch.float32
     assert vk_result.is_contiguous()
 
     cpu_result.backward(torch.ones_like(cpu_result))
-    vk_result.backward(torch.ones_like(cpu_result).to(vulkan_backend))
+    vk_result.backward(vk_grad)
+    after = pytorch_vulkan._C.live_resource_snapshot()
+    service_after = pytorch_vulkan._C.shared_service_snapshot()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert after[2] == before[2]
+    assert after[3] == before[3]
+    for key in ("pipeline_entries", "pipeline_hits", "pipeline_misses",
+                "shader_modules", "shader_hits", "shader_misses"):
+        assert service_after[key] == service_before[key]
+    assert service_before["pipeline_entries"] > 0
+    assert service_before["shader_modules"] > 0
+    descriptor_allocations = service_after["descriptor_allocations"] - service_before["descriptor_allocations"]
+    descriptor_reuses = service_after["descriptor_reuses"] - service_before["descriptor_reuses"]
+    assert descriptor_allocations + descriptor_reuses >= 1
+    assert service_after["descriptor_pools"] <= service_after["descriptor_pool_limit"]
+    assert counters[0] == 2
+    assert counters[1] == 0
+    assert counters[2] == 0
+    assert counters[3] == 0
+    assert pytorch_vulkan._C.compute_submitted_count() == 2
+    assert pytorch_vulkan._C.compute_completed_count() == 2
+    assert pytorch_vulkan._C.compute_wait_count() == 2
+    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-6, atol=1e-6)
     torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=0, atol=0)
 
 

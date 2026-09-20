@@ -262,3 +262,17 @@ def test_device_loss_quarantines_timing_context_and_rejects_new_work(timestamp_q
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "timing-device-loss-ok" in result.stdout
+
+
+def test_runtime_foundation_benchmark_schema_is_machine_readable():
+    benchmark_path = Path(__file__).resolve().parents[2] / "tools" / "benchmark_vulkan_runtime_foundation.py"
+    spec = importlib.util.spec_from_file_location("runtime_foundation_benchmark", benchmark_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.WORKLOAD_SHAPES == {
+        "small": (16, 32, 8),
+        "medium": (64, 128, 32),
+        "large": (256, 512, 128),
+        "skinny": (8, 1024, 8),
+        "irregular": (37, 59, 13),
+    }

@@ -2,6 +2,9 @@
 #include "vulkan_compute.h"
 #include "vulkan_device_guard.h"
 #include "vulkan_execution.h"
+#include "vulkan/descriptor_arena.h"
+#include "vulkan/pipeline_cache.h"
+#include "vulkan/shader_registry.h"
 #include "vulkan_platform.h"
 
 #include <pybind11/pybind11.h>
@@ -53,7 +56,37 @@ PYBIND11_MODULE(_C, module) {
         return py::make_tuple(snapshot.descriptor_pools, snapshot.descriptor_sets,
                               snapshot.pipelines, snapshot.shader_modules,
                               snapshot.pending_transfers, snapshot.pending_compute,
-                              snapshot.allocations);
+                               snapshot.allocations);
+    });
+    // Narrow diagnostic seam for migration tests; this does not expose runtime
+    // ownership or control outside the existing test module.
+    module.def("shared_service_snapshot", [] {
+        const auto pipeline = pytorch_vulkan::platform()->pipeline_cache_snapshot();
+        const auto shader = pytorch_vulkan::platform()->shader_registry().snapshot();
+        const auto descriptor =
+            pytorch_vulkan::platform()->compute().descriptor_arena_snapshot();
+        py::dict result;
+        result["pipeline_entries"] = pipeline.entry_count;
+        result["pipeline_count"] = pipeline.pipeline_count;
+        result["pipeline_hits"] = pipeline.hits;
+        result["pipeline_misses"] = pipeline.misses;
+        result["pipeline_evictions"] = pipeline.evictions;
+        result["pipeline_pending_destructions"] = pipeline.pending_destructions;
+        result["pipeline_invalidated"] = pipeline.invalidated;
+        result["shader_modules"] = shader.module_count;
+        result["shader_hits"] = shader.cache_hits;
+        result["shader_misses"] = shader.cache_misses;
+        result["descriptor_pools"] = descriptor.pool_count;
+        result["descriptor_pool_limit"] = descriptor.pool_limit;
+        result["descriptor_pool_creations"] = descriptor.pool_creations;
+        result["descriptor_sets"] = descriptor.live_sets;
+        result["descriptor_allocations"] = descriptor.allocations;
+        result["descriptor_reuses"] = descriptor.reuses;
+        result["descriptor_rollovers"] = descriptor.rollovers;
+        result["descriptor_pending"] = descriptor.pending;
+        result["descriptor_quarantined"] = descriptor.quarantined;
+        result["descriptor_invalidated"] = descriptor.invalidated;
+        return result;
     });
     module.def("begin_training_step",
                [] { pytorch_vulkan::platform()->compute().begin_training_step(); });
