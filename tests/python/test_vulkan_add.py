@@ -2,6 +2,12 @@ import pytest
 import torch
 
 import pytorch_vulkan
+from vulkan_conformance import (
+    SCALAR_OUT_CONTRACT_MATRIX,
+    SCALAR_OUT_FUNCTIONAL_CASES,
+    assert_scalar_out_counters,
+    invoke_scalar_out_contract,
+)
 
 
 def test_cpu_only_add_remains_normal_pytorch_behavior():
@@ -153,6 +159,122 @@ def test_pointwise_python_scalar_matches_cpu_and_preserves_inputs(
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 @pytest.mark.parametrize("scalar_left", [False, True])
+def test_scalar_functional_semantics_do_only_vulkan_compute(
+    vulkan_backend, operation, scalar_left
+):
+    cpu_values = torch.tensor([1.5, -2.0, 0.25], dtype=torch.float32)
+    tensor = cpu_values.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = _vulkan_scalar_operation(operation, tensor, 2.5, scalar_left)
+    expected = operation(
+        *((2.5, cpu_values) if scalar_left else (cpu_values, 2.5))
+    )
+    dispatches, copies, transfers, fallbacks = (
+        pytorch_vulkan._C.execution_counter_snapshot()
+    )
+
+    assert result.device == torch.device("vk:0")
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+    assert dispatches > 0
+    assert copies == 0
+    assert transfers == 0
+    assert fallbacks == 0
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
+@pytest.mark.parametrize("scalar_left", [False, True])
+def test_empty_scalar_functional_semantics_do_zero_work(
+    vulkan_backend, operation, scalar_left
+):
+    tensor = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = _vulkan_scalar_operation(operation, tensor, 2.5, scalar_left)
+    dispatches, copies, transfers, fallbacks = (
+        pytorch_vulkan._C.execution_counter_snapshot()
+    )
+
+    assert result.device == torch.device("vk:0")
+    assert result.shape == tensor.shape
+    assert dispatches == 0
+    assert copies == 0
+    assert transfers == 0
+    assert fallbacks == 0
+
+
+@pytest.mark.parametrize(
+    "contract",
+    SCALAR_OUT_FUNCTIONAL_CASES,
+    ids=lambda case: case.case_name,
+)
+def test_scalar_contract_matrix_cases_are_named_and_vulkan_resident(
+    vulkan_backend, contract
+):
+    values = torch.tensor([1.5, -2.0, 0.0], dtype=torch.float32)
+    tensor = values.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = invoke_scalar_out_contract(contract, tensor)
+    expected = contract.cpu_reference(values)
+
+    assert result.device == torch.device("vk:0")
+    assert contract.output_mode == "functional"
+    assert_scalar_out_counters(contract.expected_counters)
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "contract", SCALAR_OUT_FUNCTIONAL_CASES, ids=lambda case: case.case_name
+)
+def test_scalar_contract_matrix_gradients_follow_declaration(vulkan_backend, contract):
+    cpu_values = torch.tensor([1.5, -2.0, 0.0], dtype=torch.float32, requires_grad=True)
+    vk_values = cpu_values.detach().clone().to(vulkan_backend).requires_grad_()
+
+    cpu_result = contract.cpu_reference(cpu_values)
+    vk_result = invoke_scalar_out_contract(contract, vk_values)
+    cpu_result.sum().backward()
+    vk_result.sum().backward()
+
+    assert contract.check_gradients
+    torch.testing.assert_close(vk_values.grad.cpu(), cpu_values.grad, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "contract", tuple(SCALAR_OUT_CONTRACT_MATRIX.values()), ids=lambda case: case.case_name
+)
+def test_scalar_contract_matrix_empty_counters_follow_declaration(vulkan_backend, contract):
+    tensor = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    result = invoke_scalar_out_contract(contract, tensor)
+    assert result.device == torch.device("vk:0")
+    assert result.numel() == 0
+    assert_scalar_out_counters(contract.empty_expected_counters)
+
+
+@pytest.mark.parametrize(
+    "contract", SCALAR_OUT_FUNCTIONAL_CASES, ids=lambda case: case.case_name
+)
+def test_scalar_contract_matrix_rejects_schema_specific_invalid_scalar_without_work(
+    vulkan_backend, contract
+):
+    tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    invalid = {"scalar": float("nan")}
+    if contract.schema in {"aten::add.Scalar", "aten::rsub.Scalar"}:
+        invalid = {"alpha": 2.0}
+
+    with pytest.raises(RuntimeError, match=r"Vulkan|alpha|non-finite"):
+        invoke_scalar_out_contract(contract, tensor, **invalid)
+
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
+@pytest.mark.parametrize("scalar_left", [False, True])
 def test_pointwise_python_scalar_repeated_operations_are_independent(
     vulkan_backend, operation, scalar_left
 ):
@@ -206,9 +328,15 @@ def test_zero_element_add_preserves_shape_and_dtype(vulkan_backend):
     assert result.is_contiguous()
 
 
+def _assert_zero_work():
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
 def _assert_add_rejected(operation, message):
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=message):
         operation()
+    _assert_zero_work()
 
 
 def _scalar_rejection_pattern(operation, add_pattern):
@@ -239,11 +367,13 @@ def test_scalar_tensor_operand_is_rejected(vulkan_backend, operation, scalar_lef
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     scalar_tensor = torch.tensor(1.0, dtype=torch.float32).to(vulkan_backend)
     operands = (scalar_tensor, tensor) if scalar_left else (tensor, scalar_tensor)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(
         RuntimeError,
         match=_scalar_rejection_pattern(operation, r"zero-dimensional|scalar operand"),
     ):
         operation(*operands)
+    _assert_zero_work()
 
 
 def test_zero_dim_tensor_add_operands_are_supported(vulkan_backend):
@@ -340,17 +470,21 @@ def test_add_out_is_supported(vulkan_backend):
 def test_inplace_add_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
     lhs = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
     rhs = torch.tensor([3.0, 4.0], dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(
         RuntimeError, match=r"Vulkan add_.*in-place operations are unsupported"
     ):
         lhs.add_(rhs)
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_unsupported_python_scalar_conversion_is_rejected(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(TypeError, match=r"argument 'other'.*Tensor"):
         _vulkan_scalar_operation(operation, tensor, object())
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -360,11 +494,13 @@ def test_cpu_zero_dim_tensor_is_not_accepted_as_python_scalar(
 ):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     scalar_tensor = torch.tensor(1.0, dtype=torch.float32)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(
         (RuntimeError, NotImplementedError), match=r"scalar operand|Could not run"
     ):
         operands = (scalar_tensor, tensor) if scalar_left else (tensor, scalar_tensor)
         operation(*operands)
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -373,18 +509,31 @@ def test_cpu_zero_dim_tensor_is_not_accepted_as_python_scalar(
 )
 def test_unsupported_scalar_values_are_rejected(vulkan_backend, operation, scalar):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=r"non-finite|outside float32|underflows"):
         _vulkan_scalar_operation(operation, tensor, scalar)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("operation", [torch.add, torch.sub])
+def test_invalid_scalar_alpha_is_rejected_before_vulkan_work(vulkan_backend, operation):
+    tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match=r"alpha == 1"):
+        operation(tensor, 2.0, alpha=2.0)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_invalid_scalar_tensor_metadata_is_rejected(vulkan_backend, operation):
     wrong_dtype = torch.empty((2,), dtype=torch.bool, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(
         RuntimeError,
         match=_scalar_rejection_pattern(operation, r"scalar operand"),
     ):
         operation(wrong_dtype, 1.0)
+    _assert_zero_work()
 
     non_contiguous = torch.empty_strided(
         (3, 2), (1, 3), dtype=torch.float32, device=vulkan_backend
@@ -396,28 +545,34 @@ def test_invalid_scalar_tensor_metadata_is_rejected(vulkan_backend, operation):
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_scalar_vulkan_operand_on_wrong_device_is_rejected(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=r"only device index 0"):
         operation(tensor, 1.0) if tensor.device.index != 0 else operation(
             torch.empty((2,), dtype=torch.float32, device="vk:1"), 1.0
         )
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_scalar_mixed_cpu_vulkan_tensor_is_rejected(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
     cpu_tensor = torch.empty((2,), dtype=torch.float32)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=r"same device|scalar operand"):
         operation(tensor, cpu_tensor)
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
     lhs = torch.empty((2, 1), dtype=torch.float32, device=vulkan_backend)
     rhs = torch.empty((2, 3), dtype=torch.float32, device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(
         RuntimeError, match=_scalar_rejection_pattern(operation, r"broadcast")
     ):
         operation(lhs, rhs)
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -427,11 +582,13 @@ def test_scalar_out_is_supported_but_inplace_variant_is_rejected(
     tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
     assert operation(tensor, 1.0, out=output) is output
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(
         RuntimeError,
         match=rf"Vulkan {operation.__name__}_ in-place operations are unsupported",
     ):
         getattr(tensor, operation.__name__ + "_")(1.0)
+    _assert_zero_work()
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])

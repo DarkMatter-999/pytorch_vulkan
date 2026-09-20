@@ -214,6 +214,8 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
             scalar_to_float(alpha, operation_name));
         return output;
     }
+    TORCH_CHECK(operation == PointwiseOperation::Mul || alpha.toDouble() == 1.0,
+                "Vulkan ", operation_name, " supports only alpha == 1");
     TORCH_CHECK(lhs_wrapped_number != rhs_wrapped_number, "Vulkan ", operation_name,
                 " requires one Python numeric scalar and one Vulkan tensor; scalar "
                 "operand is unsupported");

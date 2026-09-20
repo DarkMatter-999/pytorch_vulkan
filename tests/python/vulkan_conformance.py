@@ -55,6 +55,346 @@ class ConformanceCase:
         )
 
 
+class CpuExpression(str):
+    """Human-readable CPU expression with an executable reference."""
+
+    def __new__(cls, expression: str):
+        return str.__new__(cls, expression)
+
+    def __call__(self, contract, tensor: torch.Tensor, rhs: torch.Tensor | None = None):
+        operation = contract.schema.split("::", 1)[1].split(".", 1)[0]
+        out = torch.empty_like(tensor) if contract.output_mode == "out" else None
+        if contract.operand_order == "tensor-tensor":
+            if operation == "add":
+                return torch.add(
+                    tensor, rhs, alpha=contract.alpha, out=out
+                ) if out is not None else torch.add(tensor, rhs, alpha=contract.alpha)
+            if operation == "sub":
+                return torch.sub(
+                    tensor, rhs, alpha=contract.alpha, out=out
+                ) if out is not None else torch.sub(tensor, rhs, alpha=contract.alpha)
+            return torch.mul(tensor, rhs, out=out) if out is not None else torch.mul(
+                tensor, rhs
+            )
+        if operation == "rsub":
+            return torch.ops.aten.rsub.Scalar_out(
+                tensor, contract.scalar, alpha=contract.alpha, out=out
+            ) if out is not None else torch.ops.aten.rsub.Scalar(
+                tensor, contract.scalar, alpha=contract.alpha
+            )
+        if operation == "add":
+            return torch.add(
+                tensor, contract.scalar, alpha=contract.alpha, out=out
+            ) if out is not None else torch.add(
+                tensor, contract.scalar, alpha=contract.alpha
+            )
+        if operation == "sub":
+            return torch.sub(
+                tensor, contract.scalar, alpha=contract.alpha, out=out
+            ) if out is not None else torch.sub(
+                tensor, contract.scalar, alpha=contract.alpha
+            )
+        return torch.mul(
+            tensor, contract.scalar, out=out
+        ) if out is not None else torch.mul(tensor, contract.scalar)
+
+
+@dataclass(frozen=True)
+class ScalarOutContract:
+    """Frozen contract metadata for the Phase 2 scalar/``out=`` schemas."""
+
+    schema: str
+    case_name: str
+    status: str
+    operand_order: str
+    scalar: float
+    alpha: float
+    cpu_expression: CpuExpression
+    output_mode: str
+    check_gradients: bool
+    empty_supported: bool
+    expected_counters: dict[str, int | str]
+    empty_expected_counters: dict[str, int | str]
+    rejection_boundaries: frozenset[str]
+
+    def cpu_reference(self, tensor: torch.Tensor, rhs: torch.Tensor | None = None):
+        return self.cpu_expression(self, tensor, rhs)
+
+
+_SCALAR_OUT_COUNTERS = {
+    "compute": "positive",
+    "vulkan_copy": 0,
+    "explicit_transfer": 0,
+    "fallback": 0,
+}
+_SCALAR_OUT_EMPTY_COUNTERS = {
+    "compute": 0,
+    "vulkan_copy": 0,
+    "explicit_transfer": 0,
+    "fallback": 0,
+}
+
+
+SCALAR_OUT_CONTRACT_MATRIX = {
+    "aten::add.Scalar": ScalarOutContract(
+        "aten::add.Scalar",
+        "scalar.add.float32",
+        "supported",
+        "tensor-scalar",
+        2.0,
+        1.0,
+        CpuExpression("torch.add(tensor, scalar, alpha=alpha)"),
+        "functional",
+        True,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"alpha", "dtype", "device", "non_finite"}),
+    ),
+    "aten::add.Scalar_out": ScalarOutContract(
+        "aten::add.Scalar_out",
+        "out.add.scalar.float32",
+        "supported",
+        "tensor-scalar",
+        -2.0,
+        1.0,
+        CpuExpression("torch.add(tensor, scalar, alpha=alpha, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "overlap", "broadcast"}),
+    ),
+    "aten::add.out": ScalarOutContract(
+        "aten::add.out",
+        "out.add.tensor.float32",
+        "supported",
+        "tensor-tensor",
+        0.0,
+        1.0,
+        CpuExpression("torch.add(lhs, rhs, alpha=alpha, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "overlap", "broadcast"}),
+    ),
+    "aten::sub.Scalar": ScalarOutContract(
+        "aten::sub.Scalar",
+        "scalar.sub.float32",
+        "supported",
+        "tensor-scalar",
+        -2.0,
+        1.0,
+        CpuExpression("torch.sub(tensor, scalar, alpha=alpha)"),
+        "functional",
+        True,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"alpha", "dtype", "device", "non_finite"}),
+    ),
+    "aten::rsub.Scalar": ScalarOutContract(
+        "aten::rsub.Scalar",
+        "scalar.rsub.float32",
+        "supported",
+        "scalar-tensor",
+        2.0,
+        1.0,
+        CpuExpression("torch.sub(scalar, tensor, alpha=alpha)"),
+        "functional",
+        True,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"alpha", "dtype", "device", "non_finite"}),
+    ),
+    "aten::sub.Scalar_out": ScalarOutContract(
+        "aten::sub.Scalar_out",
+        "out.sub.scalar.float32",
+        "supported",
+        "tensor-scalar",
+        0.0,
+        1.0,
+        CpuExpression("torch.sub(tensor, scalar, alpha=alpha, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "overlap", "non_finite"}),
+    ),
+    "aten::rsub.Scalar_out": ScalarOutContract(
+        "aten::rsub.Scalar_out",
+        "out.rsub.scalar.float32",
+        "supported",
+        "scalar-tensor",
+        -2.0,
+        1.0,
+        CpuExpression("torch.sub(scalar, tensor, alpha=alpha, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "overlap", "non_finite"}),
+    ),
+    "aten::sub.out": ScalarOutContract(
+        "aten::sub.out",
+        "out.sub.tensor.float32",
+        "supported",
+        "tensor-tensor",
+        2.0,
+        1.0,
+        CpuExpression("torch.sub(lhs, rhs, alpha=alpha, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"alpha", "dtype", "device", "overlap", "broadcast"}),
+    ),
+    "aten::mul.Scalar": ScalarOutContract(
+        "aten::mul.Scalar",
+        "scalar.mul.float32",
+        "supported",
+        "tensor-scalar",
+        -2.0,
+        1.0,
+        CpuExpression("torch.mul(tensor, scalar)"),
+        "functional",
+        True,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "non_finite"}),
+    ),
+    "aten::mul.Scalar_out": ScalarOutContract(
+        "aten::mul.Scalar_out",
+        "out.mul.scalar.float32",
+        "supported",
+        "tensor-scalar",
+        0.0,
+        1.0,
+        CpuExpression("torch.mul(tensor, scalar, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "overlap", "non_finite"}),
+    ),
+    "aten::mul.out": ScalarOutContract(
+        "aten::mul.out",
+        "out.mul.tensor.float32",
+        "supported",
+        "tensor-tensor",
+        2.0,
+        1.0,
+        CpuExpression("torch.mul(lhs, rhs, out=out)"),
+        "out",
+        False,
+        True,
+        _SCALAR_OUT_COUNTERS,
+        _SCALAR_OUT_EMPTY_COUNTERS,
+        frozenset({"dtype", "device", "overlap", "broadcast"}),
+    ),
+}
+
+SCALAR_OUT_FUNCTIONAL_CASES = tuple(
+    case for case in SCALAR_OUT_CONTRACT_MATRIX.values() if case.output_mode == "functional"
+)
+SCALAR_OUT_OUT_CASES = tuple(
+    case for case in SCALAR_OUT_CONTRACT_MATRIX.values() if case.output_mode == "out"
+)
+
+PROMOTED_SCALAR_OUT_SCHEMAS = frozenset(SCALAR_OUT_CONTRACT_MATRIX)
+REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES = frozenset(
+    {"dtype", "device"}
+)
+
+
+def invoke_scalar_out_contract(
+    contract: ScalarOutContract,
+    tensor: torch.Tensor,
+    *,
+    rhs: torch.Tensor | None = None,
+    out: torch.Tensor | None = None,
+    scalar: float | None = None,
+    alpha: float | None = None,
+) -> torch.Tensor:
+    """Execute one matrix row using its declared schema and output mode."""
+    scalar = contract.scalar if scalar is None else scalar
+    alpha = contract.alpha if alpha is None else alpha
+    operation = contract.schema.split("::", 1)[1].split(".", 1)[0]
+    is_out = contract.output_mode == "out"
+    if is_out:
+        out = torch.empty_like(tensor) if out is None else out
+
+    if contract.operand_order == "tensor-tensor":
+        if rhs is None:
+            rhs = torch.empty_like(tensor)
+        if operation == "add":
+            return (
+                torch.ops.aten.add.out(tensor, rhs, alpha=alpha, out=out)
+                if is_out
+                else torch.ops.aten.add.Tensor(tensor, rhs, alpha=alpha)
+            )
+        if operation == "sub":
+            return (
+                torch.ops.aten.sub.out(tensor, rhs, alpha=alpha, out=out)
+                if is_out
+                else torch.ops.aten.sub.Tensor(tensor, rhs, alpha=alpha)
+            )
+        return (
+            torch.ops.aten.mul.out(tensor, rhs, out=out)
+            if is_out
+            else torch.ops.aten.mul.Tensor(tensor, rhs)
+        )
+
+    if operation == "rsub":
+        if is_out:
+            return torch.ops.aten.rsub.Scalar_out(
+                tensor, scalar, alpha=alpha, out=out
+            )
+        return torch.ops.aten.rsub.Scalar(tensor, scalar, alpha=alpha)
+    if operation == "add":
+        return (
+            torch.ops.aten.add.Scalar_out(tensor, scalar, alpha=alpha, out=out)
+            if is_out
+            else torch.ops.aten.add.Scalar(tensor, scalar, alpha=alpha)
+        )
+    if operation == "sub":
+        return (
+            torch.ops.aten.sub.Scalar_out(tensor, scalar, alpha=alpha, out=out)
+            if is_out
+            else torch.ops.aten.sub.Scalar(tensor, scalar, alpha=alpha)
+        )
+    return (
+        torch.ops.aten.mul.Scalar_out(tensor, scalar, out=out)
+        if is_out
+        else torch.ops.aten.mul.Scalar(tensor, scalar)
+    )
+
+
+def assert_scalar_out_counters(expected: dict[str, int | str]) -> None:
+    actual = {
+        "compute": pytorch_vulkan._C.compute_dispatch_count(),
+        "vulkan_copy": pytorch_vulkan._C.vulkan_copy_count(),
+        "explicit_transfer": pytorch_vulkan._C.explicit_transfer_count(),
+        "fallback": pytorch_vulkan._C.fallback_count(),
+    }
+    for name, expected_value in expected.items():
+        if expected_value == "positive":
+            assert actual[name] > 0, f"expected positive {name} counter, got {actual[name]}"
+        else:
+            assert actual[name] == expected_value, (
+                f"expected {name} counter {expected_value}, got {actual[name]}"
+            )
+
+
 def vulkan_backend() -> str:
     """Return the canonical device string used by the test harness."""
     return "vk:0"

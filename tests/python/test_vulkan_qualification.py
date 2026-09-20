@@ -2,6 +2,94 @@ import json
 from pathlib import Path
 
 from tools import run_vulkan_qualification as qualification
+from tools.validate_vulkan_capabilities import load_manifest
+from vulkan_conformance import (
+    PROMOTED_SCALAR_OUT_SCHEMAS,
+    SCALAR_OUT_CONTRACT_MATRIX,
+    SCALAR_OUT_OUT_CASES,
+    SCALAR_OUT_FUNCTIONAL_CASES,
+    REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES,
+    MANIFEST_CASE_NAMES,
+)
+
+
+SCALAR_OUT_QUALIFICATION_CASES = {
+    schema: {
+        "manifest_case": contract.case_name,
+        "positive_parity": (
+            "tests/python/test_vulkan_add.py::"
+            "test_scalar_contract_matrix_cases_are_named_and_vulkan_resident"
+            if contract.output_mode == "functional"
+            else "tests/python/test_vulkan_out.py::"
+            "test_scalar_out_contract_matrix_cases_return_named_output_and_do_vulkan_work"
+        ),
+        "negative_rejection": (
+            "tests/python/test_vulkan_add.py::"
+            "test_scalar_contract_matrix_rejects_schema_specific_invalid_scalar_without_work"
+            if contract.output_mode == "functional"
+            else (
+                "tests/python/test_vulkan_out.py::"
+                "test_scalar_out_contract_rejects_invalid_scalar_without_work"
+                if contract.operand_order != "tensor-tensor"
+                else "tests/python/test_vulkan_out.py::"
+                "test_tensor_tensor_out_broadcast_rejected_before_work"
+            )
+        ),
+        "counter_no_fallback": (
+            "tests/python/test_vulkan_add.py::"
+            "test_scalar_contract_matrix_cases_are_named_and_vulkan_resident"
+            if contract.output_mode == "functional"
+            else "tests/python/test_vulkan_out.py::"
+            "test_scalar_out_contract_matrix_cases_return_named_output_and_do_vulkan_work"
+        ),
+        "alias": (
+            "tests/python/test_vulkan_add.py::"
+            "test_pointwise_python_scalar_matches_cpu_and_preserves_inputs"
+            if contract.output_mode == "functional"
+            else (
+                "tests/python/test_vulkan_out.py::test_scalar_out_contract_exact_aliases"
+                if contract.operand_order != "tensor-tensor"
+                else (
+                    "tests/python/test_vulkan_out.py::test_tensor_tensor_out_contract_exact_aliases",
+                    "tests/python/test_vulkan_out.py::"
+                    "test_tensor_tensor_out_contract_second_operand_exact_aliases",
+                )
+            )
+        ),
+    }
+    for schema, contract in SCALAR_OUT_CONTRACT_MATRIX.items()
+}
+
+
+def test_scalar_out_qualification_inventory_covers_every_promoted_schema():
+    assert set(SCALAR_OUT_QUALIFICATION_CASES) == PROMOTED_SCALAR_OUT_SCHEMAS
+    assert len(SCALAR_OUT_QUALIFICATION_CASES) == 11
+    assert len(SCALAR_OUT_FUNCTIONAL_CASES) == 4
+    assert len(SCALAR_OUT_OUT_CASES) == 7
+    manifest = load_manifest(
+        Path(__file__).resolve().parents[2] / "docs/vulkan_capabilities.json"
+    )
+    manifest_case_schemas = {
+        case["name"]: entry["schema"]
+        for entry in manifest["entries"]
+        for case in entry["test_cases"]
+    }
+
+    for schema, coverage in SCALAR_OUT_QUALIFICATION_CASES.items():
+        contract = SCALAR_OUT_CONTRACT_MATRIX[schema]
+        assert coverage["manifest_case"] in MANIFEST_CASE_NAMES
+        assert manifest_case_schemas[coverage["manifest_case"]] == schema
+        identifiers = [coverage["positive_parity"], coverage["negative_rejection"]]
+        identifiers.append(coverage["counter_no_fallback"])
+        identifiers.extend(
+            coverage["alias"] if isinstance(coverage["alias"], tuple) else (coverage["alias"],)
+        )
+        for identifier in identifiers:
+            relative_path, function = identifier.split("::", 1)
+            function = function.split("[", 1)[0]
+            source = (Path(__file__).resolve().parents[2] / relative_path).read_text()
+            assert f"def {function}(" in source, identifier
+        assert REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES <= contract.rejection_boundaries
 
 
 def test_run_command_preserves_nonzero_exit_code(monkeypatch):

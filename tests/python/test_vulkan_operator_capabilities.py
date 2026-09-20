@@ -13,6 +13,9 @@ from vulkan_conformance import (
     ROADMAP_DEFERRED_REASON_BY_FAMILY,
     ROADMAP_DEFERRED_SCHEMAS,
     ROADMAP_OPERATION_FAMILIES,
+    PROMOTED_SCALAR_OUT_SCHEMAS,
+    REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES,
+    SCALAR_OUT_CONTRACT_MATRIX,
 )
 
 
@@ -84,6 +87,99 @@ def test_gemm_declarations_cover_supported_frontends_and_deferred_forms():
         "aten::bmm.out",
         "aten::mm.out",
     } <= ROADMAP_DEFERRED_SCHEMAS
+
+
+def test_scalar_out_contract_matrix_matches_selected_manifest_schemas():
+    selected = PROMOTED_SCALAR_OUT_SCHEMAS
+    manifest = load_manifest(Path("docs/vulkan_capabilities.json"))
+    manifest_supported = frozenset(
+        entry["schema"]
+        for entry in manifest["entries"]
+        if entry["status"] == "supported"
+    )
+    assert selected == {
+        "aten::add.Scalar",
+        "aten::add.Scalar_out",
+        "aten::add.out",
+        "aten::sub.Scalar",
+        "aten::rsub.Scalar",
+        "aten::sub.Scalar_out",
+        "aten::rsub.Scalar_out",
+        "aten::sub.out",
+        "aten::mul.Scalar",
+        "aten::mul.Scalar_out",
+        "aten::mul.out",
+    }
+    assert selected <= manifest_supported
+    source_inventory, _ = _source_registration_classifications()
+    registered_scalar_out = frozenset(
+        schema
+        for schema in source_inventory
+        if schema.split("::", 1)[-1].split(".", 1)[0]
+        in {"add", "sub", "rsub", "mul"}
+        and schema.rsplit(".", 1)[-1] in {"Scalar", "Scalar_out", "out"}
+    )
+    assert selected == registered_scalar_out
+    assert selected <= DECLARED_OPERATION_MANIFEST
+    assert not selected & ROADMAP_DEFERRED_SCHEMAS
+    assert all(case.status == "supported" for case in SCALAR_OUT_CONTRACT_MATRIX.values())
+
+
+def test_scalar_out_contract_matrix_has_named_case_and_counter_contracts():
+    assert len({case.case_name for case in SCALAR_OUT_CONTRACT_MATRIX.values()}) == len(
+        SCALAR_OUT_CONTRACT_MATRIX
+    )
+    for schema, case in SCALAR_OUT_CONTRACT_MATRIX.items():
+        assert case.schema == schema
+        assert case.operand_order in {
+            "tensor-scalar",
+            "scalar-tensor",
+            "tensor-tensor",
+        }
+        assert case.output_mode in {"functional", "out"}
+        assert isinstance(case.cpu_expression, str)
+        assert callable(case.cpu_expression)
+        assert callable(case.cpu_reference)
+        assert case.check_gradients == (case.output_mode == "functional")
+        assert case.scalar in {2.0, -2.0, 0.0}
+        assert case.alpha in {1.0, 0.5}
+        assert case.expected_counters == {
+            "compute": "positive",
+            "vulkan_copy": 0,
+            "explicit_transfer": 0,
+            "fallback": 0,
+        }
+        assert case.empty_supported
+        assert case.empty_expected_counters == {
+            "compute": 0,
+            "vulkan_copy": 0,
+            "explicit_transfer": 0,
+            "fallback": 0,
+        }
+        assert REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES <= case.rejection_boundaries
+        assert case.cpu_reference is not None
+        assert case.expected_counters["compute"] == "positive"
+
+
+def test_scalar_out_promotions_have_positive_and_negative_conformance_coverage():
+    cases_by_schema = {
+        case.declaration_id: case for case in ALL_CASES if case.supported
+    }
+    assert PROMOTED_SCALAR_OUT_SCHEMAS <= cases_by_schema.keys()
+    for schema in PROMOTED_SCALAR_OUT_SCHEMAS:
+        case = cases_by_schema[schema]
+        assert callable(case.cpu_reference)
+        assert case.execution_mode == "compute"
+        assert case.name == SCALAR_OUT_CONTRACT_MATRIX[schema].case_name
+    assert all(
+        contract.rejection_boundaries
+        for contract in SCALAR_OUT_CONTRACT_MATRIX.values()
+    )
+    assert {
+        boundary
+        for contract in SCALAR_OUT_CONTRACT_MATRIX.values()
+        for boundary in contract.rejection_boundaries
+    } >= {"alpha", "broadcast", "dtype", "device", "non_finite", "overlap"}
 
 
 def test_registration_parser_accepts_formatting_variants():

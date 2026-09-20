@@ -29,7 +29,7 @@ than duplicate schema entries.
 | `aten::native_batch_norm` / `native_batch_norm_backward` | F32 | F32 | fixed contiguous training inputs `(2,4)` or `(2,4,2,2)`; affine F32 `(4,)`; Vulkan running mean/variance; momentum `0.1`, eps `1e-5`; backward output mask `[true,true,true]` | first-order | eval, partial affine, missing stats, other shapes, and masks rejected |
 | `aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward` | F32 logits, I64 labels | F32 | contiguous Vulkan logits `(2,3)`, class dimension `1`, contiguous Vulkan I64 labels `(2,)`, no weight, reduction `mean`, `ignore_index=-100` | first-order | other reductions, weights, labels, shapes, and class dimensions rejected |
 | unary `neg`/`abs`/`relu` | F32 (formatter Double exceptions documented below) | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; fresh output | first-order | empty output supported |
-| pointwise `add`/`sub`/`mul` | F32 | F32 | same-device strided tensors with equal shapes, or documented Python scalar forms; `add` accepts finite representable tensor-tensor `alpha`; unsupported overlap/broadcasting rejected | first-order | empty output supported |
+| pointwise `add`/`sub`/`mul` scalar and `out=` forms | F32 | F32 | `aten::add.Scalar`, `aten::sub.Scalar`, `aten::rsub.Scalar`, `aten::mul.Scalar` plus their promoted `Scalar_out` and tensor `out` forms; `vk:0` F32 tensors, equal shapes, no promotion or broadcasting; `add`/`sub` require finite representable `alpha == 1` | first-order for functional forms; `out=` follows PyTorch autograd restrictions | empty output supported without dispatch |
 | `aten::as_strided` | F32 | F32 | Metadata-only on `vk:0`; requested sizes/strides must be non-negative and reference a valid in-allocation range. Non-zero offsets, non-contiguous layouts, overlap, and changed logical element counts are permitted. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
 | `aten::view` | F32 | F32 | Requires PyTorch-compatible `computeStride` metadata, then validates the resulting sizes/strides and storage range/device/dtype contract before creating the metadata-only alias. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
 | `aten::_reshape_alias` | F32 | F32 | Accepts the ATen-supplied size/stride alias metadata after shared storage-range, device, and dtype validation; creates no copy or dispatch. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
@@ -103,7 +103,6 @@ are removed from this inventory.
 | Roadmap family | Deferred schemas |
 | --- | --- |
 | transfer/creation | `_copy_from_and_resize`, `_local_scalar_dense`, `resize_`, `set_` |
-| scalar and `out=` pointwise | `add.Scalar`, `add.Scalar_out`, `add.out`, `mul.Scalar`, `mul.Scalar_out`, `mul.out`, `rsub.Scalar`, `rsub.Scalar_out`, `sub.Scalar`, `sub.Scalar_out`, `sub.out` |
 | reductions/indexing | `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.out`, `prod.Dimname_out`, `sum.IntList_out`, `sum.default` |
 | sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input`, `sigmoid.out`, `sigmoid_`, `tanh.out`, `tanh_` |
 | convolution/pooling backward | `avg_pool2d_backward.grad_input`, `convolution_backward_overrideable`, `max_pool2d_with_indices`, `max_pool2d_with_indices_backward`, `upsample_bilinear2d_backward.grad_input`, `upsample_nearest2d_backward.grad_input`, `_upsample_nearest_exact2d_backward.grad_input` |
@@ -113,10 +112,15 @@ are removed from this inventory.
 The cross-entropy/NLL row inventories the deferred log-softmax and NLL pieces
 of the composed loss; it does not claim a `cross_entropy` runtime registration.
 
-The scalar and `out=` pointwise F32 forms require same-shaped Vulkan tensor
-operands, reject promotion and unsupported broadcasting, and perform no hidden
-CPU fallback. Their `out` tensors must remain Vulkan F32 tensors; exact aliases
-are permitted while partial or internally overlapping outputs are rejected.
+The promoted scalar and `out=` pointwise F32 forms are limited to `vk:0` and
+the 11 schemas listed in the supported-schema comment above. Functional scalar
+forms accept documented finite Python scalars; `add` and `sub` accept only the
+verified representable `alpha == 1` contract. Tensor operands and `out` tensors
+must remain F32 Vulkan tensors with equal shapes; promotion, mixed devices,
+unsupported broadcasting, non-finite scalars, and invalid device/dtype contracts
+reject before Vulkan work. Exact input/output aliases are permitted where
+PyTorch permits them; partial and internally overlapping outputs are rejected.
+No hidden CPU fallback or payload readback is part of this declaration.
 
 ## Serialization and multiprocessing
 

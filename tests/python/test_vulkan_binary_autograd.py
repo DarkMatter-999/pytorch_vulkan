@@ -132,6 +132,16 @@ def test_rsub_scalar_left_gradient_matches_cpu(vulkan_backend):
     torch.testing.assert_close(vk_tensor.grad.cpu(), cpu_tensor.grad)
 
 
+def test_autograd_sub_scalar_rejects_invalid_alpha_without_work(vulkan_backend):
+    tensor = _vk([1.5, -2.0], vulkan_backend, requires_grad=True)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises(RuntimeError, match=r"alpha == 1"):
+        torch.sub(tensor, 2.5, alpha=2.0)
+
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
 def test_binary_rejections_remain_explicit(vulkan_backend):
     lhs = torch.empty((2, 1), device=vulkan_backend)
     rhs = torch.empty((2, 3), device=vulkan_backend)

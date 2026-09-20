@@ -314,6 +314,7 @@ at::Tensor add_scalar_raw(const at::Tensor &tensor, const at::Scalar &scalar,
 
 at::Tensor sub_scalar_raw(const at::Tensor &tensor, const at::Scalar &scalar,
                           const at::Scalar &alpha) {
+    TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan sub supports only alpha == 1");
     return pointwise_tensor_scalar(tensor, scalar, PointwiseOperation::Sub, false,
                                    "sub");
 }
