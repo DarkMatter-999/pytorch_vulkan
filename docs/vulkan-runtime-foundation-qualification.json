@@ -1,0 +1,511 @@
+{
+  "device": "vk:0",
+  "performance_claims": "timing evidence only; no faster-than-CPU claim",
+  "qualification": "phase-1-runtime-foundation",
+  "reason": "supported workload evidence completed",
+  "schema_version": 1,
+  "status": "qualified",
+  "warmups_excluded": true,
+  "workloads": {
+    "irregular": {
+      "cache_metrics": {
+        "descriptor_reuses_delta": 9,
+        "pipeline_entries_delta": 0,
+        "pipeline_evictions_delta": 0,
+        "pipeline_hits_delta": 0,
+        "pipeline_misses_delta": 0,
+        "shader_hits_delta": 0,
+        "shader_misses_delta": 0
+      },
+      "completions": 9,
+      "dispatches": 9,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "gpu_timestamp_intervals_ns": [
+        7320,
+        3640,
+        6640,
+        7240,
+        4560,
+        6480,
+        7280,
+        4520,
+        6640
+      ],
+      "gpu_timestamp_sample_count": 9,
+      "host_latency_ns": [
+        555637,
+        531130,
+        395125
+      ],
+      "operation_sample_counts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "resource_bounds": {
+        "after": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "before": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          3
+        ],
+        "descriptor_pending_after": 0,
+        "descriptor_pool_limit": 64,
+        "descriptor_quarantined_after": 0,
+        "peak": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "peak_live_allocations": 4,
+        "peak_service": {
+          "descriptor_pending": 0,
+          "descriptor_quarantined": 0,
+          "pipeline_pending_destructions": 0,
+          "timestamp_quarantined": 0
+        },
+        "pending_compute_after": 0,
+        "pending_transfers_after": 0,
+        "pipeline_pending_destructions_after": 0,
+        "timestamp_quarantined_after": false
+      },
+      "shape": [
+        37,
+        59,
+        13
+      ],
+      "submissions": 9,
+      "timing_reason": "timestamp queries completed",
+      "timing_status": "available",
+      "transfers": 0,
+      "waits": 9,
+      "warmup": {
+        "count": 0,
+        "excluded_from_steady_state": true
+      }
+    },
+    "large": {
+      "cache_metrics": {
+        "descriptor_reuses_delta": 9,
+        "pipeline_entries_delta": 0,
+        "pipeline_evictions_delta": 0,
+        "pipeline_hits_delta": 0,
+        "pipeline_misses_delta": 0,
+        "shader_hits_delta": 0,
+        "shader_misses_delta": 0
+      },
+      "completions": 9,
+      "dispatches": 9,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "gpu_timestamp_intervals_ns": [
+        188160,
+        10200,
+        59600,
+        187640,
+        11240,
+        58920,
+        187120,
+        10760,
+        60200
+      ],
+      "gpu_timestamp_sample_count": 9,
+      "host_latency_ns": [
+        633223,
+        661095,
+        651678
+      ],
+      "operation_sample_counts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "resource_bounds": {
+        "after": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "before": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          3
+        ],
+        "descriptor_pending_after": 0,
+        "descriptor_pool_limit": 64,
+        "descriptor_quarantined_after": 0,
+        "peak": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "peak_live_allocations": 4,
+        "peak_service": {
+          "descriptor_pending": 0,
+          "descriptor_quarantined": 0,
+          "pipeline_pending_destructions": 0,
+          "timestamp_quarantined": 0
+        },
+        "pending_compute_after": 0,
+        "pending_transfers_after": 0,
+        "pipeline_pending_destructions_after": 0,
+        "timestamp_quarantined_after": false
+      },
+      "shape": [
+        256,
+        512,
+        128
+      ],
+      "submissions": 9,
+      "timing_reason": "timestamp queries completed",
+      "timing_status": "available",
+      "transfers": 0,
+      "waits": 9,
+      "warmup": {
+        "count": 0,
+        "excluded_from_steady_state": true
+      }
+    },
+    "medium": {
+      "cache_metrics": {
+        "descriptor_reuses_delta": 9,
+        "pipeline_entries_delta": 0,
+        "pipeline_evictions_delta": 0,
+        "pipeline_hits_delta": 0,
+        "pipeline_misses_delta": 0,
+        "shader_hits_delta": 0,
+        "shader_misses_delta": 0
+      },
+      "completions": 9,
+      "dispatches": 9,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "gpu_timestamp_intervals_ns": [
+        13680,
+        3760,
+        12960,
+        14320,
+        4320,
+        13200,
+        14520,
+        4720,
+        13040
+      ],
+      "gpu_timestamp_sample_count": 9,
+      "host_latency_ns": [
+        576506,
+        478281,
+        393843
+      ],
+      "operation_sample_counts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "resource_bounds": {
+        "after": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "before": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          3
+        ],
+        "descriptor_pending_after": 0,
+        "descriptor_pool_limit": 64,
+        "descriptor_quarantined_after": 0,
+        "peak": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "peak_live_allocations": 4,
+        "peak_service": {
+          "descriptor_pending": 0,
+          "descriptor_quarantined": 0,
+          "pipeline_pending_destructions": 0,
+          "timestamp_quarantined": 0
+        },
+        "pending_compute_after": 0,
+        "pending_transfers_after": 0,
+        "pipeline_pending_destructions_after": 0,
+        "timestamp_quarantined_after": false
+      },
+      "shape": [
+        64,
+        128,
+        32
+      ],
+      "submissions": 9,
+      "timing_reason": "timestamp queries completed",
+      "timing_status": "available",
+      "transfers": 0,
+      "waits": 9,
+      "warmup": {
+        "count": 0,
+        "excluded_from_steady_state": true
+      }
+    },
+    "skinny": {
+      "cache_metrics": {
+        "descriptor_reuses_delta": 9,
+        "pipeline_entries_delta": 0,
+        "pipeline_evictions_delta": 0,
+        "pipeline_hits_delta": 0,
+        "pipeline_misses_delta": 0,
+        "shader_hits_delta": 0,
+        "shader_misses_delta": 0
+      },
+      "completions": 9,
+      "dispatches": 9,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "gpu_timestamp_intervals_ns": [
+        100280,
+        3760,
+        4600,
+        94840,
+        4560,
+        4920,
+        95440,
+        4480,
+        4560
+      ],
+      "gpu_timestamp_sample_count": 9,
+      "host_latency_ns": [
+        465327,
+        487588,
+        470707
+      ],
+      "operation_sample_counts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "resource_bounds": {
+        "after": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "before": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          3
+        ],
+        "descriptor_pending_after": 0,
+        "descriptor_pool_limit": 64,
+        "descriptor_quarantined_after": 0,
+        "peak": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "peak_live_allocations": 4,
+        "peak_service": {
+          "descriptor_pending": 0,
+          "descriptor_quarantined": 0,
+          "pipeline_pending_destructions": 0,
+          "timestamp_quarantined": 0
+        },
+        "pending_compute_after": 0,
+        "pending_transfers_after": 0,
+        "pipeline_pending_destructions_after": 0,
+        "timestamp_quarantined_after": false
+      },
+      "shape": [
+        8,
+        1024,
+        8
+      ],
+      "submissions": 9,
+      "timing_reason": "timestamp queries completed",
+      "timing_status": "available",
+      "transfers": 0,
+      "waits": 9,
+      "warmup": {
+        "count": 0,
+        "excluded_from_steady_state": true
+      }
+    },
+    "small": {
+      "cache_metrics": {
+        "descriptor_reuses_delta": 6,
+        "pipeline_entries_delta": 0,
+        "pipeline_evictions_delta": 0,
+        "pipeline_hits_delta": 0,
+        "pipeline_misses_delta": 0,
+        "shader_hits_delta": 0,
+        "shader_misses_delta": 0
+      },
+      "completions": 9,
+      "dispatches": 9,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "gpu_timestamp_intervals_ns": [
+        5400,
+        3760,
+        5120,
+        5160,
+        4400,
+        4640,
+        4920,
+        4360,
+        4800
+      ],
+      "gpu_timestamp_sample_count": 9,
+      "host_latency_ns": [
+        1004443,
+        417417,
+        400865
+      ],
+      "operation_sample_counts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "resource_bounds": {
+        "after": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "before": [
+          0,
+          0,
+          26,
+          26,
+          0,
+          0,
+          3
+        ],
+        "descriptor_pending_after": 0,
+        "descriptor_pool_limit": 64,
+        "descriptor_quarantined_after": 0,
+        "peak": [
+          3,
+          3,
+          26,
+          26,
+          0,
+          0,
+          4
+        ],
+        "peak_live_allocations": 4,
+        "peak_service": {
+          "descriptor_pending": 0,
+          "descriptor_quarantined": 0,
+          "pipeline_pending_destructions": 0,
+          "timestamp_quarantined": 0
+        },
+        "pending_compute_after": 0,
+        "pending_transfers_after": 0,
+        "pipeline_pending_destructions_after": 0,
+        "timestamp_quarantined_after": false
+      },
+      "shape": [
+        16,
+        32,
+        8
+      ],
+      "submissions": 9,
+      "timing_reason": "timestamp queries completed",
+      "timing_status": "available",
+      "transfers": 0,
+      "waits": 9,
+      "warmup": {
+        "count": 0,
+        "excluded_from_steady_state": true
+      }
+    }
+  }
+}

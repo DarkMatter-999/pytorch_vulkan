@@ -23,7 +23,8 @@ VulkanShaderRegistry::~VulkanShaderRegistry() noexcept {
     }
     if (invalidated || modules.empty())
         return;
-    std::function<void()> destroy_modules = [device = device_, modules = std::move(modules)] {
+    std::function<void()> destroy_modules = [device = device_,
+                                             modules = std::move(modules)] {
         for (const auto module : modules) {
             if (module != VK_NULL_HANDLE)
                 vkDestroyShaderModule(device, module, nullptr);
@@ -33,7 +34,8 @@ VulkanShaderRegistry::~VulkanShaderRegistry() noexcept {
         destroy_modules();
 }
 
-std::size_t VulkanShaderRegistry::KeyHash::operator()(const ShaderKey &key) const noexcept {
+std::size_t
+VulkanShaderRegistry::KeyHash::operator()(const ShaderKey &key) const noexcept {
     return std::hash<ShaderKey>{}(key);
 }
 

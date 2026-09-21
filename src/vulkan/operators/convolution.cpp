@@ -30,8 +30,7 @@ void validate(const at::Tensor &t, const char *name) {
 void validate_rank4(const at::Tensor &t, const char *name) {
     TORCH_CHECK(t.dim() == 4, "Vulkan convolution ", name,
                 " requires rank 4 NCHW input");
-    TORCH_CHECK(t.numel() > 0, "Vulkan convolution ", name,
-                " rejects empty tensors");
+    TORCH_CHECK(t.numel() > 0, "Vulkan convolution ", name, " rejects empty tensors");
 }
 at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
                const at::Tensor &bias, uint32_t operation) {
@@ -59,37 +58,46 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
               weight.sizes().equals({8, 3, 3, 3}) && bias.sizes().equals({8});
         bool legacy = input.sizes().equals({2, 1, 8, 8}) &&
                       weight.sizes().equals({4, 1, 3, 3}) && bias.sizes().equals({4});
-        TORCH_CHECK(cnn || legacy, "Vulkan convolution input has an unsupported fixed shape");
+        TORCH_CHECK(cnn || legacy,
+                    "Vulkan convolution input has an unsupported fixed shape");
     } else if (operation == 1) {
         cnn = input.size(1) == 8 && input.size(2) == 32 && input.size(3) == 32 &&
               weight.sizes().equals({8, 3, 3, 3});
-        bool legacy = input.sizes().equals({2, 4, 8, 8}) &&
-                      weight.sizes().equals({4, 1, 3, 3});
-        TORCH_CHECK(cnn || legacy, "Vulkan convolution backward grad has unsupported fixed shape");
+        bool legacy =
+            input.sizes().equals({2, 4, 8, 8}) && weight.sizes().equals({4, 1, 3, 3});
+        TORCH_CHECK(cnn || legacy,
+                    "Vulkan convolution backward grad has unsupported fixed shape");
     } else if (operation == 2) {
         cnn = input.size(1) == 8 && input.size(2) == 32 && input.size(3) == 32 &&
               weight.sizes().equals({input.size(0), 3, 32, 32});
-        bool legacy = input.sizes().equals({2, 4, 8, 8}) &&
-                      weight.sizes().equals({2, 1, 8, 8});
-        TORCH_CHECK(cnn || legacy, "Vulkan convolution backward input has unsupported fixed shape");
+        bool legacy =
+            input.sizes().equals({2, 4, 8, 8}) && weight.sizes().equals({2, 1, 8, 8});
+        TORCH_CHECK(cnn || legacy,
+                    "Vulkan convolution backward input has unsupported fixed shape");
     } else {
         cnn = input.size(1) == 8 && input.size(2) == 32 && input.size(3) == 32;
         bool legacy = input.sizes().equals({2, 4, 8, 8});
-        TORCH_CHECK(cnn || legacy, "Vulkan convolution backward grad has unsupported fixed shape");
+        TORCH_CHECK(cnn || legacy,
+                    "Vulkan convolution backward grad has unsupported fixed shape");
     }
     if (cnn)
-        TORCH_CHECK(input.is_contiguous() && weight.is_contiguous() && bias.is_contiguous(),
+        TORCH_CHECK(input.is_contiguous() && weight.is_contiguous() &&
+                        bias.is_contiguous(),
                     "Vulkan convolution CNN schema requires contiguous layout");
     int64_t channels = cnn ? 8 : 4;
     if (operation == 0)
         TORCH_CHECK(bias.dim() == 1 && bias.size(0) == channels,
                     "Vulkan convolution bias has a fixed shape");
-    at::Tensor output = operation == 0
-                            ? at::empty({input.size(0), weight.size(0), input.size(2), input.size(3)}, input.options())
-                        : operation == 1
-                            ? at::empty({input.size(0), weight.size(1), input.size(2), input.size(3)}, input.options())
-                        : operation == 2 ? at::empty({input.size(1), weight.size(1), 3, 3}, input.options())
-                                         : at::empty({input.size(1)}, input.options());
+    at::Tensor output =
+        operation == 0
+            ? at::empty({input.size(0), weight.size(0), input.size(2), input.size(3)},
+                        input.options())
+        : operation == 1
+            ? at::empty({input.size(0), weight.size(1), input.size(2), input.size(3)},
+                        input.options())
+        : operation == 2
+            ? at::empty({input.size(1), weight.size(1), 3, 3}, input.options())
+            : at::empty({input.size(1)}, input.options());
     const auto &in_data = input.storage().data_ptr();
     const auto &weight_data = weight.storage().data_ptr();
     const auto &bias_data = bias.storage().data_ptr();

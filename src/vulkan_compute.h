@@ -112,11 +112,11 @@ class VulkanCompute final {
               const VulkanTensorLayout &b_layout, VkBuffer c,
               const VulkanTensorLayout &c_layout, VkBuffer output,
               const VulkanTensorLayout &output_layout, VkBuffer bias,
-               const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n, uint32_t k,
-               float alpha = 1.0F, float beta = 0.0F, bool has_bias = false,
-               uint32_t batch_count = 0, uint32_t batch_stride_a = 0,
-               uint32_t batch_stride_b = 0, uint32_t batch_stride_c = 0,
-               uint32_t batch_stride_d = 0) const;
+              const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n, uint32_t k,
+              float alpha = 1.0F, float beta = 0.0F, bool has_bias = false,
+              uint32_t batch_count = 0, uint32_t batch_stride_a = 0,
+              uint32_t batch_stride_b = 0, uint32_t batch_stride_c = 0,
+              uint32_t batch_stride_d = 0) const;
     void linear_relu_backward_input(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
                                     const VulkanTensorLayout &,
                                     const VulkanTensorLayout &,
@@ -177,10 +177,10 @@ class VulkanCompute final {
     std::size_t descriptor_pool_creation_count() const;
     std::size_t descriptor_set_allocation_count() const;
     std::size_t descriptor_set_reuse_count() const;
-     std::size_t live_descriptor_pool_count() const;
-     std::size_t live_descriptor_set_count() const;
-     void invalidate_device_loss() const;
-     DescriptorArenaSnapshot descriptor_arena_snapshot() const;
+    std::size_t live_descriptor_pool_count() const;
+    std::size_t live_descriptor_set_count() const;
+    void invalidate_device_loss() const;
+    DescriptorArenaSnapshot descriptor_arena_snapshot() const;
     std::size_t pipeline_count() const;
     std::size_t shader_module_count() const;
     void reset_descriptor_resource_counters() const;
@@ -245,9 +245,9 @@ class VulkanCompute final {
     VkDescriptorSet acquire_descriptor_set(VkDescriptorSetLayout descriptor_layout,
                                            uint32_t descriptor_count,
                                            uint32_t pool_capacity = 64) const;
-     const VulkanPlatform &platform_;
-     VkDevice device_ = VK_NULL_HANDLE;
-     std::unique_ptr<DescriptorArena> descriptor_arena_;
+    const VulkanPlatform &platform_;
+    VkDevice device_ = VK_NULL_HANDLE;
+    std::unique_ptr<DescriptorArena> descriptor_arena_;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptor_set_layouts_[10]{};
@@ -331,8 +331,8 @@ class VulkanCompute final {
     uint32_t max_compute_shared_memory_size_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
     mutable std::atomic<std::size_t> submission_count_{0};
-     mutable std::size_t descriptor_pool_baseline_ = 0;
-     mutable std::size_t descriptor_allocation_baseline_ = 0;
-     mutable std::size_t descriptor_reuse_baseline_ = 0;
-     mutable bool training_step_ = false;
+    mutable std::size_t descriptor_pool_baseline_ = 0;
+    mutable std::size_t descriptor_allocation_baseline_ = 0;
+    mutable std::size_t descriptor_reuse_baseline_ = 0;
+    mutable bool training_step_ = false;
 };

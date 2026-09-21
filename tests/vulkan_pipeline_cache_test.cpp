@@ -41,7 +41,7 @@ void test_bound_and_invalidation(VulkanPlatform &platform) {
     VulkanPipelineCache cache(platform.device(), platform, execution, 1);
 
     VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                                        VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+                                         VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo descriptor_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptor_info.bindingCount = 1;
@@ -51,7 +51,8 @@ void test_bound_and_invalidation(VulkanPlatform &platform) {
                                        &descriptor_layout) == VK_SUCCESS,
            "could not create cache test descriptor layout");
 
-    VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layout_info{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &descriptor_layout;
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
@@ -60,23 +61,25 @@ void test_bound_and_invalidation(VulkanPlatform &platform) {
            "could not create cache test pipeline layout");
 
     const auto shader = platform.shader_registry().get_or_create(
-        {"pipeline-cache-test", vulkan_shader_code_hash(
-                                     vulkan_gemm_shader::kCode,
-                                     vulkan_gemm_shader::kCodeSize / sizeof(uint32_t))},
-        vulkan_gemm_shader::kCode,
-        vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
-    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        {"pipeline-cache-test",
+         vulkan_shader_code_hash(vulkan_gemm_shader::kCode,
+                                 vulkan_gemm_shader::kCodeSize / sizeof(uint32_t))},
+        vulkan_gemm_shader::kCode, vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
+    VkPipelineShaderStageCreateInfo stage{
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = shader;
     stage.pName = "main";
-    VkComputePipelineCreateInfo create_info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkComputePipelineCreateInfo create_info{
+        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     create_info.stage = stage;
     create_info.layout = pipeline_layout;
 
     const PipelineKey first{"gemm", 1, 2, {3}, 4};
     const PipelineKey second{"pointwise", 5, 6, {7}, 8};
     const PipelineLayoutKey layout_key{1, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
-    const PipelineLayoutKey equivalent_layout_key{1, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    const PipelineLayoutKey equivalent_layout_key{1, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                                  16};
     const PipelineLayoutKey changed_layout_key{1, VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
     expect(layout_key == equivalent_layout_key &&
                std::hash<PipelineLayoutKey>{}(layout_key) ==
@@ -91,17 +94,22 @@ void test_bound_and_invalidation(VulkanPlatform &platform) {
     cached_layout_info.pSetLayouts = &descriptor_layout;
     cached_layout_info.pushConstantRangeCount = 1;
     cached_layout_info.pPushConstantRanges = &push;
-    const auto cached_layout = cache.get_or_create_layout(layout_key, cached_layout_info);
+    const auto cached_layout =
+        cache.get_or_create_layout(layout_key, cached_layout_info);
     expect(cached_layout != VK_NULL_HANDLE, "cache failed to create pipeline layout");
     expect(cache.get_or_create_layout(layout_key, cached_layout_info) == cached_layout,
            "equivalent pipeline layout keys did not reuse a layout");
-    expect(cache.snapshot().layout_count == 1, "pipeline layout cache count is incorrect");
-    expect(cache.get_or_create(first, pipeline_layout, shader, create_info) != VK_NULL_HANDLE,
+    expect(cache.snapshot().layout_count == 1,
+           "pipeline layout cache count is incorrect");
+    expect(cache.get_or_create(first, pipeline_layout, shader, create_info) !=
+               VK_NULL_HANDLE,
            "cache failed to create first pipeline");
-    expect(cache.get_or_create(first, pipeline_layout, shader, create_info) != VK_NULL_HANDLE,
+    expect(cache.get_or_create(first, pipeline_layout, shader, create_info) !=
+               VK_NULL_HANDLE,
            "cache failed to reuse first pipeline");
     execution.begin();
-    expect(cache.get_or_create(second, pipeline_layout, shader, create_info) != VK_NULL_HANDLE,
+    expect(cache.get_or_create(second, pipeline_layout, shader, create_info) !=
+               VK_NULL_HANDLE,
            "cache failed to create replacement pipeline");
     expect(cache.snapshot().pending_destructions == 1,
            "evicted pipeline destruction was not retained for completion");
@@ -136,7 +144,7 @@ void test_bound_and_invalidation(VulkanPlatform &platform) {
     bool rejected = false;
     try {
         cache.get_or_create({"rejected", 9, 10, {11}, 12}, pipeline_layout, shader,
-                             create_info);
+                            create_info);
     } catch (const VulkanDeviceLost &) {
         rejected = true;
     }

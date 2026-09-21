@@ -1,7 +1,7 @@
-#include "vulkan_platform.h"
-#include "vulkan_execution.h"
 #include "vulkan/shader_registry.h"
 #include "vulkan/shaders/generated/gemm_spv.h"
+#include "vulkan_execution.h"
+#include "vulkan_platform.h"
 
 #include <cstdint>
 #include <iostream>
@@ -44,8 +44,8 @@ void test_lookup_and_invalidation(VulkanPlatform &platform) {
     expect(invalidated.invalidated, "registry was not invalidated on device loss");
     bool rejected = false;
     try {
-        registry.get_or_create(
-            {"new", 19U}, code, vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
+        registry.get_or_create({"new", 19U}, code,
+                               vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
     } catch (const VulkanDeviceLost &) {
         rejected = true;
     }
@@ -60,15 +60,16 @@ void test_deferred_module_destruction(VulkanPlatform &platform) {
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     info.codeSize = vulkan_gemm_shader::kCodeSize;
     info.pCode = code;
-    expect(vkCreateShaderModule(platform.device(), &info, nullptr, &module) == VK_SUCCESS,
+    expect(vkCreateShaderModule(platform.device(), &info, nullptr, &module) ==
+               VK_SUCCESS,
            "could not create deferred shader module");
     bool destroyed = false;
     context.begin();
     expect(context.retain_until_completion([&] {
-               vkDestroyShaderModule(platform.device(), module, nullptr);
-               module = VK_NULL_HANDLE;
-               destroyed = true;
-           }),
+        vkDestroyShaderModule(platform.device(), module, nullptr);
+        module = VK_NULL_HANDLE;
+        destroyed = true;
+    }),
            "shader destruction was not retained for submitted work");
     context.submit();
     expect(!destroyed, "shader module was destroyed before completion");

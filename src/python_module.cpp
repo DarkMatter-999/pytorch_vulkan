@@ -1,10 +1,10 @@
+#include "vulkan/descriptor_arena.h"
+#include "vulkan/pipeline_cache.h"
+#include "vulkan/shader_registry.h"
 #include "vulkan_allocator.h"
 #include "vulkan_compute.h"
 #include "vulkan_device_guard.h"
 #include "vulkan_execution.h"
-#include "vulkan/descriptor_arena.h"
-#include "vulkan/pipeline_cache.h"
-#include "vulkan/shader_registry.h"
 #include "vulkan_platform.h"
 
 #include <pybind11/pybind11.h>
@@ -49,14 +49,14 @@ PYBIND11_MODULE(_C, module) {
     module.def("execution_counter_snapshot", [] {
         const auto snapshot = pytorch_vulkan::platform()->execution_counter_snapshot();
         return py::make_tuple(snapshot.dispatches, snapshot.vulkan_copies,
-                               snapshot.explicit_transfers, snapshot.fallbacks);
+                              snapshot.explicit_transfers, snapshot.fallbacks);
     });
     module.def("live_resource_snapshot", [] {
         const auto snapshot = pytorch_vulkan::platform()->live_resource_snapshot();
         return py::make_tuple(snapshot.descriptor_pools, snapshot.descriptor_sets,
                               snapshot.pipelines, snapshot.shader_modules,
                               snapshot.pending_transfers, snapshot.pending_compute,
-                               snapshot.allocations);
+                              snapshot.allocations);
     });
     // Narrow diagnostic seam for migration tests; this does not expose runtime
     // ownership or control outside the existing test module.
@@ -117,26 +117,23 @@ PYBIND11_MODULE(_C, module) {
                [] { return pytorch_vulkan::platform()->vulkan_copy_count(); });
     module.def("copy_command_count",
                [] { return pytorch_vulkan::platform()->copy_command_count(); });
-    module.def("transfer_operation_count", [] {
-        return pytorch_vulkan::platform()->transfer_operation_count();
-    });
-    module.def("transfer_submission_count", [] {
-        return pytorch_vulkan::platform()->transfer_submission_count();
-    });
-    module.def("transfer_completion_count", [] {
-        return pytorch_vulkan::platform()->transfer_completion_count();
-    });
-    module.def("transfer_wait_count", [] {
-        return pytorch_vulkan::platform()->transfer_wait_count();
-    });
+    module.def("transfer_operation_count",
+               [] { return pytorch_vulkan::platform()->transfer_operation_count(); });
+    module.def("transfer_submission_count",
+               [] { return pytorch_vulkan::platform()->transfer_submission_count(); });
+    module.def("transfer_completion_count",
+               [] { return pytorch_vulkan::platform()->transfer_completion_count(); });
+    module.def("transfer_wait_count",
+               [] { return pytorch_vulkan::platform()->transfer_wait_count(); });
     module.def("reset_timing", [] { pytorch_vulkan::platform()->reset_timing(); });
     module.def("timing_snapshot", [] {
         const auto timing = pytorch_vulkan::platform()->timing_snapshot();
         return py::make_tuple(timing.allocation, timing.recording, timing.submit,
                               timing.host_fence_wait, timing.total);
     });
-    module.def("timestamp_queries_supported",
-               [] { return pytorch_vulkan::platform()->timestamp_queries_supported(); });
+    module.def("timestamp_queries_supported", [] {
+        return pytorch_vulkan::platform()->timestamp_queries_supported();
+    });
     module.def("timestamp_query_support_reason", [] {
         return pytorch_vulkan::platform()->timestamp_query_support_reason();
     });
@@ -156,10 +153,9 @@ PYBIND11_MODULE(_C, module) {
     });
     module.def("timestamp_query_snapshot", [] {
         const auto owner = pytorch_vulkan::platform();
-        return py::make_tuple(owner->timestamp_query_capacity(),
-                              owner->timestamp_query_in_use(),
-                              owner->timestamp_queries_supported(),
-                              owner->timestamp_query_quarantined());
+        return py::make_tuple(
+            owner->timestamp_query_capacity(), owner->timestamp_query_in_use(),
+            owner->timestamp_queries_supported(), owner->timestamp_query_quarantined());
     });
     module.def("test_inject_device_loss", [] {
         auto owner = pytorch_vulkan::platform();

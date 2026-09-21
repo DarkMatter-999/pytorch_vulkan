@@ -75,7 +75,8 @@ DescriptorArena::~DescriptorArena() {
         if (!execution_.retain_until_completion(destroy))
             destroy();
     } catch (...) {
-        // Completion is not knowable here; leak safely rather than destroy in-flight pools.
+        // Completion is not knowable here; leak safely rather than destroy in-flight
+        // pools.
     }
 }
 
@@ -112,7 +113,8 @@ VkDescriptorSet DescriptorArena::acquire(VkDescriptorSetLayout layout,
         if (pool.sets.size() >= pool.capacity)
             continue;
         VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        VkDescriptorSetAllocateInfo info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         info.descriptorPool = pool.handle;
         info.descriptorSetCount = 1;
         info.pSetLayouts = &layout;
@@ -138,13 +140,15 @@ VkDescriptorSet DescriptorArena::acquire(VkDescriptorSetLayout layout,
     pool_info.maxSets = static_cast<uint32_t>(pool_capacity);
     pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &size;
-    if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool.handle) != VK_SUCCESS)
+    if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &pool.handle) !=
+        VK_SUCCESS)
         throw std::runtime_error("could not create descriptor arena pool");
     try {
         if (state_->pools.size() >= state_->pool_limit)
             throw std::runtime_error("descriptor arena pool limit reached");
         VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        VkDescriptorSetAllocateInfo info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         info.descriptorPool = pool.handle;
         info.descriptorSetCount = 1;
         info.pSetLayouts = &layout;

@@ -1,10 +1,10 @@
 #include "vulkan_platform.h"
 
+#include "vulkan/pipeline_cache.h"
+#include "vulkan/shader_registry.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
-#include "vulkan/shader_registry.h"
-#include "vulkan/pipeline_cache.h"
 
 #include <algorithm>
 #include <atomic>
@@ -527,7 +527,8 @@ VulkanPlatform::VulkanPlatform(bool enable_validation)
                         suitability.storage_dispatch_limits;
                     device_info_.host_visible_memory = suitability.host_visible_memory;
                     device_info_.shader_capabilities = suitability.shader_capabilities;
-                    device_info_.shader_int64_supported = suitability.shader_int64_supported;
+                    device_info_.shader_int64_supported =
+                        suitability.shader_int64_supported;
                     float queue_priority = 1.0F;
                     VkDeviceQueueCreateInfo queue_info{};
                     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -743,18 +744,21 @@ VulkanExecutionContext &VulkanPlatform::execution_context() const {
     return *execution_;
 }
 
-VulkanShaderRegistry &VulkanPlatform::shader_registry() const { return *shader_registry_; }
+VulkanShaderRegistry &VulkanPlatform::shader_registry() const {
+    return *shader_registry_;
+}
 
 VulkanPipelineCache &VulkanPlatform::pipeline_cache() const { return *pipeline_cache_; }
 
 PipelineCacheSnapshot VulkanPlatform::pipeline_cache_snapshot() const {
-    return pipeline_cache_ == nullptr ? PipelineCacheSnapshot{} : pipeline_cache_->snapshot();
+    return pipeline_cache_ == nullptr ? PipelineCacheSnapshot{}
+                                      : pipeline_cache_->snapshot();
 }
 
 void VulkanPlatform::mark_device_lost(VkResult result) const {
     int expected = static_cast<int>(VK_SUCCESS);
     device_loss_result_.compare_exchange_strong(expected, static_cast<int>(result),
-                                                 std::memory_order_relaxed);
+                                                std::memory_order_relaxed);
     if (shader_registry_ != nullptr)
         shader_registry_->invalidate_device_loss();
     if (pipeline_cache_ != nullptr)
@@ -996,7 +1000,8 @@ void VulkanPlatform::copy_buffers_sync(
         fence = VK_NULL_HANDLE;
     };
     try {
-        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        VkCommandBufferAllocateInfo allocation{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         allocation.commandPool = command_pool_;
         allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocation.commandBufferCount = 1;
@@ -1056,13 +1061,14 @@ void VulkanPlatform::copy_buffers_sync(
                 "Vulkan device lost; execution state invalidated (VkResult -4)");
         }
         check_result(wait_result, "Could not wait for Vulkan bulk-copy fence");
-        timing_.host_fence_wait += std::chrono::duration<double>(
-                                         std::chrono::steady_clock::now() - fence_wait_start)
-                                         .count();
+        timing_.host_fence_wait +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          fence_wait_start)
+                .count();
         transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
         timing_.total += std::chrono::duration<double>(
-                              std::chrono::steady_clock::now() - total_start)
-                              .count();
+                             std::chrono::steady_clock::now() - total_start)
+                             .count();
         release_resources();
     } catch (...) {
         if (device_lost()) {
@@ -1077,8 +1083,8 @@ void VulkanPlatform::copy_buffers_sync(
                 if (recovery_result == VK_ERROR_DEVICE_LOST) {
                     mark_device_lost(recovery_result);
                     defer_resources();
-                    throw VulkanDeviceLost(
-                        "Vulkan device lost; execution state invalidated (VkResult -4)");
+                    throw VulkanDeviceLost("Vulkan device lost; execution state "
+                                           "invalidated (VkResult -4)");
                 }
                 defer_resources();
                 std::ostringstream message;
@@ -1087,9 +1093,11 @@ void VulkanPlatform::copy_buffers_sync(
                 } catch (const std::exception &error) {
                     message << error.what();
                 } catch (...) {
-                    message << "Vulkan bulk transfer failed with a non-standard exception";
+                    message
+                        << "Vulkan bulk transfer failed with a non-standard exception";
                 }
-                message << "; could not confirm Vulkan bulk transfer completion failed with "
+                message << "; could not confirm Vulkan bulk transfer completion failed "
+                           "with "
                            "VkResult "
                         << static_cast<int>(recovery_result);
                 throw std::runtime_error(message.str());
@@ -1222,8 +1230,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
                 if (recovery_result == VK_ERROR_DEVICE_LOST) {
                     mark_device_lost(recovery_result);
                     defer_resources();
-                    throw VulkanDeviceLost(
-                        "Vulkan device lost; execution state invalidated (VkResult -4)");
+                    throw VulkanDeviceLost("Vulkan device lost; execution state "
+                                           "invalidated (VkResult -4)");
                 }
                 defer_resources();
                 std::ostringstream message;
@@ -1237,9 +1245,10 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
             }
             check_result(wait_result, "Could not wait for Vulkan transfer fence");
         }
-        timing_.host_fence_wait += std::chrono::duration<double>(
-                                        std::chrono::steady_clock::now() - fence_wait_start)
-                                        .count();
+        timing_.host_fence_wait +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          fence_wait_start)
+                .count();
         transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
@@ -1257,8 +1266,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
                 if (recovery_result == VK_ERROR_DEVICE_LOST) {
                     mark_device_lost(recovery_result);
                     defer_resources();
-                    throw VulkanDeviceLost(
-                        "Vulkan device lost; execution state invalidated (VkResult -4)");
+                    throw VulkanDeviceLost("Vulkan device lost; execution state "
+                                           "invalidated (VkResult -4)");
                 }
                 defer_resources();
                 std::ostringstream message;

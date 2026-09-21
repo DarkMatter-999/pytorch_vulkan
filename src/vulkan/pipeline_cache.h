@@ -2,9 +2,9 @@
 
 #include <vulkan/vulkan.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
 #include <list>
 #include <memory>
 #include <mutex>

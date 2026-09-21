@@ -1,24 +1,21 @@
-#include <iostream>
 #include <dlfcn.h>
+#include <iostream>
+#include <torch/script.h>
 #include <torch/torch.h>
-#include <torch/script.h> 
 
-
-
-torch::Device device(torch::kPrivateUse1, 0);    /* backend : torch::kPrivateUse1, torch::kCPU  */
-
+torch::Device device(torch::kPrivateUse1,
+                     0); /* backend : torch::kPrivateUse1, torch::kCPU  */
 
 void load_device() {
-    const char* lib_path = "<path-to-pt_ocl.so>";
+    const char *lib_path = "<path-to-pt_ocl.so>";
     /* load dynamic library */
-    void* handle = dlopen(lib_path, RTLD_NOW | RTLD_GLOBAL);
+    void *handle = dlopen(lib_path, RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         std::cerr << "Failed to load " << lib_path << ": " << dlerror() << std::endl;
         exit(1);
     }
     std::cout << "Dynamic library loaded successfully: " << lib_path << std::endl;
 }
-
 
 void infer_net() {
     /* create dummy input */
@@ -39,9 +36,8 @@ void infer_net() {
     std::cout << "Predicted class (scripted): " << top.item<int>() << std::endl;
 }
 
-
 int main() {
     load_device();
     infer_net();
     return 0;
-} 
+}

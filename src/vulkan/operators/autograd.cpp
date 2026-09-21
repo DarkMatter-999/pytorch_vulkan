@@ -1,12 +1,12 @@
 #include "autograd.h"
 #include "formatter_double.h"
 
+#include "../../vulkan_transfer.h"
 #include "binary.h"
 #include "convolution.h"
 #include "linear.h"
 #include "pooling.h"
 #include "unary.h"
-#include "../../vulkan_transfer.h"
 
 #include <torch/library.h>
 
@@ -86,17 +86,18 @@ class LinearAutogradFunction final
         const auto saved = ctx->get_saved_variables();
         const at::Tensor &raw_grad = grad_outputs[0];
 
-        const auto input_2d = saved[0].dim() == 2
-            ? saved[0]
-            : saved[0].reshape({saved[0].numel() / saved[0].size(-1), saved[0].size(-1)});
+        const auto input_2d =
+            saved[0].dim() == 2
+                ? saved[0]
+                : saved[0].reshape(
+                      {saved[0].numel() / saved[0].size(-1), saved[0].size(-1)});
         at::Tensor grad = raw_grad.dim() == 2
-            ? raw_grad
-            : raw_grad.reshape({input_2d.size(0), input_2d.size(1)});
+                              ? raw_grad
+                              : raw_grad.reshape({input_2d.size(0), input_2d.size(1)});
         auto grad_input = linear_backward_input(grad, saved[1], input_2d);
         if (saved[0].dim() != 2)
             grad_input = grad_input.reshape(saved[0].sizes());
-        return {grad_input,
-                linear_backward_weight(grad, input_2d),
+        return {grad_input, linear_backward_weight(grad, input_2d),
                 ctx->saved_data["has_bias"].toBool() ? linear_backward_bias(grad)
                                                      : at::Tensor()};
     }
@@ -130,7 +131,8 @@ class MmAutogradFunction final : public torch::autograd::Function<MmAutogradFunc
     }
 };
 
-class BmmAutogradFunction final : public torch::autograd::Function<BmmAutogradFunction> {
+class BmmAutogradFunction final
+    : public torch::autograd::Function<BmmAutogradFunction> {
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &mat1, const at::Tensor &mat2) {
@@ -148,11 +150,11 @@ class BmmAutogradFunction final : public torch::autograd::Function<BmmAutogradFu
         auto saved = ctx->get_saved_variables();
         auto grad = grad_outputs[0];
         auto grad_a = ctx->needs_input_grad(0)
-            ? pytorch_vulkan::bmm(grad, saved[1].transpose(1, 2))
-            : at::Tensor();
+                          ? pytorch_vulkan::bmm(grad, saved[1].transpose(1, 2))
+                          : at::Tensor();
         auto grad_b = ctx->needs_input_grad(1)
-            ? pytorch_vulkan::bmm(saved[0].transpose(1, 2), grad)
-            : at::Tensor();
+                          ? pytorch_vulkan::bmm(saved[0].transpose(1, 2), grad)
+                          : at::Tensor();
         return {grad_a, grad_b};
     }
 };
@@ -338,7 +340,9 @@ at::Tensor autograd_stack(at::TensorList tensors, int64_t dim) {
     return StackAutogradFunction::apply(tensors, dim);
 }
 
-at::Tensor stack(at::TensorList tensors, int64_t dim) { return stack_raw(tensors, dim); }
+at::Tensor stack(at::TensorList tensors, int64_t dim) {
+    return stack_raw(tensors, dim);
+}
 
 at::Tensor autograd_linear_relu(const at::Tensor &input, const at::Tensor &weight,
                                 const at::Tensor &bias) {
@@ -546,9 +550,7 @@ at::Tensor autograd_gelu(const at::Tensor &input, c10::string_view approximate) 
 
 } // namespace pytorch_vulkan
 
-TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
-    m.impl("stack", &pytorch_vulkan::stack);
-}
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) { m.impl("stack", &pytorch_vulkan::stack); }
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     m.impl("stack", &pytorch_vulkan::autograd_stack);

@@ -24,8 +24,8 @@ std::size_t std::hash<PipelineKey>::operator()(const PipelineKey &key) const noe
     return result;
 }
 
-std::size_t std::hash<PipelineLayoutKey>::operator()(
-    const PipelineLayoutKey &key) const noexcept {
+std::size_t
+std::hash<PipelineLayoutKey>::operator()(const PipelineLayoutKey &key) const noexcept {
     std::size_t result = std::hash<uint64_t>{}(key.descriptor_layout_identity);
     combine(result, std::hash<uint32_t>{}(key.stage_flags));
     combine(result, std::hash<uint32_t>{}(key.push_constant_offset));
@@ -33,7 +33,8 @@ std::size_t std::hash<PipelineLayoutKey>::operator()(
     return result;
 }
 
-std::size_t VulkanPipelineCache::KeyHash::operator()(const PipelineKey &key) const noexcept {
+std::size_t
+VulkanPipelineCache::KeyHash::operator()(const PipelineKey &key) const noexcept {
     return std::hash<PipelineKey>{}(key);
 }
 
@@ -45,7 +46,8 @@ std::size_t VulkanPipelineCache::LayoutKeyHash::operator()(
 VulkanPipelineCache::VulkanPipelineCache(VkDevice device, VulkanPlatform &platform,
                                          VulkanExecutionContext &execution,
                                          std::size_t max_entries)
-    : device_(device), platform_(platform), execution_(execution), max_entries_(max_entries) {
+    : device_(device), platform_(platform), execution_(execution),
+      max_entries_(max_entries) {
     if (max_entries == 0)
         throw std::invalid_argument("Vulkan pipeline cache maximum must be positive");
 }
@@ -120,8 +122,8 @@ VkPipeline VulkanPipelineCache::get_or_create(
         VkComputePipelineCreateInfo info = create_info;
         info.layout = pipeline_layout;
         info.stage.module = shader;
-        if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) !=
-            VK_SUCCESS)
+        if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
+                                     &pipeline) != VK_SUCCESS)
             throw std::runtime_error("could not create cached compute pipeline");
         lru_.push_back(key);
         entries_.emplace(key, Entry{pipeline, std::prev(lru_.end())});
@@ -157,10 +159,15 @@ void VulkanPipelineCache::invalidate_device_loss() {
 
 PipelineCacheSnapshot VulkanPipelineCache::snapshot() const {
     std::scoped_lock lock(mutex_);
-    return {entries_.size(), hits_, misses_, evictions_,
+    return {entries_.size(),
+            hits_,
+            misses_,
+            evictions_,
             entries_.size() + pending_destructions_->load(std::memory_order_relaxed),
-            layouts_.size(), pending_destructions_->load(std::memory_order_relaxed),
-            pending_layout_destructions_->load(std::memory_order_relaxed), invalidated_};
+            layouts_.size(),
+            pending_destructions_->load(std::memory_order_relaxed),
+            pending_layout_destructions_->load(std::memory_order_relaxed),
+            invalidated_};
 }
 
 void VulkanPipelineCache::destroy_all() noexcept {

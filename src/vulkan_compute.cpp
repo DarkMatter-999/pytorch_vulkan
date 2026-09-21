@@ -1,5 +1,8 @@
 #include "vulkan_compute.h"
 
+#include "vulkan/descriptor_arena.h"
+#include "vulkan/pipeline_cache.h"
+#include "vulkan/shader_registry.h"
 #include "vulkan/shaders/generated/convolution_spv.h"
 #include "vulkan/shaders/generated/f32_to_double_spv.h"
 #include "vulkan/shaders/generated/formatter_double_spv.h"
@@ -14,9 +17,6 @@
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
 #include "vulkan_buffer.h"
 #include "vulkan_execution.h"
-#include "vulkan/shader_registry.h"
-#include "vulkan/pipeline_cache.h"
-#include "vulkan/descriptor_arena.h"
 #include "vulkan_platform.h"
 
 #include <algorithm>
@@ -155,19 +155,29 @@ static_assert(sizeof(GemmParams) == 80, "GEMM push-constant ABI size mismatch");
 static_assert(offsetof(GemmParams, m) == 0, "GEMM ABI m offset mismatch");
 static_assert(offsetof(GemmParams, n) == 4, "GEMM ABI n offset mismatch");
 static_assert(offsetof(GemmParams, k) == 8, "GEMM ABI k offset mismatch");
-static_assert(offsetof(GemmParams, a_row_stride) == 12, "GEMM ABI A row offset mismatch");
-static_assert(offsetof(GemmParams, a_col_stride) == 16, "GEMM ABI A col offset mismatch");
-static_assert(offsetof(GemmParams, b_row_stride) == 20, "GEMM ABI B row offset mismatch");
-static_assert(offsetof(GemmParams, b_col_stride) == 24, "GEMM ABI B col offset mismatch");
-static_assert(offsetof(GemmParams, c_row_stride) == 28, "GEMM ABI C row offset mismatch");
-static_assert(offsetof(GemmParams, c_col_stride) == 32, "GEMM ABI C col offset mismatch");
-static_assert(offsetof(GemmParams, d_row_stride) == 36, "GEMM ABI D row offset mismatch");
-static_assert(offsetof(GemmParams, d_col_stride) == 40, "GEMM ABI D col offset mismatch");
+static_assert(offsetof(GemmParams, a_row_stride) == 12,
+              "GEMM ABI A row offset mismatch");
+static_assert(offsetof(GemmParams, a_col_stride) == 16,
+              "GEMM ABI A col offset mismatch");
+static_assert(offsetof(GemmParams, b_row_stride) == 20,
+              "GEMM ABI B row offset mismatch");
+static_assert(offsetof(GemmParams, b_col_stride) == 24,
+              "GEMM ABI B col offset mismatch");
+static_assert(offsetof(GemmParams, c_row_stride) == 28,
+              "GEMM ABI C row offset mismatch");
+static_assert(offsetof(GemmParams, c_col_stride) == 32,
+              "GEMM ABI C col offset mismatch");
+static_assert(offsetof(GemmParams, d_row_stride) == 36,
+              "GEMM ABI D row offset mismatch");
+static_assert(offsetof(GemmParams, d_col_stride) == 40,
+              "GEMM ABI D col offset mismatch");
 static_assert(offsetof(GemmParams, bias_stride) == 44, "GEMM ABI bias offset mismatch");
 static_assert(offsetof(GemmParams, alpha) == 48, "GEMM ABI alpha offset mismatch");
 static_assert(offsetof(GemmParams, beta) == 52, "GEMM ABI beta offset mismatch");
-static_assert(offsetof(GemmParams, has_bias) == 56, "GEMM ABI has_bias offset mismatch");
-static_assert(offsetof(GemmParams, batch_count) == 60, "GEMM ABI batch offset mismatch");
+static_assert(offsetof(GemmParams, has_bias) == 56,
+              "GEMM ABI has_bias offset mismatch");
+static_assert(offsetof(GemmParams, batch_count) == 60,
+              "GEMM ABI batch offset mismatch");
 struct F32ToDoubleParams {
     uint32_t element_count;
 };
@@ -275,8 +285,8 @@ VkDeviceSize checked_bytes(uint64_t elements, const char *name) {
 VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
     : platform_(platform), device_(platform.device()), queue_(platform.compute_queue()),
       command_pool_(platform.command_pool()),
-      descriptor_arena_(std::make_unique<DescriptorArena>(
-          device_, platform.execution_context())) {
+      descriptor_arena_(
+          std::make_unique<DescriptorArena>(device_, platform.execution_context())) {
     try {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(platform.physical_device(), &properties);
@@ -378,8 +388,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                                      &descriptor_set_layouts_[mode]),
                          "could not create pointwise descriptor-set layout");
             shader_modules_[mode] = platform_.shader_registry().get_or_create(
-                {name, vulkan_shader_code_hash(shader_info.pCode,
-                                               shader_info.codeSize / sizeof(uint32_t))},
+                {name, vulkan_shader_code_hash(
+                           shader_info.pCode, shader_info.codeSize / sizeof(uint32_t))},
                 shader_info.pCode, shader_info.codeSize / sizeof(uint32_t));
         };
         create_mode(0, "pointwise_tensor_tensor", tensor_tensor_bindings, 4,
@@ -392,12 +402,12 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         if (platform.supports_bool_pointwise()) {
             create_mode(4, "pointwise_bool_tensor_tensor", tensor_tensor_bindings, 4,
                         bool_tensor_tensor_shader);
-            create_mode(5, "pointwise_bool_output_tensor_scalar", tensor_tensor_bindings,
-                        4, bool_output_tensor_scalar_shader);
+            create_mode(5, "pointwise_bool_output_tensor_scalar",
+                        tensor_tensor_bindings, 4, bool_output_tensor_scalar_shader);
             create_mode(6, "pointwise_bool_output_unary", tensor_tensor_bindings, 4,
                         bool_output_unary_shader);
-            create_mode(7, "pointwise_bool_output_tensor_tensor", tensor_tensor_bindings,
-                        4, bool_output_tensor_tensor_shader);
+            create_mode(7, "pointwise_bool_output_tensor_tensor",
+                        tensor_tensor_bindings, 4, bool_output_tensor_tensor_shader);
         }
         VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
         const auto create_pipeline = [&](uint32_t mode, const char *name,
@@ -422,10 +432,12 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             pipeline.stage = stage;
             pipeline.layout = pipeline_layouts_[mode];
             pipelines_[mode] = platform_.pipeline_cache().get_or_create(
-                {name, reinterpret_cast<uint64_t>(descriptor_set_layouts_[mode]),
+                {name,
+                 reinterpret_cast<uint64_t>(descriptor_set_layouts_[mode]),
                  vulkan_shader_code_hash(shader_info.pCode,
                                          shader_info.codeSize / sizeof(uint32_t)),
-                 {}, 0},
+                 {},
+                 0},
                 pipeline_layouts_[mode], shader_modules_[mode], pipeline);
         };
         create_pipeline(0, "pointwise_tensor_tensor", tensor_tensor_shader);
@@ -433,7 +445,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_pipeline(2, "pointwise_scalar_tensor", scalar_tensor_shader);
         create_pipeline(3, "pointwise_unary", unary_shader);
         if (platform.supports_bool_pointwise()) {
-            create_pipeline(4, "pointwise_bool_tensor_tensor", bool_tensor_tensor_shader);
+            create_pipeline(4, "pointwise_bool_tensor_tensor",
+                            bool_tensor_tensor_shader);
             create_pipeline(5, "pointwise_bool_output_tensor_scalar",
                             bool_output_tensor_scalar_shader);
             create_pipeline(6, "pointwise_bool_output_unary", bool_output_unary_shader);
@@ -451,8 +464,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                             &compound_descriptor_layouts_[index]),
                 "could not create compound descriptor-set layout");
             compound_shader_modules_[index] = platform_.shader_registry().get_or_create(
-                {name, vulkan_shader_code_hash(shader_info.pCode,
-                                               shader_info.codeSize / sizeof(uint32_t))},
+                {name, vulkan_shader_code_hash(
+                           shader_info.pCode, shader_info.codeSize / sizeof(uint32_t))},
                 shader_info.pCode, shader_info.codeSize / sizeof(uint32_t));
             VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
             VkPipelineLayoutCreateInfo pipeline_layout{
@@ -476,11 +489,14 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             pipeline.stage = stage;
             pipeline.layout = compound_pipeline_layouts_[index];
             compound_pipelines_[index] = platform_.pipeline_cache().get_or_create(
-                {name, reinterpret_cast<uint64_t>(compound_descriptor_layouts_[index]),
+                {name,
+                 reinterpret_cast<uint64_t>(compound_descriptor_layouts_[index]),
                  vulkan_shader_code_hash(shader_info.pCode,
                                          shader_info.codeSize / sizeof(uint32_t)),
-                 {}, 0},
-                compound_pipeline_layouts_[index], compound_shader_modules_[index], pipeline);
+                 {},
+                 0},
+                compound_pipeline_layouts_[index], compound_shader_modules_[index],
+                pipeline);
         };
         create_compound(0, "pointwise_compound_mul", compound_mul_shader);
         create_compound(1, "pointwise_compound_div", compound_div_shader);
@@ -504,90 +520,90 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
              nullptr},
             {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
              nullptr}};
-        const auto create_extra = [&](const char *name,
-                                      VkDescriptorSetLayout &descriptor_layout,
-                                      VkShaderModule &module,
-                                      VkPipelineLayout &pipeline_layout,
-                                      VkPipeline &pipeline, const uint32_t *code,
-                                      std::size_t code_size,
-                                      uint32_t push_size = sizeof(ReductionParams),
-                                      uint32_t descriptor_count = 2) {
-            VkDescriptorSetLayoutCreateInfo layout{
-                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-            layout.bindingCount = descriptor_count;
-            layout.pBindings = reduction_bindings;
-            check_result(vkCreateDescriptorSetLayout(device_, &layout, nullptr,
-                                                     &descriptor_layout),
-                         "could not create reduction descriptor-set layout");
-            module = platform_.shader_registry().get_or_create(
-                {name, vulkan_shader_code_hash(code, code_size / sizeof(uint32_t))}, code,
-                code_size / sizeof(uint32_t));
-            VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size};
-            VkPipelineLayoutCreateInfo pipeline_layout_info{
-                VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            pipeline_layout_info.setLayoutCount = 1;
-            pipeline_layout_info.pSetLayouts = &descriptor_layout;
-            pipeline_layout_info.pushConstantRangeCount = 1;
-            pipeline_layout_info.pPushConstantRanges = &push;
-            pipeline_layout = platform_.pipeline_cache().get_or_create_layout(
-                {reinterpret_cast<uint64_t>(descriptor_layout), VK_SHADER_STAGE_COMPUTE_BIT,
-                 0, push_size},
-                pipeline_layout_info);
-            VkPipelineShaderStageCreateInfo stage{
-                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-            stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-            stage.module = module;
-            stage.pName = "main";
-            VkComputePipelineCreateInfo pipeline_info{
-                VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-            pipeline_info.stage = stage;
-            pipeline_info.layout = pipeline_layout;
-            pipeline = platform_.pipeline_cache().get_or_create(
-                {name, reinterpret_cast<uint64_t>(descriptor_layout),
-                 vulkan_shader_code_hash(code, code_size / sizeof(uint32_t)), {}, 0},
-                pipeline_layout, module, pipeline_info);
-        };
+        const auto create_extra =
+            [&](const char *name, VkDescriptorSetLayout &descriptor_layout,
+                VkShaderModule &module, VkPipelineLayout &pipeline_layout,
+                VkPipeline &pipeline, const uint32_t *code, std::size_t code_size,
+                uint32_t push_size = sizeof(ReductionParams),
+                uint32_t descriptor_count = 2) {
+                VkDescriptorSetLayoutCreateInfo layout{
+                    VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                layout.bindingCount = descriptor_count;
+                layout.pBindings = reduction_bindings;
+                check_result(vkCreateDescriptorSetLayout(device_, &layout, nullptr,
+                                                         &descriptor_layout),
+                             "could not create reduction descriptor-set layout");
+                module = platform_.shader_registry().get_or_create(
+                    {name, vulkan_shader_code_hash(code, code_size / sizeof(uint32_t))},
+                    code, code_size / sizeof(uint32_t));
+                VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size};
+                VkPipelineLayoutCreateInfo pipeline_layout_info{
+                    VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                pipeline_layout_info.setLayoutCount = 1;
+                pipeline_layout_info.pSetLayouts = &descriptor_layout;
+                pipeline_layout_info.pushConstantRangeCount = 1;
+                pipeline_layout_info.pPushConstantRanges = &push;
+                pipeline_layout = platform_.pipeline_cache().get_or_create_layout(
+                    {reinterpret_cast<uint64_t>(descriptor_layout),
+                     VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size},
+                    pipeline_layout_info);
+                VkPipelineShaderStageCreateInfo stage{
+                    VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+                stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                stage.module = module;
+                stage.pName = "main";
+                VkComputePipelineCreateInfo pipeline_info{
+                    VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                pipeline_info.stage = stage;
+                pipeline_info.layout = pipeline_layout;
+                pipeline = platform_.pipeline_cache().get_or_create(
+                    {name,
+                     reinterpret_cast<uint64_t>(descriptor_layout),
+                     vulkan_shader_code_hash(code, code_size / sizeof(uint32_t)),
+                     {},
+                     0},
+                    pipeline_layout, module, pipeline_info);
+            };
         create_extra("reduction", reduction_descriptor_layout_, reduction_shader_,
                      reduction_pipeline_layout_, reduction_pipeline_,
                      vulkan_reduction_shader::kReductionCode,
                      vulkan_reduction_shader::kReductionCodeSize);
         create_extra("reduction_backward", reduction_backward_descriptor_layout_,
-                     reduction_backward_shader_,
-                     reduction_backward_pipeline_layout_, reduction_backward_pipeline_,
+                     reduction_backward_shader_, reduction_backward_pipeline_layout_,
+                     reduction_backward_pipeline_,
                      vulkan_reduction_shader::kReductionBackwardCode,
                      vulkan_reduction_shader::kReductionBackwardCodeSize,
                      sizeof(ReductionBackwardParams), 4);
-        create_extra("loss", loss_descriptor_layout_, loss_shader_, loss_pipeline_layout_,
-                     loss_pipeline_, vulkan_loss_shader::kCode,
+        create_extra("loss", loss_descriptor_layout_, loss_shader_,
+                     loss_pipeline_layout_, loss_pipeline_, vulkan_loss_shader::kCode,
                      vulkan_loss_shader::kCodeSize, sizeof(LossParams), 4);
         create_extra("indexing", indexing_descriptor_layout_, indexing_shader_,
                      indexing_pipeline_layout_, indexing_pipeline_,
                      vulkan_reduction_shader::kIndexingCode,
                      vulkan_reduction_shader::kIndexingCodeSize);
-        create_extra(
-            "broadcast",
-            broadcast_descriptor_layout_, broadcast_shader_, broadcast_pipeline_layout_,
-            broadcast_pipeline_, vulkan_reduction_shader::kBroadcastCode,
-            vulkan_reduction_shader::kBroadcastCodeSize, sizeof(BroadcastParams), 3);
+        create_extra("broadcast", broadcast_descriptor_layout_, broadcast_shader_,
+                     broadcast_pipeline_layout_, broadcast_pipeline_,
+                     vulkan_reduction_shader::kBroadcastCode,
+                     vulkan_reduction_shader::kBroadcastCodeSize,
+                     sizeof(BroadcastParams), 3);
         create_extra("pooling", pooling_descriptor_layout_, pooling_shader_,
                      pooling_pipeline_layout_, pooling_pipeline_,
                      vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize,
                      sizeof(PoolingParams), 3);
-        create_extra("normalization", normalization_descriptor_layout_, normalization_shader_,
-                     normalization_pipeline_layout_, normalization_pipeline_,
-                     vulkan_normalization_shader::kCode,
+        create_extra("normalization", normalization_descriptor_layout_,
+                     normalization_shader_, normalization_pipeline_layout_,
+                     normalization_pipeline_, vulkan_normalization_shader::kCode,
                      vulkan_normalization_shader::kCodeSize, sizeof(OperatorParams),
                      10);
-        create_extra("classification", classification_descriptor_layout_, classification_shader_,
-                     classification_pipeline_layout_, classification_pipeline_,
-                     vulkan_classification_shader::kCode,
+        create_extra("classification", classification_descriptor_layout_,
+                     classification_shader_, classification_pipeline_layout_,
+                     classification_pipeline_, vulkan_classification_shader::kCode,
                      vulkan_classification_shader::kCodeSize, sizeof(OperatorParams),
                      6);
         if (platform.supports_formatter_double()) {
             create_extra("f32_to_double", f32_to_double_descriptor_layout_,
-                         f32_to_double_shader_,
-                         f32_to_double_pipeline_layout_, f32_to_double_pipeline_,
-                         vulkan_f32_to_double_shader::kCode,
+                         f32_to_double_shader_, f32_to_double_pipeline_layout_,
+                         f32_to_double_pipeline_, vulkan_f32_to_double_shader::kCode,
                          vulkan_f32_to_double_shader::kCodeSize,
                          sizeof(F32ToDoubleParams));
             const VkDescriptorSetLayoutBinding formatter_bindings[] = {
@@ -837,10 +853,11 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                                  &gemm_descriptor_layout_),
                      "could not create GEMM descriptor-set layout");
         gemm_shader_ = platform_.shader_registry().get_or_create(
-            {"gemm", vulkan_shader_code_hash(
-                         vulkan_gemm_shader::kCode,
-                         vulkan_gemm_shader::kCodeSize / sizeof(uint32_t))},
-            vulkan_gemm_shader::kCode, vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
+            {"gemm",
+             vulkan_shader_code_hash(vulkan_gemm_shader::kCode,
+                                     vulkan_gemm_shader::kCodeSize / sizeof(uint32_t))},
+            vulkan_gemm_shader::kCode,
+            vulkan_gemm_shader::kCodeSize / sizeof(uint32_t));
         VkPushConstantRange gemm_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                       sizeof(GemmParams)};
         VkPipelineLayoutCreateInfo gemm_pipeline_layout_info{
@@ -850,8 +867,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         gemm_pipeline_layout_info.pushConstantRangeCount = 1;
         gemm_pipeline_layout_info.pPushConstantRanges = &gemm_push;
         gemm_pipeline_layout_ = platform_.pipeline_cache().get_or_create_layout(
-            {reinterpret_cast<uint64_t>(gemm_descriptor_layout_), VK_SHADER_STAGE_COMPUTE_BIT,
-             0, sizeof(GemmParams)},
+            {reinterpret_cast<uint64_t>(gemm_descriptor_layout_),
+             VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GemmParams)},
             gemm_pipeline_layout_info);
         VkPipelineShaderStageCreateInfo gemm_stage{
             VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -863,10 +880,12 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         gemm_pipeline_info.stage = gemm_stage;
         gemm_pipeline_info.layout = gemm_pipeline_layout_;
         gemm_pipeline_ = platform_.pipeline_cache().get_or_create(
-            {"gemm", reinterpret_cast<uint64_t>(gemm_descriptor_layout_),
+            {"gemm",
+             reinterpret_cast<uint64_t>(gemm_descriptor_layout_),
              vulkan_shader_code_hash(vulkan_gemm_shader::kCode,
                                      vulkan_gemm_shader::kCodeSize / sizeof(uint32_t)),
-             {}, 0},
+             {},
+             0},
             gemm_pipeline_layout_, gemm_shader_, gemm_pipeline_info);
     } catch (const std::exception &error) {
         for (auto &pipeline : pipelines_)
@@ -1596,7 +1615,8 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         const uint32_t expected_rank = rank == 2 ? matrix_rank : rank;
         if (buffer == VK_NULL_HANDLE || layout.rank != expected_rank ||
             layout.scalar_type != kFloatScalarType ||
-            layout.element_bytes != sizeof(float) || layout.sizes.size() != expected_rank ||
+            layout.element_bytes != sizeof(float) ||
+            layout.sizes.size() != expected_rank ||
             layout.strides.size() != expected_rank || layout.storage_offset < 0 ||
             layout.byte_range == 0 || layout.allocation_bytes == 0 ||
             layout.byte_offset > layout.allocation_bytes ||
@@ -1604,12 +1624,15 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
             layout.internal_overlap != pytorch_vulkan::VulkanOverlap::No)
             throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
                                         " has an invalid layout");
-        if (layout.sizes[matrix_base] != rows || layout.sizes[matrix_base + 1] != columns ||
+        if (layout.sizes[matrix_base] != rows ||
+            layout.sizes[matrix_base + 1] != columns ||
             layout.strides[matrix_base] < 0 || layout.strides[matrix_base + 1] < 0 ||
             (!batched && (layout.strides[matrix_base + 1] != 1 ||
                           layout.strides[matrix_base] != columns)) ||
-            (batched && (layout.strides[matrix_base] > std::numeric_limits<uint32_t>::max() ||
-                         layout.strides[matrix_base + 1] > std::numeric_limits<uint32_t>::max())) ||
+            (batched &&
+             (layout.strides[matrix_base] > std::numeric_limits<uint32_t>::max() ||
+              layout.strides[matrix_base + 1] >
+                  std::numeric_limits<uint32_t>::max())) ||
             static_cast<uint64_t>(layout.storage_offset) >
                 std::numeric_limits<uint32_t>::max() ||
             static_cast<uint64_t>(layout.strides[0]) >
@@ -1618,10 +1641,11 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
                 std::numeric_limits<uint32_t>::max())
             throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
                                         " is not a representable contiguous matrix");
-        const uint64_t row_span =
-            static_cast<uint64_t>(rows - 1) * static_cast<uint64_t>(layout.strides[matrix_base]);
-        const uint64_t column_span = static_cast<uint64_t>(columns - 1) *
-                                     static_cast<uint64_t>(layout.strides[matrix_base + 1]);
+        const uint64_t row_span = static_cast<uint64_t>(rows - 1) *
+                                  static_cast<uint64_t>(layout.strides[matrix_base]);
+        const uint64_t column_span =
+            static_cast<uint64_t>(columns - 1) *
+            static_cast<uint64_t>(layout.strides[matrix_base + 1]);
         if (row_span > std::numeric_limits<uint64_t>::max() - column_span ||
             row_span + column_span == std::numeric_limits<uint64_t>::max())
             throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
@@ -1667,7 +1691,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     };
     const uint64_t m_groups = (static_cast<uint64_t>(m) + 15) / 16;
     const uint64_t n_groups = (static_cast<uint64_t>(n) + 15) / 16;
-        if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
+    if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
         m_groups > max_compute_workgroup_count_y_ ||
         n_groups > max_compute_workgroup_count_x_ ||
         (batched && dispatch_batches > max_compute_workgroup_count_z_) ||
@@ -1701,9 +1725,8 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     try {
         record_dispatch("gemm");
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
-        const VkDescriptorSet set =
-            acquire_descriptor_set(gemm_descriptor_layout_, 5,
-                                   kGemmDescriptorPoolCapacity);
+        const VkDescriptorSet set = acquire_descriptor_set(gemm_descriptor_layout_, 5,
+                                                           kGemmDescriptorPoolCapacity);
         const VkDescriptorBufferInfo buffers[] = {
             {a, a_layout.byte_offset, a_layout.byte_range},
             {b, b_layout.byte_offset, b_layout.byte_range},
@@ -1720,26 +1743,27 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
             writes[binding].pBufferInfo = &buffers[binding];
         }
         vkUpdateDescriptorSets(device_, 5, writes, 0, nullptr);
-        const GemmParams params{m,
-                                n,
-                                k,
-                                static_cast<uint32_t>(a_layout.strides[matrix_base]),
-                                static_cast<uint32_t>(a_layout.strides[matrix_base + 1]),
-                                static_cast<uint32_t>(b_layout.strides[matrix_base]),
-                                static_cast<uint32_t>(b_layout.strides[matrix_base + 1]),
-                                static_cast<uint32_t>(effective_c.strides[matrix_base]),
-                                static_cast<uint32_t>(effective_c.strides[matrix_base + 1]),
-                                static_cast<uint32_t>(output_layout.strides[matrix_base]),
-                                static_cast<uint32_t>(output_layout.strides[matrix_base + 1]),
-                                1,
-                                alpha,
-                                beta,
-                                has_bias ? 1U : 0U,
-                                batch_count,
-                                batch_stride_a,
-                                batch_stride_b,
-                                batch_stride_c,
-                                batch_stride_d};
+        const GemmParams params{
+            m,
+            n,
+            k,
+            static_cast<uint32_t>(a_layout.strides[matrix_base]),
+            static_cast<uint32_t>(a_layout.strides[matrix_base + 1]),
+            static_cast<uint32_t>(b_layout.strides[matrix_base]),
+            static_cast<uint32_t>(b_layout.strides[matrix_base + 1]),
+            static_cast<uint32_t>(effective_c.strides[matrix_base]),
+            static_cast<uint32_t>(effective_c.strides[matrix_base + 1]),
+            static_cast<uint32_t>(output_layout.strides[matrix_base]),
+            static_cast<uint32_t>(output_layout.strides[matrix_base + 1]),
+            1,
+            alpha,
+            beta,
+            has_bias ? 1U : 0U,
+            batch_count,
+            batch_stride_a,
+            batch_stride_b,
+            batch_stride_c,
+            batch_stride_d};
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gemm_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 gemm_pipeline_layout_, 0, 1, &set, 0, nullptr);
@@ -1879,21 +1903,21 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
     uint32_t input_channels = operation == 0 || operation == 3
                                   ? dimension(input_layout, 1)
                                   : dimension(weight_layout, 1);
-    uint32_t input_height = operation == 2 ? dimension(weight_layout, 2)
-                                           : dimension(input_layout, 2);
-    uint32_t input_width = operation == 2 ? dimension(weight_layout, 3)
-                                          : dimension(input_layout, 3);
-    uint32_t output_channels = operation == 0 ? dimension(output_layout, 1)
-                                              : dimension(input_layout, 1);
-    uint32_t output_height = operation == 0 ? dimension(output_layout, 2)
-                                            : dimension(input_layout, 2);
-    uint32_t output_width = operation == 0 ? dimension(output_layout, 3)
-                                           : dimension(input_layout, 3);
+    uint32_t input_height =
+        operation == 2 ? dimension(weight_layout, 2) : dimension(input_layout, 2);
+    uint32_t input_width =
+        operation == 2 ? dimension(weight_layout, 3) : dimension(input_layout, 3);
+    uint32_t output_channels =
+        operation == 0 ? dimension(output_layout, 1) : dimension(input_layout, 1);
+    uint32_t output_height =
+        operation == 0 ? dimension(output_layout, 2) : dimension(input_layout, 2);
+    uint32_t output_width =
+        operation == 0 ? dimension(output_layout, 3) : dimension(input_layout, 3);
     uint32_t kernel_height = operation == 2 ? dimension(output_layout, 2) : 3;
     uint32_t kernel_width = operation == 2 ? dimension(output_layout, 3) : 3;
-    ConvolutionParams params{batch, input_channels, input_height, input_width,
-                             output_channels, output_height, output_width,
-                             kernel_height, kernel_width, operation};
+    ConvolutionParams params{
+        batch,         input_channels, input_height,  input_width,  output_channels,
+        output_height, output_width,   kernel_height, kernel_width, operation};
     const uint32_t output_numel = static_cast<uint32_t>(output_layout.numel);
     dispatch_model(input, weight, bias, output, input_layout.allocation_bytes,
                    weight_layout.allocation_bytes, bias_layout.allocation_bytes,
@@ -2448,9 +2472,8 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
                                            ? (mode == 0 ? 7U : (mode == 1 ? 5U : 6U))
                                            : mode + (bool_dtype ? 4 : 0);
         const uint32_t descriptor_count = 4;
-        const VkDescriptorSet set =
-            acquire_descriptor_set(descriptor_set_layouts_[pipeline_mode],
-                                   descriptor_count);
+        const VkDescriptorSet set = acquire_descriptor_set(
+            descriptor_set_layouts_[pipeline_mode], descriptor_count);
         VkDescriptorBufferInfo buffers[] = {
             {lhs, 0, lhs_layout ? lhs_layout->allocation_bytes : 0},
             {rhs, 0, rhs_layout ? rhs_layout->allocation_bytes : 0},
@@ -2661,12 +2684,13 @@ void VulkanCompute::finish_dispatch() const {
     submission_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
-VkDescriptorSet VulkanCompute::acquire_descriptor_set(
-    VkDescriptorSetLayout descriptor_layout, uint32_t descriptor_count,
-    uint32_t pool_capacity) const {
+VkDescriptorSet
+VulkanCompute::acquire_descriptor_set(VkDescriptorSetLayout descriptor_layout,
+                                      uint32_t descriptor_count,
+                                      uint32_t pool_capacity) const {
     const VkDescriptorSet set = descriptor_arena_->acquire(
-        descriptor_layout, submission_count_.load(std::memory_order_relaxed), descriptor_count,
-        pool_capacity);
+        descriptor_layout, submission_count_.load(std::memory_order_relaxed),
+        descriptor_count, pool_capacity);
     descriptor_arena_->release_after_completion(set);
     return set;
 }

@@ -28,8 +28,9 @@ void check_result(VkResult result, const char *operation) {
 }
 
 [[noreturn]] void throw_device_lost(VkResult result) {
-    throw VulkanDeviceLost("Vulkan device lost; execution state invalidated (VkResult " +
-                           std::to_string(static_cast<int>(result)) + ")");
+    throw VulkanDeviceLost(
+        "Vulkan device lost; execution state invalidated (VkResult " +
+        std::to_string(static_cast<int>(result)) + ")");
 }
 
 std::exception_ptr
@@ -294,9 +295,8 @@ void VulkanExecutionContext::retire_completed() {
     if (recording_)
         throw std::logic_error("Cannot retire while Vulkan execution is recording");
     for (auto &record : ring_) {
-        const VkResult status = record.submitted
-                                    ? vkGetFenceStatus(device_, record.fence)
-                                    : VK_NOT_READY;
+        const VkResult status =
+            record.submitted ? vkGetFenceStatus(device_, record.fence) : VK_NOT_READY;
         if (status == VK_ERROR_DEVICE_LOST) {
             invalidate(status, lock);
             throw_device_lost(status);
@@ -423,8 +423,8 @@ std::size_t VulkanExecutionContext::timestamp_query_in_use() const {
         return 0;
     std::size_t in_use = 0;
     for (const auto &record : ring_) {
-        if (record.timestamp_recorded && (record.submitted ||
-                                          (&record == &ring_[active_slot_] && recording_)))
+        if (record.timestamp_recorded &&
+            (record.submitted || (&record == &ring_[active_slot_] && recording_)))
             in_use += 2;
     }
     return in_use;
@@ -500,7 +500,8 @@ void VulkanExecutionContext::initialize_timestamp_queries() {
     VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     info.queryType = VK_QUERY_TYPE_TIMESTAMP;
     info.queryCount = static_cast<uint32_t>(kRingSize * 2);
-    if (vkCreateQueryPool(device_, &info, nullptr, &timestamp_query_pool_) != VK_SUCCESS) {
+    if (vkCreateQueryPool(device_, &info, nullptr, &timestamp_query_pool_) !=
+        VK_SUCCESS) {
         timestamp_query_support_reason_ = "timestamp query pool creation failed";
         return;
     }
@@ -513,8 +514,9 @@ void VulkanExecutionContext::resolve_timestamp(InFlightRecord &record) {
         return;
     uint64_t values[4]{};
     const VkResult result = vkGetQueryPoolResults(
-        device_, timestamp_query_pool_, record.timestamp_begin, 2, sizeof(values), values,
-        sizeof(uint64_t) * 2, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        device_, timestamp_query_pool_, record.timestamp_begin, 2, sizeof(values),
+        values, sizeof(uint64_t) * 2,
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     if (result != VK_SUCCESS && result != VK_NOT_READY)
         return;
     VulkanTimestampSample sample;
@@ -528,7 +530,7 @@ void VulkanExecutionContext::resolve_timestamp(InFlightRecord &record) {
 }
 
 void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
-                                              std::unique_lock<std::mutex> &lock) {
+                                             std::unique_lock<std::mutex> &lock) {
     const auto wait_start = std::chrono::steady_clock::now();
     const VkResult result =
         vkWaitForFences(device_, 1, &record.fence, VK_TRUE, UINT64_MAX);
@@ -575,8 +577,7 @@ VulkanExecutionContext::abandon_recording(std::exception_ptr original,
     std::rethrow_exception(original);
 }
 
-void VulkanExecutionContext::throw_if_invalidated(
-    std::unique_lock<std::mutex> &lock) {
+void VulkanExecutionContext::throw_if_invalidated(std::unique_lock<std::mutex> &lock) {
     if (invalidated_) {
         throw_device_lost(invalidation_result_);
     }

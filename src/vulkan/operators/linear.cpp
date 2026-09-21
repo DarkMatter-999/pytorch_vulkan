@@ -137,13 +137,15 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
 at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
                   const c10::optional<at::Tensor> &bias) {
     if (!is_fake_tensor(input) && input.dim() == 3) {
-        TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
-                        input.device().index() == 0 && weight.device() == input.device() &&
-                        input.scalar_type() == at::kFloat && weight.scalar_type() == at::kFloat &&
-                        input.layout() == at::kStrided && weight.layout() == at::kStrided &&
-                        input.is_contiguous() && weight.dim() == 2 && weight.is_contiguous() &&
-                        input.size(2) == weight.size(1),
-                    "Vulkan 3-D linear requires matching contiguous float32 Vulkan tensors");
+        TORCH_CHECK(
+            input.device().type() == c10::DeviceType::PrivateUse1 &&
+                input.device().index() == 0 && weight.device() == input.device() &&
+                input.scalar_type() == at::kFloat &&
+                weight.scalar_type() == at::kFloat && input.layout() == at::kStrided &&
+                weight.layout() == at::kStrided && input.is_contiguous() &&
+                weight.dim() == 2 && weight.is_contiguous() &&
+                input.size(2) == weight.size(1),
+            "Vulkan 3-D linear requires matching contiguous float32 Vulkan tensors");
         auto input_layout = inspect_vulkan_tensor_layout(input, "3-D linear input");
         auto weight_layout = inspect_vulkan_tensor_layout(weight, "3-D linear weight");
         TORCH_CHECK(input_layout.internal_overlap == VulkanOverlap::No &&
@@ -154,14 +156,15 @@ at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
         validate_allocation(weight.storage().data_ptr(), weight_layout.byte_range,
                             "3-D linear weight");
         if (bias.has_value()) {
-            TORCH_CHECK(bias->device() == input.device() && bias->scalar_type() == at::kFloat &&
+            TORCH_CHECK(bias->device() == input.device() &&
+                            bias->scalar_type() == at::kFloat &&
                             bias->layout() == at::kStrided && bias->dim() == 1 &&
                             bias->is_contiguous() && bias->size(0) == weight.size(0),
                         "Vulkan 3-D linear requires a matching contiguous bias");
         }
         auto flattened = input.reshape({input.size(0) * input.size(1), input.size(2)});
-        return pytorch_vulkan::linear(flattened, weight, bias).reshape(
-            {input.size(0), input.size(1), weight.size(0)});
+        return pytorch_vulkan::linear(flattened, weight, bias)
+            .reshape({input.size(0), input.size(1), weight.size(0)});
     }
     if (!is_fake_tensor(input) && input.layout() == at::kStrided &&
         weight.layout() == at::kStrided && input.scalar_type() == at::kFloat &&
@@ -314,11 +317,13 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
     validate_allocation(mat2.storage().data_ptr(), mat2_layout.byte_range, "bmm mat2");
     auto output = at::empty({mat1.size(0), mat1.size(1), mat2.size(2)}, mat1.options());
     const auto output_layout = inspect_vulkan_tensor_layout(output, "bmm output");
-    validate_allocation(output.storage().data_ptr(), output_layout.byte_range, "bmm output");
+    validate_allocation(output.storage().data_ptr(), output_layout.byte_range,
+                        "bmm output");
     auto validate_batched_matrix = [](const VulkanTensorLayout &layout, int64_t rows,
                                       int64_t cols, const char *name) {
-        TORCH_CHECK(layout.rank == 3 && layout.sizes[1] == rows && layout.sizes[2] == cols &&
-                        layout.strides[1] >= 0 && layout.strides[2] >= 0 &&
+        TORCH_CHECK(layout.rank == 3 && layout.sizes[1] == rows &&
+                        layout.sizes[2] == cols && layout.strides[1] >= 0 &&
+                        layout.strides[2] >= 0 &&
                         ((layout.strides[1] == cols && layout.strides[2] == 1) ||
                          (layout.strides[1] == 1 && layout.strides[2] == rows)),
                     "Vulkan ", name,
@@ -331,8 +336,8 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
                         static_cast<uint64_t>(layout.strides[2]) <=
                             std::numeric_limits<uint32_t>::max(),
                     "Vulkan ", name, " strides exceed dispatch limits");
-        TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No,
-                    "Vulkan ", name, " has unsupported internal overlap");
+        TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No, "Vulkan ", name,
+                    " has unsupported internal overlap");
     };
     validate_batched_matrix(mat1_layout, mat1.size(1), mat1.size(2), "bmm lhs");
     validate_batched_matrix(mat2_layout, mat2.size(1), mat2.size(2), "bmm rhs");
@@ -343,11 +348,12 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
                 "Vulkan bmm requires one Vulkan platform");
     platform.compute().gemm(
         allocation_buffer(mat1.storage().data_ptr()).buffer(), mat1_layout,
-        allocation_buffer(mat2.storage().data_ptr()).buffer(), mat2_layout, VK_NULL_HANDLE,
-        output_layout, allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
+        allocation_buffer(mat2.storage().data_ptr()).buffer(), mat2_layout,
+        VK_NULL_HANDLE, output_layout,
+        allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
         VK_NULL_HANDLE, output_layout, static_cast<uint32_t>(mat1.size(1)),
-        static_cast<uint32_t>(mat2.size(2)), static_cast<uint32_t>(mat1.size(2)),
-        1.0F, 0.0F, false, static_cast<uint32_t>(mat1.size(0)),
+        static_cast<uint32_t>(mat2.size(2)), static_cast<uint32_t>(mat1.size(2)), 1.0F,
+        0.0F, false, static_cast<uint32_t>(mat1.size(0)),
         static_cast<uint32_t>(mat1_layout.strides[0]),
         static_cast<uint32_t>(mat2_layout.strides[0]),
         static_cast<uint32_t>(output_layout.strides[0]),

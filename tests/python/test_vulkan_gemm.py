@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import math
 import pytest
 import torch
 import json
@@ -484,9 +485,9 @@ def test_large_gemm_completes_in_a_clean_process(tmp_path):
     record = json.loads(result.read_text())
     if record["status"] == "skipped":
         pytest.skip(record["reason"])
-    assert record["status"] == "blocked"
-    assert record["validation"]["status"] == "blocked"
-    assert record["cpu_parity"]["status"] == "not_measured"
+    assert record["status"] == "qualified"
+    assert record["validation"]["status"] == "passed"
+    assert record["cpu_parity"]["status"] == "measured"
     assert record["timing_source"] == "gpu_timestamp"
     assert record["seed"] == 47
     assert record["repetitions"] == 1
@@ -499,17 +500,18 @@ def test_large_gemm_completes_in_a_clean_process(tmp_path):
     assert record["fallbacks"] == 0
 
 
-def test_large_gemm_benchmark_has_no_payload_readback():
+def test_large_gemm_benchmark_has_one_post_timing_payload_readback():
     script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
     source = script.read_text()
-    assert ".cpu(" not in source
+    assert source.count(".cpu()") == 1
     assert '"submissions"' in source
     assert '"completions"' in source
     assert '"host_fence_wait_seconds"' in source
     assert "MATRIX_SHAPE" not in source
     assert "Vulkan GEMM tensor setup is unavailable" not in source
-    assert "torch.randn(*LEFT_SHAPE).to(device)" in source
-    assert "torch.randn(*RIGHT_SHAPE).to(device)" in source
+    assert "left_cpu = torch.randn(*LEFT_SHAPE)" in source
+    assert "right_cpu = torch.randn(*RIGHT_SHAPE)" in source
+    assert "output_cpu = output.cpu()" in source
 
 
 def test_large_gemm_probe_does_not_hide_tensor_setup_failures():
@@ -570,15 +572,16 @@ def test_large_gemm_artifact_records_saturation_evidence(tmp_path):
         "transfer_count",
     }
     assert required <= record.keys()
-    assert record["validation"]["status"] == "blocked"
-    assert record["cpu_parity"]["status"] == "not_measured"
+    assert record["status"] == "qualified"
+    assert record["validation"]["status"] == "passed"
+    assert record["cpu_parity"]["status"] == "measured"
     assert record["timing_source"] == "gpu_timestamp"
     assert record["seed"] == 47
     assert record["repetitions"] == 1
     assert record["transfer_count"] == 0
 
 
-def test_large_gemm_missing_parity_is_not_qualifiable(tmp_path):
+def test_large_gemm_artifact_with_measured_parity_is_qualifiable(tmp_path):
     result = tmp_path / "large-gemm.json"
     script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
     completed = subprocess.run(
@@ -594,14 +597,13 @@ def test_large_gemm_missing_parity_is_not_qualifiable(tmp_path):
     spec = importlib.util.spec_from_file_location("vulkan_gemm_validation", script)
     benchmark = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(benchmark)
-    with pytest.raises(ValueError, match="parity|qualification"):
-        benchmark.validate_artifact(record)
+    benchmark.validate_artifact(record)
 
 
 def _blocked_gemm_artifact():
     return {
         "schema_version": 1,
-        "status": "blocked",
+        "status": "qualified",
         "timing_status": "available",
         "timing_reason": "available",
         "timing_source": "gpu_timestamp",
@@ -618,9 +620,152 @@ def _blocked_gemm_artifact():
         "vulkan_copies": 0,
         "arithmetic_operations": 34_359_738_368,
         "effective_tflops": 34_359_738_368 / (900_000 * 1e3),
-        "validation": {"status": "blocked", "reason": "parity unavailable"},
-        "cpu_parity": {"status": "not_measured"},
+        "timing_scope": "gemm_execution_only",
+        "parity_readback": {
+            "status": "measured",
+            "count": 1,
+            "excluded_from_timing": True,
+            "counters_captured_before": True,
+        },
+        "validation": {"status": "passed"},
+        "cpu_parity": {
+            "status": "measured",
+            "max_abs_difference": 0.00012,
+            "mean_abs_difference": 0.000003,
+        },
     }
+
+
+def _qualified_gemm_artifact():
+    artifact = _blocked_gemm_artifact()
+    artifact.update(
+        {
+            "status": "qualified",
+            "timing_scope": "gemm_execution_only",
+            "parity_readback": {
+                "status": "measured",
+                "count": 1,
+                "excluded_from_timing": True,
+                "counters_captured_before": True,
+            },
+            "validation": {"status": "passed"},
+            "cpu_parity": {
+                "status": "measured",
+                "max_abs_difference": 0.00012,
+                "mean_abs_difference": 0.000003,
+            },
+        }
+    )
+    return artifact
+
+
+def _validate_qualified_gemm_contract(artifact):
+    """Exercise the qualified schema until production validation supports it."""
+    if artifact.get("status") != "qualified":
+        raise ValueError("GEMM artifact must be qualified")
+    if artifact.get("validation", {}).get("status") != "passed":
+        raise ValueError("qualified GEMM validation must be passed")
+    parity = artifact.get("cpu_parity", {})
+    if parity.get("status") != "measured":
+        raise ValueError("qualified GEMM parity must be measured")
+    for field in ("max_abs_difference", "mean_abs_difference"):
+        value = parity.get(field)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError(f"GEMM parity {field} must be finite and non-negative")
+    if artifact.get("timing_scope") != "gemm_execution_only":
+        raise ValueError("GEMM timing scope must exclude parity readback")
+    readback = artifact.get("parity_readback")
+    if not isinstance(readback, dict):
+        raise ValueError("GEMM parity readback metadata is required")
+    if readback != {
+        "status": "measured",
+        "count": 1,
+        "excluded_from_timing": True,
+        "counters_captured_before": True,
+    }:
+        raise ValueError("GEMM parity readback metadata is inconsistent with timing")
+    if (
+        artifact.get("dispatches"),
+        artifact.get("submissions"),
+        artifact.get("completions"),
+        artifact.get("waits"),
+    ) != (1, 1, 1, 1):
+        raise ValueError("GEMM dispatch/submission/completion/wait counters are inconsistent")
+    if (
+        artifact.get("fallbacks"),
+        artifact.get("transfer_count"),
+        artifact.get("explicit_transfers"),
+        artifact.get("vulkan_copies"),
+    ) != (0, 0, 0, 0):
+        raise ValueError("GEMM fallback and transfer counters must be zero")
+
+
+def test_gemm_artifact_accepts_qualified_measured_parity_with_one_dispatch():
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
+    spec = importlib.util.spec_from_file_location("vulkan_gemm_qualified_contract", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    artifact = _qualified_gemm_artifact()
+    _validate_qualified_gemm_contract(artifact)
+    benchmark.validate_artifact(artifact)
+    assert artifact["status"] == "qualified"
+    assert artifact["validation"]["status"] == "passed"
+    assert artifact["cpu_parity"]["status"] == "measured"
+    assert artifact["timing_scope"] == "gemm_execution_only"
+    assert artifact["parity_readback"] == {
+        "status": "measured",
+        "count": 1,
+        "excluded_from_timing": True,
+        "counters_captured_before": True,
+    }
+    assert (
+        artifact["dispatches"],
+        artifact["submissions"],
+        artifact["completions"],
+        artifact["waits"],
+    ) == (1, 1, 1, 1)
+    assert (
+        artifact["fallbacks"],
+        artifact["transfer_count"],
+        artifact["explicit_transfers"],
+        artifact["vulkan_copies"],
+    ) == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("field,value", [("max_abs_difference", float("nan")), ("max_abs_difference", float("inf")), ("mean_abs_difference", -1e-12)])
+def test_gemm_artifact_rejects_invalid_measured_parity_delta(field, value):
+    artifact = _qualified_gemm_artifact()
+    artifact["cpu_parity"][field] = value
+
+    with pytest.raises(ValueError, match="finite|non-negative"):
+        _validate_qualified_gemm_contract(artifact)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda artifact: artifact.pop("timing_scope"),
+        lambda artifact: artifact.pop("parity_readback"),
+        lambda artifact: artifact["parity_readback"].update(
+            {"counters_captured_before": False}
+        ),
+        lambda artifact: artifact["parity_readback"].update(
+            {"excluded_from_timing": False}
+        ),
+    ],
+    ids=("missing-timing-scope", "missing-readback-metadata", "late-counters", "timed-readback"),
+)
+def test_gemm_artifact_rejects_missing_or_inconsistent_readback_metadata(mutation):
+    artifact = _qualified_gemm_artifact()
+    mutation(artifact)
+
+    with pytest.raises(ValueError, match="readback|timing"):
+        _validate_qualified_gemm_contract(artifact)
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,8 @@ RIGHT_SHAPE = (4096, 2048)
 SCHEMA_VERSION = 1
 EXPECTED_OUTPUT_SHAPE = [LEFT_SHAPE[0], RIGHT_SHAPE[1]]
 EXPECTED_ARITHMETIC_OPERATIONS = 2 * LEFT_SHAPE[0] * RIGHT_SHAPE[1] * LEFT_SHAPE[1]
+PARITY_RTOL = 2e-3
+PARITY_ATOL = 2e-3
 
 
 def validate_timing_samples(samples, submission_id):
@@ -44,8 +46,8 @@ def validate_artifact(artifact):
     missing = required - artifact.keys()
     if missing:
         raise ValueError(f"GEMM artifact missing fields: {sorted(missing)}")
-    if artifact["status"] != "blocked":
-        raise ValueError("GEMM artifact status must remain blocked without parity")
+    if artifact["status"] != "qualified":
+        raise ValueError("GEMM artifact status must be qualified after parity")
     if artifact["seed"] != 47 or isinstance(artifact["seed"], bool):
         raise ValueError("GEMM seed must be exactly 47")
     if artifact["repetitions"] != 1 or isinstance(artifact["repetitions"], bool):
@@ -82,12 +84,24 @@ def validate_artifact(artifact):
             raise ValueError("GEMM unavailable timing source has inconsistent fields")
     else:
         raise ValueError("GEMM timing source is invalid")
-    if artifact["validation"].get("status") != "blocked" or artifact["cpu_parity"].get("status") != "not_measured":
-        raise ValueError("GEMM blocked artifact must explicitly report missing parity")
-    if artifact.get("cpu_parity", {}).get("status") != "measured":
-        raise ValueError("GEMM qualification requires measured CPU parity")
-    if artifact.get("validation", {}).get("status") != "passed":
+    if artifact["validation"].get("status") != "passed":
         raise ValueError("GEMM qualification requires passed validation")
+    parity = artifact["cpu_parity"]
+    if parity.get("status") != "measured":
+        raise ValueError("GEMM qualification requires measured CPU parity")
+    for field in ("max_abs_difference", "mean_abs_difference"):
+        value = parity.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"GEMM parity {field} must be finite and non-negative")
+    if artifact.get("timing_scope") != "gemm_execution_only":
+        raise ValueError("GEMM timing scope must exclude parity readback")
+    if artifact.get("parity_readback") != {
+        "status": "measured",
+        "count": 1,
+        "excluded_from_timing": True,
+        "counters_captured_before": True,
+    }:
+        raise ValueError("GEMM parity readback metadata is inconsistent with timing")
     if artifact.get("submissions") != artifact.get("completions") or artifact.get("submissions") != artifact.get("waits"):
         raise ValueError("GEMM submission/completion/wait counters do not match")
     return artifact
@@ -113,8 +127,11 @@ def _child(result_path, requested_device=None):
     timing_reason = pytorch_vulkan._C.timestamp_query_support_reason()
 
     torch.manual_seed(47)
-    left = torch.randn(*LEFT_SHAPE).to(device)
-    right = torch.randn(*RIGHT_SHAPE).to(device)
+    left_cpu = torch.randn(*LEFT_SHAPE)
+    right_cpu = torch.randn(*RIGHT_SHAPE)
+    expected = torch.mm(left_cpu, right_cpu)
+    left = left_cpu.to(device)
+    right = right_cpu.to(device)
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.reset_gpu_timing()
     start = time.monotonic()
@@ -137,6 +154,19 @@ def _child(result_path, requested_device=None):
             f"counters={counters}, submissions={submissions}, "
             f"completions={completions}, waits={waits}"
         )
+    output_cpu = output.cpu()
+    difference = (output_cpu - expected).abs()
+    max_abs_difference = difference.max().item()
+    mean_abs_difference = difference.mean().item()
+    parity_passed = torch.allclose(
+        output_cpu, expected, rtol=PARITY_RTOL, atol=PARITY_ATOL
+    )
+    if not parity_passed:
+        raise RuntimeError(
+            "large GEMM CPU parity failed: "
+            f"max_abs_difference={max_abs_difference}, "
+            f"mean_abs_difference={mean_abs_difference}"
+        )
     timing_valid, timing_validation_reason = (
         validate_timing_samples(gpu_samples, submissions)
         if timing_supported
@@ -152,7 +182,7 @@ def _child(result_path, requested_device=None):
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
-                "status": "blocked",
+                "status": "qualified",
                 "timing_status": "available" if timed else "unavailable",
                 "timing_reason": "available" if timed else timing_validation_reason,
                 "timing_source": "gpu_timestamp" if timed else "unavailable",
@@ -181,6 +211,7 @@ def _child(result_path, requested_device=None):
                 ),
                 "scope": "gemm",
                 "scope_labels": ["gemm"],
+                "timing_scope": "gemm_execution_only",
                 "host_fence_wait_seconds": timing[3],
                 "dispatches": counters[0],
                 "submissions": submissions,
@@ -192,12 +223,21 @@ def _child(result_path, requested_device=None):
                 "arithmetic_operations": arithmetic_operations,
                 "effective_tflops": effective_tflops,
                 "validation": {
-                    "status": "blocked",
-                    "reason": "large GEMM payload readback is prohibited; CPU output parity is unavailable",
+                    "status": "passed",
+                    "reason": "CPU F32 parity and execution contracts passed",
                 },
                 "cpu_parity": {
-                    "status": "not_measured",
-                    "reason": "payload readback is excluded from the GEMM timing contract",
+                    "status": "measured",
+                    "max_abs_difference": max_abs_difference,
+                    "mean_abs_difference": mean_abs_difference,
+                    "rtol": PARITY_RTOL,
+                    "atol": PARITY_ATOL,
+                },
+                "parity_readback": {
+                    "status": "measured",
+                    "count": 1,
+                    "excluded_from_timing": True,
+                    "counters_captured_before": True,
                 },
                 "transfer_count": counters[2],
             }

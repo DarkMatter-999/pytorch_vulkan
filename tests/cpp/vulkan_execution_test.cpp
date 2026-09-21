@@ -285,7 +285,16 @@ void test_descriptor_cache_rollover_and_cancellation(VulkanPlatform &platform) {
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     const pytorch_vulkan::VulkanTensorLayout pointwise_layout{
-        1, {16}, {1}, 0, sizeof(float), 0, 16, 0, 64, 64,
+        1,
+        {16},
+        {1},
+        0,
+        sizeof(float),
+        0,
+        16,
+        0,
+        64,
+        64,
         pytorch_vulkan::VulkanOverlap::No};
 
     platform.compute().reset_descriptor_resource_counters();
@@ -314,17 +323,29 @@ void test_descriptor_cache_rollover_and_cancellation(VulkanPlatform &platform) {
     expect(platform.compute().descriptor_pool_creation_count() == 0,
            "cancelled recording did not reset generic descriptor cursors");
 
-    VulkanBuffer a(platform, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VulkanBuffer b(platform, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VulkanBuffer c(platform, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer a(platform, 4,
+                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer b(platform, 4,
+                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VulkanBuffer c(platform, 4,
+                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VulkanBuffer gemm_output(platform, 4,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     const pytorch_vulkan::VulkanTensorLayout matrix_layout{
-        2, {1, 1}, {1, 1}, 6, sizeof(float), 0, 1, 0, 4, 4,
+        2,
+        {1, 1},
+        {1, 1},
+        6,
+        sizeof(float),
+        0,
+        1,
+        0,
+        4,
+        4,
         pytorch_vulkan::VulkanOverlap::No};
 
     platform.compute().reset_descriptor_resource_counters();
