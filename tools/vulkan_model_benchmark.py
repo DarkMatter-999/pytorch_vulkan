@@ -298,6 +298,12 @@ def _counter_fields(device):
             "submissions": 0,
             "completions": 0,
             "waits": 0,
+            "transfer_operations": 0,
+            "transfer_submissions": 0,
+            "transfer_completions": 0,
+            "transfer_waits": 0,
+            "compute_submissions": 0,
+            "fallback_status": False,
         }
     import pytorch_vulkan
 
@@ -310,6 +316,12 @@ def _counter_fields(device):
         "submissions": pytorch_vulkan._C.compute_submitted_count(),
         "completions": pytorch_vulkan._C.compute_completed_count(),
         "waits": pytorch_vulkan._C.compute_wait_count(),
+        "transfer_operations": pytorch_vulkan._C.transfer_operation_count(),
+        "transfer_submissions": pytorch_vulkan._C.transfer_submission_count(),
+        "transfer_completions": pytorch_vulkan._C.transfer_completion_count(),
+        "transfer_waits": pytorch_vulkan._C.transfer_wait_count(),
+        "compute_submissions": pytorch_vulkan._C.compute_submitted_count(),
+        "fallback_status": counters[3] != 0,
     }
 
 
@@ -356,21 +368,22 @@ def _run_row(name, fixture, device, warmups, repetitions, initial_state=None, re
         scoped = device != "cpu"
         scope_started = False
         try:
-            optimizer.zero_grad(set_to_none=False)
-            loss = fixture.loss(model(inputs, mask) if mask is not None else model(inputs), target)
             if scoped:
                 import pytorch_vulkan
                 pytorch_vulkan._C.begin_training_step()
                 scope_started = True
+            optimizer.zero_grad(set_to_none=False)
+            loss = fixture.loss(model(inputs, mask) if mask is not None else model(inputs), target)
             loss.backward()
-            measured_loss = loss
             optimizer.step()
+            measured_loss = loss
+            if scope_started:
+                pytorch_vulkan._C.end_training_step()
+                scope_started = False
         except BaseException:
             if scope_started:
                 pytorch_vulkan._C.cancel_training_step()
             raise
-        if scope_started:
-            pytorch_vulkan._C.end_training_step()
         return measured_loss
 
     for _ in range(warmups):
@@ -470,7 +483,7 @@ def validate_artifact(artifact):
     rows = artifact.get("rows") if isinstance(artifact, dict) else None
     if not isinstance(rows, list) or len(rows) != 2:
         raise ValueError("artifact must contain exactly one CPU and one Vulkan row")
-    required = {"model", "mode", "device", "dtype", "shape", "batch", "sequence_length", "warmups", "repetitions", "seed", "host_time", "gpu_time", "timing_source", "loss", "parity", "vulkan_copies", "explicit_transfers", "fallbacks", "dispatches", "submissions", "completions", "waits", "arithmetic_operations", "effective_tflops", "validation", "cpu_parity", "transfer_count"}
+    required = {"model", "mode", "device", "dtype", "shape", "batch", "sequence_length", "warmups", "repetitions", "seed", "host_time", "gpu_time", "timing_source", "loss", "parity", "vulkan_copies", "explicit_transfers", "fallbacks", "dispatches", "submissions", "completions", "waits", "arithmetic_operations", "effective_tflops", "validation", "cpu_parity", "transfer_count", "transfer_operations", "transfer_submissions", "transfer_completions", "transfer_waits", "compute_submissions", "fallback_status"}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"rows[{index}] must be an object")
@@ -506,11 +519,28 @@ def validate_artifact(artifact):
             raise ValueError(f"rows[{index}] lacks measured CPU parity")
         if not isinstance(row["transfer_count"], int) or row["transfer_count"] < 0 or row["transfer_count"] != row["explicit_transfers"]:
             raise ValueError(f"rows[{index}] has invalid transfer count")
-        counter_fields = ("dispatches", "vulkan_copies", "explicit_transfers", "fallbacks", "submissions", "completions", "waits")
+        counter_fields = ("dispatches", "vulkan_copies", "explicit_transfers", "fallbacks", "submissions", "completions", "waits", "transfer_operations", "transfer_submissions", "transfer_completions", "transfer_waits", "compute_submissions")
         if any(isinstance(row[field], bool) or not isinstance(row[field], int) or row[field] < 0 for field in counter_fields):
+            raise ValueError(f"rows[{index}] violates counter contract")
+        if not isinstance(row["fallback_status"], bool) or row["fallback_status"] != (row["fallbacks"] != 0):
             raise ValueError(f"rows[{index}] violates counter contract")
         if row["mode"] == "cpu" and any(row[field] != 0 for field in counter_fields):
             raise ValueError(f"rows[{index}] violates CPU counter contract")
+        if row["transfer_operations"] != row["vulkan_copies"]:
+            raise ValueError(f"rows[{index}] has inconsistent transfer operation counters")
+        if row["transfer_submissions"] != row["transfer_completions"]:
+            raise ValueError(f"rows[{index}] has incomplete transfer lifecycle")
+        if row["transfer_waits"] < row["transfer_submissions"]:
+            raise ValueError(f"rows[{index}] has incomplete transfer waits")
+        if row["transfer_operations"] == 0 and any(
+            row[field] != 0
+            for field in ("transfer_submissions", "transfer_completions", "transfer_waits")
+        ):
+            raise ValueError(f"rows[{index}] has transfer lifecycle without operations")
+        if row["transfer_operations"] > 0 and row["transfer_submissions"] == 0 and row["compute_submissions"] == 0:
+            raise ValueError(f"rows[{index}] has operations without transfer submission")
+        if row["transfer_submissions"] > row["transfer_operations"]:
+            raise ValueError(f"rows[{index}] has transfer submissions exceed transfer operations")
         # Attention's bounded transposed-bmm path and RNN's explicit sequence
         # materialization use measured Vulkan-side copies; neither is a host
         # transfer or fallback.
@@ -551,6 +581,8 @@ def validate_artifact(artifact):
             raise ValueError(f"rows[{index}] lacks Vulkan execution counters")
         if row["mode"] == "vulkan" and not (row["submissions"] == row["completions"] == row["waits"] <= row["dispatches"]):
             raise ValueError(f"rows[{index}] has inconsistent Vulkan counters")
+        if row["compute_submissions"] != row["submissions"]:
+            raise ValueError(f"rows[{index}] has inconsistent compute submission counters")
         gpu = row["gpu_time"]
         if row["mode"] == "cpu":
             if gpu != {"status": "not_applicable", "samples_ns": None, "mean_ns": None}:

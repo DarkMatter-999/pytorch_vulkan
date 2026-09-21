@@ -226,6 +226,27 @@ void record_vulkan_copy(const VulkanPlatform &platform, VkBuffer source,
                          nullptr, 0, nullptr);
 }
 
+void record_vulkan_copies(const VulkanPlatform &platform, VkBuffer source,
+                          VkBuffer destination,
+                          const std::vector<VkBufferCopy> &regions) {
+    VkCommandBuffer command_buffer = platform.execution_context().command_buffer();
+    const VkMemoryBarrier before_copy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                      VK_ACCESS_SHADER_WRITE_BIT,
+                                      VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0,
+                         nullptr, 0, nullptr);
+    vkCmdCopyBuffer(command_buffer, source, destination,
+                    static_cast<uint32_t>(regions.size()), regions.data());
+    platform.record_copy_command();
+    const VkMemoryBarrier after_copy{
+        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
+                         nullptr, 0, nullptr);
+}
+
 } // namespace
 
 namespace pytorch_vulkan {
@@ -266,6 +287,7 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
     const VulkanPlatform &platform = allocation_platform(source_data);
     TORCH_CHECK(&platform == &allocation_platform(destination_data),
                 "Vulkan reshape copy requires tensors on the same Vulkan device");
+    platform.record_transfer_operation();
     platform.record_vulkan_copy();
 
     const bool source_contiguous =
@@ -285,6 +307,8 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
         return destination;
     }
 
+    std::vector<VkBufferCopy> regions;
+    regions.reserve(static_cast<std::size_t>(source_layout.numel));
     for (int64_t index = 0; index < source_layout.numel; ++index) {
         const auto source_element = vulkan_storage_offset(source_layout, index);
         const auto destination_element =
@@ -294,12 +318,87 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
         const auto destination_offset = static_cast<VkDeviceSize>(
             checked_byte_offset(destination_element, destination_layout.element_bytes,
                                 "reshape destination"));
-        platform.copy_buffer_sync(
-            source_buffer.buffer(), destination_buffer.buffer(),
-            static_cast<VkDeviceSize>(source_layout.element_bytes), source_offset,
-            destination_offset);
+        regions.push_back({source_offset, destination_offset,
+                           static_cast<VkDeviceSize>(source_layout.element_bytes)});
+    }
+    if (platform.execution_context().recording()) {
+        record_vulkan_copies(platform, source_buffer.buffer(), destination_buffer.buffer(),
+                             regions);
+    } else {
+        std::vector<VulkanBufferCopy> copies;
+        copies.reserve(regions.size());
+        for (const auto &region : regions)
+            copies.push_back({source_buffer.buffer(), destination_buffer.buffer(),
+                              region.srcOffset, region.dstOffset, region.size});
+        platform.copy_buffers_sync(copies);
     }
     return destination;
+}
+
+at::Tensor vulkan_stack_copy(at::TensorList tensors, int64_t dim) {
+    TORCH_CHECK(!tensors.empty(), "Vulkan stack requires at least one tensor");
+    const auto &first = tensors[0];
+    at::Tensor output = dim == 0
+        ? at::empty({static_cast<int64_t>(tensors.size()), first.size(0), first.size(1)},
+                    first.options())
+        : at::empty({first.size(0), static_cast<int64_t>(tensors.size()), first.size(1)},
+                    first.options());
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "stack destination");
+    const auto &first_data = first.storage().data_ptr();
+    const auto &output_data = output.storage().data_ptr();
+    VulkanBuffer &output_buffer = allocation_buffer(output_data);
+    const VulkanPlatform &platform = allocation_platform(output_data);
+    TORCH_CHECK(&platform == &allocation_platform(first_data),
+                "Vulkan stack requires tensors on the same Vulkan device");
+
+    std::vector<VulkanBufferCopy> copies;
+    for (int64_t index = 0; index < static_cast<int64_t>(tensors.size()); ++index) {
+        const auto &tensor = tensors[index];
+        const auto &data = tensor.storage().data_ptr();
+        const auto &buffer = allocation_buffer(data);
+        const auto layout = inspect_vulkan_tensor_layout(tensor, "stack source");
+        const auto element_bytes = static_cast<VkDeviceSize>(layout.element_bytes);
+        if (dim == 0) {
+            copies.push_back({buffer.buffer(), output_buffer.buffer(),
+                              static_cast<VkDeviceSize>(layout.byte_offset),
+                              static_cast<VkDeviceSize>(output_layout.byte_offset) +
+                                  static_cast<VkDeviceSize>(index * first.numel()) *
+                                      element_bytes,
+                              static_cast<VkDeviceSize>(first.numel()) * element_bytes});
+        } else {
+            for (int64_t row = 0; row < first.size(0); ++row) {
+                copies.push_back({
+                    buffer.buffer(), output_buffer.buffer(),
+                    static_cast<VkDeviceSize>(layout.byte_offset + row * first.size(1) *
+                                              layout.element_bytes),
+                    static_cast<VkDeviceSize>(output_layout.byte_offset +
+                                              (row * tensors.size() + index) * first.size(1) *
+                                                  layout.element_bytes),
+                    static_cast<VkDeviceSize>(first.size(1)) * element_bytes});
+            }
+        }
+    }
+    if (copies.empty())
+        return output;
+    platform.record_vulkan_copy();
+    platform.record_transfer_operation();
+    if (platform.execution_context().recording()) {
+        for (std::size_t index = 0; index < copies.size();) {
+            const auto source = copies[index].source;
+            const auto destination = copies[index].destination;
+            std::vector<VkBufferCopy> regions;
+            while (index < copies.size() && copies[index].source == source &&
+                   copies[index].destination == destination) {
+                const auto &copy = copies[index++];
+                regions.push_back(
+                    {copy.source_offset, copy.destination_offset, copy.size});
+            }
+            record_vulkan_copies(platform, source, destination, regions);
+        }
+    } else {
+        platform.copy_buffers_sync(copies);
+    }
+    return output;
 }
 
 at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
@@ -344,6 +443,7 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     const at::DataPtr &vulkan_data = vulkan_tensor.storage().data_ptr();
     VulkanBuffer &vulkan_buffer = allocation_buffer(vulkan_data);
     const VulkanPlatform &platform = allocation_platform(vulkan_data);
+    platform.record_transfer_operation();
     const bool host_visible =
         (vulkan_buffer.memory_properties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
     std::unique_lock<std::mutex> transfer_lock;
@@ -413,6 +513,28 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
         mark_label_copy();
         return destination;
     }
+    if (vulkan_to_vulkan && platform.execution_context().recording()) {
+        const auto &source_buffer = allocation_buffer(source.storage().data_ptr());
+        auto &destination_buffer =
+            allocation_buffer(destination.storage().data_ptr());
+        std::vector<VkBufferCopy> regions;
+        regions.reserve(static_cast<std::size_t>(destination_layout.numel));
+        for (int64_t index = 0; index < destination_layout.numel; ++index) {
+            const VkDeviceSize destination_offset =
+                static_cast<VkDeviceSize>(checked_byte_offset(
+                    static_cast<int64_t>(logical_offset(destination_layout, index)),
+                    destination_layout.element_bytes, "destination"));
+            const VkDeviceSize source_offset =
+                static_cast<VkDeviceSize>(checked_byte_offset(
+                    static_cast<int64_t>(logical_offset(source_layout, index)),
+                    source_layout.element_bytes, "source"));
+            regions.push_back({source_offset, destination_offset, element_size});
+        }
+        record_vulkan_copies(platform, source_buffer.buffer(),
+                             destination_buffer.buffer(), regions);
+        mark_label_copy();
+        return destination;
+    }
     for (int64_t index = 0; index < destination_layout.numel; ++index) {
         const VkDeviceSize destination_offset =
             static_cast<VkDeviceSize>(checked_byte_offset(
@@ -478,6 +600,7 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                         "formatter presentation source");
     const VulkanBuffer &buffer = allocation_buffer(data);
     const VulkanPlatform &platform = allocation_platform(data);
+    platform.record_transfer_operation();
     const VkDeviceSize offset = static_cast<VkDeviceSize>(
         static_cast<uint64_t>(source.storage_offset()) *
         pytorch_vulkan::vulkan_storage_bytes(source.scalar_type()));

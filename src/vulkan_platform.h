@@ -70,6 +70,14 @@ struct VulkanPendingTransferResources {
     VkFence fence = VK_NULL_HANDLE;
 };
 
+struct VulkanBufferCopy {
+    VkBuffer source = VK_NULL_HANDLE;
+    VkBuffer destination = VK_NULL_HANDLE;
+    VkDeviceSize source_offset = 0;
+    VkDeviceSize destination_offset = 0;
+    VkDeviceSize size = 0;
+};
+
 enum class VulkanTimingCategory { Allocation, Recording, Submit, HostFenceWait };
 
 class VulkanPlatform {
@@ -117,6 +125,12 @@ class VulkanPlatform {
     // Counts recorded vkCmdCopyBuffer commands, distinct from logical transfers.
     std::size_t copy_command_count() const;
     void record_copy_command() const;
+    std::size_t transfer_operation_count() const;
+    std::size_t transfer_submission_count() const;
+    std::size_t transfer_completion_count() const;
+    std::size_t transfer_wait_count() const;
+    void record_transfer_operation() const;
+    void copy_buffers_sync(const std::vector<VulkanBufferCopy> &copies) const;
     void copy_buffer_sync(VkBuffer source, VkBuffer destination, VkDeviceSize size,
                           VkDeviceSize source_offset = 0,
                           VkDeviceSize destination_offset = 0) const;
@@ -177,6 +191,10 @@ class VulkanPlatform {
     mutable std::atomic<std::size_t> fallback_count_{0};
     mutable std::atomic<bool> strict_mode_{false};
     mutable std::atomic<std::size_t> copy_command_count_{0};
+    mutable std::atomic<std::size_t> transfer_operation_count_{0};
+    mutable std::atomic<std::size_t> transfer_submission_count_{0};
+    mutable std::atomic<std::size_t> transfer_completion_count_{0};
+    mutable std::atomic<std::size_t> transfer_wait_count_{0};
     mutable std::atomic<std::size_t> compute_submitted_count_{0};
     mutable std::atomic<std::size_t> compute_completed_count_{0};
     mutable std::atomic<std::size_t> compute_wait_count_{0};

@@ -298,6 +298,11 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
     TORCH_CHECK(mat1.size(0) > 0 && mat1.size(1) > 0 && mat1.size(2) > 0 &&
                     mat2.size(2) > 0,
                 "Vulkan bmm requires non-empty matrices");
+    TORCH_CHECK(mat1.size(0) <= std::numeric_limits<uint32_t>::max() &&
+                    mat1.size(1) <= std::numeric_limits<uint32_t>::max() &&
+                    mat1.size(2) <= std::numeric_limits<uint32_t>::max() &&
+                    mat2.size(2) <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan bmm dimensions exceed dispatch limits");
     TORCH_CHECK(mat1.layout() == at::kStrided && mat2.layout() == at::kStrided,
                 "Vulkan bmm requires strided matrices");
     const auto mat1_layout = inspect_vulkan_tensor_layout(mat1, "bmm mat1");
@@ -307,51 +312,46 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
                 "Vulkan bmm rejects overlapping inputs");
     validate_allocation(mat1.storage().data_ptr(), mat1_layout.byte_range, "bmm mat1");
     validate_allocation(mat2.storage().data_ptr(), mat2_layout.byte_range, "bmm mat2");
-    auto validate_bmm_matrix = [](const at::Tensor &tensor, int64_t rows, int64_t cols,
-                                  const char *name) {
-        TORCH_CHECK(tensor.dim() == 2 && tensor.size(0) == rows && tensor.size(1) == cols &&
-                        tensor.layout() == at::kStrided && tensor.scalar_type() == at::kFloat,
-                    "Vulkan ", name, " has an unsupported matrix contract");
-        TORCH_CHECK(tensor.is_contiguous() || tensor.transpose(0, 1).is_contiguous(),
+    auto output = at::empty({mat1.size(0), mat1.size(1), mat2.size(2)}, mat1.options());
+    const auto output_layout = inspect_vulkan_tensor_layout(output, "bmm output");
+    validate_allocation(output.storage().data_ptr(), output_layout.byte_range, "bmm output");
+    auto validate_batched_matrix = [](const VulkanTensorLayout &layout, int64_t rows,
+                                      int64_t cols, const char *name) {
+        TORCH_CHECK(layout.rank == 3 && layout.sizes[1] == rows && layout.sizes[2] == cols &&
+                        layout.strides[1] >= 0 && layout.strides[2] >= 0 &&
+                        ((layout.strides[1] == cols && layout.strides[2] == 1) ||
+                         (layout.strides[1] == 1 && layout.strides[2] == rows)),
                     "Vulkan ", name,
-                    " requires a contiguous or transposed-contiguous matrix layout");
-        auto layout = inspect_vulkan_tensor_layout(tensor, name);
+                    " requires a contiguous or transposed-contiguous batched layout");
+        TORCH_CHECK(layout.strides[0] >= 0 &&
+                        static_cast<uint64_t>(layout.strides[0]) <=
+                            std::numeric_limits<uint32_t>::max() &&
+                        static_cast<uint64_t>(layout.strides[1]) <=
+                            std::numeric_limits<uint32_t>::max() &&
+                        static_cast<uint64_t>(layout.strides[2]) <=
+                            std::numeric_limits<uint32_t>::max(),
+                    "Vulkan ", name, " strides exceed dispatch limits");
         TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No,
                     "Vulkan ", name, " has unsupported internal overlap");
-        validate_allocation(tensor.storage().data_ptr(), layout.byte_range, name);
-        return layout;
     };
-    for (int64_t batch = 0; batch < mat1.size(0); ++batch) {
-        const auto lhs = mat1.select(0, batch);
-        const auto rhs = mat2.select(0, batch);
-        validate_bmm_matrix(lhs, mat1.size(1), mat1.size(2), "bmm lhs");
-        validate_bmm_matrix(rhs, mat2.size(1), mat2.size(2), "bmm rhs");
-    }
-    auto output = at::empty({mat1.size(0), mat1.size(1), mat2.size(2)}, mat1.options());
-    for (int64_t batch = 0; batch < mat1.size(0); ++batch) {
-        const auto lhs = mat1.select(0, batch);
-        const auto rhs = mat2.select(0, batch);
-        const auto out = output.select(0, batch);
-        const auto lhs_storage = lhs.is_contiguous()
-            ? lhs
-            : transpose_contiguous_2d(lhs.transpose(0, 1));
-        const auto rhs_storage = rhs.is_contiguous()
-            ? rhs
-            : transpose_contiguous_2d(rhs.transpose(0, 1));
-        const auto lhs_layout = validate_bmm_matrix(lhs_storage, mat1.size(1), mat1.size(2), "bmm lhs");
-        const auto rhs_layout = validate_bmm_matrix(rhs_storage, mat2.size(1), mat2.size(2), "bmm rhs");
-        const auto out_layout = validate_bmm_matrix(out, mat1.size(1), mat2.size(2), "bmm output");
-        const auto &platform = allocation_platform(lhs_storage.storage().data_ptr());
-        TORCH_CHECK(&platform == &allocation_platform(rhs_storage.storage().data_ptr()) &&
-                        &platform == &allocation_platform(out.storage().data_ptr()),
-                    "Vulkan bmm requires one Vulkan platform");
-        platform.compute().gemm(
-            allocation_buffer(lhs_storage.storage().data_ptr()).buffer(), lhs_layout,
-            allocation_buffer(rhs_storage.storage().data_ptr()).buffer(), rhs_layout, VK_NULL_HANDLE,
-            out_layout, allocation_buffer(out.storage().data_ptr()).buffer(), out_layout,
-            VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(mat1.size(1)),
-            static_cast<uint32_t>(mat2.size(2)), static_cast<uint32_t>(mat1.size(2)));
-    }
+    validate_batched_matrix(mat1_layout, mat1.size(1), mat1.size(2), "bmm lhs");
+    validate_batched_matrix(mat2_layout, mat2.size(1), mat2.size(2), "bmm rhs");
+    validate_batched_matrix(output_layout, mat1.size(1), mat2.size(2), "bmm output");
+    const auto &platform = allocation_platform(mat1.storage().data_ptr());
+    TORCH_CHECK(&platform == &allocation_platform(mat2.storage().data_ptr()) &&
+                    &platform == &allocation_platform(output.storage().data_ptr()),
+                "Vulkan bmm requires one Vulkan platform");
+    platform.compute().gemm(
+        allocation_buffer(mat1.storage().data_ptr()).buffer(), mat1_layout,
+        allocation_buffer(mat2.storage().data_ptr()).buffer(), mat2_layout, VK_NULL_HANDLE,
+        output_layout, allocation_buffer(output.storage().data_ptr()).buffer(), output_layout,
+        VK_NULL_HANDLE, output_layout, static_cast<uint32_t>(mat1.size(1)),
+        static_cast<uint32_t>(mat2.size(2)), static_cast<uint32_t>(mat1.size(2)),
+        1.0F, 0.0F, false, static_cast<uint32_t>(mat1.size(0)),
+        static_cast<uint32_t>(mat1_layout.strides[0]),
+        static_cast<uint32_t>(mat2_layout.strides[0]),
+        static_cast<uint32_t>(output_layout.strides[0]),
+        static_cast<uint32_t>(output_layout.strides[0]));
     return output;
 }
 

@@ -142,30 +142,32 @@ struct PoolingParams {
 };
 struct GemmParams {
     uint32_t m, n, k;
-    uint32_t stride_a, stride_b, stride_c, stride_d, stride_bias;
-    uint32_t matrix_stride;
+    uint32_t a_row_stride, a_col_stride;
+    uint32_t b_row_stride, b_col_stride;
+    uint32_t c_row_stride, c_col_stride;
+    uint32_t d_row_stride, d_col_stride;
+    uint32_t bias_stride;
     float alpha, beta;
-    uint32_t has_bias;
-    uint32_t reserved[4];
+    uint32_t has_bias, batch_count;
+    uint32_t batch_stride_a, batch_stride_b, batch_stride_c, batch_stride_d;
 };
-static_assert(sizeof(GemmParams) == 64, "GEMM push-constant ABI size mismatch");
+static_assert(sizeof(GemmParams) == 80, "GEMM push-constant ABI size mismatch");
 static_assert(offsetof(GemmParams, m) == 0, "GEMM ABI m offset mismatch");
 static_assert(offsetof(GemmParams, n) == 4, "GEMM ABI n offset mismatch");
 static_assert(offsetof(GemmParams, k) == 8, "GEMM ABI k offset mismatch");
-static_assert(offsetof(GemmParams, stride_a) == 12, "GEMM ABI stride_a offset mismatch");
-static_assert(offsetof(GemmParams, stride_b) == 16, "GEMM ABI stride_b offset mismatch");
-static_assert(offsetof(GemmParams, stride_c) == 20, "GEMM ABI stride_c offset mismatch");
-static_assert(offsetof(GemmParams, stride_d) == 24, "GEMM ABI stride_d offset mismatch");
-static_assert(offsetof(GemmParams, stride_bias) == 28,
-              "GEMM ABI stride_bias offset mismatch");
-static_assert(offsetof(GemmParams, matrix_stride) == 32,
-              "GEMM ABI matrix_stride offset mismatch");
-static_assert(offsetof(GemmParams, alpha) == 36, "GEMM ABI alpha offset mismatch");
-static_assert(offsetof(GemmParams, beta) == 40, "GEMM ABI beta offset mismatch");
-static_assert(offsetof(GemmParams, has_bias) == 44,
-              "GEMM ABI has_bias offset mismatch");
-static_assert(offsetof(GemmParams, reserved) == 48,
-              "GEMM ABI reserved offset mismatch");
+static_assert(offsetof(GemmParams, a_row_stride) == 12, "GEMM ABI A row offset mismatch");
+static_assert(offsetof(GemmParams, a_col_stride) == 16, "GEMM ABI A col offset mismatch");
+static_assert(offsetof(GemmParams, b_row_stride) == 20, "GEMM ABI B row offset mismatch");
+static_assert(offsetof(GemmParams, b_col_stride) == 24, "GEMM ABI B col offset mismatch");
+static_assert(offsetof(GemmParams, c_row_stride) == 28, "GEMM ABI C row offset mismatch");
+static_assert(offsetof(GemmParams, c_col_stride) == 32, "GEMM ABI C col offset mismatch");
+static_assert(offsetof(GemmParams, d_row_stride) == 36, "GEMM ABI D row offset mismatch");
+static_assert(offsetof(GemmParams, d_col_stride) == 40, "GEMM ABI D col offset mismatch");
+static_assert(offsetof(GemmParams, bias_stride) == 44, "GEMM ABI bias offset mismatch");
+static_assert(offsetof(GemmParams, alpha) == 48, "GEMM ABI alpha offset mismatch");
+static_assert(offsetof(GemmParams, beta) == 52, "GEMM ABI beta offset mismatch");
+static_assert(offsetof(GemmParams, has_bias) == 56, "GEMM ABI has_bias offset mismatch");
+static_assert(offsetof(GemmParams, batch_count) == 60, "GEMM ABI batch offset mismatch");
 struct F32ToDoubleParams {
     uint32_t element_count;
 };
@@ -281,6 +283,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         max_storage_buffer_range_ = properties.limits.maxStorageBufferRange;
         max_compute_workgroup_count_x_ = properties.limits.maxComputeWorkGroupCount[0];
         max_compute_workgroup_count_y_ = properties.limits.maxComputeWorkGroupCount[1];
+        max_compute_workgroup_count_z_ = properties.limits.maxComputeWorkGroupCount[2];
         max_compute_shared_memory_size_ = properties.limits.maxComputeSharedMemorySize;
         max_push_constants_size_ = properties.limits.maxPushConstantsSize;
         if (properties.limits.maxPushConstantsSize < sizeof(Params))
@@ -1579,23 +1582,34 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
                          const VulkanTensorLayout &c_layout, VkBuffer output,
                          const VulkanTensorLayout &output_layout, VkBuffer bias,
                          const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n,
-                         uint32_t k, float alpha, float beta, bool has_bias) const {
+                         uint32_t k, float alpha, float beta, bool has_bias,
+                         uint32_t batch_count, uint32_t batch_stride_a,
+                         uint32_t batch_stride_b, uint32_t batch_stride_c,
+                         uint32_t batch_stride_d) const {
+    const bool batched = batch_count != 0;
+    const uint32_t dispatch_batches = batched ? batch_count : 1U;
+    const uint32_t matrix_rank = batched ? 3U : 2U;
+    const uint32_t matrix_base = batched ? 1U : 0U;
     const auto validate_layout = [&](VkBuffer buffer, const VulkanTensorLayout &layout,
                                      uint32_t rank, uint32_t rows, uint32_t columns,
                                      const char *name) {
-        if (buffer == VK_NULL_HANDLE || layout.rank != rank ||
+        const uint32_t expected_rank = rank == 2 ? matrix_rank : rank;
+        if (buffer == VK_NULL_HANDLE || layout.rank != expected_rank ||
             layout.scalar_type != kFloatScalarType ||
-            layout.element_bytes != sizeof(float) || layout.sizes.size() != rank ||
-            layout.strides.size() != rank || layout.storage_offset < 0 ||
+            layout.element_bytes != sizeof(float) || layout.sizes.size() != expected_rank ||
+            layout.strides.size() != expected_rank || layout.storage_offset < 0 ||
             layout.byte_range == 0 || layout.allocation_bytes == 0 ||
             layout.byte_offset > layout.allocation_bytes ||
             layout.byte_range > layout.allocation_bytes - layout.byte_offset ||
             layout.internal_overlap != pytorch_vulkan::VulkanOverlap::No)
             throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
                                         " has an invalid layout");
-        if (layout.sizes[0] != rows || layout.sizes[1] != columns ||
-            layout.strides[0] < 0 || layout.strides[1] < 0 || layout.strides[1] != 1 ||
-            layout.strides[0] != columns ||
+        if (layout.sizes[matrix_base] != rows || layout.sizes[matrix_base + 1] != columns ||
+            layout.strides[matrix_base] < 0 || layout.strides[matrix_base + 1] < 0 ||
+            (!batched && (layout.strides[matrix_base + 1] != 1 ||
+                          layout.strides[matrix_base] != columns)) ||
+            (batched && (layout.strides[matrix_base] > std::numeric_limits<uint32_t>::max() ||
+                         layout.strides[matrix_base + 1] > std::numeric_limits<uint32_t>::max())) ||
             static_cast<uint64_t>(layout.storage_offset) >
                 std::numeric_limits<uint32_t>::max() ||
             static_cast<uint64_t>(layout.strides[0]) >
@@ -1605,9 +1619,9 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
             throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
                                         " is not a representable contiguous matrix");
         const uint64_t row_span =
-            static_cast<uint64_t>(rows - 1) * static_cast<uint64_t>(layout.strides[0]);
+            static_cast<uint64_t>(rows - 1) * static_cast<uint64_t>(layout.strides[matrix_base]);
         const uint64_t column_span = static_cast<uint64_t>(columns - 1) *
-                                     static_cast<uint64_t>(layout.strides[1]);
+                                     static_cast<uint64_t>(layout.strides[matrix_base + 1]);
         if (row_span > std::numeric_limits<uint64_t>::max() - column_span ||
             row_span + column_span == std::numeric_limits<uint64_t>::max())
             throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
@@ -1653,9 +1667,10 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     };
     const uint64_t m_groups = (static_cast<uint64_t>(m) + 15) / 16;
     const uint64_t n_groups = (static_cast<uint64_t>(n) + 15) / 16;
-    if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
+        if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
         m_groups > max_compute_workgroup_count_y_ ||
         n_groups > max_compute_workgroup_count_x_ ||
+        (batched && dispatch_batches > max_compute_workgroup_count_z_) ||
         2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_)
         throw std::invalid_argument("Vulkan GEMM exceeds device limits");
     validate_layout(a, a_layout, 2, m, k, "A");
@@ -1708,23 +1723,30 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         const GemmParams params{m,
                                 n,
                                 k,
-                                static_cast<uint32_t>(a_layout.strides[0]),
-                                static_cast<uint32_t>(b_layout.strides[0]),
-                                static_cast<uint32_t>(effective_c.strides[0]),
-                                static_cast<uint32_t>(output_layout.strides[0]),
-                                1,
+                                static_cast<uint32_t>(a_layout.strides[matrix_base]),
+                                static_cast<uint32_t>(a_layout.strides[matrix_base + 1]),
+                                static_cast<uint32_t>(b_layout.strides[matrix_base]),
+                                static_cast<uint32_t>(b_layout.strides[matrix_base + 1]),
+                                static_cast<uint32_t>(effective_c.strides[matrix_base]),
+                                static_cast<uint32_t>(effective_c.strides[matrix_base + 1]),
+                                static_cast<uint32_t>(output_layout.strides[matrix_base]),
+                                static_cast<uint32_t>(output_layout.strides[matrix_base + 1]),
                                 1,
                                 alpha,
                                 beta,
                                 has_bias ? 1U : 0U,
-                                {0, 0, 0, 0}};
+                                batch_count,
+                                batch_stride_a,
+                                batch_stride_b,
+                                batch_stride_c,
+                                batch_stride_d};
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gemm_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 gemm_pipeline_layout_, 0, 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, gemm_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(params), &params);
         vkCmdDispatch(cmd, static_cast<uint32_t>(n_groups),
-                      static_cast<uint32_t>(m_groups), 1);
+                      static_cast<uint32_t>(m_groups), dispatch_batches);
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {

@@ -58,19 +58,23 @@ def test_gemm_shader_contract_freezes_bindings_and_push_constant_offsets():
         "uint M": 0,
         "uint N": 4,
         "uint K": 8,
-        "uint stride_a": 12,
-        "uint stride_b": 16,
-        "uint stride_c": 20,
-        "uint stride_d": 24,
-        "uint stride_bias": 28,
-        "uint matrix_stride": 32,
-        "float alpha": 36,
-        "float beta": 40,
-        "uint has_bias": 44,
-        "uint reserved0": 48,
-        "uint reserved1": 52,
-        "uint reserved2": 56,
-        "uint reserved3": 60,
+        "uint a_row_stride": 12,
+        "uint a_col_stride": 16,
+        "uint b_row_stride": 20,
+        "uint b_col_stride": 24,
+        "uint c_row_stride": 28,
+        "uint c_col_stride": 32,
+        "uint d_row_stride": 36,
+        "uint d_col_stride": 40,
+        "uint bias_stride": 44,
+        "float alpha": 48,
+        "float beta": 52,
+        "uint has_bias": 56,
+        "uint batch_count": 60,
+        "uint batch_stride_a": 64,
+        "uint batch_stride_b": 68,
+        "uint batch_stride_c": 72,
+        "uint batch_stride_d": 76,
     }
     for declaration, offset in expected_members.items():
         assert f"/* offset {offset} */ {declaration};" in source
@@ -90,7 +94,7 @@ def test_gemm_shader_contract_guards_tiles_and_epilogue():
     assert "d.values[" in source
 
 
-def test_gemm_verifier_source_contract_ignores_reserved_padding():
+def test_gemm_verifier_source_contract_accepts_batched_strides():
     source = _source("gemm.comp")
     verify_source(source)
     assert "params.reserved" not in source

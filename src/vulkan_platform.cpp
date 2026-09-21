@@ -852,6 +852,10 @@ void VulkanPlatform::reset_execution_counters() const {
     vulkan_copy_count_.store(0, std::memory_order_relaxed);
     fallback_count_.store(0, std::memory_order_relaxed);
     copy_command_count_.store(0, std::memory_order_relaxed);
+    transfer_operation_count_.store(0, std::memory_order_relaxed);
+    transfer_submission_count_.store(0, std::memory_order_relaxed);
+    transfer_completion_count_.store(0, std::memory_order_relaxed);
+    transfer_wait_count_.store(0, std::memory_order_relaxed);
     compute_submitted_count_.store(0, std::memory_order_relaxed);
     compute_completed_count_.store(0, std::memory_order_relaxed);
     compute_wait_count_.store(0, std::memory_order_relaxed);
@@ -936,6 +940,165 @@ std::size_t VulkanPlatform::copy_command_count() const {
 
 void VulkanPlatform::record_copy_command() const {
     copy_command_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::transfer_operation_count() const {
+    return transfer_operation_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::transfer_submission_count() const {
+    return transfer_submission_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::transfer_completion_count() const {
+    return transfer_completion_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::transfer_wait_count() const {
+    return transfer_wait_count_.load(std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_transfer_operation() const {
+    transfer_operation_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::copy_buffers_sync(
+    const std::vector<VulkanBufferCopy> &copies) const {
+    if (copies.empty())
+        throw std::invalid_argument("Vulkan bulk copy requires at least one region");
+    for (const auto &copy : copies) {
+        if (copy.source == VK_NULL_HANDLE || copy.destination == VK_NULL_HANDLE ||
+            copy.size == 0)
+            throw std::invalid_argument("Invalid Vulkan bulk buffer copy arguments");
+    }
+
+    throw_if_device_lost();
+    std::scoped_lock lock(queue_mutex_);
+    throw_if_device_lost();
+    const auto total_start = std::chrono::steady_clock::now();
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    bool submission_may_be_pending = false;
+    const auto release_resources = [&] {
+        if (fence != VK_NULL_HANDLE)
+            vkDestroyFence(device_, fence, nullptr);
+        fence = VK_NULL_HANDLE;
+        if (command_buffer != VK_NULL_HANDLE)
+            vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+        command_buffer = VK_NULL_HANDLE;
+    };
+    const auto defer_resources = [&] {
+        if (pending_transfer_resources_.size() <
+            pending_transfer_resources_.capacity()) {
+            pending_transfer_resources_.push_back({command_buffer, fence});
+        }
+        command_buffer = VK_NULL_HANDLE;
+        fence = VK_NULL_HANDLE;
+    };
+    try {
+        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        allocation.commandPool = command_pool_;
+        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocation.commandBufferCount = 1;
+        const auto allocation_start = std::chrono::steady_clock::now();
+        check_result(vkAllocateCommandBuffers(device_, &allocation, &command_buffer),
+                     "Could not allocate Vulkan bulk-copy command buffer");
+        timing_.allocation += std::chrono::duration<double>(
+                                  std::chrono::steady_clock::now() - allocation_start)
+                                  .count();
+        const auto recording_start = std::chrono::steady_clock::now();
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check_result(vkBeginCommandBuffer(command_buffer, &begin),
+                     "Could not begin Vulkan bulk-copy command buffer");
+        for (std::size_t index = 0; index < copies.size();) {
+            const auto source = copies[index].source;
+            const auto destination = copies[index].destination;
+            std::vector<VkBufferCopy> regions;
+            while (index < copies.size() && copies[index].source == source &&
+                   copies[index].destination == destination) {
+                const auto &copy = copies[index++];
+                regions.push_back(
+                    {copy.source_offset, copy.destination_offset, copy.size});
+            }
+            vkCmdCopyBuffer(command_buffer, source, destination,
+                            static_cast<uint32_t>(regions.size()), regions.data());
+            copy_command_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+        check_result(vkEndCommandBuffer(command_buffer),
+                     "Could not end Vulkan bulk-copy command buffer");
+        timing_.recording += std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - recording_start)
+                                 .count();
+        VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
+                     "Could not create Vulkan bulk-copy fence");
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &command_buffer;
+        pending_transfer_resources_.reserve(pending_transfer_resources_.size() + 1);
+        submission_may_be_pending = true;
+        const VkResult submit_result = vkQueueSubmit(compute_queue_, 1, &submit, fence);
+        if (submit_result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(submit_result);
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
+        check_result(submit_result, "Could not submit Vulkan bulk-copy command buffer");
+        transfer_submission_count_.fetch_add(1, std::memory_order_relaxed);
+        transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
+        const auto fence_wait_start = std::chrono::steady_clock::now();
+        const VkResult wait_result =
+            vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (wait_result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(wait_result);
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
+        check_result(wait_result, "Could not wait for Vulkan bulk-copy fence");
+        timing_.host_fence_wait += std::chrono::duration<double>(
+                                         std::chrono::steady_clock::now() - fence_wait_start)
+                                         .count();
+        transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
+        timing_.total += std::chrono::duration<double>(
+                              std::chrono::steady_clock::now() - total_start)
+                              .count();
+        release_resources();
+    } catch (...) {
+        if (device_lost()) {
+            defer_resources();
+            throw;
+        }
+        if (submission_may_be_pending) {
+            const VkResult recovery_result = vkQueueWaitIdle(compute_queue_);
+            if (recovery_result == VK_SUCCESS) {
+                release_resources();
+            } else {
+                if (recovery_result == VK_ERROR_DEVICE_LOST) {
+                    mark_device_lost(recovery_result);
+                    defer_resources();
+                    throw VulkanDeviceLost(
+                        "Vulkan device lost; execution state invalidated (VkResult -4)");
+                }
+                defer_resources();
+                std::ostringstream message;
+                try {
+                    throw;
+                } catch (const std::exception &error) {
+                    message << error.what();
+                } catch (...) {
+                    message << "Vulkan bulk transfer failed with a non-standard exception";
+                }
+                message << "; could not confirm Vulkan bulk transfer completion failed with "
+                           "VkResult "
+                        << static_cast<int>(recovery_result);
+                throw std::runtime_error(message.str());
+            }
+        } else {
+            release_resources();
+        }
+        throw;
+    }
 }
 
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
@@ -1035,6 +1198,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
                 "Vulkan device lost; execution state invalidated (VkResult -4)");
         }
         check_result(submit_result, "Could not submit Vulkan command buffer");
+        transfer_submission_count_.fetch_add(1, std::memory_order_relaxed);
+        transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
         const auto fence_wait_start = std::chrono::steady_clock::now();
         const VkResult wait_result =
             vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
@@ -1075,6 +1240,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         timing_.host_fence_wait += std::chrono::duration<double>(
                                         std::chrono::steady_clock::now() - fence_wait_start)
                                         .count();
+        transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
             throw;
@@ -1211,6 +1377,7 @@ void VulkanPlatform::wait_for_transfer() const {
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
     const VkResult result = vkQueueWaitIdle(compute_queue_);
+    transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
     if (result == VK_ERROR_DEVICE_LOST) {
         mark_device_lost(result);
         throw VulkanDeviceLost(

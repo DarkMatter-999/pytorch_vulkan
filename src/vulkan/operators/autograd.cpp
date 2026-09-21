@@ -6,6 +6,7 @@
 #include "linear.h"
 #include "pooling.h"
 #include "unary.h"
+#include "../../vulkan_transfer.h"
 
 #include <torch/library.h>
 
@@ -300,14 +301,7 @@ at::Tensor stack_raw(at::TensorList tensors, int64_t dim) {
                         tensor.sizes().equals(first.sizes()) && tensor.is_contiguous(),
                     "Vulkan stack requires matching contiguous matrices");
     }
-    at::Tensor output = dim == 0
-        ? at::empty({static_cast<int64_t>(tensors.size()), first.size(0), first.size(1)},
-                    first.options())
-        : at::empty({first.size(0), static_cast<int64_t>(tensors.size()), first.size(1)},
-                    first.options());
-    for (int64_t index = 0; index < static_cast<int64_t>(tensors.size()); ++index)
-        output.select(dim, index).copy_(tensors[index]);
-    return output;
+    return pytorch_vulkan::vulkan_stack_copy(tensors, dim);
 }
 
 class StackAutogradFunction final

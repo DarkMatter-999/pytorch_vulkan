@@ -12,19 +12,23 @@ layout(push_constant, std430) uniform Params {
   /* offset 0 */ uint M;
   /* offset 4 */ uint N;
   /* offset 8 */ uint K;
-  /* offset 12 */ uint stride_a;
-  /* offset 16 */ uint stride_b;
-  /* offset 20 */ uint stride_c;
-  /* offset 24 */ uint stride_d;
-  /* offset 28 */ uint stride_bias;
-  /* offset 32 */ uint matrix_stride;
-  /* offset 36 */ float alpha;
-  /* offset 40 */ float beta;
-  /* offset 44 */ uint has_bias;
-  /* offset 48 */ uint reserved0;
-  /* offset 52 */ uint reserved1;
-  /* offset 56 */ uint reserved2;
-  /* offset 60 */ uint reserved3;
+  /* offset 12 */ uint a_row_stride;
+  /* offset 16 */ uint a_col_stride;
+  /* offset 20 */ uint b_row_stride;
+  /* offset 24 */ uint b_col_stride;
+  /* offset 28 */ uint c_row_stride;
+  /* offset 32 */ uint c_col_stride;
+  /* offset 36 */ uint d_row_stride;
+  /* offset 40 */ uint d_col_stride;
+  /* offset 44 */ uint bias_stride;
+  /* offset 48 */ float alpha;
+  /* offset 52 */ float beta;
+  /* offset 56 */ uint has_bias;
+  /* offset 60 */ uint batch_count;
+  /* offset 64 */ uint batch_stride_a;
+  /* offset 68 */ uint batch_stride_b;
+  /* offset 72 */ uint batch_stride_c;
+  /* offset 76 */ uint batch_stride_d;
 } params;
 
 shared float tile_a[16][16];
@@ -33,6 +37,7 @@ shared float tile_b[16][16];
 void main() {
   uint row = gl_WorkGroupID.y * 16u + gl_LocalInvocationID.y;
   uint col = gl_WorkGroupID.x * 16u + gl_LocalInvocationID.x;
+  uint batch = gl_WorkGroupID.z;
   float accumulator = 0.0;
   uint tile_count = (params.K + 15u) / 16u;
 
@@ -41,12 +46,14 @@ void main() {
     uint b_row = tile * 16u + gl_LocalInvocationID.y;
     if (row < params.M && a_col < params.K)
       tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
-          a.values[row * params.stride_a + a_col * params.matrix_stride];
+          a.values[batch * params.batch_stride_a +
+                   row * params.a_row_stride + a_col * params.a_col_stride];
     else
       tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
     if (b_row < params.K && col < params.N)
       tile_b[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
-          b.values[b_row * params.stride_b + col * params.matrix_stride];
+          b.values[batch * params.batch_stride_b +
+                   b_row * params.b_row_stride + col * params.b_col_stride];
     else
       tile_b[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
     barrier();
@@ -65,9 +72,11 @@ void main() {
     if (params.alpha != 0.0)
       value += params.alpha * accumulator;
     if (params.beta != 0.0)
-      value += params.beta * c.values[row * params.stride_c + col * params.matrix_stride];
+      value += params.beta * c.values[batch * params.batch_stride_c +
+                                      row * params.c_row_stride + col * params.c_col_stride];
     if (params.has_bias != 0u)
-      value += bias.values[col * params.stride_bias];
-    d.values[row * params.stride_d + col * params.matrix_stride] = value;
+      value += bias.values[col * params.bias_stride];
+    d.values[batch * params.batch_stride_d + row * params.d_row_stride +
+             col * params.d_col_stride] = value;
   }
 }

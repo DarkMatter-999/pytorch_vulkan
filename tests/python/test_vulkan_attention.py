@@ -2,6 +2,11 @@ import pytest
 import torch
 
 import pytorch_vulkan
+
+
+# Documented three-repetition baseline normalized to one bounded step.
+ATTENTION_PRE_OPTIMIZATION_DISPATCHES_PER_STEP = 94
+ATTENTION_PRE_OPTIMIZATION_SUBMISSIONS_PER_STEP = 33
 from tools.vulkan_model_benchmark import AttentionFixture, _move_model
 
 
@@ -38,10 +43,10 @@ def test_attention_forward_backward_matches_cpu_and_stays_resident(vulkan_backen
     cpu_loss = fixture.loss(cpu_output, cpu_target)
     cpu_loss.backward()
     pytorch_vulkan._C.reset_execution_counters()
-    vk_output = vk(vk_input)
-    vk_loss = fixture.loss(vk_output, vk_target)
     pytorch_vulkan._C.begin_training_step()
     try:
+        vk_output = vk(vk_input)
+        vk_loss = fixture.loss(vk_output, vk_target)
         vk_loss.backward()
     except BaseException:
         pytorch_vulkan._C.cancel_training_step()
@@ -50,6 +55,11 @@ def test_attention_forward_backward_matches_cpu_and_stays_resident(vulkan_backen
     dispatches = pytorch_vulkan._C.compute_dispatch_count()
     transfers = pytorch_vulkan._C.explicit_transfer_count()
     fallbacks = pytorch_vulkan._C.fallback_count()
+    compute_submissions = pytorch_vulkan._C.compute_submitted_count()
+    transfer_operations = pytorch_vulkan._C.transfer_operation_count()
+    transfer_submissions = pytorch_vulkan._C.transfer_submission_count()
+    transfer_completions = pytorch_vulkan._C.transfer_completion_count()
+    transfer_waits = pytorch_vulkan._C.transfer_wait_count()
     assert vk_output.shape == (4, 128, 256)
     torch.testing.assert_close(vk_output.cpu(), cpu_output.detach(), rtol=3e-3, atol=3e-3)
     torch.testing.assert_close(vk_loss.cpu(), cpu_loss.detach(), rtol=3e-3, atol=3e-3)
@@ -63,6 +73,11 @@ def test_attention_forward_backward_matches_cpu_and_stays_resident(vulkan_backen
     assert dispatches > 0
     assert transfers == 0
     assert fallbacks == 0
+    assert compute_submissions == 1
+    assert transfer_operations == 1
+    assert transfer_submissions == 0
+    assert transfer_completions == 0
+    assert transfer_waits == 0
 
 
 def test_attention_supported_additive_mask_matches_cpu_and_gradients(vulkan_backend):
@@ -73,10 +88,10 @@ def test_attention_supported_additive_mask_matches_cpu_and_gradients(vulkan_back
     cpu_loss.backward()
     pytorch_vulkan._C.reset_execution_counters()
     vk_mask = vk.causal_mask
-    vk_output = vk(vk_input, vk_mask)
-    vk_loss = fixture.loss(vk_output, vk_target)
     pytorch_vulkan._C.begin_training_step()
     try:
+        vk_output = vk(vk_input, vk_mask)
+        vk_loss = fixture.loss(vk_output, vk_target)
         vk_loss.backward()
     except BaseException:
         pytorch_vulkan._C.cancel_training_step()
@@ -129,9 +144,9 @@ def test_attention_backward_accumulates_gradients_out_of_place(vulkan_backend):
     model = _move_model(fixture.make_cpu(), vulkan_backend)
     inputs, target = fixture.make_inputs()
     pytorch_vulkan._C.reset_execution_counters()
-    output = model(inputs.to(vulkan_backend).requires_grad_())
     pytorch_vulkan._C.begin_training_step()
     try:
+        output = model(inputs.to(vulkan_backend).requires_grad_())
         fixture.loss(output, target.to(vulkan_backend)).backward()
     except BaseException:
         pytorch_vulkan._C.cancel_training_step()
@@ -256,3 +271,54 @@ def test_attention_rejects_unsupported_bmm_slice_layout_before_work(vulkan_backe
     assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     assert pytorch_vulkan._C.fallback_count() == 0
+
+
+def test_attention_bmm_uses_one_batched_dispatch_for_contiguous_layouts(vulkan_backend):
+    torch.manual_seed(71)
+    lhs_cpu = torch.randn(3, 5, 7)
+    rhs_cpu = torch.randn(3, 7, 4)
+    lhs = lhs_cpu.to(vulkan_backend)
+    rhs = rhs_cpu.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    actual = torch.bmm(lhs, rhs)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    assert pytorch_vulkan._C.compute_dispatch_count() < ATTENTION_PRE_OPTIMIZATION_DISPATCHES_PER_STEP
+    assert pytorch_vulkan._C.compute_submitted_count() < ATTENTION_PRE_OPTIMIZATION_SUBMISSIONS_PER_STEP
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(actual.cpu(), torch.bmm(lhs_cpu, rhs_cpu), rtol=2e-3, atol=2e-3)
+
+
+def test_attention_bmm_rejects_batch_count_above_vulkan_z_limit_before_work(
+    vulkan_backend,
+):
+    lhs = torch.ones((1 << 16, 1, 1), device=vulkan_backend)
+    rhs = torch.ones((1 << 16, 1, 1), device=vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="device limits|batch|workgroup"):
+        torch.bmm(lhs, rhs)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+def test_attention_bmm_uses_one_batched_dispatch_without_transpose_materialization(
+    vulkan_backend,
+):
+    torch.manual_seed(73)
+    query_cpu = torch.randn(3, 5, 7)
+    key_cpu = torch.randn(3, 4, 7)
+    query = query_cpu.to(vulkan_backend)
+    key = key_cpu.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    actual = torch.bmm(query, key.transpose(1, 2))
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    assert pytorch_vulkan._C.compute_dispatch_count() < ATTENTION_PRE_OPTIMIZATION_DISPATCHES_PER_STEP
+    assert pytorch_vulkan._C.compute_submitted_count() < ATTENTION_PRE_OPTIMIZATION_SUBMISSIONS_PER_STEP
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(
+        actual.cpu(), torch.bmm(query_cpu, key_cpu.transpose(1, 2)), rtol=2e-3, atol=2e-3
+    )

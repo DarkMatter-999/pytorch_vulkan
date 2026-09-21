@@ -156,6 +156,25 @@ def test_strided_vulkan_to_vulkan_copy_preserves_storage_range_and_cpu_parity(
     torch.testing.assert_close(destination.cpu(), source.cpu())
 
 
+def test_non_contiguous_reshape_copy_records_one_bulk_transfer(vulkan_backend):
+    source = torch.arange(4 * 8, dtype=torch.float32).reshape(4, 8).to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = source.transpose(0, 1).reshape(-1)
+    operations = pytorch_vulkan._C.transfer_operation_count()
+    submissions = pytorch_vulkan._C.transfer_submission_count()
+    completions = pytorch_vulkan._C.transfer_completion_count()
+    waits = pytorch_vulkan._C.transfer_wait_count()
+    copy_commands = pytorch_vulkan._C.copy_command_count()
+
+    torch.testing.assert_close(result.cpu(), source.cpu().transpose(0, 1).reshape(-1))
+    assert operations == 1
+    assert submissions == 1
+    assert completions == 1
+    assert waits == 1
+    assert copy_commands == 1
+
+
 def test_zero_sized_vulkan_to_vulkan_copy_is_a_counter_free_noop(vulkan_backend):
     source = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
     destination = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)

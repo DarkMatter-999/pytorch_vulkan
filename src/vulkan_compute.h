@@ -112,8 +112,11 @@ class VulkanCompute final {
               const VulkanTensorLayout &b_layout, VkBuffer c,
               const VulkanTensorLayout &c_layout, VkBuffer output,
               const VulkanTensorLayout &output_layout, VkBuffer bias,
-              const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n, uint32_t k,
-              float alpha = 1.0F, float beta = 0.0F, bool has_bias = false) const;
+               const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n, uint32_t k,
+               float alpha = 1.0F, float beta = 0.0F, bool has_bias = false,
+               uint32_t batch_count = 0, uint32_t batch_stride_a = 0,
+               uint32_t batch_stride_b = 0, uint32_t batch_stride_c = 0,
+               uint32_t batch_stride_d = 0) const;
     void linear_relu_backward_input(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
                                     const VulkanTensorLayout &,
                                     const VulkanTensorLayout &,
@@ -324,6 +327,7 @@ class VulkanCompute final {
     uint32_t max_push_constants_size_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
     uint32_t max_compute_workgroup_count_y_ = 0;
+    uint32_t max_compute_workgroup_count_z_ = 0;
     uint32_t max_compute_shared_memory_size_ = 0;
     mutable std::atomic<std::size_t> dispatch_count_{0};
     mutable std::atomic<std::size_t> submission_count_{0};

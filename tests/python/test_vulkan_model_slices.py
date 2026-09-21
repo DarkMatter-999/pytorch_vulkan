@@ -111,6 +111,9 @@ def test_model_aggregate_schema_validates_each_nested_result():
             "arithmetic_operations": fixture.arithmetic_operations(),
             "validation": "passed", "transfer_count": 0,
             "vulkan_copies": 0, "explicit_transfers": 0, "fallbacks": 0,
+            "transfer_operations": 0, "transfer_submissions": 0,
+            "transfer_completions": 0, "transfer_waits": 0,
+            "compute_submissions": 0, "fallback_status": False,
         }
         cpu = {
             **common, "mode": "cpu", "device": "cpu", "gpu_time": {
@@ -118,7 +121,8 @@ def test_model_aggregate_schema_validates_each_nested_result():
             }, "timing_source": "host_wall", "effective_tflops": 1.0,
             "loss": 1.0, "cpu_parity": {"status": "reference"},
             "parity": {"status": "reference", "loss_abs_difference": None, "parameter_max_abs_difference": None},
-            "dispatches": 0, "submissions": 0, "completions": 0, "waits": 0,
+            "dispatches": 0, "submissions": 0, "compute_submissions": 0,
+            "completions": 0, "waits": 0,
         }
         vulkan = {
             **common, "mode": "vulkan", "device": "vk:0", "gpu_time": {
@@ -126,7 +130,8 @@ def test_model_aggregate_schema_validates_each_nested_result():
             }, "timing_source": "unavailable", "effective_tflops": None,
             "loss": 1.0, "cpu_parity": {"status": "measured"},
             "parity": {"status": "measured", "loss_abs_difference": 0.0, "parameter_max_abs_difference": 0.0},
-            "dispatches": 1, "submissions": 1, "completions": 1, "waits": 1,
+            "dispatches": 1, "submissions": 1, "compute_submissions": 1,
+            "completions": 1, "waits": 1,
         }
         models[name] = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
 
@@ -140,3 +145,49 @@ def test_model_aggregate_schema_validates_each_nested_result():
     host_labeled_gpu["models"]["cnn"]["rows"][1]["timing_source"] = "host_wall"
     with pytest.raises(ValueError, match="timing source|effective"):
         validate_aggregate_artifact(host_labeled_gpu)
+
+
+def test_model_artifact_requires_explicit_transfer_and_scope_counters():
+    from tools.vulkan_model_benchmark import FIXTURES, validate_aggregate_artifact
+
+    models = {}
+    for name, fixture_type in FIXTURES.items():
+        fixture = fixture_type()
+        common = {
+            "model": name, "dtype": "float32", "shape": list(fixture.shape),
+            "batch": fixture.batch, "sequence_length": getattr(fixture, "sequence_length", None),
+            "warmups": 0, "repetitions": 1, "seed": 1729,
+            "host_time": {"samples_ns": [1], "mean_ns": 1},
+            "arithmetic_operations": fixture.arithmetic_operations(),
+            "validation": "passed", "transfer_count": 0,
+            "vulkan_copies": 0, "explicit_transfers": 0, "fallbacks": 0,
+            "transfer_operations": 0, "transfer_submissions": 0,
+            "transfer_completions": 0, "transfer_waits": 0,
+            "compute_submissions": 0, "fallback_status": False,
+        }
+        cpu = {
+            **common, "mode": "cpu", "device": "cpu", "gpu_time": {
+                "status": "not_applicable", "samples_ns": None, "mean_ns": None,
+            }, "timing_source": "host_wall", "effective_tflops": 1.0,
+            "loss": 1.0, "cpu_parity": {"status": "reference"},
+            "parity": {"status": "reference", "loss_abs_difference": None, "parameter_max_abs_difference": None},
+            "dispatches": 0, "submissions": 0, "compute_submissions": 0,
+            "completions": 0, "waits": 0,
+        }
+        vulkan = {
+            **common, "mode": "vulkan", "device": "vk:0", "gpu_time": {
+                "status": "unavailable", "samples_ns": None, "mean_ns": None,
+            }, "timing_source": "unavailable", "effective_tflops": None,
+            "loss": 1.0, "cpu_parity": {"status": "measured"},
+            "parity": {"status": "measured", "loss_abs_difference": 0.0, "parameter_max_abs_difference": 0.0},
+            "dispatches": 1, "submissions": 1, "compute_submissions": 1,
+            "completions": 1, "waits": 1,
+        }
+        models[name] = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+
+    artifact = validate_aggregate_artifact({"schema_version": 1, "seed": 1729, "models": models})
+    assert artifact["models"]["rnn"]["rows"][1]["fallback_status"] is False
+    missing = copy.deepcopy(artifact)
+    del missing["models"]["attention"]["rows"][1]["transfer_operations"]
+    with pytest.raises(ValueError, match="transfer_operations"):
+        validate_aggregate_artifact(missing)

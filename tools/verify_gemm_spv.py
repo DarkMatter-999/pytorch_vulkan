@@ -55,19 +55,23 @@ def verify_source(source):
         "M": 0,
         "N": 4,
         "K": 8,
-        "stride_a": 12,
-        "stride_b": 16,
-        "stride_c": 20,
-        "stride_d": 24,
-        "stride_bias": 28,
-        "matrix_stride": 32,
-        "alpha": 36,
-        "beta": 40,
-        "has_bias": 44,
-        "reserved0": 48,
-        "reserved1": 52,
-        "reserved2": 56,
-        "reserved3": 60,
+        "a_row_stride": 12,
+        "a_col_stride": 16,
+        "b_row_stride": 20,
+        "b_col_stride": 24,
+        "c_row_stride": 28,
+        "c_col_stride": 32,
+        "d_row_stride": 36,
+        "d_col_stride": 40,
+        "bias_stride": 44,
+        "alpha": 48,
+        "beta": 52,
+        "has_bias": 56,
+        "batch_count": 60,
+        "batch_stride_a": 64,
+        "batch_stride_b": 68,
+        "batch_stride_c": 72,
+        "batch_stride_d": 76,
     }
     for name, offset in expected_members.items():
         if f"/* offset {offset} */" not in source or f" {name};" not in source:
@@ -146,7 +150,7 @@ def verify_spirv(disassembly):
             disassembly,
         )
     ]
-    if offsets != list(range(0, 64, 4)):
+    if offsets != list(range(0, 80, 4)):
         fail(f"push-constant offsets {offsets}")
 
 

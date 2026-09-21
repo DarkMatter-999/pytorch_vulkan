@@ -117,6 +117,18 @@ PYBIND11_MODULE(_C, module) {
                [] { return pytorch_vulkan::platform()->vulkan_copy_count(); });
     module.def("copy_command_count",
                [] { return pytorch_vulkan::platform()->copy_command_count(); });
+    module.def("transfer_operation_count", [] {
+        return pytorch_vulkan::platform()->transfer_operation_count();
+    });
+    module.def("transfer_submission_count", [] {
+        return pytorch_vulkan::platform()->transfer_submission_count();
+    });
+    module.def("transfer_completion_count", [] {
+        return pytorch_vulkan::platform()->transfer_completion_count();
+    });
+    module.def("transfer_wait_count", [] {
+        return pytorch_vulkan::platform()->transfer_wait_count();
+    });
     module.def("reset_timing", [] { pytorch_vulkan::platform()->reset_timing(); });
     module.def("timing_snapshot", [] {
         const auto timing = pytorch_vulkan::platform()->timing_snapshot();

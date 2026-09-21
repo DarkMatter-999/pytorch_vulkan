@@ -9,6 +9,9 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
 
 at::Tensor vulkan_contiguous_copy(const at::Tensor &source);
 
+// Materialize a validated stack with one recorded/submitted transfer operation.
+at::Tensor vulkan_stack_copy(at::TensorList tensors, int64_t dim);
+
 // Internal final-value presentation path used by tensor formatting.
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                                         const at::Tensor &source);
