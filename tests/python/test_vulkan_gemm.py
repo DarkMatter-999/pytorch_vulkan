@@ -484,7 +484,12 @@ def test_large_gemm_completes_in_a_clean_process(tmp_path):
     record = json.loads(result.read_text())
     if record["status"] == "skipped":
         pytest.skip(record["reason"])
-    assert record["status"] == "completed"
+    assert record["status"] == "blocked"
+    assert record["validation"]["status"] == "blocked"
+    assert record["cpu_parity"]["status"] == "not_measured"
+    assert record["timing_source"] == "gpu_timestamp"
+    assert record["seed"] == 47
+    assert record["repetitions"] == 1
     assert record["shape"] == [2048, 2048]
     assert record["host_fence_wait_seconds"] >= 0.0
     assert record["dispatches"] == 1
@@ -542,3 +547,97 @@ def test_gemm_benchmark_timing_contract_reports_host_fence_wait():
     child_source = inspect.getsource(benchmark._child)
     assert "timing = pytorch_vulkan._C.timing_snapshot()" in child_source
     assert '"host_fence_wait_seconds": timing[3]' in child_source
+
+
+def test_large_gemm_artifact_records_saturation_evidence(tmp_path):
+    result = tmp_path / "large-gemm.json"
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), "--output", str(result)],
+        cwd=script.parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    record = json.loads(result.read_text())
+    if record["status"] == "skipped":
+        pytest.skip(record["reason"])
+    required = {
+        "arithmetic_operations",
+        "effective_tflops",
+        "validation",
+        "cpu_parity",
+        "transfer_count",
+    }
+    assert required <= record.keys()
+    assert record["validation"]["status"] == "blocked"
+    assert record["cpu_parity"]["status"] == "not_measured"
+    assert record["timing_source"] == "gpu_timestamp"
+    assert record["seed"] == 47
+    assert record["repetitions"] == 1
+    assert record["transfer_count"] == 0
+
+
+def test_large_gemm_missing_parity_is_not_qualifiable(tmp_path):
+    result = tmp_path / "large-gemm.json"
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), "--output", str(result)],
+        cwd=script.parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    record = json.loads(result.read_text())
+    if record["status"] == "skipped":
+        pytest.skip(record["reason"])
+    spec = importlib.util.spec_from_file_location("vulkan_gemm_validation", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    with pytest.raises(ValueError, match="parity|qualification"):
+        benchmark.validate_artifact(record)
+
+
+def _blocked_gemm_artifact():
+    return {
+        "schema_version": 1,
+        "status": "blocked",
+        "timing_status": "available",
+        "timing_reason": "available",
+        "timing_source": "gpu_timestamp",
+        "seed": 47,
+        "repetitions": 1,
+        "shape": [2048, 2048],
+        "seconds": 1e-3,
+        "host_total_ns": 1_000_000,
+        "gpu_time_ns": 900_000,
+        "host_time": {"samples_ns": [1_000_000], "mean_ns": 1_000_000},
+        "gpu_time": {"samples_ns": [900_000], "mean_ns": 900_000},
+        "dispatches": 1, "submissions": 1, "completions": 1, "waits": 1,
+        "fallbacks": 0, "transfer_count": 0, "explicit_transfers": 0,
+        "vulkan_copies": 0,
+        "arithmetic_operations": 34_359_738_368,
+        "effective_tflops": 34_359_738_368 / (900_000 * 1e3),
+        "validation": {"status": "blocked", "reason": "parity unavailable"},
+        "cpu_parity": {"status": "not_measured"},
+    }
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("seed", 48, "seed"),
+        ("repetitions", 2, "repetitions"),
+        ("shape", [2048, 1023], "shape"),
+        ("arithmetic_operations", 1, "arithmetic"),
+    ],
+)
+def test_gemm_artifact_validator_rejects_malformed_contract(field, value, error):
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_gemm_benchmark.py"
+    spec = importlib.util.spec_from_file_location("vulkan_gemm_contract", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    artifact = _blocked_gemm_artifact()
+    artifact[field] = value
+    with pytest.raises(ValueError, match=error):
+        benchmark.validate_artifact(artifact)

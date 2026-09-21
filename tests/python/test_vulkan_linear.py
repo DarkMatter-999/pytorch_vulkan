@@ -190,8 +190,10 @@ def test_linear_rejects_invalid_rank_shape_dtype_layout_device_and_offset(
         cpu_bias.to(vulkan_backend),
     )
 
-    with pytest.raises(RuntimeError, match="2-D|rank"):
-        torch.nn.functional.linear(input_vk.unsqueeze(0), weight_vk, bias_vk)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="2-D|rank|dimension"):
+        torch.nn.functional.linear(input_vk.unsqueeze(0).unsqueeze(0), weight_vk, bias_vk)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
     with pytest.raises(RuntimeError, match="matching features|size|shape"):
         torch.nn.functional.linear(
             input_vk, torch.empty((16, 7), device=vulkan_backend), bias_vk
@@ -300,6 +302,8 @@ def test_linear_backward_accepts_view_operands(vulkan_backend):
 def test_linear_backward_rejects_unsupported_view_rank(vulkan_backend):
     _, cpu_weight, _ = _linear_inputs("cpu")
     weight = cpu_weight.to(vulkan_backend)
-    value = torch.randn((2, 8)).unsqueeze(0).to(vulkan_backend).requires_grad_()
+    value = torch.randn((2, 8)).unsqueeze(0).unsqueeze(0).to(vulkan_backend).requires_grad_()
+    pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match="2-D|rank|dimension"):
         torch.nn.functional.linear(value, weight)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0

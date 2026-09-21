@@ -207,6 +207,7 @@ at::Tensor autograd_mul_scalar(const at::Tensor &, const at::Scalar &);
 at::Tensor autograd_linear(const at::Tensor &, const at::Tensor &,
                            const c10::optional<at::Tensor> &);
 at::Tensor autograd_mm(const at::Tensor &, const at::Tensor &);
+at::Tensor autograd_bmm(const at::Tensor &, const at::Tensor &);
 at::Tensor autograd_addmm(const at::Tensor &, const at::Tensor &, const at::Tensor &,
                           const at::Scalar &, const at::Scalar &);
 at::Tensor autograd_linear_relu(const at::Tensor &, const at::Tensor &,
@@ -216,5 +217,7 @@ at::Tensor autograd_convolution(const at::Tensor &, const at::Tensor &,
                                 at::IntArrayRef, at::IntArrayRef, bool, at::IntArrayRef,
                                 int64_t);
 at::Tensor autograd_adaptive_avg_pool2d(const at::Tensor &, at::IntArrayRef);
+at::Tensor autograd_stack(at::TensorList, int64_t);
+at::Tensor stack(at::TensorList, int64_t);
 
 } // namespace pytorch_vulkan

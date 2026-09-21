@@ -167,3 +167,17 @@ def test_manifest_rejected_inventory_is_checked_against_source_parser(tmp_path):
 def test_checked_in_manifest_covers_registered_source():
     manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
     validate_manifest_data(manifest, ROOT)
+
+
+def test_checked_in_gemm_manifest_matches_bounded_operator_contracts():
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    entries = {entry["schema"]: entry for entry in manifest["entries"]}
+
+    assert entries["aten::bmm.default"]["layouts"] == [
+        "contiguous",
+        "transposed-contiguous",
+        "non-overlapping",
+    ]
+    assert entries["aten::bmm.default"]["ranks"] == {"min": 3, "max": 3}
+    for schema in ("aten::addmm.default", "aten::addmm.out"):
+        assert entries[schema]["ranks"] == {"min": 2, "max": 2}

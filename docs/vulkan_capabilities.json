@@ -2,6 +2,35 @@
   "entries": [
     {
       "aliasing": "no_overlap",
+      "autograd": "first_order_backward",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": ["float32"],
+        "outputs": ["float32"]
+      },
+      "empty": "empty_rejected",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": ["contiguous", "transposed-contiguous", "non-overlapping"],
+      "out": "not_applicable",
+      "ranks": {"max": 3, "min": 3},
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": ["none"],
+      "schema": "aten::bmm.default",
+      "shape_constraints": ["schema_bmm_default"],
+      "status": "supported",
+      "test_cases": [{"name": "attention.bmm.forward_backward", "supported": true}],
+      "tests": [
+        "tests/python/test_vulkan_capability_manifest.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ]
+    },
+    {
+      "aliasing": "no_overlap",
       "autograd": "first_order_or_none",
       "device": {
         "index": 0,
@@ -1373,6 +1402,10 @@
           "supported": true
         },
         {
+          "name": "convolution.cnn.forward",
+          "supported": true
+        },
+        {
           "name": "convolution.shape.rejected",
           "supported": false
         }
@@ -1839,7 +1872,7 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 2,
+        "max": 3,
         "min": 2
       },
       "reason": "supported_contract",
@@ -1859,6 +1892,10 @@
         },
         {
           "name": "linear.forward.strided",
+          "supported": true
+        },
+        {
+          "name": "linear.attention.3d",
           "supported": true
         }
       ],
@@ -8323,6 +8360,53 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
+      ]
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "first_order_backward",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_rejected",
+      "execution_contract": "vulkan_copy",
+      "inplace": "not_applicable",
+      "layouts": [
+        "contiguous",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 2,
+        "min": 2
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::stack.default",
+      "shape_constraints": [
+        "schema_stack_default"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "sequence.stack.float32",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py"
       ]
     }
   ],

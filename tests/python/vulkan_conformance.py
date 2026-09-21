@@ -537,6 +537,13 @@ def _binary(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
     )
 
 
+def _stack(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
+    return (
+        torch.arange(6, dtype=torch.float32).reshape(2, 3).detach().requires_grad_(requires_grad),
+        torch.arange(6, 12, dtype=torch.float32).reshape(2, 3).detach().requires_grad_(requires_grad),
+    )
+
+
 def _binary_strided(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
     lhs = torch.arange(8, dtype=torch.float32).reshape(2, 4)[:, ::2]
     rhs = torch.arange(8, dtype=torch.float32).reshape(2, 4)[:, 1::2]
@@ -638,6 +645,14 @@ def _mm(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
     )
 
 
+def _bmm(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor]:
+    values = (
+        torch.arange(20, dtype=torch.float32).reshape(2, 2, 5),
+        torch.ones((2, 5, 3), dtype=torch.float32),
+    )
+    return tuple(value.detach().requires_grad_(requires_grad) for value in values)
+
+
 def _addmm(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return (
         torch.zeros((2, 3), dtype=torch.float32),
@@ -656,6 +671,18 @@ def _cpu_addmm(value, mat1, mat2):
 
 def _cpu_mm(value, other):
     return torch.mm(value, other)
+
+
+def _cnn_convolution(*, requires_grad=False):
+    return (
+        torch.ones((8, 3, 32, 32), dtype=torch.float32, requires_grad=requires_grad),
+        torch.ones((8, 3, 3, 3), dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(8, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _cpu_cnn_convolution(value, weight, bias, **kwargs):
+    return torch.nn.functional.conv2d(value, weight, bias, **kwargs)
 
 
 def _convolution(
@@ -1130,6 +1157,14 @@ def _cpu_linear(value, weight, bias):
     return torch.nn.functional.linear(value, weight, bias)
 
 
+def _linear_attention(*, requires_grad=False):
+    return (
+        torch.arange(128 * 256, dtype=torch.float32).reshape(1, 128, 256).detach().requires_grad_(requires_grad),
+        torch.arange(256 * 256, dtype=torch.float32).reshape(256, 256).detach().requires_grad_(requires_grad),
+        torch.arange(256, dtype=torch.float32).detach().requires_grad_(requires_grad),
+    )
+
+
 def _cpu_convolution(value, weight, bias, **kwargs):
     return torch.nn.functional.conv2d(value, weight, bias, **kwargs)
 
@@ -1344,6 +1379,16 @@ ALL_CASES = tuple(
         check_gradients=True,
         rtol=1e-4,
         atol=2e-5,
+    ),
+    _case(
+        "sequence.stack.float32",
+        "sequence",
+        lambda first, second: torch.stack((first, second), dim=1),
+        _stack,
+        cpu_reference=lambda first, second: torch.stack((first, second), dim=1),
+        expected_shape=(2, 2, 3),
+        check_gradients=True,
+        execution_mode="copy",
     ),
     _case(
         "unary.gelu.tanh.float32",
@@ -1832,12 +1877,30 @@ ALL_CASES = tuple(
         check_gradients=True,
     ),
     _case(
+        "linear.attention.3d",
+        "linear",
+        torch.nn.functional.linear,
+        _linear_attention,
+        cpu_reference=_cpu_linear,
+        expected_shape=(1, 128, 256),
+        check_gradients=True,
+    ),
+    _case(
         "mm.forward",
         "linear",
         torch.mm,
         _mm,
         cpu_reference=_cpu_mm,
         expected_shape=(2, 3),
+    ),
+    _case(
+        "attention.bmm.forward_backward",
+        "linear",
+        torch.bmm,
+        _bmm,
+        cpu_reference=torch.bmm,
+        expected_shape=(2, 2, 3),
+        check_gradients=True,
     ),
     _case(
         "addmm.forward",
@@ -1873,6 +1936,16 @@ ALL_CASES = tuple(
         kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
         cpu_reference=_cpu_convolution,
         expected_shape=(2, 4, 8, 8),
+        check_gradients=True,
+    ),
+    _case(
+        "convolution.cnn.forward",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _cnn_convolution,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_cnn_convolution,
+        expected_shape=(8, 8, 32, 32),
         check_gradients=True,
     ),
     _case(

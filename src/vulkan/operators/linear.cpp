@@ -136,6 +136,33 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
 
 at::Tensor linear(const at::Tensor &input, const at::Tensor &weight,
                   const c10::optional<at::Tensor> &bias) {
+    if (!is_fake_tensor(input) && input.dim() == 3) {
+        TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
+                        input.device().index() == 0 && weight.device() == input.device() &&
+                        input.scalar_type() == at::kFloat && weight.scalar_type() == at::kFloat &&
+                        input.layout() == at::kStrided && weight.layout() == at::kStrided &&
+                        input.is_contiguous() && weight.dim() == 2 && weight.is_contiguous() &&
+                        input.size(2) == weight.size(1),
+                    "Vulkan 3-D linear requires matching contiguous float32 Vulkan tensors");
+        auto input_layout = inspect_vulkan_tensor_layout(input, "3-D linear input");
+        auto weight_layout = inspect_vulkan_tensor_layout(weight, "3-D linear weight");
+        TORCH_CHECK(input_layout.internal_overlap == VulkanOverlap::No &&
+                        weight_layout.internal_overlap == VulkanOverlap::No,
+                    "Vulkan 3-D linear rejects overlapping inputs");
+        validate_allocation(input.storage().data_ptr(), input_layout.byte_range,
+                            "3-D linear input");
+        validate_allocation(weight.storage().data_ptr(), weight_layout.byte_range,
+                            "3-D linear weight");
+        if (bias.has_value()) {
+            TORCH_CHECK(bias->device() == input.device() && bias->scalar_type() == at::kFloat &&
+                            bias->layout() == at::kStrided && bias->dim() == 1 &&
+                            bias->is_contiguous() && bias->size(0) == weight.size(0),
+                        "Vulkan 3-D linear requires a matching contiguous bias");
+        }
+        auto flattened = input.reshape({input.size(0) * input.size(1), input.size(2)});
+        return pytorch_vulkan::linear(flattened, weight, bias).reshape(
+            {input.size(0), input.size(1), weight.size(0)});
+    }
     if (!is_fake_tensor(input) && input.layout() == at::kStrided &&
         weight.layout() == at::kStrided && input.scalar_type() == at::kFloat &&
         weight.scalar_type() == at::kFloat && input.dim() == 2 && weight.dim() == 2 &&
@@ -258,6 +285,73 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
         out_layout, allocation_buffer(output.storage().data_ptr()).buffer(), out_layout,
         VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(m), static_cast<uint32_t>(n),
         static_cast<uint32_t>(k));
+    return output;
+}
+
+at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
+    TORCH_CHECK(mat1.dim() == 3 && mat2.dim() == 3 && mat1.size(0) == mat2.size(0) &&
+                    mat1.size(2) == mat2.size(1),
+                "Vulkan bmm requires matching 3-D batch matrices");
+    TORCH_CHECK(mat1.scalar_type() == at::kFloat && mat2.scalar_type() == at::kFloat &&
+                    mat1.device() == mat2.device() && mat1.device().index() == 0,
+                "Vulkan bmm requires matching float32 Vulkan matrices");
+    TORCH_CHECK(mat1.size(0) > 0 && mat1.size(1) > 0 && mat1.size(2) > 0 &&
+                    mat2.size(2) > 0,
+                "Vulkan bmm requires non-empty matrices");
+    TORCH_CHECK(mat1.layout() == at::kStrided && mat2.layout() == at::kStrided,
+                "Vulkan bmm requires strided matrices");
+    const auto mat1_layout = inspect_vulkan_tensor_layout(mat1, "bmm mat1");
+    const auto mat2_layout = inspect_vulkan_tensor_layout(mat2, "bmm mat2");
+    TORCH_CHECK(mat1_layout.internal_overlap == VulkanOverlap::No &&
+                    mat2_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan bmm rejects overlapping inputs");
+    validate_allocation(mat1.storage().data_ptr(), mat1_layout.byte_range, "bmm mat1");
+    validate_allocation(mat2.storage().data_ptr(), mat2_layout.byte_range, "bmm mat2");
+    auto validate_bmm_matrix = [](const at::Tensor &tensor, int64_t rows, int64_t cols,
+                                  const char *name) {
+        TORCH_CHECK(tensor.dim() == 2 && tensor.size(0) == rows && tensor.size(1) == cols &&
+                        tensor.layout() == at::kStrided && tensor.scalar_type() == at::kFloat,
+                    "Vulkan ", name, " has an unsupported matrix contract");
+        TORCH_CHECK(tensor.is_contiguous() || tensor.transpose(0, 1).is_contiguous(),
+                    "Vulkan ", name,
+                    " requires a contiguous or transposed-contiguous matrix layout");
+        auto layout = inspect_vulkan_tensor_layout(tensor, name);
+        TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No,
+                    "Vulkan ", name, " has unsupported internal overlap");
+        validate_allocation(tensor.storage().data_ptr(), layout.byte_range, name);
+        return layout;
+    };
+    for (int64_t batch = 0; batch < mat1.size(0); ++batch) {
+        const auto lhs = mat1.select(0, batch);
+        const auto rhs = mat2.select(0, batch);
+        validate_bmm_matrix(lhs, mat1.size(1), mat1.size(2), "bmm lhs");
+        validate_bmm_matrix(rhs, mat2.size(1), mat2.size(2), "bmm rhs");
+    }
+    auto output = at::empty({mat1.size(0), mat1.size(1), mat2.size(2)}, mat1.options());
+    for (int64_t batch = 0; batch < mat1.size(0); ++batch) {
+        const auto lhs = mat1.select(0, batch);
+        const auto rhs = mat2.select(0, batch);
+        const auto out = output.select(0, batch);
+        const auto lhs_storage = lhs.is_contiguous()
+            ? lhs
+            : transpose_contiguous_2d(lhs.transpose(0, 1));
+        const auto rhs_storage = rhs.is_contiguous()
+            ? rhs
+            : transpose_contiguous_2d(rhs.transpose(0, 1));
+        const auto lhs_layout = validate_bmm_matrix(lhs_storage, mat1.size(1), mat1.size(2), "bmm lhs");
+        const auto rhs_layout = validate_bmm_matrix(rhs_storage, mat2.size(1), mat2.size(2), "bmm rhs");
+        const auto out_layout = validate_bmm_matrix(out, mat1.size(1), mat2.size(2), "bmm output");
+        const auto &platform = allocation_platform(lhs_storage.storage().data_ptr());
+        TORCH_CHECK(&platform == &allocation_platform(rhs_storage.storage().data_ptr()) &&
+                        &platform == &allocation_platform(out.storage().data_ptr()),
+                    "Vulkan bmm requires one Vulkan platform");
+        platform.compute().gemm(
+            allocation_buffer(lhs_storage.storage().data_ptr()).buffer(), lhs_layout,
+            allocation_buffer(rhs_storage.storage().data_ptr()).buffer(), rhs_layout, VK_NULL_HANDLE,
+            out_layout, allocation_buffer(out.storage().data_ptr()).buffer(), out_layout,
+            VK_NULL_HANDLE, out_layout, static_cast<uint32_t>(mat1.size(1)),
+            static_cast<uint32_t>(mat2.size(2)), static_cast<uint32_t>(mat1.size(2)));
+    }
     return output;
 }
 
@@ -673,6 +767,7 @@ at::Tensor &addmm_out(const at::Tensor &self, const at::Tensor &mat1,
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("mm", &pytorch_vulkan::mm);
+    m.impl("bmm", &pytorch_vulkan::bmm);
     m.impl("linear", &pytorch_vulkan::linear);
     m.impl("addmm", &pytorch_vulkan::addmm);
     m.impl("addmm.out", &pytorch_vulkan::addmm_out);
@@ -681,6 +776,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     m.impl("linear", &pytorch_vulkan::autograd_linear);
     m.impl("mm", &pytorch_vulkan::autograd_mm);
+    m.impl("bmm", &pytorch_vulkan::autograd_bmm);
     m.impl("addmm", &pytorch_vulkan::autograd_addmm);
 }
 

@@ -35,7 +35,9 @@ REQUIRED_ENTRY_KEYS = frozenset(
 STATUSES = frozenset({"supported", "rejected", "deferred"})
 ENTRY_KEYS = REQUIRED_ENTRY_KEYS
 KNOWN_DTYPES = frozenset({"float16", "float32", "float64", "int64", "bool"})
-KNOWN_LAYOUTS = frozenset({"strided", "contiguous", "non-overlapping", "zero-offset"})
+KNOWN_LAYOUTS = frozenset(
+    {"strided", "contiguous", "transposed-contiguous", "non-overlapping", "zero-offset"}
+)
 EMPTY_VALUES = frozenset({"empty_output_supported", "empty_rejected", "empty_deferred", "reduction_identity_or_nan", "zero_size_noop"})
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
@@ -45,7 +47,13 @@ EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", 
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
 FEATURE_VALUES = frozenset({"vulkan_1_2_8bit_storage_int8"})
-TEST_VALUES = frozenset({"tests/python/test_vulkan_conformance.py", "tests/python/test_vulkan_operator_capabilities.py"})
+TEST_VALUES = frozenset(
+    {
+        "tests/python/test_vulkan_capability_manifest.py",
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py",
+    }
+)
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text())

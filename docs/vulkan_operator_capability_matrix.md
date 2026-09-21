@@ -21,10 +21,12 @@ than duplicate schema entries.
 | `aten::_softmax_backward_data.out` / `aten::_log_softmax_backward_data.out` | F32 | F32 | contiguous F32 grad/output tensors; rank ≤ 8; one supported dimension | first-order backward kernel | unsupported higher-order forms rejected |
 | `aten::mse_loss` / `aten::mse_loss_backward` | F32 | F32 | matching, contiguous F32 input/target and Vulkan-resident outputs; reductions `none`, `sum`, and `mean` | first-order reverse mode | empty `sum` is zero, empty `mean` is NaN, empty `none` is empty |
 | `aten::sigmoid` / `aten::tanh` / `aten::gelu` | F32 | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; GELU requires `approximate="tanh"` and the standard `0.044715` polynomial; fresh Vulkan output | first-order reverse mode | empty output supported without dispatch |
-| `aten::linear` | F32 | F32 | Eligible 2-D F32 input/weight matrices on Vulkan device index 0 with matching features, contiguous fast-path operands, optional contiguous 1-D bias, and non-overlapping output; other explicitly supported contracts use the serial Vulkan path | first-order | GEMM dispatch |
+| `aten::linear` | F32 | F32 | Eligible 2-D F32 input/weight matrices, plus the bounded attention 3-D contract `(batch,128,256)` with contiguous F32 input/weight/bias, exact feature metadata, and non-overlapping operands/output on Vulkan device index 0 | first-order | GEMM dispatch |
+| `aten::stack` | F32 | F32 | Bounded stack of matching contiguous 2-D Vulkan matrices, with insertion dimension `0` or `1`; output remains Vulkan-resident and uses Vulkan-to-Vulkan copies only | first-order | empty rejected |
 | `aten::mm` | F32 | F32 | 2-D contiguous F32 matrices on Vulkan device index 0 with matching inner dimension and non-overlapping output | forward | GEMM dispatch |
 | `aten::addmm` | F32 | F32 | Contiguous 2-D F32 self/matrix operands on Vulkan device index 0 with matching shapes use the production GEMM dispatch; the existing 1-D F32 bias with matching 2-D matrices remains a legacy supported serial Vulkan fallback; non-overlapping output and explicit scalar contracts | forward | GEMM dispatch for eligible 2-D form; serial Vulkan fallback for 1-D-bias form |
-| `aten::convolution` / `aten::convolution_backward` | F32 | F32 | fixed F32 shapes `(2,1,8,8)` + `(4,1,3,3)` + bias `(4,)` -> `(2,4,8,8)`; strided operands; stride/padding/dilation `[1,1]`, groups `1`, non-transposed, output padding `[0,0]`; backward requires output mask `[true,true,true]` | first-order | empty and unsupported backward forms rejected |
+| `aten::bmm` | F32 | F32 | Bounded attention-only 3-D batches with matching `(batch, rows, inner)` and `(batch, inner, cols)` shapes, non-overlapping Vulkan operands, and first-order autograd; every 2-D batch slice must be contiguous or transposed-contiguous, with transposed attention operands using a measured Vulkan-side layout materialization | first-order | non-empty exact attention slice |
+| `aten::convolution` / `aten::convolution_backward` | F32 | F32 | legacy fixed F32 shapes `(2,1,8,8)` + `(4,1,3,3)` + bias `(4,)` and CNN slice shapes `(N,3,32,32)` + `(8,3,3,3)` + bias `(8,)` -> `(N,8,32,32)`; CNN operands contiguous; stride/padding/dilation `[1,1]`, groups `1`, non-transposed, output padding `[0,0]`; backward requires output mask `[true,true,true]` | first-order | empty and unsupported backward forms rejected |
 | `aten::_adaptive_avg_pool2d` / `_adaptive_avg_pool2d_backward` | F32 | F32 | nonempty rank-4 NCHW strided, non-overlapping input; output size `(1, 1)`; backward grad shape `(N,C,1,1)` | first-order | empty and non-global forms rejected |
 | `aten::native_batch_norm` / `native_batch_norm_backward` | F32 | F32 | fixed contiguous training inputs `(2,4)` or `(2,4,2,2)`; affine F32 `(4,)`; Vulkan running mean/variance; momentum `0.1`, eps `1e-5`; backward output mask `[true,true,true]` | first-order | eval, partial affine, missing stats, other shapes, and masks rejected |
 | `aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward` | F32 logits, I64 labels | F32 | contiguous Vulkan logits `(2,3)`, class dimension `1`, contiguous Vulkan I64 labels `(2,)`, no weight, reduction `mean`, `ignore_index=-100` | first-order | other reductions, weights, labels, shapes, and class dimensions rejected |
@@ -40,6 +42,7 @@ than duplicate schema entries.
 | scalar `torch.optim.Adam` | F32 parameters, gradients, `exp_avg`, `exp_avg_sq` | F32 | contiguous, non-overlapping tensors on `vk:0`; scalar `lr`, betas, eps, and weight decay; `amsgrad=False`, `maximize=False`, `foreach=False`, `fused=False`, `capturable=False`, `differentiable=False`; tensor state stays Vulkan-resident and non-capturable `step` metadata stays host-resident | first-order gradients supplied by supported autograd | empty updates follow PyTorch optimizer semantics |
 | fixed MLP training | F32 | F32 | `Sequential(Linear(8,16), ReLU, Linear(16,4))`; contiguous `(batch,8)` inputs and `(batch,4)` targets on `vk:0`; scalar summed squared-error loss; SGD or Adam only | forward and first-order backward on Vulkan | not part of the contract |
 | flattened MNIST-shaped training | F32 | F32 | `Sequential(Flatten(1), Linear(784,32), ReLU, Linear(32,10))`; contiguous `(batch,1,28,28)` inputs and same-shaped contiguous F32 `(batch,10)` targets on `vk:0`; scalar summed squared-error loss; SGD or Adam only. The synthetic fixture generates one-hot targets; runtime does not validate one-hot semantics. | forward and first-order backward on Vulkan | not part of the contract |
+| bounded vanilla RNN training | F32 | F32 | Explicit sequence loop with `batch ∈ [1,16]`, `sequence_length ∈ [1,64]`, input feature `128`, hidden feature `256`, contiguous `vk:0` state/intermediates, and fixed `Linear(128,256) + Linear(256,256,bias=False) + tanh` cell; no GRU/LSTM/general recurrent compiler | first-order backward through all timesteps and SGD | not part of the contract |
 
 Bool and float16 are not declared for the reduction/indexing slice. Vulkan I64
 allocation is permitted only while materializing a declared `argmax` result.
@@ -48,17 +51,24 @@ rejected before temporary allocation or Vulkan dispatch. Invalid device, dtype,
 layout, contiguity, and offset metadata are rejected at the same boundary.
 
 The fixed model slices are the **fixed MLP** (`aten::linear`) and **fixed CNN**
-(`aten::convolution` plus `aten::_adaptive_avg_pool2d`). Every consuming
+(`aten::convolution` plus `aten::relu`, `aten::flatten`, and `aten::linear`). Every consuming
 operator must independently declare the layouts it accepts; view construction
 does not widen those contracts.
 
-Eligible `mm`, eligible 2-D `addmm`, and eligible `linear` calls use the GEMM
+The bounded attention fixture stores one deterministic F32 causal mask buffer with
+shape `(batch,128,128)`, containing `0` on and below the diagonal and `-10000`
+above it. Masked forward accepts only that module-registered buffer object on the
+same Vulkan device; clones, altered values, wrong metadata, and other devices are
+rejected before allocation or Vulkan work. No arbitrary Vulkan mask payload is
+read back for validation.
+
+Eligible `mm`, bounded attention `bmm`, eligible 2-D `addmm`, and eligible `linear` calls use the GEMM
 dispatch by default and do not require an environment variable. The existing
 1-D-bias `addmm` form is a legacy supported serial Vulkan fallback; the serial
 path is not a CPU fallback. `aten::mm.out`, `aten::bmm.out`, and other unlisted
 GEMM forms remain deferred and are listed in the deferred schema inventory
-below.
-The supported GEMM family is `aten::linear` / `aten::mm` / `aten::addmm`.
+below. The supported GEMM family is `aten::linear` / `aten::mm` / `aten::bmm` /
+`aten::addmm`.
 
 ## Formatter-Compatible Double
 

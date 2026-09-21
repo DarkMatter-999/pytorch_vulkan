@@ -1850,11 +1850,29 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
     fill_layout_metadata(metadata.tensors[1], weight_layout, "convolution weight");
     fill_layout_metadata(metadata.tensors[2], bias_layout, "convolution bias");
     fill_layout_metadata(metadata.tensors[3], output_layout, "convolution output");
-    ConvolutionParams params{2, 1, 8, 8, 4, 8, 8, 3, 3, operation};
-    const uint32_t output_numel = operation == 0   ? 512
-                                  : operation == 1 ? 128
-                                  : operation == 2 ? 36
-                                                   : 4;
+    auto dimension = [](const VulkanTensorLayout &layout, size_t index) {
+        return static_cast<uint32_t>(layout.sizes.at(index));
+    };
+    uint32_t batch = dimension(input_layout, 0);
+    uint32_t input_channels = operation == 0 || operation == 3
+                                  ? dimension(input_layout, 1)
+                                  : dimension(weight_layout, 1);
+    uint32_t input_height = operation == 2 ? dimension(weight_layout, 2)
+                                           : dimension(input_layout, 2);
+    uint32_t input_width = operation == 2 ? dimension(weight_layout, 3)
+                                          : dimension(input_layout, 3);
+    uint32_t output_channels = operation == 0 ? dimension(output_layout, 1)
+                                              : dimension(input_layout, 1);
+    uint32_t output_height = operation == 0 ? dimension(output_layout, 2)
+                                            : dimension(input_layout, 2);
+    uint32_t output_width = operation == 0 ? dimension(output_layout, 3)
+                                           : dimension(input_layout, 3);
+    uint32_t kernel_height = operation == 2 ? dimension(output_layout, 2) : 3;
+    uint32_t kernel_width = operation == 2 ? dimension(output_layout, 3) : 3;
+    ConvolutionParams params{batch, input_channels, input_height, input_width,
+                             output_channels, output_height, output_width,
+                             kernel_height, kernel_width, operation};
+    const uint32_t output_numel = static_cast<uint32_t>(output_layout.numel);
     dispatch_model(input, weight, bias, output, input_layout.allocation_bytes,
                    weight_layout.allocation_bytes, bias_layout.allocation_bytes,
                    output_layout.allocation_bytes, &params, sizeof(params),

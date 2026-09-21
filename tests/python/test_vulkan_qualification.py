@@ -319,6 +319,7 @@ def test_validation_ctest_registration_sets_validation_layer():
 
 
 def test_command_records_effective_environment_deltas(monkeypatch, tmp_path):
+    monkeypatch.delenv("VK_INSTANCE_LAYERS", raising=False)
     monkeypatch.setattr(
         qualification,
         "device_available",
