@@ -84,7 +84,7 @@ class _VanillaRNN(torch.nn.Module):
         self.hidden = torch.nn.Linear(hidden_dim, hidden_dim, bias=False)
 
     def forward(self, inputs):
-        if (inputs.device.type == "privateuseone" and inputs.device.index != 0) or inputs.dim() != 3:
+        if (inputs.device.type in {"privateuseone", "vk"} and inputs.device.index != 0) or inputs.dim() != 3:
             raise RuntimeError("RNN input has unsupported device or shape")
         if inputs.dtype is not torch.float32:
             raise RuntimeError("RNN requires float32 inputs")
@@ -94,6 +94,28 @@ class _VanillaRNN(torch.nn.Module):
             raise RuntimeError("RNN input has unsupported sequence or feature shape")
         if not inputs.is_contiguous():
             raise RuntimeError("RNN requires contiguous input layout")
+        if inputs.device.type in {"privateuseone", "vk"}:
+            output = torch.ops.pytorch_vulkan.rnn_sequence(
+                inputs,
+                self.input.weight,
+                self.hidden.weight,
+                self.input.bias,
+            )
+            self.last_states = list(output.unbind(dim=1))
+            captured_states = tuple(self.last_states)
+            for state in captured_states:
+                if state.requires_grad:
+                    state.retain_grad()
+            if output.requires_grad:
+                def retain_state_grads(gradient):
+                    for index, state in enumerate(captured_states):
+                        state_gradient = gradient.select(1, index).detach()
+                        state.grad = (state.grad + state_gradient
+                                      if state.grad is not None else state_gradient)
+                    return gradient
+
+                output.register_hook(retain_state_grads)
+            return output
         state = torch.zeros(
             inputs.shape[0], self.hidden.out_features, dtype=inputs.dtype, device=inputs.device
         )

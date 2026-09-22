@@ -38,8 +38,10 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/generated/loss_spv.sha256
                      src/vulkan/shaders/generated/operator_spv.h
                      src/vulkan/shaders/generated/operator_spv.sha256
-                    src/vulkan/shaders/generated/gemm_spv.h
-                    src/vulkan/shaders/generated/gemm_spv.sha256
+                     src/vulkan/shaders/generated/gemm_spv.h
+                     src/vulkan/shaders/generated/gemm_spv.sha256
+                     src/vulkan/shaders/generated/rnn_sequence_spv.h
+                     src/vulkan/shaders/generated/rnn_sequence_spv.sha256
                      src/vulkan/shaders/generated/formatter_double_spv.h
                      src/vulkan/shaders/generated/formatter_double_spv.sha256
                    src/vulkan/shaders/glsl/pointwise.comp
@@ -49,8 +51,9 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp
                         src/vulkan/shaders/glsl/pooling.comp
-                        src/vulkan/shaders/glsl/loss.comp
-                        src/vulkan/shaders/glsl/normalization.comp
+                         src/vulkan/shaders/glsl/loss.comp
+                         src/vulkan/shaders/glsl/rnn_sequence.comp
+                         src/vulkan/shaders/glsl/normalization.comp
                         src/vulkan/shaders/glsl/classification.comp)
         add_custom_target(vulkan_linear_relu_backward_shader_integrity
                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
@@ -70,6 +73,25 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256)
          add_dependencies(vulkan_platform vulkan_linear_relu_backward_shader_generate)
+         add_custom_command(
+           OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.h
+                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.sha256
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
+           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
+                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/rnn_sequence.comp
+           VERBATIM)
+         add_custom_target(vulkan_rnn_sequence_shader_generate DEPENDS
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.h
+                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.sha256)
+         add_custom_target(vulkan_rnn_sequence_shader_integrity
+                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/rnn_sequence.comp
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.h
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.sha256)
+         add_dependencies(vulkan_platform vulkan_rnn_sequence_shader_generate
+                           vulkan_rnn_sequence_shader_integrity)
          add_custom_command(
            OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256
@@ -120,10 +142,12 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
           add_dependencies(vulkan_platform vulkan_gemm_shader_generate
                            vulkan_gemm_shader_integrity)
-         if(BUILD_TESTING)
-           add_test(NAME vulkan_gemm_shader_integrity
-                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
-         endif()
+          if(BUILD_TESTING)
+            add_test(NAME vulkan_gemm_shader_integrity
+                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
+            add_test(NAME vulkan_rnn_sequence_shader_integrity
+                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py)
+          endif()
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -271,6 +295,8 @@ if(BUILD_PYTHON_EXTENSION)
                 src/vulkan/operators/classification.cpp src/vulkan/operators/classification.h
                 src/vulkan/operators/f32_to_double.cpp
               src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h)
+          target_sources(pytorch_vulkan_python PRIVATE src/vulkan/operators/rnn.cpp
+                         src/vulkan/operators/rnn.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)
     target_include_directories(pytorch_vulkan_python PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)
@@ -368,9 +394,9 @@ if(BUILD_PYTHON_EXTENSION)
                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
              add_test(NAME vulkan_operator_shader_integrity
                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py)
-            add_test(NAME vulkan_linear_relu_backward_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
-       endif()
+             add_test(NAME vulkan_linear_relu_backward_shader_integrity
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
+        endif()
     configure_file(
          "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
          "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
@@ -430,7 +456,8 @@ if(BUILD_PYTHON_EXTENSION)
                        src/vulkan/operators/linear.cpp src/vulkan/operators/convolution.cpp
                         src/vulkan/operators/f32_to_double.cpp
                         src/vulkan/operators/formatter_double.cpp
-                       src/vulkan/operators/pooling.cpp)
+                        src/vulkan/operators/rnn.cpp
+                        src/vulkan/operators/pooling.cpp)
     target_compile_features(vulkan_transfer_tensor_test PRIVATE cxx_std_17)
     target_include_directories(vulkan_transfer_tensor_test PRIVATE ${TORCH_INCLUDE_DIRS})
     if(TORCH_CXX_FLAGS)

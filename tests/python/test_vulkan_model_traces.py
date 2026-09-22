@@ -93,13 +93,16 @@ def test_attention_benchmark_execution_row_excludes_loss_readback_transfer():
     assert row["fallback_status"] is False
 
 
-def test_rnn_benchmark_training_step_does_not_submit_each_layout_element():
+def test_rnn_benchmark_training_step_uses_one_fused_lifecycle():
     row = _run_row("rnn", RNNFixture(sequence_length=2), "vk:0", warmups=0, repetitions=1)
 
+    assert row["dispatches"] == 11
+    assert row["compute_submissions"] == 1
     assert row["transfer_operations"] == row["vulkan_copies"]
-    assert row["transfer_submissions"] < row["transfer_operations"] * 2
     assert row["transfer_completions"] == row["transfer_submissions"]
     assert row["transfer_waits"] >= row["transfer_submissions"]
+    assert row["explicit_transfers"] == 0
+    assert row["fallbacks"] == 0
 
 
 def test_fixture_contracts_reject_unsupported_dtype_and_dimensions():

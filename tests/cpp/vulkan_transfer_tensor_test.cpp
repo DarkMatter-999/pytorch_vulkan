@@ -12,6 +12,7 @@
 
 #include <ATen/ATen.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -51,6 +52,46 @@ void expect_error(const std::function<void()> &operation, const char *text) {
         return;
     }
     throw std::runtime_error("Vulkan transfer accepted invalid input");
+}
+
+void test_rnn_limit_validation_uses_supplied_limits() {
+    constexpr uint32_t batch = 4;
+    constexpr uint32_t sequence = 3;
+    constexpr uint32_t input_dimension = 8;
+    constexpr uint32_t hidden_dimension = 16;
+    const VkDeviceSize input_bytes = batch * sequence * input_dimension * sizeof(float);
+    const VkDeviceSize weight_bytes = input_dimension * hidden_dimension * sizeof(float);
+    const VkDeviceSize recurrent_bytes = hidden_dimension * hidden_dimension * sizeof(float);
+    const VkDeviceSize bias_bytes = hidden_dimension * sizeof(float);
+    const VkDeviceSize output_bytes = batch * sequence * hidden_dimension * sizeof(float);
+    const VkDeviceSize largest_range = std::max({input_bytes, weight_bytes, recurrent_bytes,
+                                                  bias_bytes, output_bytes});
+    const VkDeviceSize backward_range = std::max(
+        {largest_range, batch * weight_bytes, batch * recurrent_bytes, batch * bias_bytes});
+
+    VulkanCompute::validate_rnn_sequence_limits(
+        batch, sequence, input_dimension, hidden_dimension, largest_range, batch);
+    expect_error(
+        [&] {
+            VulkanCompute::validate_rnn_sequence_limits(
+                batch, sequence, input_dimension, hidden_dimension, output_bytes - 1, batch);
+        },
+        "maxStorageBufferRange");
+    expect_error(
+        [&] {
+            VulkanCompute::validate_rnn_sequence_limits(
+                batch, sequence, input_dimension, hidden_dimension, largest_range, batch - 1);
+        },
+        "batch must be between 1 and 16");
+
+    VulkanCompute::validate_rnn_sequence_backward_limits(
+        batch, sequence, input_dimension, hidden_dimension, backward_range, batch);
+    expect_error(
+        [&] {
+            VulkanCompute::validate_rnn_sequence_backward_limits(
+                1, 1, 512, 256, std::numeric_limits<VkDeviceSize>::max(), 1);
+        },
+        "maxComputeWorkGroupCount[0]");
 }
 
 void test_copy_round_trip() {
@@ -1312,6 +1353,7 @@ int main() {
         test_shared_out_device_index_is_rejected_by_native_allocator();
         test_platform_destruction_is_nothrow();
         test_reduction_indexing_reject_malformed_metadata();
+        test_rnn_limit_validation_uses_supplied_limits();
         std::cout << "Vulkan tensor transfer tests passed\n";
         return 0;
     } catch (const VulkanUnavailable &error) {

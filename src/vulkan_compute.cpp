@@ -15,6 +15,7 @@
 #include "vulkan/shaders/generated/pointwise_spv.h"
 #include "vulkan/shaders/generated/pooling_spv.h"
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
+#include "vulkan/shaders/generated/rnn_sequence_spv.h"
 #include "vulkan_buffer.h"
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
@@ -151,6 +152,12 @@ struct GemmParams {
     uint32_t has_bias, batch_count;
     uint32_t batch_stride_a, batch_stride_b, batch_stride_c, batch_stride_d;
 };
+struct RnnParams {
+    uint32_t batch, sequence, input_dimension, hidden_dimension;
+    uint32_t mode, output_region_offset, output_region_size;
+    uint32_t gradient_region_offset, gradient_region_size;
+};
+static_assert(sizeof(RnnParams) == 36, "RNN push-constant ABI size mismatch");
 static_assert(sizeof(GemmParams) == 80, "GEMM push-constant ABI size mismatch");
 static_assert(offsetof(GemmParams, m) == 0, "GEMM ABI m offset mismatch");
 static_assert(offsetof(GemmParams, n) == 4, "GEMM ABI n offset mismatch");
@@ -886,7 +893,52 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                      vulkan_gemm_shader::kCodeSize / sizeof(uint32_t)),
              {},
              0},
-            gemm_pipeline_layout_, gemm_shader_, gemm_pipeline_info);
+                 gemm_pipeline_layout_, gemm_shader_, gemm_pipeline_info);
+
+        VkDescriptorSetLayoutBinding rnn_bindings[14]{};
+        for (uint32_t binding = 0; binding < 14; ++binding)
+            rnn_bindings[binding] = {binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                     VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo rnn_layout{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        rnn_layout.bindingCount = 14;
+        rnn_layout.pBindings = rnn_bindings;
+        check_result(vkCreateDescriptorSetLayout(device_, &rnn_layout, nullptr,
+                                                  &rnn_descriptor_layout_),
+                     "could not create RNN descriptor-set layout");
+        rnn_shader_ = platform_.shader_registry().get_or_create(
+            {"rnn_sequence",
+             vulkan_shader_code_hash(vulkan_rnn_sequence_shader::kCode,
+                                     vulkan_rnn_sequence_shader::kCodeSize / sizeof(uint32_t))},
+            vulkan_rnn_sequence_shader::kCode,
+            vulkan_rnn_sequence_shader::kCodeSize / sizeof(uint32_t));
+        VkPushConstantRange rnn_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                     sizeof(RnnParams)};
+        VkPipelineLayoutCreateInfo rnn_pipeline_layout_info{
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        rnn_pipeline_layout_info.setLayoutCount = 1;
+        rnn_pipeline_layout_info.pSetLayouts = &rnn_descriptor_layout_;
+        rnn_pipeline_layout_info.pushConstantRangeCount = 1;
+        rnn_pipeline_layout_info.pPushConstantRanges = &rnn_push;
+        rnn_pipeline_layout_ = platform_.pipeline_cache().get_or_create_layout(
+            {reinterpret_cast<uint64_t>(rnn_descriptor_layout_),
+             VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(RnnParams)},
+            rnn_pipeline_layout_info);
+        VkPipelineShaderStageCreateInfo rnn_stage{
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        rnn_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        rnn_stage.module = rnn_shader_;
+        rnn_stage.pName = "main";
+        VkComputePipelineCreateInfo rnn_pipeline_info{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        rnn_pipeline_info.stage = rnn_stage;
+        rnn_pipeline_info.layout = rnn_pipeline_layout_;
+        rnn_pipeline_ = platform_.pipeline_cache().get_or_create(
+            {"rnn_sequence", reinterpret_cast<uint64_t>(rnn_descriptor_layout_),
+             vulkan_shader_code_hash(vulkan_rnn_sequence_shader::kCode,
+                                     vulkan_rnn_sequence_shader::kCodeSize / sizeof(uint32_t)),
+             {}, 0},
+            rnn_pipeline_layout_, rnn_shader_, rnn_pipeline_info);
     } catch (const std::exception &error) {
         for (auto &pipeline : pipelines_)
             pipeline = VK_NULL_HANDLE;
@@ -902,6 +954,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         classification_pipeline_ = VK_NULL_HANDLE;
         f32_to_double_pipeline_ = VK_NULL_HANDLE;
         gemm_pipeline_ = VK_NULL_HANDLE;
+        rnn_pipeline_ = VK_NULL_HANDLE;
         for (auto &layout : pipeline_layouts_)
             layout = VK_NULL_HANDLE;
         for (auto &layout : compound_pipeline_layouts_)
@@ -916,6 +969,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         classification_pipeline_layout_ = VK_NULL_HANDLE;
         f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
         gemm_pipeline_layout_ = VK_NULL_HANDLE;
+        rnn_pipeline_layout_ = VK_NULL_HANDLE;
         platform_.pipeline_cache().destroy_all();
         for (uint32_t mode = 0; mode < 8; ++mode)
             shader_modules_[mode] = VK_NULL_HANDLE;
@@ -930,6 +984,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         normalization_shader_ = VK_NULL_HANDLE;
         classification_shader_ = VK_NULL_HANDLE;
         f32_to_double_shader_ = VK_NULL_HANDLE;
+        rnn_shader_ = VK_NULL_HANDLE;
         for (auto pipeline : pipelines_) {
             if (pipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(device_, pipeline, nullptr);
@@ -1081,6 +1136,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                          nullptr);
         if (gemm_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
+        if (rnn_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, rnn_descriptor_layout_, nullptr);
         throw contextual_error("initialization failed", error);
     }
 }
@@ -1100,6 +1157,7 @@ VulkanCompute::~VulkanCompute() {
     classification_pipeline_ = VK_NULL_HANDLE;
     f32_to_double_pipeline_ = VK_NULL_HANDLE;
     gemm_pipeline_ = VK_NULL_HANDLE;
+    rnn_pipeline_ = VK_NULL_HANDLE;
     for (auto &layout : pipeline_layouts_)
         layout = VK_NULL_HANDLE;
     for (auto &layout : compound_pipeline_layouts_)
@@ -1114,6 +1172,7 @@ VulkanCompute::~VulkanCompute() {
     classification_pipeline_layout_ = VK_NULL_HANDLE;
     f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
     gemm_pipeline_layout_ = VK_NULL_HANDLE;
+    rnn_pipeline_layout_ = VK_NULL_HANDLE;
     platform_.pipeline_cache().destroy_all();
     for (auto pipeline : pipelines_) {
         if (pipeline != VK_NULL_HANDLE) {
@@ -1156,6 +1215,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, formatter_double_pipeline_, nullptr);
     if (gemm_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, gemm_pipeline_, nullptr);
+    if (rnn_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, rnn_pipeline_, nullptr);
     for (uint32_t mode = 0; mode < 8; ++mode)
         shader_modules_[mode] = VK_NULL_HANDLE;
     compound_shader_modules_[0] = VK_NULL_HANDLE;
@@ -1209,6 +1270,7 @@ VulkanCompute::~VulkanCompute() {
     if (formatter_double_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, formatter_double_shader_, nullptr);
     gemm_shader_ = VK_NULL_HANDLE;
+    rnn_shader_ = VK_NULL_HANDLE;
     descriptor_arena_.reset();
     for (auto layout : pipeline_layouts_) {
         if (layout != VK_NULL_HANDLE) {
@@ -1251,6 +1313,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, formatter_double_pipeline_layout_, nullptr);
     if (gemm_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, gemm_pipeline_layout_, nullptr);
+    if (rnn_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, rnn_pipeline_layout_, nullptr);
     for (auto layout : descriptor_set_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device_, layout, nullptr);
@@ -1298,6 +1362,8 @@ VulkanCompute::~VulkanCompute() {
                                      nullptr);
     if (gemm_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
+    if (rnn_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, rnn_descriptor_layout_, nullptr);
 }
 
 void VulkanCompute::add(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
@@ -1777,6 +1843,252 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         cancel_recording();
         throw contextual_error("GEMM dispatch failed", error);
     }
+}
+
+void VulkanCompute::rnn_sequence(
+    VkBuffer input, VkBuffer weight, VkBuffer recurrent_weight, VkBuffer bias,
+    VkBuffer output, uint32_t batch, uint32_t sequence, uint32_t input_dimension,
+    uint32_t hidden_dimension) const {
+    if (input == VK_NULL_HANDLE || weight == VK_NULL_HANDLE ||
+        recurrent_weight == VK_NULL_HANDLE || bias == VK_NULL_HANDLE ||
+        output == VK_NULL_HANDLE || batch == 0 || sequence == 0 ||
+        input_dimension == 0 || hidden_dimension == 0)
+        throw std::invalid_argument("Vulkan RNN sequence has an invalid range");
+    validate_rnn_sequence(batch, sequence, input_dimension, hidden_dimension);
+    std::scoped_lock lock(platform_.queue_mutex());
+    try {
+        const uint64_t output_region_elements =
+            static_cast<uint64_t>(batch) * hidden_dimension;
+        if (output_region_elements > std::numeric_limits<uint32_t>::max())
+            throw std::invalid_argument("Vulkan RNN output region exceeds uint32 range");
+        record_dispatch("operator");
+        VkCommandBuffer cmd = platform_.execution_context().command_buffer();
+        const VkDescriptorSet set = acquire_descriptor_set(rnn_descriptor_layout_, 14);
+        const VkDeviceSize input_bytes = static_cast<VkDeviceSize>(batch) * sequence *
+                                         input_dimension * sizeof(float);
+        const VkDeviceSize weight_bytes = static_cast<VkDeviceSize>(input_dimension) *
+                                          hidden_dimension * sizeof(float);
+        const VkDeviceSize recurrent_bytes = static_cast<VkDeviceSize>(hidden_dimension) *
+                                             hidden_dimension * sizeof(float);
+        const VkDeviceSize bias_bytes = static_cast<VkDeviceSize>(hidden_dimension) * sizeof(float);
+        const VkDeviceSize output_bytes = static_cast<VkDeviceSize>(batch) * sequence *
+                                          hidden_dimension * sizeof(float);
+        VkDescriptorBufferInfo buffers[14] = {
+            {input, 0, input_bytes}, {weight, 0, weight_bytes},
+            {recurrent_weight, 0, recurrent_bytes}, {bias, 0, bias_bytes},
+            {output, 0, output_bytes}, {output, 0, output_bytes},
+            {input, 0, input_bytes}, {output, 0, output_bytes},
+            {weight, 0, weight_bytes}, {recurrent_weight, 0, recurrent_bytes},
+            {bias, 0, bias_bytes}, {weight, 0, weight_bytes},
+            {recurrent_weight, 0, recurrent_bytes}, {bias, 0, bias_bytes}};
+        VkWriteDescriptorSet writes[14]{};
+        for (uint32_t i = 0; i < 14; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &buffers[i];
+        }
+        vkUpdateDescriptorSets(device_, 14, writes, 0, nullptr);
+        const RnnParams params{batch, sequence, input_dimension, hidden_dimension,
+                               0, 0, static_cast<uint32_t>(output_region_elements), 0, 0};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rnn_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rnn_pipeline_layout_,
+                                0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(cmd, rnn_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(params), &params);
+        vkCmdDispatch(cmd, batch, 1, 1);
+        finish_dispatch();
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::exception &error) {
+        cancel_recording();
+        throw contextual_error("RNN sequence dispatch failed", error);
+    }
+}
+
+void VulkanCompute::rnn_sequence_backward(
+    VkBuffer input, VkBuffer weight, VkBuffer recurrent_weight, VkBuffer bias,
+    VkBuffer output, VkBuffer gradient_output, VkBuffer gradient_input,
+    VkBuffer partial_input_weight, VkBuffer partial_recurrent_weight,
+    VkBuffer partial_bias, VkBuffer gradient_weight, VkBuffer gradient_recurrent_weight,
+    VkBuffer gradient_bias, uint32_t batch, uint32_t sequence,
+    uint32_t input_dimension, uint32_t hidden_dimension) const {
+    const VkBuffer buffers[] = {
+        input, weight, recurrent_weight, bias, output, output, gradient_output,
+        gradient_input, partial_input_weight, partial_recurrent_weight, partial_bias,
+        gradient_weight, gradient_recurrent_weight, gradient_bias};
+    for (const VkBuffer buffer : buffers)
+        if (buffer == VK_NULL_HANDLE)
+            throw std::invalid_argument("Vulkan RNN backward has an invalid buffer");
+    validate_rnn_sequence_backward(batch, sequence, input_dimension, hidden_dimension);
+    std::scoped_lock lock(platform_.queue_mutex());
+    try {
+        const auto checked_region_size = [](uint64_t elements) {
+            if (elements > std::numeric_limits<uint32_t>::max())
+                throw std::invalid_argument("Vulkan RNN gradient region exceeds uint32 range");
+            return static_cast<uint32_t>(elements);
+        };
+        const auto checked_workgroups = [&](uint64_t elements) {
+            const uint64_t groups = elements / 256u + (elements % 256u != 0);
+            if (groups == 0 || groups > std::numeric_limits<uint32_t>::max() ||
+                groups > max_compute_workgroup_count_x_)
+                throw std::invalid_argument(
+                    "Vulkan RNN reduction dispatch exceeds maxComputeWorkGroupCount[0]");
+            return static_cast<uint32_t>(groups);
+        };
+        const uint64_t input_weight_elements =
+            static_cast<uint64_t>(input_dimension) * hidden_dimension;
+        const uint64_t recurrent_weight_elements =
+            static_cast<uint64_t>(hidden_dimension) * hidden_dimension;
+        const VkDeviceSize input_bytes = static_cast<VkDeviceSize>(batch) * sequence *
+                                         input_dimension * sizeof(float);
+        const VkDeviceSize weight_bytes = static_cast<VkDeviceSize>(input_dimension) *
+                                          hidden_dimension * sizeof(float);
+        const VkDeviceSize recurrent_bytes = static_cast<VkDeviceSize>(hidden_dimension) *
+                                             hidden_dimension * sizeof(float);
+        const VkDeviceSize bias_bytes = static_cast<VkDeviceSize>(hidden_dimension) * sizeof(float);
+        const VkDeviceSize output_bytes = static_cast<VkDeviceSize>(batch) * sequence *
+                                          hidden_dimension * sizeof(float);
+        const VkDeviceSize partial_weight_bytes = static_cast<VkDeviceSize>(batch) * weight_bytes;
+        const VkDeviceSize partial_recurrent_bytes =
+            static_cast<VkDeviceSize>(batch) * recurrent_bytes;
+        const VkDeviceSize partial_bias_bytes = static_cast<VkDeviceSize>(batch) * bias_bytes;
+        const VkDescriptorSet set = acquire_descriptor_set(rnn_descriptor_layout_, 14);
+        VkDescriptorBufferInfo infos[14] = {
+            {input, 0, input_bytes}, {weight, 0, weight_bytes},
+            {recurrent_weight, 0, recurrent_bytes}, {bias, 0, bias_bytes},
+            {output, 0, output_bytes}, {output, 0, output_bytes},
+            {gradient_output, 0, output_bytes}, {gradient_input, 0, input_bytes},
+            {partial_input_weight, 0, partial_weight_bytes},
+            {partial_recurrent_weight, 0, partial_recurrent_bytes},
+            {partial_bias, 0, partial_bias_bytes}, {gradient_weight, 0, weight_bytes},
+            {gradient_recurrent_weight, 0, recurrent_bytes}, {gradient_bias, 0, bias_bytes}};
+        VkWriteDescriptorSet writes[14]{};
+        for (uint32_t index = 0; index < 14; ++index) {
+            writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[index].dstSet = set;
+            writes[index].dstBinding = index;
+            writes[index].descriptorCount = 1;
+            writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[index].pBufferInfo = &infos[index];
+        }
+        vkUpdateDescriptorSets(device_, 14, writes, 0, nullptr);
+
+        const auto dispatch = [&](uint32_t mode, uint32_t output_size,
+                                  uint32_t workgroups) {
+            record_dispatch("operator");
+            const RnnParams params{batch, sequence, input_dimension, hidden_dimension,
+                                   mode, 0, output_size, 0, 0};
+            VkCommandBuffer cmd = platform_.execution_context().command_buffer();
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rnn_pipeline_);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    rnn_pipeline_layout_, 0, 1, &set, 0, nullptr);
+            vkCmdPushConstants(cmd, rnn_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(params), &params);
+            vkCmdDispatch(cmd, workgroups, 1, 1);
+            dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+        };
+        dispatch(1, 0, batch);
+        dispatch(2, checked_region_size(input_weight_elements),
+                 checked_workgroups(input_weight_elements));
+        dispatch(3, checked_region_size(recurrent_weight_elements),
+                 checked_workgroups(recurrent_weight_elements));
+        dispatch(4, hidden_dimension, checked_workgroups(hidden_dimension));
+        finish_dispatch();
+    } catch (const std::exception &error) {
+        cancel_recording();
+        throw contextual_error("RNN backward dispatch failed", error);
+    }
+}
+
+void VulkanCompute::validate_rnn_sequence(uint32_t batch, uint32_t sequence,
+                                          uint32_t input_dimension,
+                                          uint32_t hidden_dimension) const {
+    validate_rnn_sequence_limits(batch, sequence, input_dimension, hidden_dimension,
+                                 max_storage_buffer_range_, max_compute_workgroup_count_x_);
+}
+
+void VulkanCompute::validate_rnn_sequence_limits(
+    uint32_t batch, uint32_t sequence, uint32_t input_dimension, uint32_t hidden_dimension,
+    VkDeviceSize max_storage_buffer_range, uint32_t max_compute_workgroup_count_x) {
+    const auto checked_product = [](uint64_t lhs, uint64_t rhs) {
+        if (rhs != 0 && lhs > std::numeric_limits<uint64_t>::max() / rhs)
+            throw std::invalid_argument("Vulkan RNN descriptor range overflows");
+        return lhs * rhs;
+    };
+    const auto checked_bytes = [](uint64_t elements) {
+        if (elements > std::numeric_limits<uint64_t>::max() / sizeof(float))
+            throw std::invalid_argument("Vulkan RNN descriptor range overflows");
+        return static_cast<VkDeviceSize>(elements * sizeof(float));
+    };
+    const uint64_t input_elements = checked_product(
+        checked_product(batch, sequence), input_dimension);
+    const uint64_t weight_elements = checked_product(input_dimension, hidden_dimension);
+    const uint64_t recurrent_elements = checked_product(hidden_dimension, hidden_dimension);
+    const uint64_t bias_elements = hidden_dimension;
+    const uint64_t output_elements = checked_product(
+        checked_product(batch, sequence), hidden_dimension);
+    const VkDeviceSize ranges[] = {
+        checked_bytes(input_elements), checked_bytes(weight_elements),
+        checked_bytes(recurrent_elements), checked_bytes(bias_elements),
+        checked_bytes(output_elements), checked_bytes(output_elements),
+        checked_bytes(output_elements), checked_bytes(input_elements),
+        checked_bytes(weight_elements), checked_bytes(recurrent_elements),
+        checked_bytes(bias_elements), checked_bytes(weight_elements),
+        checked_bytes(recurrent_elements), checked_bytes(bias_elements)};
+    for (const VkDeviceSize range : ranges) {
+        if (range == 0 || range > max_storage_buffer_range)
+            throw std::invalid_argument("Vulkan RNN descriptor range exceeds maxStorageBufferRange");
+    }
+    if (batch == 0 || batch > 16 || batch > max_compute_workgroup_count_x)
+        throw std::invalid_argument("Vulkan RNN batch must be between 1 and 16");
+    if (sequence == 0 || sequence > 64)
+        throw std::invalid_argument("Vulkan RNN sequence must be between 1 and 64");
+}
+
+void VulkanCompute::validate_rnn_sequence_backward(
+    uint32_t batch, uint32_t sequence, uint32_t input_dimension,
+    uint32_t hidden_dimension) const {
+    validate_rnn_sequence(batch, sequence, input_dimension, hidden_dimension);
+    validate_rnn_sequence_backward_limits(batch, sequence, input_dimension,
+                                          hidden_dimension, max_storage_buffer_range_,
+                                          max_compute_workgroup_count_x_);
+}
+
+void VulkanCompute::validate_rnn_sequence_backward_limits(
+    uint32_t batch, uint32_t sequence, uint32_t input_dimension,
+    uint32_t hidden_dimension, VkDeviceSize max_storage_buffer_range,
+    uint32_t max_compute_workgroup_count_x) {
+    validate_rnn_sequence_limits(batch, sequence, input_dimension, hidden_dimension,
+                                 max_storage_buffer_range, max_compute_workgroup_count_x);
+    const uint64_t weight_elements = static_cast<uint64_t>(input_dimension) * hidden_dimension;
+    const uint64_t recurrent_elements = static_cast<uint64_t>(hidden_dimension) * hidden_dimension;
+    const uint64_t bias_elements = hidden_dimension;
+    const auto checked_partial_bytes = [&](uint64_t elements) {
+        if (batch != 0 && elements > std::numeric_limits<uint64_t>::max() / batch)
+            throw std::invalid_argument("Vulkan RNN backward partial range overflows");
+        const uint64_t total = elements * batch;
+        if (total > std::numeric_limits<uint64_t>::max() / sizeof(float) ||
+            total * sizeof(float) > max_storage_buffer_range)
+            throw std::invalid_argument(
+                "Vulkan RNN backward partial range exceeds maxStorageBufferRange");
+    };
+    checked_partial_bytes(weight_elements);
+    checked_partial_bytes(recurrent_elements);
+    checked_partial_bytes(bias_elements);
+    const auto reduction_groups = [](uint64_t elements) {
+        return elements / 256u + (elements % 256u != 0);
+    };
+    const uint64_t weight_groups = reduction_groups(weight_elements);
+    const uint64_t recurrent_groups = reduction_groups(recurrent_elements);
+    const uint64_t bias_groups = reduction_groups(bias_elements);
+    if (weight_groups == 0 || recurrent_groups == 0 || bias_groups == 0 ||
+        weight_groups > max_compute_workgroup_count_x ||
+        recurrent_groups > max_compute_workgroup_count_x ||
+        bias_groups > max_compute_workgroup_count_x)
+        throw std::invalid_argument(
+            "Vulkan RNN reduction dispatch exceeds maxComputeWorkGroupCount[0]");
 }
 
 void VulkanCompute::linear_relu_backward_input(

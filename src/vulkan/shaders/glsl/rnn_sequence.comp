@@ -1,0 +1,144 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputBuffer { float input_buffer[]; };
+layout(set = 0, binding = 1, std430) readonly buffer InputWeight { float input_weight[]; };
+layout(set = 0, binding = 2, std430) readonly buffer RecurrentWeight { float recurrent_weight[]; };
+layout(set = 0, binding = 3, std430) readonly buffer Bias { float bias[]; };
+layout(set = 0, binding = 4, std430) buffer OutputBuffer { float output_buffer[]; };
+layout(set = 0, binding = 5, std430) buffer SavedState { float saved_state[]; };
+layout(set = 0, binding = 6, std430) readonly buffer GradientOutput { float gradient_output[]; };
+layout(set = 0, binding = 7, std430) buffer GradientInput { float gradient_input[]; };
+layout(set = 0, binding = 8, std430) buffer PartialInputWeight { float partial_input_weight[]; };
+layout(set = 0, binding = 9, std430) buffer PartialRecurrentWeight { float partial_recurrent_weight[]; };
+layout(set = 0, binding = 10, std430) buffer PartialBias { float partial_bias[]; };
+layout(set = 0, binding = 11, std430) buffer GradientWeight { float gradient_weight[]; };
+layout(set = 0, binding = 12, std430) buffer GradientRecurrentWeight { float gradient_recurrent_weight[]; };
+layout(set = 0, binding = 13, std430) buffer GradientBias { float gradient_bias[]; };
+
+layout(push_constant) uniform Params {
+  uint batch;
+  uint sequence;
+  uint input_dimension;
+  uint hidden_dimension;
+  uint mode;
+  uint output_region_offset;
+  uint output_region_size;
+  uint gradient_region_offset;
+  uint gradient_region_size;
+} params;
+
+shared float adjoint[256];
+shared float delta[256];
+
+void main() {
+  uint local = gl_LocalInvocationID.x;
+  uint global = gl_GlobalInvocationID.x;
+  uint sequence_size = params.batch * params.sequence;
+
+  if (params.mode == 0u) {
+    uint batch_index = gl_WorkGroupID.x;
+    if (batch_index >= params.batch) return;
+    for (uint sequence_index = 0u; sequence_index < params.sequence; ++sequence_index) {
+      if (local < params.hidden_dimension) {
+        uint hidden = local;
+        uint step = batch_index * params.sequence + sequence_index;
+        float value = bias[hidden];
+        for (uint input_index = 0u; input_index < params.input_dimension; ++input_index) {
+          uint source = step * params.input_dimension + input_index;
+          value += input_buffer[source] * input_weight[hidden * params.input_dimension + input_index];
+        }
+        if (sequence_index > 0u) {
+          for (uint previous_hidden = 0u; previous_hidden < params.hidden_dimension; ++previous_hidden) {
+            value += saved_state[(step - 1u) * params.hidden_dimension + previous_hidden] *
+                recurrent_weight[hidden * params.hidden_dimension + previous_hidden];
+          }
+        }
+        float activation = tanh(value);
+        output_buffer[step * params.hidden_dimension + hidden] = activation;
+        saved_state[step * params.hidden_dimension + hidden] = activation;
+      }
+      memoryBarrierBuffer();
+      barrier();
+    }
+    return;
+  }
+
+  if (params.mode == 1u) {
+    uint batch_index = gl_WorkGroupID.x;
+    if (batch_index >= params.batch) return;
+    uint partial_weight_base = batch_index * params.input_dimension * params.hidden_dimension;
+    uint partial_recurrent_base = batch_index * params.hidden_dimension * params.hidden_dimension;
+    uint partial_bias_base = batch_index * params.hidden_dimension;
+    for (uint index = local; index < params.input_dimension * params.hidden_dimension; index += 256u)
+      partial_input_weight[partial_weight_base + index] = 0.0;
+    for (uint index = local; index < params.hidden_dimension * params.hidden_dimension; index += 256u)
+      partial_recurrent_weight[partial_recurrent_base + index] = 0.0;
+    for (uint index = local; index < params.hidden_dimension; index += 256u)
+      partial_bias[partial_bias_base + index] = 0.0;
+    if (local < params.hidden_dimension)
+      adjoint[local] = 0.0;
+    barrier();
+    for (uint reverse = 0u; reverse < params.sequence; ++reverse) {
+      uint sequence_index = params.sequence - reverse - 1u;
+      uint step = batch_index * params.sequence + sequence_index;
+      if (local < params.hidden_dimension) {
+        adjoint[local] += gradient_output[step * params.hidden_dimension + local];
+        float state = saved_state[step * params.hidden_dimension + local];
+        delta[local] = adjoint[local] * (1.0 - state * state);
+      }
+      barrier();
+      for (uint input_index = local; input_index < params.input_dimension; input_index += 256u) {
+        float value = 0.0;
+        for (uint hidden = 0u; hidden < params.hidden_dimension; ++hidden)
+          value += delta[hidden] * input_weight[hidden * params.input_dimension + input_index];
+        gradient_input[step * params.input_dimension + input_index] = value;
+      }
+      if (local < params.hidden_dimension) {
+        for (uint input_index = 0u; input_index < params.input_dimension; ++input_index)
+          partial_input_weight[partial_weight_base + local * params.input_dimension + input_index] +=
+              input_buffer[step * params.input_dimension + input_index] * delta[local];
+        for (uint previous_hidden = 0u; previous_hidden < params.hidden_dimension; ++previous_hidden) {
+          float previous_state = sequence_index == 0u
+              ? 0.0
+              : saved_state[(step - 1u) * params.hidden_dimension + previous_hidden];
+          partial_recurrent_weight[partial_recurrent_base +
+              local * params.hidden_dimension + previous_hidden] += previous_state * delta[local];
+        }
+        partial_bias[partial_bias_base + local] += delta[local];
+      }
+      barrier();
+      if (local < params.hidden_dimension) {
+        float previous_adjoint = 0.0;
+        for (uint hidden = 0u; hidden < params.hidden_dimension; ++hidden)
+          previous_adjoint += delta[hidden] *
+              recurrent_weight[hidden * params.hidden_dimension + local];
+        adjoint[local] = previous_adjoint;
+      }
+      barrier();
+    }
+    return;
+  }
+
+  if (params.mode == 2u && global < params.output_region_size) {
+    float value = 0.0;
+    for (uint batch_index = 0u; batch_index < params.batch; ++batch_index)
+      value += partial_input_weight[batch_index * params.output_region_size + global];
+    gradient_weight[global] = value;
+    return;
+  }
+  if (params.mode == 3u && global < params.output_region_size) {
+    float value = 0.0;
+    for (uint batch_index = 0u; batch_index < params.batch; ++batch_index)
+      value += partial_recurrent_weight[batch_index * params.output_region_size + global];
+    gradient_recurrent_weight[global] = value;
+    return;
+  }
+  if (params.mode == 4u && global < params.output_region_size) {
+    float value = 0.0;
+    for (uint batch_index = 0u; batch_index < params.batch; ++batch_index)
+      value += partial_bias[batch_index * params.output_region_size + global];
+    gradient_bias[global] = value;
+  }
+}

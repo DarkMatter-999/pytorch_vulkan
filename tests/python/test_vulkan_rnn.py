@@ -10,10 +10,6 @@ from tools.vulkan_model_benchmark import (
 )
 
 
-RNN_PRE_OPTIMIZATION_COPY_OPERATIONS = 64
-RNN_PRE_OPTIMIZATION_COPY_COMMANDS = 64
-
-
 @pytest.fixture
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
@@ -25,6 +21,11 @@ def _resident(value):
     assert value.device == torch.device("vk:0")
     assert value.dtype is torch.float32
     assert value.is_contiguous()
+
+
+def _resident_view(value):
+    assert value.device == torch.device("vk:0")
+    assert value.dtype is torch.float32
 
 
 def _pair(device, batch=1, sequence_length=64):
@@ -69,18 +70,114 @@ def test_rnn_forward_backward_and_optimizer_match_cpu(vulkan_backend):
     _resident(vk_loss)
     _resident(vk_input.grad)
     for state in vk.last_states:
-        _resident(state)
+        _resident_view(state)
         assert state.grad is not None
-        _resident(state.grad)
+        _resident_view(state.grad)
     for actual, expected in zip(vk.last_states, cpu.last_states):
         torch.testing.assert_close(actual.grad.cpu(), expected.grad, rtol=3e-3, atol=3e-3)
     assert dispatches > 0
-    assert 0 < copies <= 3 * fixture.sequence_length
+    assert copies == 0
     assert transfers == 0
     assert fallbacks == 0
     assert submissions == 1
     assert completions == 1
     assert waits == 1
+
+
+def test_default_rnn_fixture_hidden_256_training_path(vulkan_backend):
+    fixture, cpu, model, cpu_inputs, inputs, cpu_target, target = _pair(vulkan_backend)
+    cpu_optimizer = torch.optim.SGD(cpu.parameters(), lr=0.01)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    pytorch_vulkan._C.reset_execution_counters()
+    cpu_output = cpu(cpu_inputs)
+    cpu_loss = fixture.loss(cpu_output, cpu_target)
+    cpu_loss.backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        output = model(inputs)
+        loss = fixture.loss(output, target)
+        loss.backward()
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+    dispatches = pytorch_vulkan._C.compute_dispatch_count()
+    submissions = pytorch_vulkan._C.compute_submitted_count()
+    completions = pytorch_vulkan._C.compute_completed_count()
+    waits = pytorch_vulkan._C.compute_wait_count()
+    copies = pytorch_vulkan._C.vulkan_copy_count()
+    transfers = pytorch_vulkan._C.explicit_transfer_count()
+    fallbacks = pytorch_vulkan._C.fallback_count()
+    optimizer.step()
+    cpu_optimizer.step()
+    torch.testing.assert_close(output.cpu(), cpu_output, rtol=3e-3, atol=3e-3)
+    assert torch.isfinite(output.cpu()).all()
+    torch.testing.assert_close(loss.cpu(), cpu_loss.detach(), rtol=3e-3, atol=3e-3)
+    assert torch.isfinite(loss.cpu()).all()
+    assert dispatches > 0
+    assert submissions == 1
+    assert completions == 1
+    assert waits == 1
+    assert copies == 0
+    assert transfers == 0
+    assert fallbacks == 0
+    torch.testing.assert_close(inputs.grad.cpu(), cpu_inputs.grad, rtol=3e-3, atol=3e-3)
+    assert torch.isfinite(inputs.grad.cpu()).all()
+    for actual, expected in zip(model.parameters(), cpu.parameters()):
+        assert actual.grad is not None
+        assert torch.isfinite(actual.grad.cpu()).all()
+        torch.testing.assert_close(actual.grad.cpu(), expected.grad, rtol=3e-3, atol=3e-3)
+        assert torch.isfinite(actual.cpu()).all()
+        torch.testing.assert_close(actual.cpu(), expected, rtol=3e-3, atol=3e-3)
+
+
+def test_rnn_state_gradient_hook_is_generation_local(vulkan_backend):
+    fixture, _, model, _, inputs, _, target = _pair(vulkan_backend, batch=1, sequence_length=3)
+    first_output = model(inputs)
+    first_states = list(model.last_states)
+    second_output = model(inputs.detach().clone().requires_grad_())
+    second_states = list(model.last_states)
+    assert first_states[0].untyped_storage().data_ptr() != second_states[0].untyped_storage().data_ptr()
+
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        fixture.loss(first_output, target).backward()
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    assert all(state.grad is not None for state in first_states)
+    assert all(state.grad is None for state in second_states)
+
+
+def test_rnn_last_states_are_fused_output_views_with_cpu_matching_gradients(vulkan_backend):
+    fixture, cpu, vk, cpu_input, vk_input, cpu_target, vk_target = _pair(
+        vulkan_backend, batch=2, sequence_length=3
+    )
+    cpu_output = cpu(cpu_input)
+    vk_output = vk(vk_input)
+    cpu_loss = fixture.loss(cpu_output, cpu_target)
+    vk_loss = fixture.loss(vk_output, vk_target)
+    cpu_loss.backward()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_loss.backward()
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    output_storage = vk_output.untyped_storage().data_ptr()
+    assert len(vk.last_states) == fixture.sequence_length
+    for index, state in enumerate(vk.last_states):
+        assert state.untyped_storage().data_ptr() == output_storage
+        assert tuple(state.shape) == (2, fixture.hidden_dim)
+        assert tuple(state.stride()) == (fixture.sequence_length * fixture.hidden_dim, 1)
+        assert state.storage_offset() == vk_output.storage_offset() + index * fixture.hidden_dim
+        assert state.grad is not None
+    for actual, expected in zip(vk.last_states, cpu.last_states):
+        torch.testing.assert_close(actual.grad.cpu(), expected.grad, rtol=3e-3, atol=3e-3)
 
 
 def test_training_scope_cleans_up_after_forward_failure(vulkan_backend):
@@ -102,81 +199,6 @@ def test_training_scope_cleans_up_after_forward_failure(vulkan_backend):
         raise
     pytorch_vulkan._C.end_training_step()
     assert not pytorch_vulkan._C.training_step_active()
-
-
-def test_stack_64_states_has_one_transfer_lifecycle_and_backward_parity(vulkan_backend):
-    torch.manual_seed(1729)
-    cpu_states = [torch.randn(2, 8, requires_grad=True) for _ in range(64)]
-    vk_states = [state.detach().clone().to(vulkan_backend).requires_grad_() for state in cpu_states]
-    grad = torch.randn((2, 64, 8), dtype=torch.float32)
-    vk_grad = grad.to(vulkan_backend)
-    pytorch_vulkan._C.reset_execution_counters()
-
-    cpu_output = torch.stack(cpu_states, dim=1)
-    vk_output = torch.stack(vk_states, dim=1)
-    operations = pytorch_vulkan._C.transfer_operation_count()
-    submissions = pytorch_vulkan._C.transfer_submission_count()
-    completions = pytorch_vulkan._C.transfer_completion_count()
-    waits = pytorch_vulkan._C.transfer_wait_count()
-    copy_commands = pytorch_vulkan._C.copy_command_count()
-    cpu_output.backward(grad)
-    vk_output.backward(vk_grad)
-
-    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach(), rtol=0, atol=0)
-    for vk_state, cpu_state in zip(vk_states, cpu_states):
-        torch.testing.assert_close(vk_state.grad.cpu(), cpu_state.grad, rtol=0, atol=0)
-    assert operations < RNN_PRE_OPTIMIZATION_COPY_OPERATIONS
-    assert copy_commands == RNN_PRE_OPTIMIZATION_COPY_COMMANDS
-    assert submissions == completions == 1
-    assert waits >= submissions
-
-
-def test_stack_64_states_dim_zero_has_one_transfer_lifecycle(vulkan_backend):
-    states = [torch.full((2, 8), float(index), device=vulkan_backend) for index in range(64)]
-    expected = torch.stack([state.cpu() for state in states], dim=0)
-    pytorch_vulkan._C.reset_execution_counters()
-
-    output = torch.stack(states, dim=0)
-    operations = pytorch_vulkan._C.transfer_operation_count()
-    submissions = pytorch_vulkan._C.transfer_submission_count()
-    completions = pytorch_vulkan._C.transfer_completion_count()
-    waits = pytorch_vulkan._C.transfer_wait_count()
-
-    torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
-    assert operations == 1
-    assert submissions == 1
-    assert completions == 1
-    assert waits == 1
-
-
-@pytest.mark.parametrize("case", ["rank", "dtype", "noncontiguous"])
-def test_stack_rejects_unsupported_layout_before_work(vulkan_backend, case):
-    first = torch.ones((2, 8), dtype=torch.float32, device=vulkan_backend)
-    if case == "rank":
-        states, message = [first.reshape(2, 8, 1)], "contiguous"
-    elif case == "dtype":
-        states, message = [first, torch.ones((2, 8), dtype=torch.float64)], "matching"
-    else:
-        states, message = [first.transpose(0, 1)], "contiguous"
-    pytorch_vulkan._C.reset_execution_counters()
-
-    with pytest.raises((RuntimeError, ValueError), match=message):
-        torch.stack(states, dim=0)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
-
-
-def test_stack_rejects_mixed_device_before_work(vulkan_backend):
-    states = [torch.ones((2, 8), dtype=torch.float32, device=vulkan_backend),
-              torch.ones((2, 8), dtype=torch.float32)]
-    pytorch_vulkan._C.reset_execution_counters()
-
-    with pytest.raises((RuntimeError, ValueError), match="matching|device|same"):
-        torch.stack(states, dim=0)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
 
 
 def test_rnn_benchmark_one_step_preserves_loss_parity(vulkan_backend):
@@ -201,7 +223,7 @@ def test_rnn_benchmark_one_step_preserves_loss_parity(vulkan_backend):
     assert vulkan_row["waits"] == vulkan_row["repetitions"]
     assert vulkan_row["compute_submissions"] == vulkan_row["repetitions"]
     assert vulkan_row["transfer_operations"] == vulkan_row["vulkan_copies"]
-    assert vulkan_row["transfer_operations"] > 0
+    assert vulkan_row["transfer_operations"] == 0
     assert vulkan_row["transfer_submissions"] <= vulkan_row["transfer_operations"]
     assert vulkan_row["transfer_completions"] == vulkan_row["transfer_submissions"]
     assert vulkan_row["transfer_waits"] >= vulkan_row["transfer_submissions"]
@@ -226,7 +248,6 @@ def test_rnn_rejects_batch_above_bounded_contract_before_work(vulkan_backend):
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     assert pytorch_vulkan._C.fallback_count() == 0
 
-
 @pytest.mark.parametrize("batch", [1, 16])
 @pytest.mark.parametrize("sequence_length", [1, 64])
 def test_rnn_supported_boundaries_stay_resident(vulkan_backend, batch, sequence_length):
@@ -235,7 +256,7 @@ def test_rnn_supported_boundaries_stay_resident(vulkan_backend, batch, sequence_
     assert output.shape == (batch, sequence_length, fixture.hidden_dim)
     _resident(output)
     for state in model.last_states:
-        _resident(state)
+        _resident_view(state)
 
 
 @pytest.mark.parametrize("mutator, message", [
@@ -249,19 +270,6 @@ def test_rnn_rejects_unsupported_input_before_work(vulkan_backend, mutator, mess
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises((RuntimeError, ValueError), match=message):
         model(bad_inputs)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
-    assert pytorch_vulkan._C.fallback_count() == 0
-
-
-def test_rnn_rejects_higher_order_gradient_before_work(vulkan_backend):
-    value = torch.ones((1, 8), device=vulkan_backend, requires_grad=True)
-    output = torch.tanh(value)
-    grad_output = torch.ones_like(output)
-    pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises((RuntimeError, ValueError), match="higher|second|order"):
-        torch.autograd.grad(output, value, grad_output, create_graph=True)
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
     assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0

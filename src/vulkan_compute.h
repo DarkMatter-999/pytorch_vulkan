@@ -116,7 +116,33 @@ class VulkanCompute final {
               float alpha = 1.0F, float beta = 0.0F, bool has_bias = false,
               uint32_t batch_count = 0, uint32_t batch_stride_a = 0,
               uint32_t batch_stride_b = 0, uint32_t batch_stride_c = 0,
-              uint32_t batch_stride_d = 0) const;
+               uint32_t batch_stride_d = 0) const;
+    void rnn_sequence(VkBuffer input, VkBuffer weight, VkBuffer recurrent_weight,
+                      VkBuffer bias, VkBuffer output, uint32_t batch,
+                      uint32_t sequence, uint32_t input_dimension,
+                      uint32_t hidden_dimension) const;
+    void rnn_sequence_backward(
+        VkBuffer input, VkBuffer weight, VkBuffer recurrent_weight, VkBuffer bias,
+        VkBuffer output, VkBuffer gradient_output, VkBuffer gradient_input,
+        VkBuffer partial_input_weight, VkBuffer partial_recurrent_weight,
+        VkBuffer partial_bias, VkBuffer gradient_weight, VkBuffer gradient_recurrent_weight,
+        VkBuffer gradient_bias, uint32_t batch, uint32_t sequence,
+        uint32_t input_dimension, uint32_t hidden_dimension) const;
+    void validate_rnn_sequence(uint32_t batch, uint32_t sequence,
+                               uint32_t input_dimension,
+                               uint32_t hidden_dimension) const;
+    void validate_rnn_sequence_backward(uint32_t batch, uint32_t sequence,
+                                        uint32_t input_dimension,
+                                        uint32_t hidden_dimension) const;
+    static void validate_rnn_sequence_limits(uint32_t batch, uint32_t sequence,
+                                             uint32_t input_dimension,
+                                             uint32_t hidden_dimension,
+                                             VkDeviceSize max_storage_buffer_range,
+                                             uint32_t max_compute_workgroup_count_x);
+    static void validate_rnn_sequence_backward_limits(
+        uint32_t batch, uint32_t sequence, uint32_t input_dimension,
+        uint32_t hidden_dimension, VkDeviceSize max_storage_buffer_range,
+        uint32_t max_compute_workgroup_count_x);
     void linear_relu_backward_input(VkBuffer, VkBuffer, VkBuffer, VkBuffer,
                                     const VulkanTensorLayout &,
                                     const VulkanTensorLayout &,
@@ -323,6 +349,10 @@ class VulkanCompute final {
     VkPipelineLayout gemm_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule gemm_shader_ = VK_NULL_HANDLE;
     VkPipeline gemm_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout rnn_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout rnn_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule rnn_shader_ = VK_NULL_HANDLE;
+    VkPipeline rnn_pipeline_ = VK_NULL_HANDLE;
     VkDeviceSize max_storage_buffer_range_ = 0;
     uint32_t max_push_constants_size_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;
