@@ -516,6 +516,22 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
                         "linear gradient bias");
     validate_allocation(output_data, checked_bytes(output, "gradient output"),
                         "linear gradient output");
+    if (operation == 1 && input.is_contiguous() && weight.is_contiguous()) {
+        const auto gemm_input_layout =
+            validate_gemm_2d(input, {rows, features}, "linear input-gradient input");
+        const auto gemm_weight_layout = validate_gemm_2d(
+            weight, {features, outputs}, "linear input-gradient weight");
+        const auto gemm_output_layout =
+            validate_gemm_2d(output, {rows, outputs}, "linear input-gradient output");
+        platform.compute().gemm(
+            allocation_buffer(input_data).buffer(), gemm_input_layout,
+            allocation_buffer(weight_data).buffer(), gemm_weight_layout, VK_NULL_HANDLE,
+            gemm_output_layout, allocation_buffer(output_data).buffer(),
+            gemm_output_layout, VK_NULL_HANDLE, bias_layout,
+            static_cast<uint32_t>(rows), static_cast<uint32_t>(outputs),
+            static_cast<uint32_t>(features));
+        return output;
+    }
     const at::Tensor transposed_input = operation == 2 ? input.t() : at::Tensor();
     const auto transposed_input_layout =
         operation == 2 ? inspect_vulkan_tensor_layout(transposed_input,

@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -23,6 +26,21 @@ def _linear_inputs(device):
         torch.randn(16, 8, dtype=torch.float32, device=device),
         torch.randn(16, dtype=torch.float32, device=device),
     )
+
+
+def test_linear_input_gradient_uses_tiled_gemm_path():
+    source_path = Path(__file__).resolve().parents[2] / "src/vulkan/operators/linear.cpp"
+    source = source_path.read_text()
+    linear_gradient = source.split("at::Tensor linear_gradient(", 1)[1].split(
+        "at::Tensor fused_gradient(", 1
+    )[0]
+    input_gradient_branches = re.findall(
+        r"if \(operation == 1[^\{]*\{(.*?)\n    \}",
+        linear_gradient,
+        re.DOTALL,
+    )
+
+    assert any("platform.compute().gemm(" in branch for branch in input_gradient_branches)
 
 
 def test_linear_forward_matches_cpu_and_returns_contiguous_f32(vulkan_backend):
