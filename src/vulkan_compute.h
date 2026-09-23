@@ -244,10 +244,11 @@ class VulkanCompute final {
                         VkDeviceSize bias_bytes, VkDeviceSize output_bytes,
                         const void *params, uint32_t params_size, uint32_t output_numel,
                         VkPipeline pipeline = VK_NULL_HANDLE,
-                        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE,
-                        VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE,
-                        const void *metadata = nullptr,
-                        VkDeviceSize metadata_size = 0) const;
+                         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE,
+                         VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE,
+                         const void *metadata = nullptr,
+                         VkDeviceSize metadata_size = 0,
+                         bool workgroup_per_output = false) const;
     void dispatch_multi_output(const VulkanBuffer *const *inputs,
                                const VulkanTensorLayout *const *input_layouts,
                                const VulkanBuffer *const *outputs,

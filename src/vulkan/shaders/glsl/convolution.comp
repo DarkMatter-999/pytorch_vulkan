@@ -6,6 +6,7 @@ layout(set = 0, binding = 2) readonly buffer Bias { float bias_values[]; };
 layout(set = 0, binding = 3) writeonly buffer Output { float output_values[]; };
 struct TensorMetadata { uint rank; uint sizes[8]; uint strides[8]; uint storage_offset; uint padding[2]; };
 layout(set = 0, binding = 4, std430) readonly buffer Metadata { TensorMetadata tensors[4]; } metadata;
+shared float reduction_values[256];
 layout(push_constant) uniform Params {
   uint batch;
   uint input_channels;
@@ -79,22 +80,35 @@ void main() {
   } else if (params.operation == 2u) {
     uint count =
         params.output_channels * params.input_channels * params.kernel_height * params.kernel_width;
-    if (index >= count)
+    uint weight_index = gl_WorkGroupID.x;
+    if (weight_index >= count)
       return;
-    uint kw = index % params.kernel_width;
-    uint kh = (index / params.kernel_width) % params.kernel_height;
-    uint ic = (index / (params.kernel_width * params.kernel_height)) % params.input_channels;
-    uint oc = index / (params.kernel_width * params.kernel_height * params.input_channels);
+    uint kw = weight_index % params.kernel_width;
+    uint kh = (weight_index / params.kernel_width) % params.kernel_height;
+    uint ic = (weight_index / (params.kernel_width * params.kernel_height)) % params.input_channels;
+    uint oc = weight_index / (params.kernel_width * params.kernel_height * params.input_channels);
+    uint lane = gl_LocalInvocationID.x;
+    uint spatial = params.output_height * params.output_width;
+    uint reduction_count = params.batch * spatial;
     float value = 0.0;
-    for (uint n = 0u; n < params.batch; ++n)
-      for (uint oh = 0u; oh < params.output_height; ++oh)
-        for (uint ow = 0u; ow < params.output_width; ++ow) {
-          int ih = int(oh) + int(kh) - 1;
-          int iw = int(ow) + int(kw) - 1;
-          if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
-            value += input_values[ii(n, oc, oh, ow)] * weight_values[bi(n, ic, uint(ih), uint(iw))];
-        }
-    output_values[index] = value;
+    for (uint reduction_index = lane; reduction_index < reduction_count; reduction_index += gl_WorkGroupSize.x) {
+      uint n = reduction_index / spatial;
+      uint oh = (reduction_index / params.output_width) % params.output_height;
+      uint ow = reduction_index % params.output_width;
+      int ih = int(oh) + int(kh) - 1;
+      int iw = int(ow) + int(kw) - 1;
+      if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
+        value += input_values[ii(n, oc, oh, ow)] * weight_values[bi(n, ic, uint(ih), uint(iw))];
+    }
+    reduction_values[lane] = value;
+    barrier();
+    for (uint stride = gl_WorkGroupSize.x / 2u; stride > 0u; stride >>= 1u) {
+      if (lane < stride)
+        reduction_values[lane] += reduction_values[lane + stride];
+      barrier();
+    }
+    if (lane == 0u)
+      output_values[weight_index] = reduction_values[0];
   } else {
     if (index >= params.output_channels)
       return;

@@ -73,6 +73,30 @@ def test_conv2d_fixed_contract_backward_matches_cpu(vulkan_backend):
         torch.testing.assert_close(actual.cpu(), expected)
 
 
+def test_conv2d_cnn_batch_weight_gradient_matches_cpu(vulkan_backend):
+    torch.manual_seed(1729)
+    cpu_input = torch.randn((1024, 3, 32, 32), dtype=torch.float32, requires_grad=True)
+    cpu_weight = torch.randn((8, 3, 3, 3), dtype=torch.float32, requires_grad=True)
+    cpu_bias = torch.randn((8,), dtype=torch.float32, requires_grad=True)
+    grad_output = torch.randn((1024, 8, 32, 32), dtype=torch.float32)
+
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+    vk_bias = cpu_bias.detach().to(vulkan_backend).requires_grad_()
+
+    cpu_output = torch.nn.functional.conv2d(cpu_input, cpu_weight, cpu_bias, padding=1)
+    vk_output = torch.nn.functional.conv2d(vk_input, vk_weight, vk_bias, padding=1)
+    cpu_output.backward(grad_output)
+    vk_output.backward(grad_output.to(vulkan_backend))
+
+    for actual, expected in (
+        (vk_input.grad, cpu_input.grad),
+        (vk_weight.grad, cpu_weight.grad),
+        (vk_bias.grad, cpu_bias.grad),
+    ):
+        torch.testing.assert_close(actual.cpu(), expected, rtol=3e-3, atol=3e-3)
+
+
 def test_conv2d_backward_is_first_order_only(vulkan_backend):
     input, weight, bias = _conv_inputs(vulkan_backend, requires_grad=True)
     output = torch.nn.functional.conv2d(input, weight, bias, padding=1)

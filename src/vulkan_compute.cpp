@@ -2234,10 +2234,11 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
         output_height, output_width,   kernel_height, kernel_width, operation};
     const uint32_t output_numel = static_cast<uint32_t>(output_layout.numel);
     dispatch_model(input, weight, bias, output, input_layout.allocation_bytes,
-                   weight_layout.allocation_bytes, bias_layout.allocation_bytes,
-                   output_layout.allocation_bytes, &params, sizeof(params),
-                   output_numel, convolution_pipeline_, convolution_pipeline_layout_,
-                   convolution_descriptor_layout_, &metadata, sizeof(metadata));
+                    weight_layout.allocation_bytes, bias_layout.allocation_bytes,
+                    output_layout.allocation_bytes, &params, sizeof(params),
+                    output_numel, convolution_pipeline_, convolution_pipeline_layout_,
+                    convolution_descriptor_layout_, &metadata, sizeof(metadata),
+                    operation == 2);
 }
 
 void VulkanCompute::pooling(VkBuffer input, VkBuffer output,
@@ -2293,14 +2294,15 @@ void VulkanCompute::dispatch_model(
     VkDeviceSize output_bytes, const void *params, uint32_t params_size,
     uint32_t output_numel, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
     VkDescriptorSetLayout descriptor_layout, const void *metadata,
-    VkDeviceSize metadata_size) const {
+    VkDeviceSize metadata_size, bool workgroup_per_output) const {
     if (pipeline == VK_NULL_HANDLE) {
         pipeline = model_pipeline_;
         pipeline_layout = model_pipeline_layout_;
         descriptor_layout = model_descriptor_layout_;
     }
-    const uint64_t dispatch_groups =
-        (static_cast<uint64_t>(output_numel) + kWorkgroupSize - 1) / kWorkgroupSize;
+    const uint64_t dispatch_groups = workgroup_per_output
+        ? output_numel
+        : (static_cast<uint64_t>(output_numel) + kWorkgroupSize - 1) / kWorkgroupSize;
     if (input == VK_NULL_HANDLE || weight == VK_NULL_HANDLE || bias == VK_NULL_HANDLE ||
         output == VK_NULL_HANDLE || !input_bytes || !weight_bytes || !bias_bytes ||
         !output_bytes || !output_numel || input_bytes > max_storage_buffer_range_ ||
