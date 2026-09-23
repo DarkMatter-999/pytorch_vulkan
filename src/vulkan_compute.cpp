@@ -1677,7 +1677,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     const uint32_t matrix_base = batched ? 1U : 0U;
     const auto validate_layout = [&](VkBuffer buffer, const VulkanTensorLayout &layout,
                                      uint32_t rank, uint32_t rows, uint32_t columns,
-                                     const char *name) {
+                                     const char *name, bool allow_transposed = false) {
         const uint32_t expected_rank = rank == 2 ? matrix_rank : rank;
         if (buffer == VK_NULL_HANDLE || layout.rank != expected_rank ||
             layout.scalar_type != kFloatScalarType ||
@@ -1693,8 +1693,10 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         if (layout.sizes[matrix_base] != rows ||
             layout.sizes[matrix_base + 1] != columns ||
             layout.strides[matrix_base] < 0 || layout.strides[matrix_base + 1] < 0 ||
-            (!batched && (layout.strides[matrix_base + 1] != 1 ||
-                          layout.strides[matrix_base] != columns)) ||
+            (!batched && !((layout.strides[matrix_base + 1] == 1 &&
+                            layout.strides[matrix_base] == columns) ||
+                           (allow_transposed && layout.strides[matrix_base] == 1 &&
+                            layout.strides[matrix_base + 1] == rows))) ||
             (batched &&
              (layout.strides[matrix_base] > std::numeric_limits<uint32_t>::max() ||
               layout.strides[matrix_base + 1] >
@@ -1763,7 +1765,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         (batched && dispatch_batches > max_compute_workgroup_count_z_) ||
         2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_)
         throw std::invalid_argument("Vulkan GEMM exceeds device limits");
-    validate_layout(a, a_layout, 2, m, k, "A");
+    validate_layout(a, a_layout, 2, m, k, "A", !batched);
     validate_layout(b, b_layout, 2, k, n, "B");
     validate_layout(output, output_layout, 2, m, n, "output");
     if (c != VK_NULL_HANDLE)

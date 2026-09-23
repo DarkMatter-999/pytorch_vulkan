@@ -94,12 +94,19 @@ class LinearAutogradFunction final
         at::Tensor grad = raw_grad.dim() == 2
                               ? raw_grad
                               : raw_grad.reshape({input_2d.size(0), input_2d.size(1)});
-        auto grad_input = linear_backward_input(grad, saved[1], input_2d);
-        if (saved[0].dim() != 2)
-            grad_input = grad_input.reshape(saved[0].sizes());
-        return {grad_input, linear_backward_weight(grad, input_2d),
-                ctx->saved_data["has_bias"].toBool() ? linear_backward_bias(grad)
-                                                     : at::Tensor()};
+        at::Tensor grad_input;
+        if (ctx->needs_input_grad(0)) {
+            grad_input = linear_backward_input(grad, saved[1], input_2d);
+            if (saved[0].dim() != 2)
+                grad_input = grad_input.reshape(saved[0].sizes());
+        }
+        at::Tensor grad_weight;
+        if (ctx->needs_input_grad(1))
+            grad_weight = linear_backward_weight(grad, input_2d);
+        at::Tensor grad_bias;
+        if (ctx->saved_data["has_bias"].toBool() && ctx->needs_input_grad(2))
+            grad_bias = linear_backward_bias(grad);
+        return {grad_input, grad_weight, grad_bias};
     }
 };
 
@@ -149,11 +156,18 @@ class BmmAutogradFunction final
             return {at::Tensor(), at::Tensor()};
         auto saved = ctx->get_saved_variables();
         auto grad = grad_outputs[0];
+        auto bmm_like = [](const at::Tensor &lhs, const at::Tensor &rhs,
+                           const at::Tensor &layout_like) {
+            return pytorch_vulkan::bmm_out(
+                lhs, rhs,
+                at::empty_strided(layout_like.sizes(), layout_like.strides(),
+                                  layout_like.options()));
+        };
         auto grad_a = ctx->needs_input_grad(0)
-                          ? pytorch_vulkan::bmm(grad, saved[1].transpose(1, 2))
+                          ? bmm_like(grad, saved[1].transpose(1, 2), saved[0])
                           : at::Tensor();
         auto grad_b = ctx->needs_input_grad(1)
-                          ? pytorch_vulkan::bmm(saved[0].transpose(1, 2), grad)
+                          ? bmm_like(saved[0].transpose(1, 2), grad, saved[1])
                           : at::Tensor();
         return {grad_a, grad_b};
     }

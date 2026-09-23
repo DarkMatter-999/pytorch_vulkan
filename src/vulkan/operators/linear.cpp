@@ -57,6 +57,54 @@ bool layouts_overlap(const at::Tensor &lhs, const VulkanTensorLayout &lhs_layout
     return static_cast<uint64_t>(lhs_layout.byte_offset) < rhs_end &&
            static_cast<uint64_t>(rhs_layout.byte_offset) < lhs_end;
 }
+
+void validate_bmm_preflight(const at::Tensor &mat1, const at::Tensor &mat2) {
+    TORCH_CHECK(mat1.dim() == 3 && mat2.dim() == 3 && mat1.size(0) == mat2.size(0) &&
+                    mat1.size(2) == mat2.size(1),
+                "Vulkan bmm requires matching 3-D batch matrices");
+    TORCH_CHECK(mat1.scalar_type() == at::kFloat && mat2.scalar_type() == at::kFloat &&
+                    mat1.device() == mat2.device() && mat1.device().index() == 0,
+                "Vulkan bmm requires matching float32 Vulkan matrices");
+    TORCH_CHECK(mat1.size(0) > 0 && mat1.size(1) > 0 && mat1.size(2) > 0 &&
+                    mat2.size(2) > 0,
+                "Vulkan bmm requires non-empty matrices");
+    TORCH_CHECK(mat1.size(0) <= std::numeric_limits<uint32_t>::max() &&
+                    mat1.size(1) <= std::numeric_limits<uint32_t>::max() &&
+                    mat1.size(2) <= std::numeric_limits<uint32_t>::max() &&
+                    mat2.size(2) <= std::numeric_limits<uint32_t>::max(),
+                "Vulkan bmm dimensions exceed dispatch limits");
+    TORCH_CHECK(mat1.layout() == at::kStrided && mat2.layout() == at::kStrided,
+                "Vulkan bmm requires strided matrices");
+    const auto mat1_layout = inspect_vulkan_tensor_layout(mat1, "bmm mat1");
+    const auto mat2_layout = inspect_vulkan_tensor_layout(mat2, "bmm mat2");
+    TORCH_CHECK(mat1_layout.internal_overlap == VulkanOverlap::No &&
+                    mat2_layout.internal_overlap == VulkanOverlap::No,
+                "Vulkan bmm rejects overlapping inputs");
+    validate_allocation(mat1.storage().data_ptr(), mat1_layout.byte_range, "bmm mat1");
+    validate_allocation(mat2.storage().data_ptr(), mat2_layout.byte_range, "bmm mat2");
+    const auto validate_batched_matrix = [](const VulkanTensorLayout &layout, int64_t rows,
+                                            int64_t cols, const char *name) {
+        TORCH_CHECK(layout.rank == 3 && layout.sizes[1] == rows &&
+                        layout.sizes[2] == cols && layout.strides[1] >= 0 &&
+                        layout.strides[2] >= 0 &&
+                        ((layout.strides[1] == cols && layout.strides[2] == 1) ||
+                         (layout.strides[1] == 1 && layout.strides[2] == rows)),
+                    "Vulkan ", name,
+                    " requires a contiguous or transposed-contiguous batched layout");
+        TORCH_CHECK(layout.strides[0] >= 0 &&
+                        static_cast<uint64_t>(layout.strides[0]) <=
+                            std::numeric_limits<uint32_t>::max() &&
+                        static_cast<uint64_t>(layout.strides[1]) <=
+                            std::numeric_limits<uint32_t>::max() &&
+                        static_cast<uint64_t>(layout.strides[2]) <=
+                            std::numeric_limits<uint32_t>::max(),
+                    "Vulkan ", name, " strides exceed dispatch limits");
+        TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No, "Vulkan ", name,
+                    " has unsupported internal overlap");
+    };
+    validate_batched_matrix(mat1_layout, mat1.size(1), mat1.size(2), "bmm lhs");
+    validate_batched_matrix(mat2_layout, mat2.size(1), mat2.size(2), "bmm rhs");
+}
 } // namespace
 
 at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
@@ -292,6 +340,14 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
 }
 
 at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
+    validate_bmm_preflight(mat1, mat2);
+    return bmm_out(mat1, mat2,
+                   at::empty({mat1.size(0), mat1.size(1), mat2.size(2)},
+                             mat1.options()));
+}
+
+at::Tensor bmm_out(const at::Tensor &mat1, const at::Tensor &mat2,
+                   const at::Tensor &output) {
     TORCH_CHECK(mat1.dim() == 3 && mat2.dim() == 3 && mat1.size(0) == mat2.size(0) &&
                     mat1.size(2) == mat2.size(1),
                 "Vulkan bmm requires matching 3-D batch matrices");
@@ -315,7 +371,11 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
                 "Vulkan bmm rejects overlapping inputs");
     validate_allocation(mat1.storage().data_ptr(), mat1_layout.byte_range, "bmm mat1");
     validate_allocation(mat2.storage().data_ptr(), mat2_layout.byte_range, "bmm mat2");
-    auto output = at::empty({mat1.size(0), mat1.size(1), mat2.size(2)}, mat1.options());
+    TORCH_CHECK(output.sizes() ==
+                        at::IntArrayRef({mat1.size(0), mat1.size(1), mat2.size(2)}) &&
+                    output.scalar_type() == mat1.scalar_type() &&
+                    output.device() == mat1.device() && output.layout() == at::kStrided,
+                "Vulkan bmm output must match the result shape, dtype, device, and layout");
     const auto output_layout = inspect_vulkan_tensor_layout(output, "bmm output");
     validate_allocation(output.storage().data_ptr(), output_layout.byte_range,
                         "bmm output");
@@ -346,6 +406,9 @@ at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
     TORCH_CHECK(&platform == &allocation_platform(mat2.storage().data_ptr()) &&
                     &platform == &allocation_platform(output.storage().data_ptr()),
                 "Vulkan bmm requires one Vulkan platform");
+    TORCH_CHECK(!layouts_overlap(mat1, mat1_layout, output, output_layout) &&
+                    !layouts_overlap(mat2, mat2_layout, output, output_layout),
+                "Vulkan bmm output may not alias an input");
     platform.compute().gemm(
         allocation_buffer(mat1.storage().data_ptr()).buffer(), mat1_layout,
         allocation_buffer(mat2.storage().data_ptr()).buffer(), mat2_layout,
@@ -424,6 +487,12 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
                         weight.size(0) == features && weight.size(1) == outputs,
                     "Vulkan linear gradient dimensions do not match");
     }
+    constexpr int64_t kMaxDispatchDimension =
+        static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+    TORCH_CHECK(rows > 0 && features > 0 && outputs > 0 &&
+                    rows <= kMaxDispatchDimension && features <= kMaxDispatchDimension &&
+                    outputs <= kMaxDispatchDimension,
+                "Vulkan linear gradient dimensions exceed uint32 dispatch range");
     at::Tensor output = at::empty({rows, outputs}, input.options());
     at::Tensor dummy_bias = at::empty({1}, input.options());
     const auto bias_layout =
@@ -447,6 +516,25 @@ at::Tensor linear_gradient(const at::Tensor &input, const at::Tensor &weight,
                         "linear gradient bias");
     validate_allocation(output_data, checked_bytes(output, "gradient output"),
                         "linear gradient output");
+    const at::Tensor transposed_input = operation == 2 ? input.t() : at::Tensor();
+    const auto transposed_input_layout =
+        operation == 2 ? inspect_vulkan_tensor_layout(transposed_input,
+                                                       "linear weight gradient operand")
+                       : input_layout;
+    if (operation == 2 && transposed_input_layout.strides.size() == 2 &&
+        transposed_input_layout.strides[0] == 1 &&
+        transposed_input_layout.strides[1] == rows &&
+        weight_layout.strides.size() == 2 && weight_layout.strides[1] == 1 &&
+        weight_layout.strides[0] == outputs) {
+        platform.compute().gemm(
+            allocation_buffer(input_data).buffer(), transposed_input_layout,
+            allocation_buffer(weight_data).buffer(), weight_layout, VK_NULL_HANDLE,
+            output_layout, allocation_buffer(output_data).buffer(), output_layout,
+            VK_NULL_HANDLE, bias_layout, static_cast<uint32_t>(rows),
+            static_cast<uint32_t>(outputs), static_cast<uint32_t>(features),
+            1.0F, 0.0F, false);
+        return output;
+    }
     platform.compute().linear(
         allocation_buffer(input_data).buffer(), allocation_buffer(weight_data).buffer(),
         allocation_buffer(bias_data).buffer(), allocation_buffer(output_data).buffer(),

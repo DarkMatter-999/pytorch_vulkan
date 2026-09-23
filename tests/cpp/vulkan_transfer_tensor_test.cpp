@@ -1,6 +1,7 @@
 #include "vulkan/operators/binary.h"
 #include "vulkan/operators/comparison.h"
 #include "vulkan/operators/convolution.h"
+#include "vulkan/operators/linear.h"
 #include "vulkan/operators/pooling.h"
 #include "vulkan/operators/reduction.h"
 #include "vulkan_allocator.h"
@@ -768,6 +769,25 @@ void test_metadata_only_views() {
                     "Vulkan as_strided");
 }
 
+void test_bmm_out_rejects_input_alias_before_dispatch() {
+    const auto options = at::TensorOptions().dtype(at::kFloat).device(kDevice);
+    auto lhs = at::empty({1, 2, 2}, options);
+    auto rhs = at::empty({1, 2, 2}, options);
+    const auto platform = pytorch_vulkan::platform();
+    platform->reset_execution_counters();
+
+    expect_error([&] { (void)pytorch_vulkan::bmm_out(lhs, rhs, lhs); },
+                 "output may not alias an input");
+    expect(platform->compute_dispatch_count() == 0,
+           "aliased bmm output submitted compute work");
+    expect(platform->vulkan_copy_count() == 0,
+           "aliased bmm output submitted a copy");
+    expect(platform->explicit_transfer_count() == 0,
+           "aliased bmm output submitted a transfer");
+    expect(platform->execution_counter_snapshot().fallbacks == 0,
+           "aliased bmm output used a fallback");
+}
+
 void test_repeated_add_dispatch_and_retained_output() {
     auto lhs = at::tensor({1.0F, 2.0F, 3.0F, 4.0F});
     auto rhs = at::tensor({10.0F, 20.0F, 30.0F, 40.0F});
@@ -1333,6 +1353,7 @@ int main() {
         test_empty_vulkan_view_checks_allocation_boundary();
         test_empty_vulkan_view_does_not_use_shader_address_limit();
         test_metadata_only_views();
+        test_bmm_out_rejects_input_alias_before_dispatch();
         test_repeated_add_dispatch_and_retained_output();
         test_tensor_tensor_sub_and_mul_dispatch();
         test_zero_element_add_does_not_dispatch();

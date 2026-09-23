@@ -74,10 +74,128 @@ def test_attention_forward_backward_matches_cpu_and_stays_resident(vulkan_backen
     assert transfers == 0
     assert fallbacks == 0
     assert compute_submissions == 1
-    assert transfer_operations == 1
+    assert transfer_operations == 0
     assert transfer_submissions == 0
     assert transfer_completions == 0
     assert transfer_waits == 0
+
+
+@pytest.mark.parametrize("rows,features,outputs", [(37, 13, 11), (129, 32, 19), (1025, 64, 33)])
+def test_linear_dinput_generic_shapes_match_cpu(vulkan_backend, rows, features, outputs):
+    cpu_weight = torch.randn(outputs, features)
+    cpu_grad = torch.randn(rows, outputs)
+    vk_weight = cpu_weight.to(vulkan_backend)
+    vk_grad = cpu_grad.to(vulkan_backend)
+    vk_input = torch.empty((rows, features), device=vulkan_backend, requires_grad=True)
+    vk_output = torch.nn.functional.linear(vk_input, vk_weight)
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output.backward(vk_grad)
+    actual = vk_input.grad
+    transfers = pytorch_vulkan._C.explicit_transfer_count()
+    fallbacks = pytorch_vulkan._C.fallback_count()
+    dispatches = pytorch_vulkan._C.compute_dispatch_count()
+    expected = cpu_grad @ cpu_weight
+
+    actual_cpu = actual.cpu()
+    assert torch.isfinite(actual_cpu).all()
+    torch.testing.assert_close(actual_cpu, expected, rtol=3e-3, atol=3e-3)
+    assert transfers == 0
+    assert fallbacks == 0
+    assert dispatches == 1
+
+
+
+@pytest.mark.parametrize("rows,features,outputs", [(37, 13, 11), (129, 32, 19), (1025, 64, 33), (1024, 256, 256), (8192, 256, 256)])
+def test_linear_dweight_generic_shapes_match_cpu(vulkan_backend, rows, features, outputs):
+    cpu_input = torch.randn(rows, features)
+    cpu_grad = torch.randn(rows, outputs)
+    vk_input = cpu_input.to(vulkan_backend)
+    vk_weight = torch.randn(outputs, features).to(vulkan_backend).requires_grad_()
+    vk_output = torch.nn.functional.linear(vk_input, vk_weight)
+    vk_grad = cpu_grad.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output.backward(vk_grad)
+    transfers = pytorch_vulkan._C.explicit_transfer_count()
+    fallbacks = pytorch_vulkan._C.fallback_count()
+    dispatches = pytorch_vulkan._C.compute_dispatch_count()
+    actual_cpu = vk_weight.grad.cpu()
+    expected = cpu_grad.T @ cpu_input
+    assert torch.isfinite(actual_cpu).all()
+    torch.testing.assert_close(actual_cpu, expected, rtol=3e-3, atol=3e-3)
+    assert transfers == 0
+    assert fallbacks == 0
+    assert dispatches == 1
+
+
+def test_linear_dweight_uses_gemm_scope_when_timestamps_supported(vulkan_backend):
+    cpu_input = torch.randn(37, 13)
+    cpu_grad = torch.randn(37, 11)
+    vk_input = cpu_input.to(vulkan_backend)
+    vk_weight = torch.randn(11, 13).to(vulkan_backend).requires_grad_()
+    vk_grad = cpu_grad.to(vulkan_backend)
+    vk_output = torch.nn.functional.linear(vk_input, vk_weight)
+    if not pytorch_vulkan._C.timestamp_queries_supported():
+        pytest.skip("Vulkan timestamp queries unsupported")
+    pytorch_vulkan._C.reset_gpu_timing()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output.backward(vk_grad)
+    samples = pytorch_vulkan._C.gpu_timing_snapshot()
+    assert samples
+    assert [sample["scope"] for sample in samples] == ["gemm"]
+
+@pytest.mark.parametrize(
+    "requires_grad,has_bias,expected_dispatches",
+    [
+        ((True, False, False), True, 1),
+        ((False, True, False), True, 1),
+        ((False, False, True), True, 1),
+        ((True, True, False), True, 2),
+        ((True, True, True), True, 3),
+        ((False, False, False), True, 0),
+        ((True, False, False), False, 1),
+        ((False, True, False), False, 1),
+    ],
+)
+def test_linear_backward_only_computes_requested_gradients(
+    vulkan_backend, requires_grad, has_bias, expected_dispatches
+):
+    torch.manual_seed(451)
+    rows, features, outputs = 5, 7, 3
+    x = torch.randn(rows, features)
+    weight = torch.randn(outputs, features)
+    bias = torch.randn(outputs) if has_bias else None
+    grad = torch.randn(rows, outputs)
+    vk_x = x.to(vulkan_backend).requires_grad_(requires_grad[0])
+    vk_weight = weight.to(vulkan_backend).requires_grad_(requires_grad[1])
+    vk_bias = bias.to(vulkan_backend).requires_grad_(requires_grad[2]) if bias is not None else None
+    cpu_x = x.requires_grad_(requires_grad[0])
+    cpu_weight = weight.requires_grad_(requires_grad[1])
+    cpu_bias = bias.requires_grad_(requires_grad[2]) if bias is not None else None
+
+    cpu_out = torch.nn.functional.linear(cpu_x, cpu_weight, cpu_bias)
+    vk_out = torch.nn.functional.linear(vk_x, vk_weight, vk_bias)
+    vk_grad = grad.to(vulkan_backend)
+    if any(requires_grad):
+        cpu_out.backward(grad)
+    pytorch_vulkan._C.reset_execution_counters()
+    if any(requires_grad):
+        vk_out.backward(vk_grad)
+    assert pytorch_vulkan._C.compute_dispatch_count() == expected_dispatches
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+    for vk_leaf, cpu_leaf, requested in (
+        (vk_x, cpu_x, requires_grad[0]),
+        (vk_weight, cpu_weight, requires_grad[1]),
+        (vk_bias, cpu_bias, requires_grad[2] if has_bias else False),
+    ):
+        if vk_leaf is None:
+            continue
+        assert (vk_leaf.grad is not None) == requested
+        if requested:
+            torch.testing.assert_close(vk_leaf.grad.cpu(), cpu_leaf.grad, rtol=3e-3, atol=3e-3)
+
+
 
 
 def test_attention_supported_additive_mask_matches_cpu_and_gradients(vulkan_backend):
@@ -102,6 +220,36 @@ def test_attention_supported_additive_mask_matches_cpu_and_gradients(vulkan_back
     for actual, expected in zip(vk.parameters(), cpu.parameters()):
         torch.testing.assert_close(actual.grad.cpu(), expected.grad, rtol=3e-3, atol=3e-3)
     assert pytorch_vulkan._C.fallback_count() == 0
+
+
+@pytest.mark.parametrize("batch", [8, 64])
+def test_attention_training_dweight_batches_match_cpu_in_single_scope(vulkan_backend, batch):
+    fixture, cpu, vk, cpu_input, vk_input, cpu_target, vk_target = _pair(
+        vulkan_backend, batch=batch
+    )
+    cpu_loss = fixture.loss(cpu(cpu_input), cpu_target)
+    cpu_loss.backward()
+
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        vk_loss = fixture.loss(vk(vk_input), vk_target)
+        vk_loss.backward()
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    for actual, expected in zip(vk.parameters(), cpu.parameters()):
+        torch.testing.assert_close(actual.grad.cpu(), expected.grad, rtol=3e-3, atol=3e-3)
+    assert torch.isfinite(vk_input.grad.cpu()).all()
+    assert counters[1] == 0
+    assert counters[2] == 0
+    assert counters[3] == 0
+    assert pytorch_vulkan._C.compute_submitted_count() == 1
+    assert pytorch_vulkan._C.compute_completed_count() == 1
+    assert pytorch_vulkan._C.compute_wait_count() == 1
 
 
 def test_attention_causal_mask_changes_future_scores(vulkan_backend):
@@ -322,3 +470,76 @@ def test_attention_bmm_uses_one_batched_dispatch_without_transpose_materializati
     torch.testing.assert_close(
         actual.cpu(), torch.bmm(query_cpu, key_cpu.transpose(1, 2)), rtol=2e-3, atol=2e-3
     )
+
+
+def test_attention_bmm_backward_rejects_unsupported_grad_layout_before_work(vulkan_backend):
+    lhs = torch.ones((1, 2, 4), device=vulkan_backend, requires_grad=True)
+    rhs = torch.ones((1, 4, 2), device=vulkan_backend)
+    actual = torch.bmm(lhs, rhs)
+    padded_grad = torch.ones((1, 2, 4), device=vulkan_backend)
+    unsupported_grad = padded_grad[..., ::2]
+
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="layout|contiguous|transpose|bmm"):
+        actual.backward(unsupported_grad)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.vulkan_copy_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
+@pytest.mark.parametrize("batch", [8, 64])
+@pytest.mark.parametrize(
+    "needs_lhs, needs_rhs", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_attention_bmm_backward_uses_transposed_contiguous_operands_without_extra_work(
+    vulkan_backend, batch, needs_lhs, needs_rhs
+):
+    """Catches a BMM backward regression that materializes transpose views or falls back."""
+    torch.manual_seed(79 + batch)
+    lhs_cpu = torch.randn(batch, 5, 7, requires_grad=needs_lhs)
+    key_cpu = torch.randn(batch, 4, 7, requires_grad=needs_rhs)
+    lhs = lhs_cpu.detach().to(vulkan_backend).requires_grad_(needs_lhs)
+    key = key_cpu.detach().to(vulkan_backend).requires_grad_(needs_rhs)
+    expected = torch.bmm(lhs_cpu, key_cpu.transpose(1, 2))
+    grad_output_cpu = torch.ones_like(expected)
+    grad_output = grad_output_cpu.to(vulkan_backend)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    actual = torch.bmm(lhs, key.transpose(1, 2))
+    forward_dispatches = pytorch_vulkan._C.compute_dispatch_count()
+    forward_copies = pytorch_vulkan._C.vulkan_copy_count()
+    forward_transfers = pytorch_vulkan._C.explicit_transfer_count()
+    forward_fallbacks = pytorch_vulkan._C.fallback_count()
+
+    assert actual.shape == expected.shape
+    assert forward_dispatches == 1
+    assert forward_copies == 0
+    assert forward_transfers == 0
+    assert forward_fallbacks == 0
+
+    if not (needs_lhs or needs_rhs):
+        assert not actual.requires_grad
+        assert lhs.grad is None
+        assert key.grad is None
+        return
+
+    expected.backward(grad_output_cpu)
+    actual.backward(grad_output)
+    backward_dispatches = pytorch_vulkan._C.compute_dispatch_count() - forward_dispatches
+    backward_copies = pytorch_vulkan._C.vulkan_copy_count() - forward_copies
+    backward_transfers = pytorch_vulkan._C.explicit_transfer_count() - forward_transfers
+    backward_fallbacks = pytorch_vulkan._C.fallback_count() - forward_fallbacks
+
+    assert backward_dispatches == int(needs_lhs) + int(needs_rhs)
+    assert backward_copies == 0
+    assert backward_transfers == 0
+    assert backward_fallbacks == 0
+    if needs_lhs:
+        torch.testing.assert_close(lhs.grad.cpu(), lhs_cpu.grad, rtol=2e-3, atol=2e-3)
+    else:
+        assert lhs.grad is None
+    if needs_rhs:
+        torch.testing.assert_close(key.grad.cpu(), key_cpu.grad, rtol=2e-3, atol=2e-3)
+    else:
+        assert key.grad is None

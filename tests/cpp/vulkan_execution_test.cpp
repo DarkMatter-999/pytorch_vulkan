@@ -5,9 +5,13 @@
 #include "vulkan_tensor_layout.h"
 
 #include <cstdint>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -361,6 +365,69 @@ void test_descriptor_cache_rollover_and_cancellation(VulkanPlatform &platform) {
            "GEMM descriptor cache did not roll over at pool capacity");
 }
 
+void test_gemm_transposed_a_and_preflight_rejections(VulkanPlatform &platform) {
+    constexpr VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VulkanBuffer a(platform, 6 * sizeof(float), host);
+    VulkanBuffer b(platform, 6 * sizeof(float), host);
+    VulkanBuffer out(platform, 4 * sizeof(float), host);
+    // Logical A is 2x3, stored as a contiguous 3x2 transpose.
+    const float av[] = {1, 4, 2, 5, 3, 6};
+    const float bv[] = {7, 8, 9, 10, 11, 12};
+    a.write(av, sizeof(av));
+    b.write(bv, sizeof(bv));
+    auto layout = [](std::vector<int64_t> sizes, std::vector<int64_t> strides,
+                     uint64_t bytes) {
+        return pytorch_vulkan::VulkanTensorLayout{
+            2, std::move(sizes), std::move(strides), 6, sizeof(float), 0, 1, 0,
+            bytes, bytes, pytorch_vulkan::VulkanOverlap::No};
+    };
+    const auto at = layout({2, 3}, {1, 2}, sizeof(av));
+    const auto row = layout({3, 2}, {2, 1}, sizeof(bv));
+    const auto result = layout({2, 2}, {2, 1}, sizeof(float) * 4);
+    platform.reset_execution_counters();
+    platform.compute().begin_training_step();
+    platform.compute().gemm(a.buffer(), at, b.buffer(), row, VK_NULL_HANDLE,
+                            result, out.buffer(), result, VK_NULL_HANDLE, result,
+                            2, 2, 3, 1.0F, 0.0F, false);
+    platform.compute().end_training_step();
+    float actual[4]{};
+    out.read(actual, sizeof(actual));
+    const float expected[] = {58, 64, 139, 154};
+    for (int i = 0; i < 4; ++i)
+        expect(std::abs(actual[i] - expected[i]) < 1e-4F,
+               "transposed-A GEMM numerical mismatch");
+    expect(platform.compute_dispatch_count() == 1,
+           "transposed-A GEMM did not record exactly one dispatch");
+
+    auto unchanged = [&] {
+        expect(platform.compute_dispatch_count() == 0, "invalid GEMM dispatched work");
+        expect(platform.vulkan_copy_count() == 0, "invalid GEMM recorded a copy");
+        expect(platform.explicit_transfer_count() == 0, "invalid GEMM transferred data");
+        expect(platform.execution_counter_snapshot().fallbacks == 0,
+               "invalid GEMM used fallback");
+    };
+    auto rejected = [&](const pytorch_vulkan::VulkanTensorLayout &bad_a,
+                        VkBuffer output_buffer, const auto &output_layout) {
+        platform.reset_execution_counters();
+        platform.compute().begin_training_step();
+        expect_rejected([&] {
+            platform.compute().gemm(a.buffer(), bad_a, b.buffer(), row,
+                                    VK_NULL_HANDLE, result, output_buffer,
+                                    output_layout, VK_NULL_HANDLE, result,
+                                    2, 2, 3, 1.0F, 0.0F, false);
+        }, "malformed GEMM layout was accepted");
+        platform.compute().cancel_training_step();
+        unchanged();
+    };
+    rejected(layout({2, 3}, {2, 1}, sizeof(av)), out.buffer(), result); // sliced/noncompact
+    rejected(layout({2, 3}, {1, static_cast<int64_t>(UINT32_MAX) + 1}, sizeof(av)),
+             out.buffer(), result);
+    auto alias_output = layout({2, 2}, {2, 1}, sizeof(float) * 4);
+    alias_output.allocation_bytes = sizeof(av);
+    rejected(at, a.buffer(), alias_output); // output aliases A
+}
+
 void test_execution_counters_and_timing(VulkanPlatform &platform) {
     platform.reset_execution_counters();
     platform.reset_timing();
@@ -413,6 +480,7 @@ int main() {
         test_retained_descriptor_pool(platform);
         test_platform_pending_compute_count(platform);
         test_descriptor_cache_rollover_and_cancellation(platform);
+        test_gemm_transposed_a_and_preflight_rejections(platform);
         test_execution_counters_and_timing(platform);
         test_bounded_platform_lifetimes();
         std::cout << "Vulkan execution lifecycle tests passed\n";
