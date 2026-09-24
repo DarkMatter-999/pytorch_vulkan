@@ -12,16 +12,40 @@ layout(set = 0, binding = 3, std430) buffer Counter { uint counter; };
 #endif
 layout(push_constant) uniform Params { uint element_count; }
 params;
+shared uint selected_per_lane[256];
+uint range_start(uint lane) {
+  uint quotient = params.element_count / 256u;
+  uint remainder = params.element_count % 256u;
+  return quotient * lane + min(lane, remainder);
+}
+uint range_end(uint lane) {
+  uint quotient = params.element_count / 256u;
+  uint remainder = params.element_count % 256u;
+  return quotient * (lane + 1u) + min(lane + 1u, remainder);
+}
 void main() {
-  if (gl_LocalInvocationIndex != 0u)
-    return;
+  uint lane = gl_LocalInvocationIndex;
+  uint begin = range_start(lane);
+  uint end = range_end(lane);
 #ifdef MASKED_SELECT_COUNT
-  for (uint index = 0u; index < params.element_count; ++index)
+  uint selected = 0u;
+  for (uint index = begin; index < end; ++index)
     if (mask_data[index] != uint8_t(0))
-      atomicAdd(counter, 1u);
+      ++selected;
+  atomicAdd(counter, selected);
 #else
-  for (uint index = 0u; index < params.element_count; ++index)
+  uint selected = 0u;
+  for (uint index = begin; index < end; ++index)
     if (mask_data[index] != uint8_t(0))
-      output_data[atomicAdd(counter, 1u)] = input_data[index];
+      ++selected;
+  selected_per_lane[lane] = selected;
+  barrier();
+  uint output_offset = 0u;
+  for (uint previous = 0u; previous < lane; ++previous)
+    output_offset += selected_per_lane[previous];
+  for (uint index = begin; index < end; ++index) {
+    if (mask_data[index] != uint8_t(0))
+      output_data[output_offset++] = input_data[index];
+  }
 #endif
 }

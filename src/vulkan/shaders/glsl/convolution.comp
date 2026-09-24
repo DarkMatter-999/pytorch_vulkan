@@ -109,14 +109,32 @@ void main() {
     }
     if (lane == 0u)
       output_values[weight_index] = reduction_values[0];
-  } else {
-    if (index >= params.output_channels)
+  } else if (params.operation == 3u) {
+    uint channel = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    if (channel >= params.input_channels)
       return;
+    uint spatial = params.output_height * params.output_width;
+    uint reduction_count = params.batch * spatial;
     float value = 0.0;
-    for (uint n = 0u; n < params.batch; ++n)
-      for (uint oh = 0u; oh < params.output_height; ++oh)
-        for (uint ow = 0u; ow < params.output_width; ++ow)
-          value += input_values[ii(n, index, oh, ow)];
-    output_values[index] = value;
+    for (uint reduction_index = lane; reduction_index < reduction_count;
+         reduction_index += gl_WorkGroupSize.x) {
+      uint n = reduction_index / spatial;
+      uint oh = (reduction_index / params.output_width) % params.output_height;
+      uint ow = reduction_index % params.output_width;
+      value += input_values[ii(n, channel, oh, ow)];
+    }
+    reduction_values[lane] = value;
+    barrier();
+    for (uint stride = gl_WorkGroupSize.x / 2u; stride > 0u; stride >>= 1u) {
+      if (lane < stride)
+        reduction_values[lane] += reduction_values[lane + stride];
+      barrier();
+    }
+    if (lane == 0u) {
+      TensorMetadata outm = metadata.tensors[3];
+      output_values[outm.storage_offset + channel * outm.strides[0]] =
+          reduction_values[0];
+    }
   }
 }

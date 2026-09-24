@@ -4,6 +4,7 @@ layout(set = 0, binding = 0, std430) readonly buffer Input { float input_data[];
 layout(set = 0, binding = 1, std430) readonly buffer Target { float target_data[]; };
 layout(set = 0, binding = 2, std430) readonly buffer Auxiliary { float auxiliary_data[]; };
 layout(set = 0, binding = 3, std430) writeonly buffer Output { float output_data[]; };
+shared float reduction_partial[256];
 layout(push_constant, std430) uniform Params {
   uint element_count;
   uint reduction;
@@ -13,6 +14,27 @@ layout(push_constant, std430) uniform Params {
 // mse_loss and mse_loss_backward share this deliberately narrow shader contract.
 
 void main() {
+  if (params.backward == 0u && params.reduction != 0u) {
+    uint lane = gl_LocalInvocationID.x;
+    float partial = 0.0;
+    for (uint index = lane; index < params.element_count; index += 256u) {
+      float delta = input_data[index] - target_data[index];
+      partial += delta * delta;
+    }
+    reduction_partial[lane] = partial;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+      if (lane < stride)
+        reduction_partial[lane] += reduction_partial[lane + stride];
+      barrier();
+    }
+    if (lane == 0u)
+      output_data[0] = params.reduction == 1u
+          ? reduction_partial[0] / float(params.element_count)
+          : reduction_partial[0];
+    return;
+  }
+
   uint index = gl_GlobalInvocationID.x;
   if (index >= params.element_count) return;
   if (params.backward != 0u) {

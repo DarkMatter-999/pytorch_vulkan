@@ -28,6 +28,8 @@ class VulkanExecutionContext final {
     VulkanExecutionContext &operator=(const VulkanExecutionContext &) = delete;
 
     void begin(const char *scope = "operator");
+    void begin_timestamp_scope(const char *scope);
+    void end_timestamp_scope();
     VkCommandBuffer command_buffer() const;
     void submit();
     void wait();
@@ -55,6 +57,11 @@ class VulkanExecutionContext final {
 
   private:
     struct InFlightRecord {
+        struct TimestampRegion {
+            uint32_t begin = 0;
+            uint32_t end = 0;
+            std::string scope;
+        };
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
         VkSemaphore signal_semaphore = VK_NULL_HANDLE;
@@ -64,6 +71,7 @@ class VulkanExecutionContext final {
         uint32_t timestamp_end = 0;
         bool timestamp_recorded = false;
         std::string timestamp_scope;
+        std::vector<TimestampRegion> timestamp_regions;
         std::vector<std::function<void()>> callbacks;
     };
 
@@ -98,5 +106,7 @@ class VulkanExecutionContext final {
     std::string timestamp_query_support_reason_ = "timestamp queries are unavailable";
     uint64_t next_submission_id_ = 0;
     std::vector<VulkanTimestampSample> timestamp_samples_;
+    uint32_t next_timestamp_region_ = 0;
+    bool timestamp_region_active_ = false;
     mutable std::mutex mutex_;
 };

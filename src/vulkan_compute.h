@@ -231,9 +231,10 @@ class VulkanCompute final {
                         VkDeviceSize output_bytes, VkPipeline pipeline,
                         VkPipelineLayout pipeline_layout,
                         VkDescriptorSetLayout descriptor_layout, const void *params,
-                        uint32_t params_size, uint32_t output_numel,
-                        const void *metadata = nullptr,
-                        VkDeviceSize metadata_size = 0) const;
+                         uint32_t params_size, uint32_t output_numel,
+                         const void *metadata = nullptr,
+                         VkDeviceSize metadata_size = 0,
+                         bool one_workgroup_per_output = false) const;
     void dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer output,
                             VkDeviceSize input_bytes, VkDeviceSize rhs_bytes,
                             VkDeviceSize output_bytes, const void *params,

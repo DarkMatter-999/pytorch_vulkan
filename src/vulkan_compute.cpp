@@ -82,6 +82,7 @@ struct ReductionParams {
     uint32_t storage_offset;
     uint32_t operation;
     uint32_t reduce_dim;
+    uint32_t softmax_workgroup;
 };
 struct ReductionBackwardParams {
     uint32_t rank, input_numel, reduce_numel, reduce_mask, reduce_dim, operation,
@@ -1508,15 +1509,31 @@ void VulkanCompute::reduction(VkBuffer input, const VulkanTensorLayout &input_la
                               uint32_t reduce_dim) const {
     ReductionParams params{};
     fill_layout_metadata(params, input_layout, "reduction");
-    params.output_numel = output_numel;
     params.reduce_mask = reduce_mask;
     params.reduce_numel = reduce_numel;
     params.operation = operation;
     params.reduce_dim = reduce_dim;
+    const auto is_contiguous = [](const VulkanTensorLayout &layout) {
+        int64_t expected_stride = 1;
+        for (int64_t dim = layout.rank - 1; dim >= 0; --dim) {
+            if (layout.sizes[dim] > 1 && layout.strides[dim] != expected_stride)
+                return false;
+            expected_stride *= layout.sizes[dim];
+        }
+        return true;
+    };
+    const bool grouped_softmax =
+        operation >= 5 && reduce_numel > 0 && input_layout.rank > 0 &&
+        reduce_dim + 1 == static_cast<uint32_t>(input_layout.rank) &&
+        output_numel % reduce_numel == 0 && is_contiguous(input_layout) &&
+        is_contiguous(output_layout);
+    params.softmax_workgroup = grouped_softmax ? 1U : 0U;
+    params.output_numel = grouped_softmax ? output_numel / reduce_numel : output_numel;
     dispatch_extra(input, output, input_layout.allocation_bytes,
                    output_layout.allocation_bytes, reduction_pipeline_,
                    reduction_pipeline_layout_, reduction_descriptor_layout_, &params,
-                   sizeof(params), output_numel);
+                   sizeof(params), params.output_numel, nullptr, 0,
+                   grouped_softmax);
 }
 
 void VulkanCompute::reduction_backward(
@@ -1979,7 +1996,9 @@ void VulkanCompute::rnn_sequence_backward(
 
         const auto dispatch = [&](uint32_t mode, uint32_t output_size,
                                   uint32_t workgroups) {
+            const std::string scope = "rnn_backward_mode_" + std::to_string(mode);
             record_dispatch("operator");
+            platform_.execution_context().begin_timestamp_scope(scope.c_str());
             const RnnParams params{batch, sequence, input_dimension, hidden_dimension,
                                    mode, 0, output_size, 0, 0};
             VkCommandBuffer cmd = platform_.execution_context().command_buffer();
@@ -1990,6 +2009,7 @@ void VulkanCompute::rnn_sequence_backward(
                                sizeof(params), &params);
             vkCmdDispatch(cmd, workgroups, 1, 1);
             dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+            platform_.execution_context().end_timestamp_scope();
         };
         dispatch(1, 0, batch);
         dispatch(2, checked_region_size(input_weight_elements),
@@ -2238,7 +2258,7 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
                     output_layout.allocation_bytes, &params, sizeof(params),
                     output_numel, convolution_pipeline_, convolution_pipeline_layout_,
                     convolution_descriptor_layout_, &metadata, sizeof(metadata),
-                    operation == 2);
+                    operation == 2 || operation == 3);
 }
 
 void VulkanCompute::pooling(VkBuffer input, VkBuffer output,
@@ -2489,11 +2509,13 @@ void VulkanCompute::dispatch_extra(
     VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
     VkDeviceSize output_bytes, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
     VkDescriptorSetLayout descriptor_layout, const void *params, uint32_t params_size,
-    uint32_t output_numel, const void *metadata, VkDeviceSize metadata_size) const {
+    uint32_t output_numel, const void *metadata, VkDeviceSize metadata_size,
+    bool one_workgroup_per_output) const {
     const uint64_t max_elements =
         checked_product(static_cast<uint64_t>(max_compute_workgroup_count_x_),
                         kWorkgroupSize, "dispatch workgroup limit");
-    const uint64_t dispatch_groups = checked_dispatch_groups(output_numel);
+    const uint64_t dispatch_groups =
+        one_workgroup_per_output ? output_numel : checked_dispatch_groups(output_numel);
     if (input == VK_NULL_HANDLE || output == VK_NULL_HANDLE || output_numel == 0 ||
         input_bytes == 0 || input_bytes > max_storage_buffer_range_ ||
         output_bytes > max_storage_buffer_range_ ||

@@ -9,6 +9,7 @@
 #include <string>
 
 namespace {
+constexpr uint32_t kQueriesPerSlot = 10;
 struct QuarantinedExecution {
     bool occupied = false;
     std::array<VkCommandBuffer, 2> command_buffers{};
@@ -186,15 +187,18 @@ void VulkanExecutionContext::begin(const char *scope) {
     ring_[active_slot_].timestamp_scope = scope == nullptr ? "operator" : scope;
     ring_[active_slot_].timestamp_recorded = false;
     if (timestamp_queries_supported_) {
-        const uint32_t query_base = static_cast<uint32_t>(active_slot_ * 2);
+        const uint32_t query_base = static_cast<uint32_t>(active_slot_ * kQueriesPerSlot);
         vkCmdResetQueryPool(ring_[active_slot_].command_buffer, timestamp_query_pool_,
-                            query_base, 2);
+                            query_base, kQueriesPerSlot);
         vkCmdWriteTimestamp(ring_[active_slot_].command_buffer,
                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_,
                             query_base);
         ring_[active_slot_].timestamp_begin = query_base;
         ring_[active_slot_].timestamp_end = query_base + 1;
         ring_[active_slot_].timestamp_recorded = true;
+        ring_[active_slot_].timestamp_regions.clear();
+        next_timestamp_region_ = 0;
+        timestamp_region_active_ = false;
     }
     if (platform_)
         platform_->record_timing(
@@ -203,6 +207,40 @@ void VulkanExecutionContext::begin(const char *scope) {
                                           allocation_start)
                 .count());
     recording_ = true;
+}
+
+void VulkanExecutionContext::begin_timestamp_scope(const char *scope) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!recording_ || timestamp_region_active_)
+        throw std::logic_error("Invalid Vulkan timestamp scope begin");
+    if (!timestamp_queries_supported_) {
+        timestamp_region_active_ = true;
+        return;
+    }
+    if (next_timestamp_region_ >= 4)
+        throw std::logic_error("Vulkan timestamp region capacity exceeded");
+    const uint32_t query_base = static_cast<uint32_t>(active_slot_ * kQueriesPerSlot) +
+                                2 + next_timestamp_region_ * 2;
+    auto &record = ring_[active_slot_];
+    record.timestamp_regions.push_back({query_base, query_base + 1,
+                                        scope == nullptr ? "region" : scope});
+    vkCmdWriteTimestamp(record.command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        timestamp_query_pool_, query_base);
+    timestamp_region_active_ = true;
+}
+
+void VulkanExecutionContext::end_timestamp_scope() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!recording_ || !timestamp_region_active_)
+        throw std::logic_error("Invalid Vulkan timestamp scope end");
+    if (timestamp_queries_supported_) {
+        auto &region = ring_[active_slot_].timestamp_regions.back();
+        vkCmdWriteTimestamp(ring_[active_slot_].command_buffer,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            timestamp_query_pool_, region.end);
+        ++next_timestamp_region_;
+    }
+    timestamp_region_active_ = false;
 }
 
 VkCommandBuffer VulkanExecutionContext::command_buffer() const {
@@ -414,7 +452,7 @@ void VulkanExecutionContext::reset_timestamp_samples() {
 
 std::size_t VulkanExecutionContext::timestamp_query_capacity() const {
     std::scoped_lock lock(mutex_);
-    return timestamp_queries_supported_ ? kRingSize * 2 : 0;
+    return timestamp_queries_supported_ ? kRingSize * kQueriesPerSlot : 0;
 }
 
 std::size_t VulkanExecutionContext::timestamp_query_in_use() const {
@@ -499,7 +537,7 @@ void VulkanExecutionContext::initialize_timestamp_queries() {
     }
     VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    info.queryCount = static_cast<uint32_t>(kRingSize * 2);
+    info.queryCount = static_cast<uint32_t>(kRingSize * kQueriesPerSlot);
     if (vkCreateQueryPool(device_, &info, nullptr, &timestamp_query_pool_) !=
         VK_SUCCESS) {
         timestamp_query_support_reason_ = "timestamp query pool creation failed";
@@ -527,6 +565,23 @@ void VulkanExecutionContext::resolve_timestamp(InFlightRecord &record) {
         sample.gpu_time_ns = static_cast<uint64_t>(
             static_cast<double>(values[2] - values[0]) * timestamp_period_);
     timestamp_samples_.push_back(std::move(sample));
+    for (const auto &region : record.timestamp_regions) {
+        uint64_t region_values[4]{};
+        const VkResult region_result = vkGetQueryPoolResults(
+            device_, timestamp_query_pool_, region.begin, 2, sizeof(region_values),
+            region_values, sizeof(uint64_t) * 2,
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        VulkanTimestampSample region_sample;
+        region_sample.submission_id = record.submission_id;
+        region_sample.scope = region.scope;
+        region_sample.available = region_result == VK_SUCCESS &&
+                                  region_values[1] != 0 && region_values[3] != 0;
+        if (region_sample.available && region_values[2] >= region_values[0])
+            region_sample.gpu_time_ns = static_cast<uint64_t>(
+                static_cast<double>(region_values[2] - region_values[0]) *
+                timestamp_period_);
+        timestamp_samples_.push_back(std::move(region_sample));
+    }
 }
 
 void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,

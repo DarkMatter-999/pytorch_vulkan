@@ -114,6 +114,43 @@ def test_masked_select_handles_empty_and_full_masks(vulkan_backend, selected):
     )
 
 
+@pytest.mark.parametrize(
+    ("size", "density"),
+    [(0, "none"), (4096, "none"), (4096, "sparse"),
+     (4096, "half"), (4096, "dense"), (65536, "none"),
+     (65536, "sparse"), (65536, "half"), (65536, "dense"),
+     (262144, "all")],
+)
+def test_masked_select_large_density_preserves_cpu_order_without_fallback(
+    vulkan_backend, size, density
+):
+    indices = torch.arange(size)
+    values = (indices.to(torch.float32) * 0.5 - 12).reshape(-1)
+    if density == "none":
+        mask = indices < 0
+    elif density == "sparse":
+        mask = indices % 64 == 0
+    elif density == "half":
+        mask = indices % 2 == 0
+    elif density == "dense":
+        mask = indices % 64 != 0
+    else:
+        mask = indices >= 0
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_values = values.to(vulkan_backend)
+    vk_mask = mask.to(vulkan_backend)
+    if size == 0:
+        # Keep zero-length views backed by real Vulkan allocations so the
+        # operator can validate allocation provenance and device capability.
+        vk_values = torch.zeros(1, dtype=torch.float32).to(vulkan_backend)[:0]
+        vk_mask = torch.zeros(1, dtype=torch.bool).to(vulkan_backend)[:0]
+    actual = torch.masked_select(vk_values, vk_mask)
+    dispatches, _, _, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert fallbacks == 0
+    assert dispatches == (0 if size == 0 else 1 if density == "none" else 2)
+    torch.testing.assert_close(actual.cpu(), values[mask], rtol=0, atol=0)
+
+
 def test_masked_select_rejects_broadcasting_and_unsupported_metadata(vulkan_backend):
     values = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
     mask = torch.ones(4, dtype=torch.bool).to(vulkan_backend)

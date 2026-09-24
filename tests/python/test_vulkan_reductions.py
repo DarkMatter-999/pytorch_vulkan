@@ -206,6 +206,31 @@ def test_softmax_and_log_softmax_match_cpu(vulkan_backend, logarithmic):
     assert pytorch_vulkan._C.fallback_count() == 0
 
 
+@pytest.mark.parametrize("logarithmic", [False, True])
+def test_softmax_wide_contiguous_rows_match_cpu_with_nonuniform_gradients(
+    vulkan_backend, logarithmic
+):
+    cpu_input = torch.linspace(-12.0, 12.0, 4 * 512).reshape(4, 512)
+    cpu_input[:, 0] += 20.0
+    cpu_input[:, -1] -= 17.0
+    cpu_input.requires_grad_()
+    vk_input = cpu_input.detach().clone().to(vulkan_backend).requires_grad_()
+    operation = torch.log_softmax if logarithmic else torch.softmax
+
+    cpu_result = operation(cpu_input, dim=1)
+    vk_result = operation(vk_input, dim=1)
+    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-5, atol=5e-6)
+
+    cpu_grad = torch.linspace(-1.0, 1.0, cpu_result.numel()).reshape_as(cpu_result)
+    vk_grad = cpu_grad.to(vulkan_backend)
+    cpu_result.backward(cpu_grad)
+    vk_result.backward(vk_grad)
+    torch.testing.assert_close(
+        vk_input.grad.cpu(), cpu_input.grad, rtol=1e-5, atol=5e-6
+    )
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
 @pytest.mark.parametrize("operation", [torch.softmax, torch.log_softmax])
 def test_softmax_rejects_invalid_dim_and_unsupported_dtype(vulkan_backend, operation):
     input = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)

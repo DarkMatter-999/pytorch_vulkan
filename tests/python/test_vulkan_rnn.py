@@ -180,6 +180,31 @@ def test_rnn_last_states_are_fused_output_views_with_cpu_matching_gradients(vulk
         torch.testing.assert_close(actual.grad.cpu(), expected.grad, rtol=3e-3, atol=3e-3)
 
 
+def test_rnn_backward_exposes_non_overlapping_mode_timestamps(vulkan_backend):
+    fixture, _, model, _, inputs, _, target = _pair(
+        vulkan_backend, batch=16, sequence_length=64
+    )
+    pytorch_vulkan._C.reset_gpu_timing()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        fixture.loss(model(inputs), target).backward()
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    samples = pytorch_vulkan._C.gpu_timing_snapshot()
+    modes = [sample for sample in samples if sample["scope"].startswith("rnn_backward_mode_")]
+    assert {sample["scope"] for sample in modes} == {
+        "rnn_backward_mode_1", "rnn_backward_mode_2",
+        "rnn_backward_mode_3", "rnn_backward_mode_4",
+    }
+    assert all(sample["available"] and sample["gpu_time_ns"] > 0 for sample in modes)
+    assert all(sum(sample["scope"] == scope for sample in samples) == 1
+               for scope in {sample["scope"] for sample in modes})
+    assert sum(sample["scope"] == "training" for sample in samples) == 1
+
+
 def test_training_scope_cleans_up_after_forward_failure(vulkan_backend):
     fixture, _, model, _, inputs, _, target = _pair(vulkan_backend, batch=1)
     pytorch_vulkan._C.begin_training_step()

@@ -239,6 +239,8 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     TORCH_CHECK(&platform == &allocation_platform(mask_data) &&
                     platform.supports_bool_pointwise(),
                 "Vulkan masked_select requires bool pointwise Vulkan capability");
+    if (self.numel() == 0)
+        return at::empty({0}, self.options());
     // The shader consumes a densely packed logical sequence.  Validation above
     // must remain side-effect free; only then may a supported value view be
     // materialized on Vulkan.
@@ -251,8 +253,6 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
     TORCH_CHECK(static_cast<uint64_t>(values.numel()) <=
                     std::numeric_limits<uint32_t>::max(),
                 "Vulkan masked_select exceeds the supported element count");
-    if (values.numel() == 0)
-        return at::empty({0}, values.options());
     const uint32_t element_count = static_cast<uint32_t>(values.numel());
     const VkDeviceSize input_bytes =
         static_cast<VkDeviceSize>(element_count) * sizeof(float);

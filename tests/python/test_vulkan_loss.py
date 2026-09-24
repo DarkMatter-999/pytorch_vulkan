@@ -33,6 +33,21 @@ def test_mse_forward_backward_parity_and_residency(vk, reduction):
     assert pytorch_vulkan._C.fallback_count() == 0
 
 
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
+def test_mse_wide_reduction_matches_cpu_without_fallback(vk, reduction):
+    cpu_input = torch.linspace(-3.0, 3.0, 65536).reshape(1024, 64)
+    cpu_target = torch.cos(cpu_input)
+    vk_input = cpu_input.to(vk)
+    vk_target = cpu_target.to(vk)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = torch.nn.functional.mse_loss(vk_input, vk_target, reduction=reduction)
+    expected = torch.nn.functional.mse_loss(cpu_input, cpu_target, reduction=reduction)
+    torch.testing.assert_close(result.cpu(), expected, rtol=1e-5, atol=1e-6)
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    assert pytorch_vulkan._C.fallback_count() == 0
+
+
 def test_mse_training_step(vk):
     x, target = tensors(vk)
     parameter = torch.tensor([1.0, -1.0], device=vk, requires_grad=True)

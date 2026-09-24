@@ -109,7 +109,7 @@ void main() {
         partial_bias[partial_bias_base + local] += delta[local];
       }
       barrier();
-      if (local < params.hidden_dimension) {
+      if (sequence_index > 0u && local < params.hidden_dimension) {
         float previous_adjoint = 0.0;
         for (uint hidden = 0u; hidden < params.hidden_dimension; ++hidden)
           previous_adjoint += delta[hidden] *

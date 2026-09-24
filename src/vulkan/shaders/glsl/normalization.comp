@@ -33,20 +33,36 @@ float variance(uint ch, float m) {
 }
 
 void batch_norm_forward(uint index) {
-  uint ch = index % p.channels;
-  float m = mean(ch); float v = variance(ch, m); float r = 1.0 / sqrt(v + p.eps);
-  if (index < p.channels) { g[index] = m; h[index] = r; d[index] = p.momentum * m + (1.0 - p.momentum) * d[index]; e[index] = p.momentum * (v * float(p.batch * p.spatial) / float(p.batch * p.spatial - 1u)) + (1.0 - p.momentum) * e[index]; }
-  if (index < p.batch * p.channels * p.spatial) f[index] = (a[index] - m) * r * b[ch] + c[ch];
+  if (index < p.channels) {
+    float m = mean(index); float v = variance(index, m); float r = 1.0 / sqrt(v + p.eps);
+    g[index] = m; h[index] = r;
+    d[index] = p.momentum * m + (1.0 - p.momentum) * d[index];
+    e[index] = p.momentum * (v * float(p.batch * p.spatial) / float(p.batch * p.spatial - 1u)) + (1.0 - p.momentum) * e[index];
+  }
+  if (index < p.batch * p.channels * p.spatial) {
+    uint ch = (index / p.spatial) % p.channels;
+    float m = mean(ch); float v = variance(ch, m); float r = 1.0 / sqrt(v + p.eps);
+    f[index] = (a[index] - m) * r * b[ch] + c[ch];
+  }
 }
 
-void batch_norm_backward(uint index) {
-  uint ch = index % p.channels;
-  float m = f[ch]; float r = g[ch]; float sum_dy = 0.0; float sum_xdy = 0.0;
+void batch_norm_sums(uint ch, out float sum_dy, out float sum_xdy) {
+  float m = f[ch]; sum_dy = 0.0; sum_xdy = 0.0;
   for (uint n = 0u; n < p.batch; ++n) for (uint s = 0u; s < p.spatial; ++s) {
     uint q = xidx(n, ch, s); float dy = a[q]; sum_dy += dy; sum_xdy += (b[q] - m) * dy;
   }
-  if (index < p.channels) { i[index] = sum_xdy * r; j[index] = sum_dy; }
+}
+
+void batch_norm_backward(uint index) {
+  if (index < p.channels) {
+    float sum_dy, sum_xdy;
+    batch_norm_sums(index, sum_dy, sum_xdy);
+    i[index] = sum_xdy * g[index]; j[index] = sum_dy;
+  }
   if (index < p.batch * p.channels * p.spatial) {
+    uint ch = (index / p.spatial) % p.channels;
+    float m = f[ch]; float r = g[ch]; float sum_dy, sum_xdy;
+    batch_norm_sums(ch, sum_dy, sum_xdy);
     float dy = a[index]; float dx = (float(p.batch * p.spatial) * dy - sum_dy - (b[index] - m) * r * r * sum_xdy) * r * c[ch] / float(p.batch * p.spatial);
     h[index] = dx;
   }

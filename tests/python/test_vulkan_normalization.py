@@ -35,6 +35,23 @@ def test_native_batch_norm_fixed_training_contract_matches_cpu(vulkan_backend):
         torch.testing.assert_close(result.cpu(), reference)
 
 
+def test_native_batch_norm_4d_benchmark_case_matches_cpu(vulkan_backend):
+    torch.manual_seed(1729)
+    cpu = (
+        torch.randn(2, 4, 2, 2),
+        torch.randn(4),
+        torch.randn(4),
+        torch.randn(4),
+        torch.rand(4) + 1,
+    )
+    vk = tuple(value.to(vulkan_backend) for value in cpu)
+    expected = torch.ops.aten.native_batch_norm.default(*cpu, True, 0.1, 1e-5)
+    actual = torch.ops.aten.native_batch_norm.default(*vk, True, 0.1, 1e-5)
+    for result, reference in zip(actual, expected):
+        assert result.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(result.cpu(), reference)
+
+
 def test_native_batch_norm_rejects_eval_and_wrong_eps_without_vulkan_work(
     vulkan_backend,
 ):
@@ -76,6 +93,32 @@ def test_native_batch_norm_backward_returns_resident_gradients(vulkan_backend):
         True,
         1e-5,
         [True, True, True],
+    )
+    for result, reference in zip(actual, expected):
+        assert result.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(result.cpu(), reference)
+
+
+def test_native_batch_norm_4d_backward_nonuniform_grad_matches_cpu(vulkan_backend):
+    torch.manual_seed(1729)
+    cpu = (
+        torch.randn(2, 4, 2, 2),
+        torch.randn(4),
+        torch.randn(4),
+        torch.randn(4),
+        torch.rand(4) + 1,
+    )
+    vk = tuple(value.to(vulkan_backend) for value in cpu)
+    cpu_forward = torch.ops.aten.native_batch_norm.default(*cpu, True, 0.1, 1e-5)
+    vk_forward = torch.ops.aten.native_batch_norm.default(*vk, True, 0.1, 1e-5)
+    grad = torch.randn_like(cpu[0])
+    expected = torch.ops.aten.native_batch_norm_backward.default(
+        grad, cpu[0], cpu[1], cpu[3], cpu[4], cpu_forward[1], cpu_forward[2],
+        True, 1e-5, [True, True, True],
+    )
+    actual = torch.ops.aten.native_batch_norm_backward.default(
+        grad.to(vulkan_backend), vk[0], vk[1], vk[3], vk[4],
+        vk_forward[1], vk_forward[2], True, 1e-5, [True, True, True],
     )
     for result, reference in zip(actual, expected):
         assert result.device == torch.device(vulkan_backend)

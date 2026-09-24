@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -21,6 +23,25 @@ def _conv_inputs(device, requires_grad=False):
         weight.requires_grad_()
         bias.requires_grad_()
     return input, weight, bias
+
+
+def test_conv_bias_gradient_uses_parallel_workgroup_reduction():
+    root = Path(__file__).resolve().parents[2]
+    shader = (root / "src/vulkan/shaders/glsl/convolution.comp").read_text()
+    assert "} else if (params.operation == 3u) {" in shader
+    bias_branch = shader.split("} else if (params.operation == 3u) {", 1)[1].split(
+        "\n  }", 1
+    )[0]
+    assert "gl_WorkGroupID.x" in bias_branch
+    assert "gl_LocalInvocationID.x" in bias_branch
+    assert "reduction_values[lane]" in bias_branch
+    assert "barrier();" in bias_branch
+
+    compute = (root / "src/vulkan_compute.cpp").read_text()
+    convolution_dispatch = compute.split("void VulkanCompute::convolution(", 1)[1].split(
+        "void VulkanCompute::pooling(", 1
+    )[0]
+    assert "operation == 2 || operation == 3" in convolution_dispatch
 
 
 def test_conv2d_fixed_contract_forward_matches_cpu(vulkan_backend):

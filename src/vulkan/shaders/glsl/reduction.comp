@@ -12,9 +12,55 @@ layout(push_constant, std430) uniform Params {
   uint storage_offset;
   uint operation;
   uint reduce_dim;
+  uint softmax_workgroup;
 }
 params;
+
+shared float softmax_partial[256];
+
 void main() {
+  if (params.operation >= 5u && params.softmax_workgroup != 0u) {
+    uint row = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    if (row >= params.output_numel) return;
+
+    float maximum = -3.402823466e+38;
+    for (uint index = lane; index < params.reduce_numel; index += 256u)
+      maximum = max(maximum, input_data[params.storage_offset +
+                                        row * params.reduce_numel + index]);
+    softmax_partial[lane] = maximum;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+      if (lane < stride)
+        softmax_partial[lane] = max(softmax_partial[lane],
+                                    softmax_partial[lane + stride]);
+      barrier();
+    }
+    maximum = softmax_partial[0];
+
+    float total = 0.0;
+    for (uint index = lane; index < params.reduce_numel; index += 256u)
+      total += exp(input_data[params.storage_offset +
+                              row * params.reduce_numel + index] - maximum);
+    softmax_partial[lane] = total;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+      if (lane < stride)
+        softmax_partial[lane] += softmax_partial[lane + stride];
+      barrier();
+    }
+    total = softmax_partial[0];
+
+    for (uint index = lane; index < params.reduce_numel; index += 256u) {
+      float value = input_data[params.storage_offset +
+                              row * params.reduce_numel + index];
+      output_data[row * params.reduce_numel + index] = params.operation == 5u
+          ? exp(value - maximum) / total
+          : value - maximum - log(total);
+    }
+    return;
+  }
+
   uint output_index = gl_GlobalInvocationID.x;
   if (output_index >= params.output_numel)
     return;

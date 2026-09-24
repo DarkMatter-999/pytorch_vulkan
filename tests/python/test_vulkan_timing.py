@@ -138,7 +138,7 @@ def test_pending_timing_uses_bounded_context_owned_query_ring(timestamp_queries)
         capacity, in_use, supported, quarantined = (
             pytorch_vulkan._C.timestamp_query_snapshot()
         )
-        assert (capacity, supported, quarantined) == (4, True, False)
+        assert (capacity, supported, quarantined) == (20, True, False)
         assert in_use == 2
     finally:
         pytorch_vulkan._C.cancel_training_step()
@@ -233,9 +233,9 @@ def test_device_loss_quarantines_timing_context_and_rejects_new_work(timestamp_q
         output = torch.empty_like(first)
         pytorch_vulkan._C.begin_training_step()
         torch.add(first, second, out=output)
-        assert pytorch_vulkan._C.timestamp_query_snapshot() == (4, 2, True, False)
+        assert pytorch_vulkan._C.timestamp_query_snapshot() == (20, 2, True, False)
         pytorch_vulkan._C.test_inject_device_loss()
-        assert pytorch_vulkan._C.timestamp_query_snapshot() == (4, 0, True, True)
+        assert pytorch_vulkan._C.timestamp_query_snapshot() == (20, 0, True, True)
         try:
             torch.ones(1).to("vk:0")
         except RuntimeError as error:

@@ -13,10 +13,13 @@ for operation in ("params.operation == 1u", "params.operation == 2u"):
     if operation not in source_text:
         raise SystemExit(f"missing convolution backward operation: {operation}")
 if (
-    "} else {" not in source_text
-    or "index >= params.output_channels" not in source_text
+    "} else if (params.operation == 3u) {" not in source_text
+    or "gl_WorkGroupID.x" not in source_text
+    or "gl_LocalInvocationID.x" not in source_text
+    or "reduction_values[lane]" not in source_text
+    or "barrier();" not in source_text
 ):
-    raise SystemExit("missing convolution bias backward operation")
+    raise SystemExit("missing parallel convolution bias-gradient reduction")
 digest = lambda data: hashlib.sha256(data).hexdigest()
 expected = dict(
     line.split("=", 1) for line in MANIFEST.read_text(encoding="ascii").splitlines()
