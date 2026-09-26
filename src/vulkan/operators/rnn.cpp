@@ -242,7 +242,8 @@ std::array<at::Tensor, 4> rnn_sequence_backward_impl(
         partial_weight->buffer(), partial_recurrent->buffer(), partial_bias->buffer(),
         gradient_weight_buffer, gradient_recurrent_buffer, gradient_bias_buffer,
         batch, sequence, input_dimension, hidden_dimension);
-    if (platform.compute().training_step_active()) {
+    if (platform.compute().training_step_active() ||
+        platform.async_execution_enabled()) {
         platform.execution_context().defer_destruction(
             [partial_weight, partial_recurrent, partial_bias, scratch_gradients] {});
     }

@@ -102,6 +102,9 @@ class VulkanPlatform {
     // Serializes synchronous transfers that may reuse the shared staging buffer.
     std::mutex &transfer_mutex() const;
     void wait_for_transfer() const;
+    // Waits for submitted work and returns with the ordered queue mutex held;
+    // callers keep it through direct host-visible memory access.
+    std::unique_lock<std::mutex> acquire_host_transfer_lock() const;
     // Exposes lifecycle invariants to native tests.
     std::size_t pending_transfer_count() const;
     std::size_t pending_compute_count() const;
@@ -161,11 +164,14 @@ class VulkanPlatform {
     std::size_t timestamp_query_capacity() const;
     std::size_t timestamp_query_in_use() const;
     bool timestamp_query_quarantined() const;
+    bool async_execution_enabled() const;
 
   private:
     using PendingTransferResources = VulkanPendingTransferResources;
 
     void cleanup() noexcept;
+    bool record_copy_in_training_step(
+        const std::vector<VulkanBufferCopy> &copies) const;
     friend class VulkanCompute;
 
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -177,6 +183,7 @@ class VulkanPlatform {
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue compute_queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    bool async_execution_enabled_ = false;
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     bool validation_enabled_ = false;
     bool bool_pointwise_supported_ = false;

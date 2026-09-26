@@ -90,6 +90,19 @@ PYBIND11_MODULE(_C, module) {
     });
     module.def("begin_training_step",
                [] { pytorch_vulkan::platform()->compute().begin_training_step(); });
+    module.def("execution_mode", [] {
+        return pytorch_vulkan::platform()->async_execution_enabled() ? "async" : "sync";
+    });
+    module.def("synchronize", [] {
+        const c10::Stream stream(c10::Stream::DEFAULT,
+                                 c10::Device(c10::DeviceType::PrivateUse1, 0));
+        pytorch_vulkan::VulkanDeviceGuard().synchronizeStream(stream);
+    });
+    module.def("query", [] {
+        const c10::Stream stream(c10::Stream::DEFAULT,
+                                 c10::Device(c10::DeviceType::PrivateUse1, 0));
+        return pytorch_vulkan::VulkanDeviceGuard().queryStream(stream);
+    });
     module.def("end_training_step",
                [] { pytorch_vulkan::platform()->compute().end_training_step(); });
     module.def("cancel_training_step",

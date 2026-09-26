@@ -59,6 +59,13 @@ def test_training_benchmark_phases_preserve_scope_and_residency(vulkan_backend):
     assert set(results) == set(expected)
     for phase, fields in expected.items():
         assert results[phase]["phase"] == phase
+        assert results[phase]["requested_execution_mode"] == (
+            pytorch_vulkan._C.execution_mode()
+        )
+        assert results[phase]["execution_mode"] == pytorch_vulkan._C.execution_mode()
+        assert results[phase]["training_scope"] == (
+            "not_applicable" if phase == "forward" else "scoped"
+        )
         assert "host_total_ns" in results[phase]
         assert "gpu_time_ns" in results[phase]
         assert "warmup" in results[phase]
@@ -71,7 +78,11 @@ def test_training_benchmark_phases_preserve_scope_and_residency(vulkan_backend):
         assert results[phase]["dispatches"][0] > 0
         for field, value in fields.items():
             if value == "dispatches":
-                value = results[phase]["dispatches"]
+                value = (
+                    results[phase]["dispatches"]
+                    if results[phase]["execution_mode"] == "sync"
+                    else [1]
+                )
             assert results[phase][field] == value
 
     assert results["forward"]["synchronization_boundaries"] == (
@@ -80,6 +91,20 @@ def test_training_benchmark_phases_preserve_scope_and_residency(vulkan_backend):
     for phase in ("backward", "optimizer"):
         assert results[phase]["synchronization_boundaries"] == (
             "one training-scope submit/wait per step"
+        )
+
+
+def test_training_benchmark_reports_unscoped_eager_autograd_limitation(vulkan_backend):
+    script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_training_benchmark.py"
+    spec = importlib.util.spec_from_file_location("vulkan_training_benchmark_unscoped", script)
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    baseline = benchmark.make_model("mlp", "cpu", 17).state_dict()
+
+    with pytest.raises(RuntimeError, match="in-place operations are unsupported"):
+        benchmark.run(
+            "mlp", "step", "fused", vulkan_backend, 0, 1, 1, 3, 17,
+            baseline, "optimizer", "unscoped",
         )
 
 
@@ -394,6 +419,7 @@ def test_training_scope_records_two_dispatches_and_completes_once(vulkan_backend
     second = torch.full((2, 8), 2.0).to(vulkan_backend)
     result = torch.empty_like(first)
 
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.begin_training_step()
     try:

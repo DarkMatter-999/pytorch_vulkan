@@ -138,6 +138,51 @@ def test_measure_case_pairs_inputs_alternates_order_and_excludes_warmups():
     assert all(cpu == vulkan and cpu is not vulkan for cpu, vulkan in case["payload_pairs"])
 
 
+@pytest.mark.parametrize(("value", "expected"), [(None, "sync"), ("1", "async")])
+def test_operator_result_records_selected_execution_mode(monkeypatch, value, expected):
+    from tools.vulkan_operator_benchmark import measure_case
+
+    if value is None:
+        monkeypatch.delenv("PYTORCH_VULKAN_ASYNC_EXECUTION", raising=False)
+    else:
+        monkeypatch.setenv("PYTORCH_VULKAN_ASYNC_EXECUTION", value)
+    result = measure_case(_fake_case(_FakeVulkanApi()), warmups=0, repetitions=1)
+    assert result["requested_execution_mode"] == expected
+    assert result["execution_mode"] == "sync"
+
+
+def test_operator_host_sample_includes_explicit_completion(monkeypatch):
+    from tools import vulkan_operator_benchmark as benchmark
+
+    events = []
+    api = _FakeVulkanApi()
+    case = _fake_case(api)
+    clock = benchmark.time.perf_counter_ns
+    snapshot = api.gpu_timing_snapshot
+
+    def clock_event():
+        events.append("clock")
+        return clock()
+
+    def snapshot_event():
+        events.append("snapshot")
+        return snapshot()
+
+    monkeypatch.setattr(benchmark.time, "perf_counter_ns", clock_event)
+    monkeypatch.setattr(api, "gpu_timing_snapshot", snapshot_event)
+    monkeypatch.setattr(benchmark, "_synchronize_vulkan", lambda: events.append("synchronize"), raising=False)
+    result = benchmark.measure_case(case, warmups=0, repetitions=2)
+
+    assert len(result["vulkan_host_time_ns"]["samples"]) == 2
+    # Each run snapshots the previous submission before timing starts.
+    for index, event in enumerate(events):
+        if event == "synchronize":
+            assert events[index - 1] == "clock"
+            assert events[index + 1] == "clock"
+            assert events[index + 2] == "snapshot"
+    assert events.count("synchronize") == 2
+
+
 @pytest.mark.parametrize(
     ("equal", "timing", "fallbacks", "expected"),
     [
@@ -166,6 +211,8 @@ def test_artifact_validation_requires_complete_metadata_and_finite_samples():
 
     artifact = {
         "schema_version": 1,
+        "execution_mode": "sync",
+        "requested_execution_mode": "async",
         "device": {"name": "Renoir"},
         "warmups": 0,
         "repetitions": 1,
@@ -200,6 +247,24 @@ def test_artifact_validation_requires_complete_metadata_and_finite_samples():
     }
     assert validate_artifact(artifact) is artifact
 
+    for mode in (None, "unknown"):
+        invalid = copy.deepcopy(artifact)
+        if mode is None:
+            del invalid["requested_execution_mode"]
+        else:
+            invalid["requested_execution_mode"] = mode
+        with pytest.raises(ValueError, match="requested_execution_mode"):
+            validate_artifact(invalid)
+
+    for mode in (None, "unknown"):
+        invalid = copy.deepcopy(artifact)
+        if mode is None:
+            del invalid["execution_mode"]
+        else:
+            invalid["execution_mode"] = mode
+        with pytest.raises(ValueError, match="execution_mode"):
+            validate_artifact(invalid)
+
     artifact["results"][0]["cpu_time_ns"]["samples"] = [float("nan")]
     with pytest.raises(ValueError, match="finite and non-negative"):
         validate_artifact(artifact)
@@ -210,6 +275,8 @@ def test_artifact_validation_checks_sample_counts_and_counters():
 
     valid = {
         "schema_version": 1,
+        "execution_mode": "async",
+        "requested_execution_mode": "async",
         "device": {"name": "Renoir"},
         "warmups": 0,
         "repetitions": 1,

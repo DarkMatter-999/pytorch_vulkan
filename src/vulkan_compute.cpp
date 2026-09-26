@@ -58,6 +58,18 @@ std::runtime_error contextual_error(const char *operation,
                               error.what());
 }
 
+std::runtime_error recording_failure(const char *operation,
+                                     const std::exception &error,
+                                     bool invalidates_prior_eager_work) {
+    const std::string message =
+        std::string("Vulkan compute ") + operation +
+        (invalidates_prior_eager_work
+             ? " failed; pending eager batch explicitly failed and earlier recorded operations were canceled: "
+             : " failed while recording; the partial recording was canceled: ") +
+        error.what();
+    return std::runtime_error(message);
+}
+
 struct TensorMetadata {
     uint32_t rank;
     uint32_t sizes[8];
@@ -1854,13 +1866,12 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
                                 gemm_pipeline_layout_, 0, 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, gemm_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(params), &params);
-        vkCmdDispatch(cmd, static_cast<uint32_t>(n_groups),
-                      static_cast<uint32_t>(m_groups), dispatch_batches);
+        record_dispatch_command(cmd, static_cast<uint32_t>(n_groups),
+                                static_cast<uint32_t>(m_groups), dispatch_batches);
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("GEMM dispatch failed", error);
+        fail_recording("GEMM dispatch", error);
     }
 }
 
@@ -1917,12 +1928,11 @@ void VulkanCompute::rnn_sequence(
                                 0, 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, rnn_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(params), &params);
-        vkCmdDispatch(cmd, batch, 1, 1);
+        record_dispatch_command(cmd, batch, 1, 1);
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("RNN sequence dispatch failed", error);
+        fail_recording("RNN sequence dispatch", error);
     }
 }
 
@@ -2007,7 +2017,7 @@ void VulkanCompute::rnn_sequence_backward(
                                     rnn_pipeline_layout_, 0, 1, &set, 0, nullptr);
             vkCmdPushConstants(cmd, rnn_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                sizeof(params), &params);
-            vkCmdDispatch(cmd, workgroups, 1, 1);
+            record_dispatch_command(cmd, workgroups, 1, 1);
             dispatch_count_.fetch_add(1, std::memory_order_relaxed);
             platform_.execution_context().end_timestamp_scope();
         };
@@ -2019,8 +2029,7 @@ void VulkanCompute::rnn_sequence_backward(
         dispatch(4, hidden_dimension, checked_workgroups(hidden_dimension));
         finish_dispatch();
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("RNN backward dispatch failed", error);
+        fail_recording("RNN backward dispatch", error);
     }
 }
 
@@ -2372,13 +2381,12 @@ void VulkanCompute::dispatch_model(
                                 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            params_size, params);
-        vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
+        record_dispatch_command(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("model dispatch failed", error);
+        fail_recording("model dispatch", error);
     }
 }
 
@@ -2478,13 +2486,12 @@ void VulkanCompute::dispatch_multi_output(
                                 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            params_size, params);
-        vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
+        record_dispatch_command(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("multi-output dispatch failed", error);
+        fail_recording("multi-output dispatch", error);
     }
 }
 
@@ -2563,13 +2570,12 @@ void VulkanCompute::dispatch_extra(
                                 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            params_size, params);
-        vkCmdDispatch(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
+        record_dispatch_command(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("reduction dispatch failed", error);
+        fail_recording("reduction dispatch", error);
     }
 }
 
@@ -2599,6 +2605,7 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
             vkDestroyDescriptorPool(device_, pool, nullptr);
     };
     try {
+        flush_recording();
         platform_.execution_context().begin();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
         const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
@@ -2638,16 +2645,16 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
                                 nullptr);
         vkCmdPushConstants(cmd, formatter_double_pipeline_layout_,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, params_size, params);
-        vkCmdDispatch(cmd, (output_numel + kWorkgroupSize - 1) / kWorkgroupSize, 1, 1);
+        record_dispatch_command(cmd, (output_numel + kWorkgroupSize - 1) / kWorkgroupSize,
+                                1, 1);
         platform_.execution_context().retain(pool);
         pool = VK_NULL_HANDLE;
         platform_.execution_context().submit();
         platform_.execution_context().wait();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
         cleanup();
-        throw contextual_error("formatter dispatch failed", error);
+        fail_recording("formatter dispatch", error);
     }
 }
 
@@ -2682,6 +2689,7 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
             vkDestroyDescriptorPool(device_, pool, nullptr);
     };
     try {
+        flush_recording();
         platform_.execution_context().begin();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
         VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -2722,16 +2730,15 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         MaskedParams params{element_count};
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(params), &params);
-        vkCmdDispatch(cmd, 1, 1, 1);
+        record_dispatch_command(cmd, 1, 1, 1);
         platform_.execution_context().retain(pool);
         pool = VK_NULL_HANDLE;
         platform_.execution_context().submit();
         platform_.execution_context().wait();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
         cleanup();
-        throw contextual_error("masked-select dispatch failed", error);
+        fail_recording("masked-select dispatch", error);
     }
 }
 
@@ -2840,13 +2847,12 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
         Params params{scalar, elements, operation, 0};
         vkCmdPushConstants(cmd, pipeline_layouts_[pipeline_mode],
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-        vkCmdDispatch(cmd, groups, 1, 1);
+        record_dispatch_command(cmd, groups, 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("dispatch failed", error);
+        fail_recording("dispatch", error);
     }
 }
 
@@ -2930,13 +2936,12 @@ void VulkanCompute::dispatch_compound(
         Params params{value, elements, operation, 0};
         vkCmdPushConstants(cmd, compound_pipeline_layouts_[operation],
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
-        vkCmdDispatch(cmd, groups, 1, 1);
+        record_dispatch_command(cmd, groups, 1, 1);
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
-        cancel_recording();
-        throw contextual_error("compound dispatch failed", error);
+        fail_recording("compound dispatch", error);
     }
 }
 
@@ -2944,6 +2949,7 @@ void VulkanCompute::begin_training_step() const {
     std::scoped_lock lock(platform_.queue_mutex());
     if (training_step_)
         throw std::logic_error("Vulkan training step is already recording");
+    flush_recording();
     platform_.execution_context().begin("training");
     const VkMemoryBarrier barrier{
         VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
@@ -2993,10 +2999,18 @@ void VulkanCompute::cancel_training_step() const {
 bool VulkanCompute::training_step_active() const { return training_step_; }
 
 void VulkanCompute::record_dispatch(const char *scope) const {
+    current_dispatch_setup_ = false;
+    current_dispatch_recorded_ = false;
     VulkanExecutionContext &context = platform_.execution_context();
+    throw_if_pending_batch_failure();
     platform_.throw_if_device_lost();
+    if (!training_step_ && platform_.async_execution_enabled() && context.recording() &&
+        (eager_dispatches_ >= 16 || context.timestamp_region_capacity_exhausted()))
+        flush_recording();
     if (!context.recording()) {
+        eager_dispatches_ = 0;
         context.begin(scope);
+        current_dispatch_setup_ = true;
         return;
     }
     const VkMemoryBarrier barrier{
@@ -3005,6 +3019,15 @@ void VulkanCompute::record_dispatch(const char *scope) const {
     vkCmdPipelineBarrier(context.command_buffer(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
                          nullptr, 0, nullptr);
+    current_dispatch_setup_ = true;
+}
+
+void VulkanCompute::record_dispatch_command(VkCommandBuffer command_buffer,
+                                            uint32_t groups_x,
+                                            uint32_t groups_y,
+                                            uint32_t groups_z) const {
+    vkCmdDispatch(command_buffer, groups_x, groups_y, groups_z);
+    current_dispatch_recorded_ = true;
 }
 
 void VulkanCompute::cancel_recording() const {
@@ -3013,12 +3036,113 @@ void VulkanCompute::cancel_recording() const {
         context.cancel();
 }
 
+void VulkanCompute::throw_if_pending_batch_failure() const {
+    if (pending_batch_failure_ != nullptr)
+        std::rethrow_exception(pending_batch_failure_);
+}
+
+[[noreturn]] void VulkanCompute::fail_recording(
+    const char *operation, const std::exception &error) const {
+    const bool async = platform_.async_execution_enabled();
+    const bool preserve_prefix = async && current_dispatch_setup_ &&
+                                 !current_dispatch_recorded_ && eager_dispatches_ > 0;
+    if (preserve_prefix) {
+        try {
+            flush_recording();
+        } catch (const std::exception &submission_error) {
+            const auto failure = recording_failure(
+                operation, submission_error, true);
+            cancel_recording();
+            eager_dispatches_ = 0;
+            current_dispatch_setup_ = false;
+            current_dispatch_recorded_ = false;
+            pending_batch_failure_ = std::make_exception_ptr(std::runtime_error(
+                std::string("pending async eager batch failure: ") + failure.what()));
+            throw failure;
+        }
+        current_dispatch_setup_ = false;
+        current_dispatch_recorded_ = false;
+        throw std::runtime_error(
+            std::string("Vulkan compute ") + operation +
+            " failed before dispatch; earlier eager operations were submitted: " +
+            error.what());
+    }
+    const auto failure = recording_failure(operation, error, async && eager_dispatches_ > 0);
+    cancel_recording();
+    eager_dispatches_ = 0;
+    current_dispatch_setup_ = false;
+    current_dispatch_recorded_ = false;
+    if (async) {
+        pending_batch_failure_ = std::make_exception_ptr(std::runtime_error(
+            std::string("pending async eager batch failure: ") + failure.what()));
+    }
+    throw failure;
+}
+
+void VulkanCompute::test_inject_recording_failure() const {
+    std::scoped_lock lock(platform_.queue_mutex());
+    if (!platform_.async_execution_enabled())
+        throw std::logic_error("recording failure injection requires async mode");
+    if (!platform_.execution_context().recording())
+        throw std::logic_error("recording failure injection requires pending commands");
+    try {
+        const VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                      VK_ACCESS_SHADER_WRITE_BIT,
+                                      VK_ACCESS_SHADER_READ_BIT};
+        vkCmdPipelineBarrier(platform_.execution_context().command_buffer(),
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
+                             nullptr, 0, nullptr);
+        throw std::runtime_error("injected failure after partial command recording");
+    } catch (const std::exception &error) {
+        fail_recording("injected dispatch", error);
+    }
+}
+
+void VulkanCompute::test_inject_pre_dispatch_failure() const {
+    std::scoped_lock lock(platform_.queue_mutex());
+    if (!platform_.async_execution_enabled())
+        throw std::logic_error("pre-dispatch failure injection requires async mode");
+    try {
+        record_dispatch("injected setup failure");
+        throw std::runtime_error("injected failure before dispatch command");
+    } catch (const std::exception &error) {
+        fail_recording("injected dispatch setup", error);
+    }
+}
+
 void VulkanCompute::finish_dispatch() const {
-    if (training_step_)
+    if (training_step_) {
+        current_dispatch_setup_ = false;
+        current_dispatch_recorded_ = false;
         return;
+    }
     VulkanExecutionContext &context = platform_.execution_context();
+    if (platform_.async_execution_enabled()) {
+        ++eager_dispatches_;
+        if (eager_dispatches_ >= 16)
+            flush_recording();
+        current_dispatch_setup_ = false;
+        current_dispatch_recorded_ = false;
+        return;
+    }
     context.submit();
     context.wait();
+    eager_dispatches_ = 0;
+    submission_count_.fetch_add(1, std::memory_order_relaxed);
+    current_dispatch_setup_ = false;
+    current_dispatch_recorded_ = false;
+}
+
+void VulkanCompute::flush_recording() const {
+    throw_if_pending_batch_failure();
+    VulkanExecutionContext &context = platform_.execution_context();
+    if (!context.recording()) {
+        eager_dispatches_ = 0;
+        return;
+    }
+    context.submit();
+    eager_dispatches_ = 0;
     submission_count_.fetch_add(1, std::memory_order_relaxed);
 }
 

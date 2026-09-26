@@ -5,6 +5,7 @@ from tools.vulkan_model_benchmark import (
     AttentionFixture,
     CNNFixture,
     RNNFixture,
+    _run_row,
     validate_artifact,
 )
 
@@ -55,6 +56,24 @@ def test_rnn_slice_schema_is_exact():
         "input.bias": (256,),
         "hidden.weight": (256, 256),
     }
+
+
+def test_model_benchmark_rows_identify_training_scope():
+    row = _run_row("cnn", CNNFixture(batch=1), "cpu", 0, 1)
+    assert row["phase"] == "training"
+    assert row["training_scope"] == "not_applicable"
+
+
+def test_model_benchmark_exposes_inference_phase_without_training_updates():
+    fixture = CNNFixture(batch=1)
+    row, state = _run_row(
+        "cnn", fixture, "cpu", 0, 1, phase="inference", return_state=True
+    )
+    assert row["phase"] == "inference"
+    assert row["training_scope"] == "not_applicable"
+    assert row["loss"] >= 0
+    model = fixture.make_cpu()
+    assert all((state[name] == value).all() for name, value in model.state_dict().items())
 
 
 def test_model_artifact_schema_requires_saturation_evidence():
@@ -133,9 +152,9 @@ def test_model_aggregate_schema_validates_each_nested_result():
             "dispatches": 1, "submissions": 1, "compute_submissions": 1,
             "completions": 1, "waits": 1,
         }
-        models[name] = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+        models[name] = {"schema_version": 1, "requested_execution_mode": "sync", "execution_mode": "sync", "seed": 1729, "rows": [cpu, vulkan]}
 
-    artifact = validate_aggregate_artifact({"schema_version": 1, "seed": 1729, "models": models})
+    artifact = validate_aggregate_artifact({"schema_version": 1, "requested_execution_mode": "sync", "execution_mode": "sync", "seed": 1729, "models": models})
     assert set(artifact["models"]) == {"cnn", "attention", "rnn"}
     pending = copy.deepcopy(artifact)
     pending["models"]["cnn"]["rows"][1]["cpu_parity"] = {"status": "pending"}
@@ -183,9 +202,9 @@ def test_model_artifact_requires_explicit_transfer_and_scope_counters():
             "dispatches": 1, "submissions": 1, "compute_submissions": 1,
             "completions": 1, "waits": 1,
         }
-        models[name] = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+        models[name] = {"schema_version": 1, "requested_execution_mode": "sync", "execution_mode": "sync", "seed": 1729, "rows": [cpu, vulkan]}
 
-    artifact = validate_aggregate_artifact({"schema_version": 1, "seed": 1729, "models": models})
+    artifact = validate_aggregate_artifact({"schema_version": 1, "requested_execution_mode": "sync", "execution_mode": "sync", "seed": 1729, "models": models})
     assert artifact["models"]["rnn"]["rows"][1]["fallback_status"] is False
     missing = copy.deepcopy(artifact)
     del missing["models"]["attention"]["rows"][1]["transfer_operations"]

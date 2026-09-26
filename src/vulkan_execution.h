@@ -35,6 +35,7 @@ class VulkanExecutionContext final {
     void wait();
     void synchronize();
     void retire_completed();
+    bool query_complete();
     void cancel();
     bool recording() const;
     bool invalidated() const;
@@ -44,6 +45,7 @@ class VulkanExecutionContext final {
     void retain(VkDescriptorPool descriptor_pool);
     std::size_t pending_count() const;
     bool timestamp_queries_supported() const;
+    bool timestamp_region_capacity_exhausted() const;
     std::string timestamp_query_support_reason() const;
     std::vector<VulkanTimestampSample> timestamp_samples() const;
     void reset_timestamp_samples();
@@ -79,6 +81,7 @@ class VulkanExecutionContext final {
     void recreate_signal_semaphore(InFlightRecord &record);
     void reset_reusable_resources(InFlightRecord &record);
     void wait_and_retire(InFlightRecord &record, std::unique_lock<std::mutex> &lock);
+    void poll_completed(std::unique_lock<std::mutex> &lock);
     [[noreturn]] void abandon_recording(std::exception_ptr original,
                                         std::unique_lock<std::mutex> &lock);
     void throw_if_invalidated(std::unique_lock<std::mutex> &lock);

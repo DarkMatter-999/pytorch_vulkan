@@ -16,6 +16,7 @@
 #endif
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -376,7 +377,11 @@ void ensure_process_local_vulkan() {
 } // namespace pytorch_vulkan
 
 VulkanPlatform::VulkanPlatform(bool enable_validation)
-    : validation_enabled_(enable_validation) {
+    : validation_enabled_(enable_validation),
+      async_execution_enabled_([] {
+          const char *value = std::getenv("PYTORCH_VULKAN_ASYNC_EXECUTION");
+          return value != nullptr && std::string(value) == "1";
+      }()) {
     try {
         pytorch_vulkan::register_fork_state_handler();
         pytorch_vulkan::ensure_process_local_vulkan();
@@ -830,6 +835,10 @@ bool VulkanPlatform::timestamp_query_quarantined() const {
     return execution_ != nullptr && execution_->timestamp_query_quarantined();
 }
 
+bool VulkanPlatform::async_execution_enabled() const {
+    return async_execution_enabled_;
+}
+
 VulkanCompute &VulkanPlatform::compute() const { return *compute_; }
 
 std::mutex &VulkanPlatform::queue_mutex() const { return queue_mutex_; }
@@ -966,6 +975,52 @@ void VulkanPlatform::record_transfer_operation() const {
     transfer_operation_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool VulkanPlatform::record_copy_in_training_step(
+    const std::vector<VulkanBufferCopy> &copies) const {
+    if (!compute_->training_step_active())
+        return false;
+    VulkanExecutionContext &context = execution_context();
+    if (!context.recording())
+        context.begin("training");
+
+    const auto recording_start = std::chrono::steady_clock::now();
+    const VkMemoryBarrier before_copy{
+        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    const VkPipelineStageFlags source_stages =
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    vkCmdPipelineBarrier(context.command_buffer(), source_stages,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0,
+                         nullptr, 0, nullptr);
+
+    for (std::size_t index = 0; index < copies.size();) {
+        const auto source = copies[index].source;
+        const auto destination = copies[index].destination;
+        std::vector<VkBufferCopy> regions;
+        while (index < copies.size() && copies[index].source == source &&
+               copies[index].destination == destination) {
+            const auto &copy = copies[index++];
+            regions.push_back(
+                {copy.source_offset, copy.destination_offset, copy.size});
+        }
+        vkCmdCopyBuffer(context.command_buffer(), source, destination,
+                        static_cast<uint32_t>(regions.size()), regions.data());
+        copy_command_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const VkMemoryBarrier after_copy{
+        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(context.command_buffer(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
+                         nullptr, 0, nullptr);
+    timing_.recording += std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - recording_start)
+                             .count();
+    return true;
+}
+
 void VulkanPlatform::copy_buffers_sync(
     const std::vector<VulkanBufferCopy> &copies) const {
     if (copies.empty())
@@ -979,6 +1034,9 @@ void VulkanPlatform::copy_buffers_sync(
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
+    if (record_copy_in_training_step(copies))
+        return;
+    compute_->flush_recording();
     const auto total_start = std::chrono::steady_clock::now();
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -1129,6 +1187,10 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
+    if (record_copy_in_training_step(
+            {{source, destination, source_offset, destination_offset, size}}))
+        return;
+    compute_->flush_recording();
 
     const auto total_start = std::chrono::steady_clock::now();
     VkCommandBufferAllocateInfo allocation_info{};
@@ -1303,6 +1365,7 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
+    compute_->flush_recording();
     VkCommandBufferAllocateInfo allocation_info{};
     allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocation_info.commandPool = command_pool_;
@@ -1382,9 +1445,15 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
 }
 
 void VulkanPlatform::wait_for_transfer() const {
+    auto lock = acquire_host_transfer_lock();
+}
+
+std::unique_lock<std::mutex> VulkanPlatform::acquire_host_transfer_lock() const {
     throw_if_device_lost();
-    std::scoped_lock lock(queue_mutex_);
+    std::unique_lock<std::mutex> lock(queue_mutex_);
     throw_if_device_lost();
+    if (compute_ != nullptr)
+        compute_->flush_recording();
     const VkResult result = vkQueueWaitIdle(compute_queue_);
     transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
     if (result == VK_ERROR_DEVICE_LOST) {
@@ -1397,6 +1466,7 @@ void VulkanPlatform::wait_for_transfer() const {
             "Could not wait for Vulkan transfer queue with VkResult " +
             std::to_string(static_cast<int>(result)));
     }
+    return lock;
 }
 
 void VulkanPlatform::copy_buffer(VkBuffer source, VkBuffer destination,

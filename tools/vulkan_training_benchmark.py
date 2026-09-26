@@ -91,6 +91,11 @@ def _cpu_threads():
     }
 
 
+def _synchronize_vulkan():
+    # PyTorch 2.4 has no PrivateUse1 default-stream getter.
+    torch._C.Stream(stream_id=0, device_index=0, device_type=20).synchronize()
+
+
 def timing_status(supported, reason):
     if supported is None:
         return {"status": "not_applicable", "reason": reason}
@@ -146,7 +151,10 @@ def run(
     seed,
     initial_state=None,
     phase=None,
+    training_scope="scoped",
 ):
+    if training_scope not in {"scoped", "unscoped"}:
+        raise ValueError("training_scope must be scoped or unscoped")
     if device.startswith("vk"):
         if backward_mode == "unfused":
             os.environ["PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD"] = "1"
@@ -167,7 +175,7 @@ def run(
     targets = cpu_targets.to(device)
     phase = phase or ("optimizer" if mode == "step" else "forward")
     training = phase != "forward"
-    scoped = device.startswith("vk") and training
+    scoped = device.startswith("vk") and training and training_scope == "scoped"
     timing_supported = None
     timing_reason = "timing is not applicable to CPU execution"
     if device.startswith("vk"):
@@ -179,6 +187,8 @@ def run(
             train_step(model, optimizer, inputs, targets, scoped, phase)
         else:
             forward_step(model, inputs, targets)
+    if device.startswith("vk"):
+        _synchronize_vulkan()
 
     samples = []
     dispatches = []
@@ -221,6 +231,10 @@ def run(
                 last_loss = train_step(model, optimizer, inputs, targets, scoped, phase)
             else:
                 last_loss = forward_step(model, inputs, targets)
+        # Include completed work in each sample for both scoped and unscoped
+        # training, and prevent work from leaking into the next repetition.
+        if device.startswith("vk"):
+            _synchronize_vulkan()
         elapsed = time.monotonic() - start
         samples.append(elapsed)
         host_total_ns.append(int(elapsed * 1_000_000_000))
@@ -288,6 +302,11 @@ def run(
         "batch": batch_size,
         "mode": mode if device.startswith("vk") else "cpu",
         "phase": phase,
+        "requested_execution_mode": (
+            "async" if os.environ.get("PYTORCH_VULKAN_ASYNC_EXECUTION") == "1" else "sync"
+        ),
+        "execution_mode": _C.execution_mode() if device.startswith("vk") else "cpu",
+        "training_scope": "not_applicable" if not training else training_scope,
         "backward_mode": backward_mode if device.startswith("vk") else "native",
         "warmups": warmups,
         "repetitions": repetitions,
@@ -356,6 +375,7 @@ def main():
     parser.add_argument("--mnist-batch-size", type=int, default=32)
     parser.add_argument("--cpu-intraop-threads", type=int, default=1)
     parser.add_argument("--cpu-interop-threads", type=int, default=1)
+    parser.add_argument("--training-scope", choices=("scoped", "unscoped"), default="scoped")
     args = parser.parse_args()
     if (
         args.warmups < 0
@@ -391,6 +411,7 @@ def main():
                 17,
                 baseline,
                 phase,
+                args.training_scope,
             )
             print(json.dumps(cpu_result, allow_nan=False, sort_keys=True))
             if not pytorch_vulkan.is_available():
@@ -407,6 +428,7 @@ def main():
                 17,
                 baseline,
                 phase,
+                args.training_scope,
             )
             vk_result["cpu_comparison"] = {
                 "final_loss": cpu_result["final_loss"],

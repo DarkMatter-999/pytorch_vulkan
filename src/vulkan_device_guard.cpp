@@ -1,6 +1,8 @@
 #include "vulkan_device_guard.h"
 
 #include "vulkan_platform.h"
+#include "vulkan_compute.h"
+#include "vulkan_execution.h"
 
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <c10/util/Exception.h>
@@ -120,13 +122,8 @@ bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {
     owner->throw_if_device_lost();
     std::scoped_lock lock(owner->queue_mutex());
     owner->throw_if_device_lost();
-    const VkResult result = vkQueueWaitIdle(owner->compute_queue());
-    if (result == VK_ERROR_DEVICE_LOST) {
-        owner->mark_device_lost(result);
-        owner->throw_if_device_lost();
-    }
-    TORCH_CHECK(result == VK_SUCCESS, "Could not query Vulkan compute queue");
-    return true;
+    owner->compute().flush_recording();
+    return owner->execution_context().query_complete();
 }
 
 void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
@@ -135,12 +132,8 @@ void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
     owner->throw_if_device_lost();
     std::scoped_lock lock(owner->queue_mutex());
     owner->throw_if_device_lost();
-    const VkResult result = vkQueueWaitIdle(owner->compute_queue());
-    if (result == VK_ERROR_DEVICE_LOST) {
-        owner->mark_device_lost(result);
-        owner->throw_if_device_lost();
-    }
-    TORCH_CHECK(result == VK_SUCCESS, "Could not synchronize Vulkan compute queue");
+    owner->compute().flush_recording();
+    owner->execution_context().synchronize();
 }
 
 c10::Device current_device() { return current; }

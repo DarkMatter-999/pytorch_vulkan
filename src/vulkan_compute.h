@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <exception>
 #include <memory>
 #include <vector>
 
@@ -214,6 +215,9 @@ class VulkanCompute final {
     void end_training_step() const;
     void cancel_training_step() const;
     bool training_step_active() const;
+    void flush_recording() const;
+    void test_inject_recording_failure() const;
+    void test_inject_pre_dispatch_failure() const;
 
   private:
     void dispatch(uint32_t mode, VkBuffer lhs, const VulkanTensorLayout *lhs_layout,
@@ -268,8 +272,13 @@ class VulkanCompute final {
                          VkDescriptorSetLayout descriptor_layout,
                          uint32_t descriptor_count) const;
     void record_dispatch(const char *scope = "operator") const;
+    void record_dispatch_command(VkCommandBuffer command_buffer, uint32_t groups_x,
+                                 uint32_t groups_y, uint32_t groups_z) const;
     void finish_dispatch() const;
     void cancel_recording() const;
+    [[noreturn]] void fail_recording(const char *operation,
+                                    const std::exception &error) const;
+    void throw_if_pending_batch_failure() const;
     VkDescriptorSet acquire_descriptor_set(VkDescriptorSetLayout descriptor_layout,
                                            uint32_t descriptor_count,
                                            uint32_t pool_capacity = 64) const;
@@ -367,4 +376,8 @@ class VulkanCompute final {
     mutable std::size_t descriptor_allocation_baseline_ = 0;
     mutable std::size_t descriptor_reuse_baseline_ = 0;
     mutable bool training_step_ = false;
+    mutable std::size_t eager_dispatches_ = 0;
+    mutable bool current_dispatch_setup_ = false;
+    mutable bool current_dispatch_recorded_ = false;
+    mutable std::exception_ptr pending_batch_failure_;
 };

@@ -18,6 +18,26 @@ SCHEMA_VERSION = 1
 TIMING_SCOPES = {"operator", "gemm", "training"}
 
 
+def _requested_execution_mode():
+    return "async" if os.environ.get("PYTORCH_VULKAN_ASYNC_EXECUTION") == "1" else "sync"
+
+
+def _actual_execution_mode():
+    try:
+        import pytorch_vulkan
+
+        return pytorch_vulkan._C.execution_mode()
+    except (ImportError, AttributeError, RuntimeError):
+        return "sync"
+
+
+def _synchronize_vulkan():
+    import torch
+
+    # PyTorch 2.4 has no Python default-stream getter for PrivateUse1.
+    torch._C.Stream(stream_id=0, device_index=0, device_type=20).synchronize()
+
+
 def _timed(call):
     started = time.perf_counter_ns()
     output = call()
@@ -40,7 +60,12 @@ def _run_vulkan(case, payload):
     api.reset_timing()
     api.reset_gpu_timing()
     api.reset_descriptor_resource_counters()
-    output, host_ns = _timed(lambda: case["vulkan_call"](payload))
+    def completed_call():
+        output = case["vulkan_call"](payload)
+        _synchronize_vulkan()
+        return output
+
+    output, host_ns = _timed(completed_call)
     counters = api.execution_counter_snapshot()
     samples = api.gpu_timing_snapshot()
     current = [
@@ -122,6 +147,8 @@ def measure_case(case, warmups=2, repetitions=10, order_seed=1729):
     gpu_valid = timing_supported and all(value is not None for value in vulkan_gpu_samples)
     result = {
         "schema_version": SCHEMA_VERSION,
+        "requested_execution_mode": _requested_execution_mode(),
+        "execution_mode": _actual_execution_mode(),
         "schema": case["schema"],
         "family": case["family"],
         "phase": case["phase"],
@@ -177,6 +204,10 @@ def qualify_case(result, rtol, atol):
 def validate_artifact(artifact):
     if not isinstance(artifact, dict) or artifact.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(f"schema_version must be exactly {SCHEMA_VERSION}")
+    if artifact.get("execution_mode") not in {"sync", "async"}:
+        raise ValueError("artifact execution_mode must be sync or async")
+    if artifact.get("requested_execution_mode") not in {"sync", "async"}:
+        raise ValueError("artifact requested_execution_mode must be sync or async")
     required = {"device", "warmups", "repetitions", "cpu_threads", "results"}
     missing = required - artifact.keys()
     if missing:
@@ -352,6 +383,8 @@ def main(argv=None):
                        "omp_num_threads": os.environ.get("OMP_NUM_THREADS")}
         artifact = {
             "schema_version": SCHEMA_VERSION,
+            "requested_execution_mode": _requested_execution_mode(),
+            "execution_mode": _actual_execution_mode(),
             "device": {"requested": args.device, "name": _device_name(), "timestamp_queries_supported": extension.timestamp_queries_supported(), "timestamp_query_reason": extension.timestamp_query_support_reason()},
             "environment": {
                 "os": platform.platform(), "python": platform.python_version(), "pytorch": torch.__version__,

@@ -2,6 +2,7 @@
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
+#include "vulkan/descriptor_arena.h"
 #include "vulkan_tensor_layout.h"
 
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -78,6 +80,296 @@ void test_submitted_callback_retirement(VulkanPlatform &platform) {
     expect(callback_count == 1, "submitted callback did not run exactly once");
     context.wait();
     expect(callback_count == 1, "submitted callback ran more than once");
+}
+
+void test_nonblocking_completion_query(VulkanPlatform &platform) {
+    VulkanExecutionContext &context = platform.execution_context();
+    context.wait();
+    platform.reset_execution_counters();
+    expect(context.query_complete(), "idle execution query reported pending work");
+    expect(platform.compute_wait_count() == 0,
+           "idle execution query performed a blocking wait");
+
+    int callback_count = 0;
+    context.begin();
+    context.defer_destruction([&] { ++callback_count; });
+    expect(!context.query_complete(), "recording execution query reported complete");
+    expect(callback_count == 0, "recording query retired a callback");
+    context.submit();
+    const bool first_poll = context.query_complete();
+    expect(first_poll == (context.pending_count() == 0),
+           "submitted query disagreed with pending fence state");
+    expect(platform.compute_wait_count() == 0,
+           "submitted execution query performed a blocking wait");
+    if (first_poll)
+        expect(callback_count == 1, "completed query did not retire callback");
+
+    context.wait();
+    expect(context.query_complete(), "waited execution query reported pending work");
+    expect(callback_count == 1, "submitted query callback did not run exactly once");
+    expect(context.query_complete(), "repeat idle query reported pending work");
+    expect(callback_count == 1, "repeat query retired callback more than once");
+
+    context.begin();
+    context.cancel();
+    expect(context.query_complete(), "cancelled recording query reported pending work");
+}
+
+
+void test_timestamp_capacity_query(VulkanPlatform &platform) {
+    VulkanExecutionContext &context = platform.execution_context();
+    context.wait();
+    context.begin();
+    expect(!context.timestamp_region_capacity_exhausted(),
+           "timestamp capacity was exhausted in a fresh record");
+    for (int region = 0; region < 4; ++region) {
+        context.begin_timestamp_scope("capacity-test");
+        context.end_timestamp_scope();
+    }
+    expect(context.timestamp_region_capacity_exhausted() ==
+               context.timestamp_queries_supported(),
+           "timestamp capacity query disagrees with query support");
+    context.cancel();
+}
+
+void test_wait_for_transfer_flushes_recording(VulkanPlatform &platform) {
+    VulkanBuffer buffer(platform, 64,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    platform.reset_execution_counters();
+    auto &context = platform.execution_context();
+    context.begin();
+    vkCmdFillBuffer(context.command_buffer(), buffer.buffer(), 0, 64, 0x31415926U);
+    platform.wait_for_transfer();
+    expect(!context.recording(), "host-visible transfer wait left compute unsubmitted");
+    expect(platform.compute_submitted_count() == 1,
+           "host-visible transfer wait did not submit pending compute");
+    uint32_t values[16]{};
+    buffer.read(values, sizeof(values));
+    for (uint32_t value : values)
+        expect(value == 0x31415926U,
+               "host-visible transfer observed data before pending compute");
+}
+
+void test_failed_async_recording_surfaces_at_next_boundary(VulkanPlatform &platform) {
+    expect(platform.async_execution_enabled(),
+           "recording-failure test requires async execution mode");
+    VulkanBuffer buffer(platform, 64,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    auto &context = platform.execution_context();
+    context.begin("test-prefix");
+    vkCmdFillBuffer(context.command_buffer(), buffer.buffer(), 0, 64, 0x1234U);
+    expect_rejected([&] { platform.compute().test_inject_recording_failure(); },
+                    "injected partial recording failure was not surfaced");
+    expect(!context.recording(), "failed partial command buffer was not canceled");
+    bool pending_failure = false;
+    try {
+        platform.wait_for_transfer();
+    } catch (const std::exception &error) {
+        pending_failure =
+            std::string(error.what()).find("pending async eager batch failure") !=
+            std::string::npos;
+    }
+    expect(pending_failure,
+           "host-visible boundary did not surface the canceled batch failure");
+    expect_rejected([&] { platform.compute().flush_recording(); },
+                    "flush cleared a pending async batch failure");
+}
+
+void test_async_pre_dispatch_failure_preserves_prefix(VulkanPlatform &platform) {
+    expect(platform.async_execution_enabled(),
+           "pre-dispatch failure test requires async execution mode");
+    constexpr VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VulkanBuffer lhs(platform, 4 * sizeof(float), host);
+    VulkanBuffer rhs(platform, 4 * sizeof(float), host);
+    VulkanBuffer output(platform, 4 * sizeof(float), host);
+    const float lhs_values[] = {1.0F, 2.0F, 3.0F, 4.0F};
+    const float rhs_values[] = {5.0F, 6.0F, 7.0F, 8.0F};
+    lhs.write(lhs_values, sizeof(lhs_values));
+    rhs.write(rhs_values, sizeof(rhs_values));
+    const pytorch_vulkan::VulkanTensorLayout layout{
+        1, {4}, {1}, 0, sizeof(float), 0, 4, 0, sizeof(lhs_values),
+        sizeof(lhs_values), pytorch_vulkan::VulkanOverlap::No};
+
+    platform.reset_execution_counters();
+    platform.compute().add(lhs.buffer(), layout, rhs.buffer(), layout,
+                           output.buffer(), layout);
+    expect(platform.compute_submitted_count() == 0,
+           "valid eager prefix was submitted before injected setup failure");
+    expect_rejected(
+        [&] { platform.compute().test_inject_pre_dispatch_failure(); },
+        "injected pre-dispatch failure was not surfaced");
+    expect(platform.compute_submitted_count() == 1,
+           "pre-dispatch failure did not submit the valid eager prefix");
+    expect(platform.compute_wait_count() == 0,
+           "pre-dispatch failure blocked while preserving the prefix");
+    expect(!platform.execution_context().recording(),
+           "pre-dispatch failure left an unexpected recording open");
+
+    platform.wait_for_transfer();
+    platform.execution_context().synchronize();
+    float actual[4]{};
+    output.read(actual, sizeof(actual));
+    for (int i = 0; i < 4; ++i)
+        expect(actual[i] == lhs_values[i] + rhs_values[i],
+               "pre-dispatch failure discarded the valid eager prefix");
+    platform.compute().flush_recording();
+}
+
+void test_async_eager_batch_and_sync_fill_order(VulkanPlatform &platform) {
+    expect(platform.async_execution_enabled(),
+           "async batch test requires PYTORCH_VULKAN_ASYNC_EXECUTION=1");
+    constexpr VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    constexpr std::size_t count = 18;
+    VulkanBuffer lhs(platform, 16 * sizeof(float), host);
+    VulkanBuffer rhs(platform, 16 * sizeof(float), host);
+    float lhs_values[16];
+    float rhs_values[16];
+    for (int i = 0; i < 16; ++i) {
+        lhs_values[i] = 1.0F;
+        rhs_values[i] = 2.0F;
+    }
+    lhs.write(lhs_values, sizeof(lhs_values));
+    rhs.write(rhs_values, sizeof(rhs_values));
+    std::vector<std::unique_ptr<VulkanBuffer>> outputs;
+    outputs.reserve(count);
+    for (std::size_t i = 0; i < count; ++i)
+        outputs.push_back(std::make_unique<VulkanBuffer>(platform, sizeof(lhs_values), host));
+    const pytorch_vulkan::VulkanTensorLayout layout{1,
+                                                    {16},
+                                                    {1},
+                                                    0,
+                                                    sizeof(float),
+                                                    0,
+                                                    16,
+                                                    0,
+                                                    sizeof(lhs_values),
+                                                    sizeof(lhs_values),
+                                                    pytorch_vulkan::VulkanOverlap::No};
+    platform.reset_execution_counters();
+    for (std::size_t i = 0; i < count; ++i) {
+        const VkBuffer previous = i == 0 ? lhs.buffer() : outputs[i - 1]->buffer();
+        platform.compute().add(previous, layout, rhs.buffer(), layout,
+                               outputs[i]->buffer(), layout);
+        if (i == 15) {
+            expect(platform.compute_submitted_count() == 1,
+                   "16-dispatch async batch was not submitted at its bound");
+            expect(platform.compute_wait_count() == 0,
+                   "async batch waited after reaching its dispatch bound");
+        }
+    }
+    expect(platform.compute_submitted_count() == 1,
+           "async eager chain submitted once per operator");
+    expect(platform.compute_wait_count() == 0,
+           "async eager chain waited before host readback");
+    expect(platform.compute().descriptor_arena_snapshot().pending > 0,
+           "async descriptor sets were not retained for submitted work");
+    platform.compute().flush_recording();
+    platform.execution_context().wait();
+    float result[16]{};
+    outputs.back()->read(result, sizeof(result));
+    for (float value : result)
+        expect(std::abs(value - 37.0F) < 1e-5F,
+               "async eager chain readback had incorrect queue order");
+    expect(platform.compute().descriptor_arena_snapshot().pending == 0,
+           "async descriptor sets were not retired after batch completion");
+
+    // A synchronous fill must submit and complete any preceding async compute.
+    platform.compute().add(lhs.buffer(), layout, rhs.buffer(), layout,
+                           outputs.back()->buffer(), layout);
+    platform.fill_buffer_sync(outputs.back()->buffer(), 0, sizeof(result), 0x3f800000U);
+    outputs.back()->read(result, sizeof(result));
+    for (float value : result)
+        expect(value == 1.0F, "synchronous empty-fill boundary reordered pending compute");
+
+    // Exercise both full timestamp groups in distinct records, retaining each
+    // record's callback until its fence is retired.
+    auto &context = platform.execution_context();
+    int retired_callbacks = 0;
+    for (int group = 0; group < 2; ++group) {
+        context.begin("rnn_backward");
+        context.defer_destruction([&] { ++retired_callbacks; });
+        for (int region = 0; region < 4; ++region) {
+            context.begin_timestamp_scope("rnn_backward_region");
+            context.end_timestamp_scope();
+        }
+        expect(context.timestamp_region_capacity_exhausted() ==
+                   context.timestamp_queries_supported(),
+               "four-scope timestamp group did not report exact capacity");
+        context.submit();
+    }
+    context.wait();
+    expect(retired_callbacks == 2,
+           "timestamp rollover did not retain callbacks through fence retirement");
+}
+
+void test_scoped_training_batches_device_copy(VulkanPlatform &platform) {
+    constexpr VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VulkanBuffer lhs(platform, 4 * sizeof(float), host);
+    VulkanBuffer rhs(platform, 4 * sizeof(float), host);
+    VulkanBuffer first(platform, 4 * sizeof(float), host);
+    VulkanBuffer copied(platform, 4 * sizeof(float), host);
+    VulkanBuffer output(platform, 4 * sizeof(float), host);
+    const float lhs_values[] = {1.0F, 2.0F, 3.0F, 4.0F};
+    const float rhs_values[] = {5.0F, 6.0F, 7.0F, 8.0F};
+    lhs.write(lhs_values, sizeof(lhs_values));
+    rhs.write(rhs_values, sizeof(rhs_values));
+    const pytorch_vulkan::VulkanTensorLayout layout{
+        1, {4}, {1}, 0, sizeof(float), 0, 4, 0, sizeof(lhs_values),
+        sizeof(lhs_values), pytorch_vulkan::VulkanOverlap::No};
+
+    platform.reset_execution_counters();
+    platform.compute().begin_training_step();
+    platform.compute().add(lhs.buffer(), layout, rhs.buffer(), layout,
+                           first.buffer(), layout);
+    platform.copy_buffer_sync(first.buffer(), copied.buffer(), sizeof(lhs_values));
+    platform.compute().add(copied.buffer(), layout, rhs.buffer(), layout,
+                           output.buffer(), layout);
+    expect(platform.compute_submitted_count() == 0,
+           "device copy split an explicitly scoped training command buffer");
+    expect(platform.compute_wait_count() == 0,
+           "device copy blocked inside an explicitly scoped training step");
+    platform.compute().end_training_step();
+    expect(platform.compute_submitted_count() == 1,
+           "scoped training step with device copy did not submit once");
+    expect(platform.compute_completed_count() == 1 &&
+               platform.compute_wait_count() == 1,
+           "scoped training copy was not completed by its end boundary");
+    float actual[4]{};
+    output.read(actual, sizeof(actual));
+    for (int i = 0; i < 4; ++i)
+        expect(actual[i] == lhs_values[i] + 2.0F * rhs_values[i],
+               "scoped device copy did not preserve compute ordering");
+}
+
+void test_query_retains_callbacks_until_all_submissions(VulkanPlatform &platform) {
+    VulkanExecutionContext &context = platform.execution_context();
+    context.wait();
+    platform.reset_execution_counters();
+    int callback_count = 0;
+    context.begin();
+    context.defer_destruction([&] { ++callback_count; });
+    context.submit();
+    context.begin();
+    expect(!context.query_complete(),
+           "recording query ignored active commands after an earlier submission");
+    expect(platform.compute_wait_count() == 0,
+           "recording query performed a blocking wait");
+    context.submit();
+    const bool complete = context.query_complete();
+    expect(complete == (context.pending_count() == 0),
+           "query did not report both submitted records");
+    expect(platform.compute_wait_count() == 0,
+           "multi-submission query performed a blocking wait");
+    if (complete)
+        expect(callback_count == 1, "completed submissions retained callback");
+    context.wait();
+    expect(context.query_complete(), "query remained incomplete after wait");
+    expect(callback_count == 1, "query retired callback more than once");
 }
 
 void test_stale_slot_callback_retirement(VulkanPlatform &platform) {
@@ -472,6 +764,10 @@ int main() {
         test_invalid_states(context);
         test_deferred_callback(platform);
         test_submitted_callback_retirement(platform);
+        test_nonblocking_completion_query(platform);
+        test_timestamp_capacity_query(platform);
+        test_wait_for_transfer_flushes_recording(platform);
+        test_query_retains_callbacks_until_all_submissions(platform);
         test_stale_slot_callback_retirement(platform);
         test_callback_waits_for_all_submissions(platform);
         test_abandoned_callback(platform);
@@ -481,6 +777,13 @@ int main() {
         test_platform_pending_compute_count(platform);
         test_descriptor_cache_rollover_and_cancellation(platform);
         test_gemm_transposed_a_and_preflight_rejections(platform);
+        test_scoped_training_batches_device_copy(platform);
+        if (platform.async_execution_enabled())
+            test_async_eager_batch_and_sync_fill_order(platform);
+        if (platform.async_execution_enabled())
+            test_async_pre_dispatch_failure_preserves_prefix(platform);
+        if (platform.async_execution_enabled())
+            test_failed_async_recording_surfaces_at_next_boundary(platform);
         test_execution_counters_and_timing(platform);
         test_bounded_platform_lifetimes();
         std::cout << "Vulkan execution lifecycle tests passed\n";

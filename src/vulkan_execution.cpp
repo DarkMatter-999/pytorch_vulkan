@@ -229,6 +229,11 @@ void VulkanExecutionContext::begin_timestamp_scope(const char *scope) {
     timestamp_region_active_ = true;
 }
 
+bool VulkanExecutionContext::timestamp_region_capacity_exhausted() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return timestamp_queries_supported_ && next_timestamp_region_ >= 4;
+}
+
 void VulkanExecutionContext::end_timestamp_scope() {
     std::unique_lock<std::mutex> lock(mutex_);
     if (!recording_ || !timestamp_region_active_)
@@ -332,19 +337,42 @@ void VulkanExecutionContext::retire_completed() {
     throw_if_invalidated(lock);
     if (recording_)
         throw std::logic_error("Cannot retire while Vulkan execution is recording");
+    poll_completed(lock);
+}
+
+bool VulkanExecutionContext::query_complete() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
+    if (recording_)
+        return false;
+    poll_completed(lock);
+    throw_if_invalidated(lock);
+    if (recording_)
+        return false;
+    for (const auto &record : ring_) {
+        if (record.submitted)
+            return false;
+    }
+    return true;
+}
+
+void VulkanExecutionContext::poll_completed(std::unique_lock<std::mutex> &lock) {
     for (auto &record : ring_) {
-        const VkResult status =
-            record.submitted ? vkGetFenceStatus(device_, record.fence) : VK_NOT_READY;
+        if (!record.submitted)
+            continue;
+        const VkResult status = vkGetFenceStatus(device_, record.fence);
         if (status == VK_ERROR_DEVICE_LOST) {
             invalidate(status, lock);
             throw_device_lost(status);
         }
-        if (record.submitted && status == VK_SUCCESS) {
+        if (status == VK_SUCCESS) {
             if (platform_)
                 platform_->record_compute_completed();
             resolve_timestamp(record);
             retire(record, lock);
-        }
+            throw_if_invalidated(lock);
+        } else if (status != VK_NOT_READY)
+            check_result(status, "Could not query Vulkan execution fence");
     }
 }
 

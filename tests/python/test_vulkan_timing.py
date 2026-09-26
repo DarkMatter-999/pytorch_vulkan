@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 import sys
 import textwrap
@@ -27,6 +28,77 @@ def _gemm_benchmark_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_model_artifact_identifies_execution_mode_and_rejects_missing_or_invalid_mode():
+    from tools import vulkan_model_benchmark as benchmark
+
+    script = textwrap.dedent(
+        """
+        import json
+        from tools import vulkan_model_benchmark as benchmark
+
+        artifact = benchmark.run("cnn", "vk:0", warmups=0, repetitions=1)
+        print(json.dumps(artifact))
+        """
+    )
+    environment = os.environ.copy()
+    environment["PYTORCH_VULKAN_ASYNC_EXECUTION"] = "1"
+    module_root = Path(pytorch_vulkan.__file__).resolve().parent.parent
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(__file__).resolve().parents[2]), str(module_root), environment.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    artifact = json.loads(result.stdout)
+    assert artifact["requested_execution_mode"] == "async"
+    assert artifact["execution_mode"] == "async"
+    for invalid_mode in (None, "unknown"):
+        invalid = dict(artifact)
+        if invalid_mode is None:
+            invalid.pop("requested_execution_mode", None)
+        else:
+            invalid["requested_execution_mode"] = invalid_mode
+        with pytest.raises(ValueError, match="requested_execution_mode"):
+            benchmark.validate_artifact(invalid)
+    for invalid_mode in (None, "unknown"):
+        invalid = dict(artifact)
+        if invalid_mode is None:
+            invalid.pop("execution_mode", None)
+        else:
+            invalid["execution_mode"] = invalid_mode
+        with pytest.raises(ValueError, match="execution_mode"):
+            benchmark.validate_artifact(invalid)
+
+
+def test_model_vulkan_repetitions_synchronize_before_host_end_and_gpu_snapshot(monkeypatch):
+    from tools import vulkan_model_benchmark as benchmark
+
+    events = []
+    clock = benchmark.time.perf_counter_ns
+    snapshot = pytorch_vulkan._C.gpu_timing_snapshot
+
+    def clock_event():
+        events.append("clock")
+        return clock()
+
+    def snapshot_event():
+        events.append("snapshot")
+        return snapshot()
+
+    monkeypatch.setattr(benchmark.time, "perf_counter_ns", clock_event)
+    monkeypatch.setattr(pytorch_vulkan._C, "gpu_timing_snapshot", snapshot_event)
+    monkeypatch.setattr(benchmark, "_synchronize_vulkan", lambda: events.append("synchronize"), raising=False)
+    row = benchmark._run_row("cnn", benchmark.CNNFixture(batch=1), "vk:0", 0, 2)
+
+    assert row["host_time"]["samples_ns"] and len(row["host_time"]["samples_ns"]) == 2
+    assert events == ["clock", "synchronize", "clock", "snapshot"] * 2
 
 
 @pytest.fixture

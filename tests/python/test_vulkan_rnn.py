@@ -43,6 +43,7 @@ def test_rnn_forward_backward_and_optimizer_match_cpu(vulkan_backend):
     vk_optimizer = torch.optim.SGD(vk.parameters(), lr=0.01)
     cpu_loss = fixture.loss(cpu(cpu_input), cpu_target)
     cpu_loss.backward()
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.begin_training_step()
     try:

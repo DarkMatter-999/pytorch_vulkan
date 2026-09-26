@@ -2,6 +2,7 @@
 
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
+#include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_layout.h"
 
@@ -458,7 +459,11 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     if (!vulkan_to_vulkan && !host_visible) {
         staging = &platform.staging_buffer(bytes);
     }
-    if (host_visible || vulkan_to_vulkan)
+    std::unique_lock<std::mutex> host_access_lock;
+    if (host_visible && !vulkan_to_vulkan)
+        host_access_lock = platform.acquire_host_transfer_lock();
+    else if (vulkan_to_vulkan &&
+             !platform.compute().training_step_active())
         platform.wait_for_transfer();
     if (vulkan_to_vulkan)
         platform.record_vulkan_copy();

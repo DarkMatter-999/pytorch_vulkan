@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -25,6 +26,25 @@ SCHEMA_VERSION = 1
 TIMING_MEAN_REL_TOLERANCE = 1e-6
 TIMING_MEAN_ABS_TOLERANCE_NS = 1.0
 MODEL_PARITY_ABS_TOLERANCE = 3e-3
+
+
+def _requested_execution_mode():
+    return "async" if os.environ.get("PYTORCH_VULKAN_ASYNC_EXECUTION") == "1" else "sync"
+
+
+def _actual_execution_mode():
+    try:
+        import pytorch_vulkan
+
+        return pytorch_vulkan._C.execution_mode()
+    except (ImportError, AttributeError, RuntimeError):
+        return "sync"
+
+
+def _synchronize_vulkan():
+    # PyTorch 2.4 does not expose a Python default-stream getter for PrivateUse1.
+    # Stream id zero is the existing Vulkan compute stream; 20 is PrivateUse1.
+    torch._C.Stream(stream_id=0, device_index=0, device_type=20).synchronize()
 
 
 class _Attention(torch.nn.Module):
@@ -365,9 +385,11 @@ def _move_model(model, device):
     return model
 
 
-def _run_row(name, fixture, device, warmups, repetitions, initial_state=None, return_state=False):
+def _run_row(name, fixture, device, warmups, repetitions, initial_state=None, return_state=False, phase="training"):
     if device not in {"cpu", "vk:0"}:
         raise ValueError("device must be exactly vk:0")
+    if phase not in {"inference", "training"}:
+        raise ValueError("phase must be inference or training")
     runtime_device = "privateuseone:0" if device == "vk:0" else device
     if device != "cpu":
         import pytorch_vulkan  # noqa: F401 - registers the PrivateUse1 backend
@@ -387,6 +409,10 @@ def _run_row(name, fixture, device, warmups, repetitions, initial_state=None, re
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
     def train_once():
+        if phase == "inference":
+            with torch.inference_mode():
+                output = model(inputs, mask) if mask is not None else model(inputs)
+                return fixture.loss(output, target)
         scoped = device != "cpu"
         scope_started = False
         try:
@@ -423,6 +449,8 @@ def _run_row(name, fixture, device, warmups, repetitions, initial_state=None, re
             pytorch_vulkan._C.reset_gpu_timing()
         start = time.perf_counter_ns()
         loss = train_once()
+        if device != "cpu":
+            _synchronize_vulkan()
         samples.append(time.perf_counter_ns() - start)
         losses.append(loss.detach())
         if device != "cpu" and timing_supported:
@@ -438,6 +466,10 @@ def _run_row(name, fixture, device, warmups, repetitions, initial_state=None, re
     row = {
         "model": name,
         "mode": "cpu" if device == "cpu" else "vulkan",
+        "phase": phase,
+        "training_scope": (
+            "scoped" if phase == "training" and device != "cpu" else "not_applicable"
+        ),
         "device": device,
         "dtype": "float32",
         "shape": list(fixture.shape),
@@ -635,10 +667,16 @@ def validate_artifact(artifact):
             raise ValueError(f"CPU/Vulkan {field} does not match")
     if artifact.get("seed") != cpu["seed"] or artifact["seed"] != vulkan["seed"]:
         raise ValueError("artifact and row seeds do not match")
+    if artifact.get("execution_mode") not in {"sync", "async"}:
+        raise ValueError("artifact execution_mode must be sync or async")
+    if artifact.get("requested_execution_mode") not in {"sync", "async"}:
+        raise ValueError("artifact requested_execution_mode must be sync or async")
+    if "phase" in artifact and artifact["phase"] not in {"inference", "training"}:
+        raise ValueError("artifact phase must be inference or training")
     return artifact
 
 
-def run(model_name, device, warmups, repetitions):
+def run(model_name, device, warmups, repetitions, phase="training"):
     if model_name not in FIXTURES:
         raise ValueError(f"unsupported model: {model_name}")
     fixture = FIXTURES[model_name]()
@@ -651,20 +689,25 @@ def run(model_name, device, warmups, repetitions):
         name: value.detach().clone()
         for name, value in fixture.make_cpu().state_dict().items()
     }
-    cpu_row, cpu_state = _run_row(model_name, fixture, "cpu", warmups, repetitions, initial_state, True)
-    vulkan_row, vulkan_state = _run_row(model_name, fixture, device, warmups, repetitions, initial_state, True)
+    cpu_row, cpu_state = _run_row(model_name, fixture, "cpu", warmups, repetitions, initial_state, True, phase)
+    vulkan_row, vulkan_state = _run_row(model_name, fixture, device, warmups, repetitions, initial_state, True, phase)
     _apply_parity(vulkan_row, cpu_row, cpu_state, vulkan_state)
     rows = [cpu_row, vulkan_row]
-    artifact = {"schema_version": SCHEMA_VERSION, "seed": SEED, "rows": rows}
+    artifact = {"schema_version": SCHEMA_VERSION, "requested_execution_mode": _requested_execution_mode(),
+                "execution_mode": _actual_execution_mode(), "phase": phase,
+                "seed": SEED, "rows": rows}
     return validate_artifact(artifact)
 
 
-def run_all(device, warmups, repetitions):
+def run_all(device, warmups, repetitions, phase="training"):
     artifact = {
         "schema_version": SCHEMA_VERSION,
+        "requested_execution_mode": _requested_execution_mode(),
+        "execution_mode": _actual_execution_mode(),
+        "phase": phase,
         "seed": SEED,
         "models": {
-            name: run(name, device, warmups, repetitions) for name in FIXTURES
+            name: run(name, device, warmups, repetitions, phase) for name in FIXTURES
         },
     }
     return validate_aggregate_artifact(artifact)
@@ -676,10 +719,23 @@ def validate_aggregate_artifact(artifact):
     models = artifact.get("models")
     if not isinstance(models, dict) or set(models) != set(FIXTURES):
         raise ValueError("aggregate models must contain cnn, attention, and rnn")
+    if artifact.get("execution_mode") not in {"sync", "async"}:
+        raise ValueError("aggregate execution_mode must be sync or async")
+    if artifact.get("requested_execution_mode") not in {"sync", "async"}:
+        raise ValueError("aggregate requested_execution_mode must be sync or async")
+    phase = artifact.get("phase", "training")
+    if phase not in {"inference", "training"}:
+        raise ValueError("aggregate phase must be inference or training")
     if artifact.get("seed") != SEED:
         raise ValueError("aggregate seed does not match benchmark seed")
     for name in FIXTURES:
         nested = validate_artifact(models[name])
+        if nested["execution_mode"] != artifact["execution_mode"]:
+            raise ValueError(f"aggregate {name} execution_mode does not match")
+        if nested["requested_execution_mode"] != artifact["requested_execution_mode"]:
+            raise ValueError(f"aggregate {name} requested_execution_mode does not match")
+        if nested.get("phase", "training") != phase:
+            raise ValueError(f"aggregate {name} phase does not match")
         if nested["rows"][0]["model"] != name:
             raise ValueError(f"aggregate {name} artifact has the wrong model")
     return artifact
@@ -688,6 +744,7 @@ def validate_aggregate_artifact(artifact):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=tuple(FIXTURES) + ("all",), required=True)
+    parser.add_argument("--phase", choices=("inference", "training"), default="training")
     parser.add_argument("--device", default="vk:0")
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--repetitions", type=int, default=3)
@@ -696,7 +753,7 @@ def main():
     if args.warmups < 0 or args.repetitions < 1:
         parser.error("warmups must be non-negative and repetitions must be positive")
     try:
-        artifact = run_all(args.device, args.warmups, args.repetitions) if args.model == "all" else run(args.model, args.device, args.warmups, args.repetitions)
+        artifact = run_all(args.device, args.warmups, args.repetitions, args.phase) if args.model == "all" else run(args.model, args.device, args.warmups, args.repetitions, args.phase)
     except (RuntimeError, NotImplementedError) as error:
         args.output.write_text(json.dumps({
             "schema_version": 1,
