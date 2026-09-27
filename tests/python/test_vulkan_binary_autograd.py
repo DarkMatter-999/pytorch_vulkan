@@ -28,6 +28,8 @@ def test_binary_tensor_gradients_match_cpu(vulkan_backend, operation):
     cpu_result = operation(cpu_lhs, cpu_rhs)
     vk_grad = torch.ones_like(cpu_result).to(vulkan_backend)
 
+    api = pytorch_vulkan._C
+    api.synchronize()
     before = pytorch_vulkan._C.live_resource_snapshot()
     service_before = pytorch_vulkan._C.shared_service_snapshot()
     pytorch_vulkan._C.reset_descriptor_resource_counters()
@@ -55,13 +57,31 @@ def test_binary_tensor_gradients_match_cpu(vulkan_backend, operation):
     assert counters[1] == 0
     assert counters[2] == 0
     assert counters[3] == 0
-    assert pytorch_vulkan._C.compute_submitted_count() == 3
-    assert pytorch_vulkan._C.compute_completed_count() == 3
-    assert pytorch_vulkan._C.compute_wait_count() == 3
-    torch.testing.assert_close(vk_result.cpu(), cpu_result)
+    if api.execution_mode() == "sync":
+        assert api.compute_submitted_count() == 3
+        assert api.compute_completed_count() == 3
+        assert api.compute_wait_count() == 3
+    else:
+        assert api.compute_submitted_count() == 0
+        assert api.compute_completed_count() == 0
+        assert api.compute_wait_count() == 0
+        assert api.pending_compute_count() > 0
 
-    torch.testing.assert_close(vk_lhs.grad.cpu(), cpu_lhs.grad)
-    torch.testing.assert_close(vk_rhs.grad.cpu(), cpu_rhs.grad)
+    api.synchronize()
+
+    if api.execution_mode() == "async":
+        submitted = api.compute_submitted_count()
+        assert submitted >= 1
+        assert api.compute_completed_count() == submitted
+        assert api.compute_wait_count() == submitted
+        assert api.pending_compute_count() == 0
+
+    result_cpu = vk_result.cpu()
+    lhs_grad_cpu = vk_lhs.grad.cpu()
+    rhs_grad_cpu = vk_rhs.grad.cpu()
+    torch.testing.assert_close(result_cpu, cpu_result)
+    torch.testing.assert_close(lhs_grad_cpu, cpu_lhs.grad)
+    torch.testing.assert_close(rhs_grad_cpu, cpu_rhs.grad)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub])
@@ -161,13 +181,12 @@ def test_binary_rejections_remain_explicit(vulkan_backend):
         torch.mul(grad_lhs, grad_rhs, out=torch.empty_like(equal_lhs))
 
 
-def test_binary_inplace_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
+def test_binary_inplace_is_supported_outside_optimizer_step(vulkan_backend):
     tensor = _vk([1.0, 2.0], vulkan_backend)
     other = _vk([3.0, 4.0], vulkan_backend)
-    with pytest.raises(
-        RuntimeError, match=r"Vulkan mul_.*in-place operations are unsupported"
-    ):
-        tensor.mul_(other)
+    assert tensor.mul_(other) is tensor
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(tensor.detach().cpu(), _vk([3.0, 8.0], "cpu"))
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.mul])

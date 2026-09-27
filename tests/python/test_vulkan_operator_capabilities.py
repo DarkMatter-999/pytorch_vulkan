@@ -304,26 +304,20 @@ def test_manifest_separates_public_inplace_forms_from_optimizer_updates():
 
 @pytest.mark.parametrize("mode", [torch.no_grad, torch.inference_mode])
 @pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])
-def test_public_inplace_pointwise_rejects_no_grad_and_inference_mode(
+def test_public_inplace_pointwise_is_supported_under_no_grad_and_inference_mode(
     vulkan_backend, mode, operation
 ):
     tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
     other = torch.full_like(tensor, 2.0)
     pytorch_vulkan._C.reset_execution_counters()
 
-    with (
-        mode(),
-        pytest.raises(
-            RuntimeError,
-            match=rf"Vulkan {operation}.*in-place operations are unsupported",
-        ),
-    ):
+    with mode():
         if operation == "mul_":
             getattr(tensor, operation)(2.0)
         else:
             getattr(tensor, operation)(other)
 
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
     assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
 

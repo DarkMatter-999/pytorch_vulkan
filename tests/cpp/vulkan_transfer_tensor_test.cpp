@@ -1141,20 +1141,39 @@ void test_shared_out_rejects_partial_and_internal_overlap() {
            "internal overlap rejection submitted a compute dispatch");
 }
 
-void test_inplace_rejections_preserve_inputs_and_dispatch_count() {
+void test_inplace_operations_and_rejections_preserve_contracts() {
     auto values = at::tensor({1.0F, -2.0F, 3.0F});
     auto input = at::empty_like(values, values.options().device(kDevice));
     auto other = at::empty_like(values, values.options().device(kDevice));
     pytorch_vulkan::copy_tensor(input, values, false);
     pytorch_vulkan::copy_tensor(other, values, false);
     const auto platform = pytorch_vulkan::platform();
-    const std::size_t before = platform->compute_dispatch_count();
-    expect_error([&] { input.add_(other); }, "in-place");
-    expect(platform->compute_dispatch_count() == before,
-           "in-place add rejection submitted a compute dispatch");
     auto result = at::empty_like(values);
-    pytorch_vulkan::copy_tensor(result, input, false);
-    expect(result.equal(values), "in-place add rejection mutated its input");
+
+    const auto expect_mutation = [&](const std::function<void()> &operation,
+                                     const at::Tensor &expected,
+                                     const char *message) {
+        pytorch_vulkan::copy_tensor(input, values, false);
+        const std::size_t dispatches = platform->compute_dispatch_count();
+        operation();
+        expect(platform->compute_dispatch_count() == dispatches + 1,
+               "supported in-place operation did not submit one compute dispatch");
+        pytorch_vulkan::copy_tensor(result, input, false);
+        expect(result.equal(expected), message);
+    };
+
+    expect_mutation([&] { input.add_(other); }, at::tensor({2.0F, -4.0F, 6.0F}),
+                    "in-place add produced wrong values");
+    expect_mutation([&] { input.add_(1.0F); }, at::tensor({2.0F, -1.0F, 4.0F}),
+                    "in-place scalar add produced wrong values");
+    expect_mutation([&] { input.sub_(other); }, at::tensor({0.0F, 0.0F, 0.0F}),
+                    "in-place sub produced wrong values");
+    expect_mutation([&] { input.sub_(1.0F); }, at::tensor({0.0F, -3.0F, 2.0F}),
+                    "in-place scalar sub produced wrong values");
+    expect_mutation([&] { input.mul_(other); }, at::tensor({1.0F, 4.0F, 9.0F}),
+                    "in-place mul produced wrong values");
+    expect_mutation([&] { input.mul_(2.0F); }, at::tensor({2.0F, -4.0F, 6.0F}),
+                    "in-place scalar mul produced wrong values");
 
     const auto expect_unchanged = [&](const std::function<void()> &operation,
                                       const char *message) {
@@ -1165,16 +1184,6 @@ void test_inplace_rejections_preserve_inputs_and_dispatch_count() {
         pytorch_vulkan::copy_tensor(result, input, false);
         expect(result.equal(values), "in-place rejection mutated its input");
     };
-    expect_unchanged([&] { input.add_(1.0F); },
-                     "in-place scalar add rejection submitted a compute dispatch");
-    expect_unchanged([&] { input.sub_(other); },
-                     "in-place sub rejection submitted a compute dispatch");
-    expect_unchanged([&] { input.sub_(1.0F); },
-                     "in-place scalar sub rejection submitted a compute dispatch");
-    expect_unchanged([&] { input.mul_(other); },
-                     "in-place mul rejection submitted a compute dispatch");
-    expect_unchanged([&] { input.mul_(1.0F); },
-                     "in-place scalar mul rejection submitted a compute dispatch");
     expect_unchanged([&] { input.neg_(); },
                      "in-place neg rejection submitted a compute dispatch");
     expect_unchanged([&] { input.abs_(); },
@@ -1369,7 +1378,7 @@ int main() {
         test_shared_out_empty_path_does_not_dispatch();
         test_shared_out_rejects_offset_and_noncontiguous_output();
         test_shared_out_rejects_partial_and_internal_overlap();
-        test_inplace_rejections_preserve_inputs_and_dispatch_count();
+        test_inplace_operations_and_rejections_preserve_contracts();
         test_shared_out_exact_aliases_preserve_values_and_lifecycles();
         test_shared_out_device_index_is_rejected_by_native_allocator();
         test_platform_destruction_is_nothrow();

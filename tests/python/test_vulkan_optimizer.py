@@ -670,26 +670,21 @@ def test_nonzero_vulkan_device_index_rejects_before_dispatch(vulkan_backend):
 
 
 @pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])
-def test_public_inplace_pointwise_is_rejected(vulkan_backend, operation):
+def test_public_inplace_pointwise_is_supported(vulkan_backend, operation):
     cpu = torch.tensor([1.0, -2.0, 3.0])
     vk = cpu.to(vulkan_backend)
     other_vk = torch.tensor([0.5, 2.0, -4.0], device=vulkan_backend)
-    with pytest.raises(
-        RuntimeError,
-        match=rf"Vulkan {operation}.*in-place operations are unsupported",
-    ):
-        getattr(vk, operation)(other_vk)
+    assert getattr(vk, operation)(other_vk) is vk
+    torch.testing.assert_close(vk.cpu(), getattr(cpu, operation)(torch.tensor([0.5, 2.0, -4.0])))
 
 
-def test_public_inplace_pointwise_scalar_is_rejected(vulkan_backend):
+def test_public_inplace_pointwise_scalar_is_supported(vulkan_backend):
     for operation, value in (("add_", 0.5), ("sub_", 0.5), ("mul_", 2.5)):
         cpu = torch.tensor([1.0, -2.0, 3.0])
         vk = cpu.to(vulkan_backend)
-        with pytest.raises(
-            RuntimeError,
-            match=rf"Vulkan {operation}.*in-place operations are unsupported",
-        ):
-            getattr(vk, operation)(value)
+        getattr(cpu, operation)(value)
+        getattr(vk, operation)(value)
+        torch.testing.assert_close(vk.cpu(), cpu)
 
 
 def test_zero_and_fill_mutate_vulkan_storage(vulkan_backend):
@@ -706,47 +701,60 @@ def test_zero_and_fill_mutate_vulkan_storage(vulkan_backend):
     torch.testing.assert_close(vk.cpu(), cpu)
 
 
-def test_inplace_pointwise_rejects_partial_overlap_before_dispatch(vulkan_backend):
+def test_inplace_pointwise_supports_contiguous_slice_view(vulkan_backend):
     cpu = torch.arange(6.0)
     vk = cpu.to(vulkan_backend)
     self_vk = vk[:4]
-    other_vk = vk[1:5]
-    version = self_vk._version
+    other_vk = torch.full_like(self_vk, 2.0)
     pytorch_vulkan._C.reset_execution_counters()
 
-    with pytest.raises(
-        RuntimeError, match="Vulkan add_.*in-place operations are unsupported"
-    ):
-        self_vk.add_(other_vk)
-
-    assert self_vk._version == version
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    torch.testing.assert_close(vk.cpu(), cpu)
+    assert self_vk.add_(other_vk) is self_vk
+    torch.testing.assert_close(vk.cpu(), torch.tensor([2.0, 3.0, 4.0, 5.0, 4.0, 5.0]))
 
 
 @pytest.mark.parametrize("view", [slice(1, 5)])
-def test_public_inplace_pointwise_rejects_valid_view_layouts(vulkan_backend, view):
+def test_public_inplace_pointwise_supports_valid_view_layouts(vulkan_backend, view):
     cpu = torch.arange(6.0)
     vk = cpu.to(vulkan_backend)
     self_vk = vk[view]
     other_vk = torch.full_like(self_vk, 2.0)
-    with pytest.raises(
-        RuntimeError, match="Vulkan add_.*in-place operations are unsupported"
-    ):
-        self_vk.add_(other_vk)
+    expected = cpu.clone()
+    expected[view] += 2.0
+    assert self_vk.add_(other_vk) is self_vk
+    torch.testing.assert_close(vk.cpu(), expected)
 
 
 def test_inplace_pointwise_rejects_uncertain_noncontiguous_view(vulkan_backend):
-    vk = torch.arange(6.0).to(vulkan_backend)[::2]
+    vk = torch.arange(6.0).to(vulkan_backend)
     other = torch.ones(3, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
+    view = vk[::2]
+    version = view._version
 
-    with pytest.raises(
-        RuntimeError, match="Vulkan add_.*in-place operations are unsupported"
-    ):
-        vk.add_(other)
+    with pytest.raises(RuntimeError, match="internal overlap"):
+        view.add_(other)
 
+    assert view._version == version
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk.detach().cpu(), torch.arange(6.0, dtype=torch.float32))
+
+
+def test_inplace_rejects_partial_overlap_between_distinct_views(vulkan_backend):
+    cpu = torch.arange(6.0, dtype=torch.float32)
+    vk = cpu.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    lhs, rhs = vk[0:3], vk[1:4]
+    lhs_version, rhs_version = lhs._version, rhs._version
+
+    with pytest.raises(RuntimeError, match="partially overlaps an input"):
+        lhs.add_(rhs)
+
+    assert lhs._version == lhs_version
+    assert rhs._version == rhs_version
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk.detach().cpu(), cpu)
 
 
 def test_fill_and_zero_increment_version_without_cpu_payload_transfer(vulkan_backend):

@@ -467,15 +467,16 @@ def test_add_out_is_supported(vulkan_backend):
     assert torch.add(lhs, rhs, out=output) is output
 
 
-def test_inplace_add_is_explicitly_rejected_outside_optimizer_step(vulkan_backend):
+def test_inplace_add_is_supported_outside_optimizer_step(vulkan_backend):
     lhs = torch.tensor([1.0, 2.0], dtype=torch.float32, device=vulkan_backend)
     rhs = torch.tensor([3.0, 4.0], dtype=torch.float32, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(
-        RuntimeError, match=r"Vulkan add_.*in-place operations are unsupported"
-    ):
-        lhs.add_(rhs)
-    _assert_zero_work()
+    assert lhs.add_(rhs) is lhs
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(
+        lhs.detach().cpu(), torch.tensor([4.0, 6.0], dtype=torch.float32)
+    )
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -576,19 +577,19 @@ def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
-def test_scalar_out_is_supported_but_inplace_variant_is_rejected(
-    vulkan_backend, operation
-):
+def test_scalar_out_and_inplace_variant_are_both_supported(vulkan_backend, operation):
     tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
     assert operation(tensor, 1.0, out=output) is output
     pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(
-        RuntimeError,
-        match=rf"Vulkan {operation.__name__}_ in-place operations are unsupported",
-    ):
-        getattr(tensor, operation.__name__ + "_")(1.0)
-    _assert_zero_work()
+    name = operation.__name__
+    assert getattr(tensor, name + "_")(1.0) is tensor
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    pytorch_vulkan._C.synchronize()
+    expected = {"add": [2.0, 2.0], "sub": [0.0, 0.0], "mul": [1.0, 1.0]}[name]
+    torch.testing.assert_close(
+        tensor.detach().cpu(), torch.tensor(expected, dtype=torch.float32)
+    )
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])

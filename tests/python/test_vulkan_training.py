@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -94,18 +95,27 @@ def test_training_benchmark_phases_preserve_scope_and_residency(vulkan_backend):
         )
 
 
-def test_training_benchmark_reports_unscoped_eager_autograd_limitation(vulkan_backend):
+def test_training_benchmark_unscoped_eager_autograd_succeeds(vulkan_backend):
     script = Path(__file__).resolve().parents[2] / "tools" / "vulkan_training_benchmark.py"
     spec = importlib.util.spec_from_file_location("vulkan_training_benchmark_unscoped", script)
     benchmark = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(benchmark)
     baseline = benchmark.make_model("mlp", "cpu", 17).state_dict()
 
-    with pytest.raises(RuntimeError, match="in-place operations are unsupported"):
-        benchmark.run(
-            "mlp", "step", "fused", vulkan_backend, 0, 1, 1, 3, 17,
-            baseline, "optimizer", "unscoped",
-        )
+    results, _, _, _ = benchmark.run(
+        "mlp", "step", "fused", vulkan_backend, 0, 1, 1, 3, 17,
+        baseline, "optimizer", "unscoped",
+    )
+
+    assert results["phase"] == "optimizer"
+    assert results["training_scope"] == "unscoped"
+    cpu_results, _, _, _ = benchmark.run(
+        "mlp", "step", "fused", "cpu", 0, 1, 1, 3, 17,
+        baseline, "optimizer", "unscoped",
+    )
+    assert results["final_loss"] == pytest.approx(cpu_results["final_loss"], rel=1e-5)
+    assert all(count == 0 for count in results["fallbacks"])
+    assert all(count > 0 for count in results["dispatches"])
 
 
 def _make_mlp(device, seed):
@@ -125,6 +135,46 @@ def _make_mnist_classifier(device, seed):
         torch.nn.ReLU(),
         torch.nn.Linear(32, 10),
     ).to(device=device, dtype=torch.float32)
+
+
+def test_unscoped_training_step_matches_cpu_with_momentum(vulkan_backend):
+    torch.manual_seed(0)
+    vulkan_model = torch.nn.Sequential(
+        torch.nn.Linear(8, 16), torch.nn.ReLU(), torch.nn.Linear(16, 4)
+    ).to(device=vulkan_backend, dtype=torch.float32)
+    cpu_model = torch.nn.Sequential(
+        torch.nn.Linear(8, 16), torch.nn.ReLU(), torch.nn.Linear(16, 4)
+    ).to(device="cpu", dtype=torch.float32)
+    cpu_model.load_state_dict({k: v.cpu() for k, v in vulkan_model.state_dict().items()})
+
+    vulkan_optimizer = torch.optim.SGD(vulkan_model.parameters(), lr=0.1, momentum=0.9)
+    cpu_optimizer = torch.optim.SGD(cpu_model.parameters(), lr=0.1, momentum=0.9)
+
+    cpu_inputs = torch.randn(3, 8, dtype=torch.float32)
+    cpu_targets = torch.randn(3, 4, dtype=torch.float32)
+    vulkan_inputs = cpu_inputs.to(vulkan_backend)
+    vulkan_targets = cpu_targets.to(vulkan_backend)
+
+    for _ in range(3):
+        vulkan_optimizer.zero_grad(set_to_none=False)
+        vulkan_error = vulkan_model(vulkan_inputs) - vulkan_targets
+        vulkan_loss = (vulkan_error * vulkan_error).sum()
+        vulkan_loss.backward()
+        vulkan_optimizer.step()
+
+        cpu_optimizer.zero_grad(set_to_none=False)
+        cpu_error = cpu_model(cpu_inputs) - cpu_targets
+        cpu_loss = (cpu_error * cpu_error).sum()
+        cpu_loss.backward()
+        cpu_optimizer.step()
+
+    pytorch_vulkan._C.synchronize()
+    for (name, vulkan_parameter), (_, cpu_parameter) in zip(
+        vulkan_model.named_parameters(), cpu_model.named_parameters()
+    ):
+        torch.testing.assert_close(
+            vulkan_parameter.detach().cpu(), cpu_parameter.detach(), rtol=1e-4, atol=1e-5
+        ), name
 
 
 def _make_mnist_batch(seed, batch_size):
@@ -148,6 +198,10 @@ def _assert_vk_f32_contiguous(tensor):
     assert tensor.device == torch.device("vk:0")
     assert tensor.dtype is torch.float32
     assert tensor.is_contiguous()
+
+
+def _vulkan_device():
+    return os.environ.get("VULKAN_DEVICE", "vk:0")
 
 
 def _validate_mnist_training_contract(model, optimizer, inputs, targets, loss_fn):
@@ -276,7 +330,7 @@ def _make_training_pairs(device, seed):
 def vulkan_backend():
     if not pytorch_vulkan.is_available():
         pytest.skip("no suitable Vulkan device is available")
-    return "vk:0"
+    return _vulkan_device()
 
 
 def test_mlp_fixture_has_expected_shape_dtype_and_device():
@@ -600,10 +654,17 @@ def test_fused_linear_relu_optimizer_state_matches_cpu_for_mnist_shape(vulkan_ba
         )
 
 
-def test_user_facing_vulkan_inplace_add_remains_rejected(vulkan_backend):
-    value = torch.randn(2, 8).to(vulkan_backend)
-    with pytest.raises(RuntimeError, match="in-place operations are unsupported"):
-        value.add_(1.0)
+def test_user_facing_vulkan_inplace_add_is_supported(vulkan_backend):
+    initial = torch.randn(2, 8)
+    value = initial.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    returned = value.add_(1.0)
+
+    assert returned is value
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    torch.testing.assert_close(value.cpu(), initial + 1.0)
 
 
 def test_batch_norm_classification_training_matches_cpu(vulkan_backend):
