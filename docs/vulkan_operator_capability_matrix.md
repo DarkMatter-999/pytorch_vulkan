@@ -99,9 +99,12 @@ The optimizer execution schemas are `div.Tensor`, `lerp.Scalar_out`,
 `addcdiv_`, and `zero_`.
 
 The generic public pointwise in-place forms (`add_`, `sub_`, and `mul_`) are
-rejected outside an active Vulkan optimizer/training step. The optimizer
-execution schemas above are an internal update path, not a declaration that
-generic user-facing in-place pointwise operations are supported.
+supported whenever the destination passes alias validation: exact full-tensor
+aliasing, and contiguous slice views. Partial overlap, non-exact full overlap,
+strided views, and any destination with internal overlap are rejected before
+dispatch, and rejection leaves the tensor unmodified with no recorded work. An
+active Vulkan optimizer/training step is not required. The optimizer execution
+schemas above remain a distinct internal update path.
 
 ## Deferred operator-expansion inventory
 
