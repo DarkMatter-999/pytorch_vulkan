@@ -63,6 +63,47 @@ struct VulkanTimingSnapshot {
     double submit = 0.0;
     double host_fence_wait = 0.0;
     double total = 0.0;
+    // Host-side breakdown for time that the four categories above do not cover:
+    // buffer lifetime, host mapping, descriptor writes, and per-operator
+    // vkCmd* recording.
+    //
+    // These fields overlap and must not be summed. `dispatch_host` is the
+    // inclusive host time of a whole operator, so it already contains that
+    // operator's `descriptor_update`, `command_record`, and any buffer
+    // creation and host mapping it performs. Summing every field double
+    // counts; sum only the mutually exclusive leaf categories.
+    double buffer_create = 0.0;
+    double buffer_destroy = 0.0;
+    double buffer_map_write = 0.0;
+    double buffer_map_read = 0.0;
+    double descriptor_update = 0.0;
+    double command_record = 0.0;
+    // Inclusive of the categories above; see the note on this struct.
+    double dispatch_host = 0.0;
+    std::size_t buffer_creations = 0;
+    std::size_t buffer_requested_bytes = 0;
+};
+
+// Lock-free accumulator behind VulkanTimingSnapshot. Buffer lifetime, host
+// mapping, and descriptor updates are recorded from the allocator and from
+// autograd worker threads without holding queue_mutex_, so the counters must
+// be atomic rather than mutex-protected. VulkanTimingSnapshot stays a plain
+// value type for callers; timing_snapshot() copies out of this.
+struct VulkanTimingCounters {
+    std::atomic<double> total{0.0};
+    std::atomic<double> allocation{0.0};
+    std::atomic<double> recording{0.0};
+    std::atomic<double> submit{0.0};
+    std::atomic<double> host_fence_wait{0.0};
+    std::atomic<double> buffer_create{0.0};
+    std::atomic<double> buffer_destroy{0.0};
+    std::atomic<double> buffer_map_write{0.0};
+    std::atomic<double> buffer_map_read{0.0};
+    std::atomic<double> descriptor_update{0.0};
+    std::atomic<double> command_record{0.0};
+    std::atomic<double> dispatch_host{0.0};
+    std::atomic<std::size_t> buffer_creations{0};
+    std::atomic<std::size_t> buffer_requested_bytes{0};
 };
 
 struct VulkanPendingTransferResources {
@@ -78,7 +119,19 @@ struct VulkanBufferCopy {
     VkDeviceSize size = 0;
 };
 
-enum class VulkanTimingCategory { Allocation, Recording, Submit, HostFenceWait };
+enum class VulkanTimingCategory {
+    Allocation,
+    Recording,
+    Submit,
+    HostFenceWait,
+    BufferCreate,
+    BufferDestroy,
+    BufferMapWrite,
+    BufferMapRead,
+    DescriptorUpdate,
+    CommandRecord,
+    DispatchHost,
+};
 
 class VulkanPlatform {
   public:
@@ -86,6 +139,9 @@ class VulkanPlatform {
     ~VulkanPlatform() noexcept;
 
     static bool is_available() noexcept;
+    // Diagnostic counters: availability probes construct a throwaway platform.
+    static std::size_t platform_construction_count() noexcept;
+    static std::size_t availability_probe_count() noexcept;
 
     VulkanPlatform(const VulkanPlatform &) = delete;
     VulkanPlatform &operator=(const VulkanPlatform &) = delete;
@@ -144,6 +200,7 @@ class VulkanPlatform {
     VulkanTimingSnapshot timing_snapshot() const;
     void reset_timing() const;
     void record_timing(VulkanTimingCategory category, double seconds) const;
+    void record_buffer_created(VkDeviceSize bytes) const;
     bool validation_enabled() const;
     bool supports_bool_pointwise() const;
     bool supports_formatter_double() const;
@@ -170,8 +227,8 @@ class VulkanPlatform {
     using PendingTransferResources = VulkanPendingTransferResources;
 
     void cleanup() noexcept;
-    bool record_copy_in_training_step(
-        const std::vector<VulkanBufferCopy> &copies) const;
+    bool
+    record_copy_in_training_step(const std::vector<VulkanBufferCopy> &copies) const;
     friend class VulkanCompute;
 
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -208,7 +265,7 @@ class VulkanPlatform {
     mutable std::atomic<int> device_loss_result_{static_cast<int>(VK_SUCCESS)};
     mutable std::atomic<std::size_t> live_allocation_count_{0};
     mutable std::unique_ptr<VulkanBuffer> staging_buffer_;
-    mutable VulkanTimingSnapshot timing_;
+    mutable VulkanTimingCounters timing_;
 };
 
 namespace pytorch_vulkan {

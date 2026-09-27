@@ -21,6 +21,7 @@
 #include "vulkan_platform.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -1839,7 +1840,13 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
             writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[binding].pBufferInfo = &buffers[binding];
         }
+        const auto descriptor_start = std::chrono::steady_clock::now();
         vkUpdateDescriptorSets(device_, 5, writes, 0, nullptr);
+        platform_.record_timing(
+            VulkanTimingCategory::DescriptorUpdate,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          descriptor_start)
+                .count());
         const GemmParams params{
             m,
             n,
@@ -1861,6 +1868,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
             batch_stride_b,
             batch_stride_c,
             batch_stride_d};
+        const auto record_start = std::chrono::steady_clock::now();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gemm_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 gemm_pipeline_layout_, 0, 1, &set, 0, nullptr);
@@ -1868,6 +1876,11 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
                            sizeof(params), &params);
         record_dispatch_command(cmd, static_cast<uint32_t>(n_groups),
                                 static_cast<uint32_t>(m_groups), dispatch_batches);
+        platform_.record_timing(
+            VulkanTimingCategory::CommandRecord,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          record_start)
+                .count());
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
@@ -2447,6 +2460,18 @@ void VulkanCompute::dispatch_multi_output(
 
     std::scoped_lock lock(platform_.queue_mutex());
     std::shared_ptr<VulkanBuffer> metadata_holder;
+    const auto dispatch_start = std::chrono::steady_clock::now();
+    struct DispatchTimer {
+        const VulkanPlatform *platform;
+        std::chrono::steady_clock::time_point start;
+        ~DispatchTimer() {
+            platform->record_timing(
+                VulkanTimingCategory::DispatchHost,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                              start)
+                    .count());
+        }
+    } dispatch_timer{&platform_, dispatch_start};
     try {
         record_dispatch();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
@@ -2480,13 +2505,25 @@ void VulkanCompute::dispatch_multi_output(
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[i].pBufferInfo = &infos[i];
         }
+        const auto descriptor_start = std::chrono::steady_clock::now();
         vkUpdateDescriptorSets(device_, descriptor_count, writes, 0, nullptr);
+        platform_.record_timing(
+            VulkanTimingCategory::DescriptorUpdate,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          descriptor_start)
+                .count());
+        const auto record_start = std::chrono::steady_clock::now();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0,
                                 1, &set, 0, nullptr);
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            params_size, params);
         record_dispatch_command(cmd, static_cast<uint32_t>(dispatch_groups), 1, 1);
+        platform_.record_timing(
+            VulkanTimingCategory::CommandRecord,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          record_start)
+                .count());
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
@@ -2806,6 +2843,18 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
+    const auto dispatch_start = std::chrono::steady_clock::now();
+    struct DispatchTimer {
+        const VulkanPlatform *platform;
+        std::chrono::steady_clock::time_point start;
+        ~DispatchTimer() {
+            platform->record_timing(
+                VulkanTimingCategory::DispatchHost,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                              start)
+                    .count());
+        }
+    } dispatch_timer{&platform_, dispatch_start};
     try {
         record_dispatch();
         cmd = platform_.execution_context().command_buffer();
@@ -2837,8 +2886,15 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[i].pBufferInfo = &buffers[source];
         }
+        const auto descriptor_start = std::chrono::steady_clock::now();
         vkUpdateDescriptorSets(device_, write_count, writes, 0, nullptr);
+        platform_.record_timing(
+            VulkanTimingCategory::DescriptorUpdate,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          descriptor_start)
+                .count());
 
+        const auto record_start = std::chrono::steady_clock::now();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                           pipelines_[pipeline_mode]);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -2848,6 +2904,11 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
         vkCmdPushConstants(cmd, pipeline_layouts_[pipeline_mode],
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
         record_dispatch_command(cmd, groups, 1, 1);
+        platform_.record_timing(
+            VulkanTimingCategory::CommandRecord,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          record_start)
+                .count());
         platform_.execution_context().defer_destruction([metadata_holder] {});
         finish_dispatch();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);

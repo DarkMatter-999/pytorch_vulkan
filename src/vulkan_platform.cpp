@@ -374,14 +374,17 @@ void ensure_process_local_vulkan() {
     }
 }
 
+std::atomic<std::size_t> platform_constructions{0};
+std::atomic<std::size_t> availability_probes{0};
+
 } // namespace pytorch_vulkan
 
 VulkanPlatform::VulkanPlatform(bool enable_validation)
-    : validation_enabled_(enable_validation),
-      async_execution_enabled_([] {
+    : validation_enabled_(enable_validation), async_execution_enabled_([] {
           const char *value = std::getenv("PYTORCH_VULKAN_ASYNC_EXECUTION");
           return value != nullptr && std::string(value) == "1";
       }()) {
+    pytorch_vulkan::platform_constructions.fetch_add(1, std::memory_order_relaxed);
     try {
         pytorch_vulkan::register_fork_state_handler();
         pytorch_vulkan::ensure_process_local_vulkan();
@@ -724,13 +727,48 @@ void VulkanPlatform::cleanup() noexcept {
 }
 
 bool VulkanPlatform::is_available() noexcept {
+    pytorch_vulkan::availability_probes.fetch_add(1, std::memory_order_relaxed);
+    // A forked child inherited unusable Vulkan state, so it has no Vulkan.
+    if (pytorch_vulkan::inherited_fork_state())
+        return false;
+
+    static std::atomic<bool> available{false};
+    if (available.load(std::memory_order_acquire))
+        return true;
+
+    constexpr int kMaxProbeAttempts = 3;
+    static std::atomic<int> attempts{0};
+    // Intentionally leaked so the guard outlives static destruction, matching
+    // the lifetime expectations of the platform singleton it protects.
+    static std::mutex *const probe_mutex = new std::mutex();
+    const int attempt = attempts.fetch_add(1, std::memory_order_relaxed);
+    if (attempt >= kMaxProbeAttempts)
+        return false;
+    std::scoped_lock lock(*probe_mutex);
+    if (available.load(std::memory_order_acquire))
+        return true;
+    bool probed = false;
     try {
         pytorch_vulkan::register_fork_state_handler();
         const VulkanPlatform platform;
-        return platform.device() != VK_NULL_HANDLE;
+        probed = platform.device() != VK_NULL_HANDLE;
     } catch (...) {
-        return false;
+        probed = false;
     }
+    if (probed) {
+        available.store(true, std::memory_order_release);
+        attempts.store(0, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+std::size_t VulkanPlatform::platform_construction_count() noexcept {
+    return pytorch_vulkan::platform_constructions.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::availability_probe_count() noexcept {
+    return pytorch_vulkan::availability_probes.load(std::memory_order_relaxed);
 }
 
 const VulkanDeviceInfo &VulkanPlatform::device_info() const { return device_info_; }
@@ -991,8 +1029,8 @@ bool VulkanPlatform::record_copy_in_training_step(
     const VkPipelineStageFlags source_stages =
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     vkCmdPipelineBarrier(context.command_buffer(), source_stages,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0,
-                         nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0, nullptr,
+                         0, nullptr);
 
     for (std::size_t index = 0; index < copies.size();) {
         const auto source = copies[index].source;
@@ -1001,8 +1039,7 @@ bool VulkanPlatform::record_copy_in_training_step(
         while (index < copies.size() && copies[index].source == source &&
                copies[index].destination == destination) {
             const auto &copy = copies[index++];
-            regions.push_back(
-                {copy.source_offset, copy.destination_offset, copy.size});
+            regions.push_back({copy.source_offset, copy.destination_offset, copy.size});
         }
         vkCmdCopyBuffer(context.command_buffer(), source, destination,
                         static_cast<uint32_t>(regions.size()), regions.data());
@@ -1015,9 +1052,10 @@ bool VulkanPlatform::record_copy_in_training_step(
     vkCmdPipelineBarrier(context.command_buffer(), VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
                          nullptr, 0, nullptr);
-    timing_.recording += std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - recording_start)
-                             .count();
+    timing_.recording.fetch_add(std::chrono::duration<double>(
+                                    std::chrono::steady_clock::now() - recording_start)
+                                    .count(),
+                                std::memory_order_relaxed);
     return true;
 }
 
@@ -1066,9 +1104,11 @@ void VulkanPlatform::copy_buffers_sync(
         const auto allocation_start = std::chrono::steady_clock::now();
         check_result(vkAllocateCommandBuffers(device_, &allocation, &command_buffer),
                      "Could not allocate Vulkan bulk-copy command buffer");
-        timing_.allocation += std::chrono::duration<double>(
-                                  std::chrono::steady_clock::now() - allocation_start)
-                                  .count();
+        timing_.allocation.fetch_add(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          allocation_start)
+                .count(),
+            std::memory_order_relaxed);
         const auto recording_start = std::chrono::steady_clock::now();
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1090,9 +1130,11 @@ void VulkanPlatform::copy_buffers_sync(
         }
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan bulk-copy command buffer");
-        timing_.recording += std::chrono::duration<double>(
-                                 std::chrono::steady_clock::now() - recording_start)
-                                 .count();
+        timing_.recording.fetch_add(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          recording_start)
+                .count(),
+            std::memory_order_relaxed);
         VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         check_result(vkCreateFence(device_, &fence_info, nullptr, &fence),
                      "Could not create Vulkan bulk-copy fence");
@@ -1119,14 +1161,16 @@ void VulkanPlatform::copy_buffers_sync(
                 "Vulkan device lost; execution state invalidated (VkResult -4)");
         }
         check_result(wait_result, "Could not wait for Vulkan bulk-copy fence");
-        timing_.host_fence_wait +=
+        timing_.host_fence_wait.fetch_add(
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           fence_wait_start)
-                .count();
+                .count(),
+            std::memory_order_relaxed);
         transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
-        timing_.total += std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - total_start)
-                             .count();
+        timing_.total.fetch_add(std::chrono::duration<double>(
+                                    std::chrono::steady_clock::now() - total_start)
+                                    .count(),
+                                std::memory_order_relaxed);
         release_resources();
     } catch (...) {
         if (device_lost()) {
@@ -1202,9 +1246,11 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     const auto allocation_start = std::chrono::steady_clock::now();
     check_result(vkAllocateCommandBuffers(device_, &allocation_info, &command_buffer),
                  "Could not allocate Vulkan command buffer");
-    timing_.allocation += std::chrono::duration<double>(
-                              std::chrono::steady_clock::now() - allocation_start)
-                              .count();
+    timing_.allocation.fetch_add(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      allocation_start)
+            .count(),
+        std::memory_order_relaxed);
 
     VkFence fence = VK_NULL_HANDLE;
     bool submission_may_be_pending = false;
@@ -1245,9 +1291,11 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         copy_command_count_.fetch_add(1, std::memory_order_relaxed);
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan command buffer");
-        timing_.recording += std::chrono::duration<double>(
-                                 std::chrono::steady_clock::now() - recording_start)
-                                 .count();
+        timing_.recording.fetch_add(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          recording_start)
+                .count(),
+            std::memory_order_relaxed);
 
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1307,10 +1355,11 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
             }
             check_result(wait_result, "Could not wait for Vulkan transfer fence");
         }
-        timing_.host_fence_wait +=
+        timing_.host_fence_wait.fetch_add(
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           fence_wait_start)
-                .count();
+                .count(),
+            std::memory_order_relaxed);
         transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
@@ -1352,9 +1401,10 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     }
 
     release_resources();
-    timing_.total +=
+    timing_.total.fetch_add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - total_start)
-            .count();
+            .count(),
+        std::memory_order_relaxed);
 }
 
 void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
@@ -1486,35 +1536,93 @@ VulkanBuffer &VulkanPlatform::staging_buffer(VkDeviceSize size) const {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
     const auto end = std::chrono::steady_clock::now();
-    timing_.allocation += std::chrono::duration<double>(end - start).count();
+    timing_.allocation.fetch_add(std::chrono::duration<double>(end - start).count(),
+                                 std::memory_order_relaxed);
     return *staging_buffer_;
 }
 
 VulkanTimingSnapshot VulkanPlatform::timing_snapshot() const {
-    std::scoped_lock lock(queue_mutex_);
-    return timing_;
+    VulkanTimingSnapshot snapshot;
+    snapshot.total = timing_.total.load(std::memory_order_relaxed);
+    snapshot.allocation = timing_.allocation.load(std::memory_order_relaxed);
+    snapshot.recording = timing_.recording.load(std::memory_order_relaxed);
+    snapshot.submit = timing_.submit.load(std::memory_order_relaxed);
+    snapshot.host_fence_wait = timing_.host_fence_wait.load(std::memory_order_relaxed);
+    snapshot.buffer_create = timing_.buffer_create.load(std::memory_order_relaxed);
+    snapshot.buffer_destroy = timing_.buffer_destroy.load(std::memory_order_relaxed);
+    snapshot.buffer_map_write =
+        timing_.buffer_map_write.load(std::memory_order_relaxed);
+    snapshot.buffer_map_read = timing_.buffer_map_read.load(std::memory_order_relaxed);
+    snapshot.descriptor_update =
+        timing_.descriptor_update.load(std::memory_order_relaxed);
+    snapshot.command_record = timing_.command_record.load(std::memory_order_relaxed);
+    snapshot.dispatch_host = timing_.dispatch_host.load(std::memory_order_relaxed);
+    snapshot.buffer_creations =
+        timing_.buffer_creations.load(std::memory_order_relaxed);
+    snapshot.buffer_requested_bytes =
+        timing_.buffer_requested_bytes.load(std::memory_order_relaxed);
+    return snapshot;
 }
 
 void VulkanPlatform::reset_timing() const {
-    std::scoped_lock lock(queue_mutex_);
-    timing_ = {};
+    timing_.total.store(0.0, std::memory_order_relaxed);
+    timing_.allocation.store(0.0, std::memory_order_relaxed);
+    timing_.recording.store(0.0, std::memory_order_relaxed);
+    timing_.submit.store(0.0, std::memory_order_relaxed);
+    timing_.host_fence_wait.store(0.0, std::memory_order_relaxed);
+    timing_.buffer_create.store(0.0, std::memory_order_relaxed);
+    timing_.buffer_destroy.store(0.0, std::memory_order_relaxed);
+    timing_.buffer_map_write.store(0.0, std::memory_order_relaxed);
+    timing_.buffer_map_read.store(0.0, std::memory_order_relaxed);
+    timing_.descriptor_update.store(0.0, std::memory_order_relaxed);
+    timing_.command_record.store(0.0, std::memory_order_relaxed);
+    timing_.dispatch_host.store(0.0, std::memory_order_relaxed);
+    timing_.buffer_creations.store(0, std::memory_order_relaxed);
+    timing_.buffer_requested_bytes.store(0, std::memory_order_relaxed);
 }
 
 void VulkanPlatform::record_timing(VulkanTimingCategory category,
                                    double seconds) const {
-    timing_.total += seconds;
+    timing_.total.fetch_add(seconds, std::memory_order_relaxed);
     switch (category) {
     case VulkanTimingCategory::Allocation:
-        timing_.allocation += seconds;
+        timing_.allocation.fetch_add(seconds, std::memory_order_relaxed);
         break;
     case VulkanTimingCategory::Recording:
-        timing_.recording += seconds;
+        timing_.recording.fetch_add(seconds, std::memory_order_relaxed);
         break;
     case VulkanTimingCategory::Submit:
-        timing_.submit += seconds;
+        timing_.submit.fetch_add(seconds, std::memory_order_relaxed);
         break;
     case VulkanTimingCategory::HostFenceWait:
-        timing_.host_fence_wait += seconds;
+        timing_.host_fence_wait.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::BufferCreate:
+        timing_.buffer_create.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::BufferDestroy:
+        timing_.buffer_destroy.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::BufferMapWrite:
+        timing_.buffer_map_write.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::BufferMapRead:
+        timing_.buffer_map_read.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::DescriptorUpdate:
+        timing_.descriptor_update.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::CommandRecord:
+        timing_.command_record.fetch_add(seconds, std::memory_order_relaxed);
+        break;
+    case VulkanTimingCategory::DispatchHost:
+        timing_.dispatch_host.fetch_add(seconds, std::memory_order_relaxed);
         break;
     }
+}
+
+void VulkanPlatform::record_buffer_created(VkDeviceSize bytes) const {
+    timing_.buffer_creations.fetch_add(1, std::memory_order_relaxed);
+    timing_.buffer_requested_bytes.fetch_add(static_cast<std::size_t>(bytes),
+                                             std::memory_order_relaxed);
 }

@@ -16,6 +16,10 @@ PYBIND11_MODULE(_C, module) {
     module.doc() = "Minimal Vulkan runtime interface";
     module.def("is_available", &VulkanPlatform::is_available);
     module.def("device_count", []() { return VulkanPlatform::is_available() ? 1 : 0; });
+    module.def("platform_construction_count",
+               [] { return VulkanPlatform::platform_construction_count(); });
+    module.def("availability_probe_count",
+               [] { return VulkanPlatform::availability_probe_count(); });
     module.def("current_device",
                []() { return pytorch_vulkan::current_device().index(); });
     module.def("set_device", &pytorch_vulkan::set_device);
@@ -143,6 +147,24 @@ PYBIND11_MODULE(_C, module) {
         const auto timing = pytorch_vulkan::platform()->timing_snapshot();
         return py::make_tuple(timing.allocation, timing.recording, timing.submit,
                               timing.host_fence_wait, timing.total);
+    });
+    module.def("timing_breakdown", [] {
+        const auto timing = pytorch_vulkan::platform()->timing_snapshot();
+        py::dict result;
+        result["allocation_seconds"] = timing.allocation;
+        result["recording_seconds"] = timing.recording;
+        result["submit_seconds"] = timing.submit;
+        result["host_fence_wait_seconds"] = timing.host_fence_wait;
+        result["buffer_create_seconds"] = timing.buffer_create;
+        result["buffer_destroy_seconds"] = timing.buffer_destroy;
+        result["buffer_map_write_seconds"] = timing.buffer_map_write;
+        result["buffer_map_read_seconds"] = timing.buffer_map_read;
+        result["descriptor_update_seconds"] = timing.descriptor_update;
+        result["command_record_seconds"] = timing.command_record;
+        result["dispatch_host_seconds"] = timing.dispatch_host;
+        result["buffer_creations"] = timing.buffer_creations;
+        result["buffer_requested_bytes"] = timing.buffer_requested_bytes;
+        return result;
     });
     module.def("timestamp_queries_supported", [] {
         return pytorch_vulkan::platform()->timestamp_queries_supported();

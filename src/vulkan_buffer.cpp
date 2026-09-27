@@ -1,5 +1,6 @@
 #include "vulkan_buffer.h"
 
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 
@@ -42,6 +43,7 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
     if (size == 0) {
         throw std::invalid_argument("Vulkan buffer size must be greater than zero");
     }
+    const auto create_start = std::chrono::steady_clock::now();
 
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -86,6 +88,12 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
         }
         throw;
     }
+
+    platform_->record_buffer_created(size);
+    platform_->record_timing(
+        VulkanTimingCategory::BufferCreate,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - create_start)
+            .count());
 }
 
 VulkanBuffer::~VulkanBuffer() {
@@ -93,6 +101,19 @@ VulkanBuffer::~VulkanBuffer() {
         // Parent-owned Vulkan handles are invalid for destruction in a forked child.
         return;
     }
+    if (buffer_ == VK_NULL_HANDLE && memory_ == VK_NULL_HANDLE)
+        return;
+    const auto destroy_start = std::chrono::steady_clock::now();
+    struct DestroyTimer {
+        const VulkanPlatform *platform;
+        std::chrono::steady_clock::time_point start;
+        ~DestroyTimer() {
+            platform->record_timing(
+                VulkanTimingCategory::BufferDestroy,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+                    .count());
+        }
+    } destroy_timer{platform_, destroy_start};
     if (buffer_ != VK_NULL_HANDLE) {
         vkDestroyBuffer(device_, buffer_, nullptr);
     }
@@ -121,6 +142,7 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
         throw std::out_of_range("Vulkan buffer write is outside the buffer");
     }
 
+    const auto map_start = std::chrono::steady_clock::now();
     void *mapped = nullptr;
     if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
         throw std::runtime_error("Could not map Vulkan buffer memory for writing");
@@ -138,6 +160,10 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
         }
     }
     vkUnmapMemory(device_, memory_);
+    platform_->record_timing(
+        VulkanTimingCategory::BufferMapWrite,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start)
+            .count());
 }
 
 void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) const {
@@ -148,6 +174,7 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
         throw std::out_of_range("Vulkan buffer read is outside the buffer");
     }
 
+    const auto map_start = std::chrono::steady_clock::now();
     void *mapped = nullptr;
     if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
         throw std::runtime_error("Could not map Vulkan buffer memory for reading");
@@ -165,4 +192,8 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
     }
     std::memcpy(data, mapped, static_cast<size_t>(size));
     vkUnmapMemory(device_, memory_);
+    platform_->record_timing(
+        VulkanTimingCategory::BufferMapRead,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start)
+            .count());
 }
