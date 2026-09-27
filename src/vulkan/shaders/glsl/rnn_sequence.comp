@@ -31,6 +31,8 @@ layout(push_constant) uniform Params {
 
 shared float adjoint[256];
 shared float delta[256];
+shared float input_tile[256];
+shared float previous_state_tile[256];
 
 void main() {
   uint local = gl_LocalInvocationID.x;
@@ -41,23 +43,73 @@ void main() {
     uint batch_index = gl_WorkGroupID.x;
     if (batch_index >= params.batch) return;
     for (uint sequence_index = 0u; sequence_index < params.sequence; ++sequence_index) {
+      uint step = batch_index * params.sequence + sequence_index;
       if (local < params.hidden_dimension) {
-        uint hidden = local;
-        uint step = batch_index * params.sequence + sequence_index;
-        float value = bias[hidden];
-        for (uint input_index = 0u; input_index < params.input_dimension; ++input_index) {
-          uint source = step * params.input_dimension + input_index;
-          value += input_buffer[source] * input_weight[hidden * params.input_dimension + input_index];
+        previous_state_tile[local] = sequence_index == 0u
+            ? 0.0
+            : saved_state[(step - 1u) * params.hidden_dimension + local];
+      }
+      float value = 0.0;
+      if (local < params.hidden_dimension)
+        value = bias[local];
+
+      for (uint input_base = 0u; input_base < params.input_dimension;
+           input_base += 256u) {
+        uint input_count = min(256u, params.input_dimension - input_base);
+        if (local < input_count) {
+          input_tile[local] = input_buffer[step * params.input_dimension +
+                                           input_base + local];
         }
+        barrier();
+
+        if (local < params.hidden_dimension) {
+          uint hidden = local;
+          uint input_index = 0u;
+          for (; input_index + 3u < input_count; input_index += 4u) {
+            uint weight_offset = hidden * params.input_dimension + input_base +
+                                 input_index;
+            vec4 inputs = vec4(input_tile[input_index], input_tile[input_index + 1u],
+                               input_tile[input_index + 2u],
+                               input_tile[input_index + 3u]);
+            vec4 weights = vec4(input_weight[weight_offset],
+                                input_weight[weight_offset + 1u],
+                                input_weight[weight_offset + 2u],
+                                input_weight[weight_offset + 3u]);
+            value += dot(inputs, weights);
+          }
+          for (; input_index < input_count; ++input_index) {
+            value += input_tile[input_index] *
+                input_weight[hidden * params.input_dimension + input_base +
+                             input_index];
+          }
+        }
+        barrier();
+      }
+
+      if (local < params.hidden_dimension) {
         if (sequence_index > 0u) {
-          for (uint previous_hidden = 0u; previous_hidden < params.hidden_dimension; ++previous_hidden) {
-            value += saved_state[(step - 1u) * params.hidden_dimension + previous_hidden] *
-                recurrent_weight[hidden * params.hidden_dimension + previous_hidden];
+          uint previous_hidden = 0u;
+          for (; previous_hidden + 3u < params.hidden_dimension;
+               previous_hidden += 4u) {
+            uint weight_offset = local * params.hidden_dimension + previous_hidden;
+            vec4 states = vec4(previous_state_tile[previous_hidden],
+                               previous_state_tile[previous_hidden + 1u],
+                               previous_state_tile[previous_hidden + 2u],
+                               previous_state_tile[previous_hidden + 3u]);
+            vec4 weights = vec4(recurrent_weight[weight_offset],
+                                recurrent_weight[weight_offset + 1u],
+                                recurrent_weight[weight_offset + 2u],
+                                recurrent_weight[weight_offset + 3u]);
+            value += dot(states, weights);
+          }
+          for (; previous_hidden < params.hidden_dimension; ++previous_hidden) {
+            value += previous_state_tile[previous_hidden] *
+                recurrent_weight[local * params.hidden_dimension + previous_hidden];
           }
         }
         float activation = tanh(value);
-        output_buffer[step * params.hidden_dimension + hidden] = activation;
-        saved_state[step * params.hidden_dimension + hidden] = activation;
+        output_buffer[step * params.hidden_dimension + local] = activation;
+        saved_state[step * params.hidden_dimension + local] = activation;
       }
       memoryBarrierBuffer();
       barrier();

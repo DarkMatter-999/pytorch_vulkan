@@ -1,7 +1,9 @@
 import subprocess
 import re
 import os
+import shutil
 import sys
+import tempfile
 import textwrap
 import gc
 from pathlib import Path
@@ -77,6 +79,28 @@ def test_rnn_sequence_shader_contract_and_integrity():
     assert "rnn_sequence shader contract=ok" in result.stdout
 
 
+def test_rnn_forward_compiles_vectorized_input_and_recurrent_dots():
+    if shutil.which("spirv-dis") is None:
+        pytest.skip("spirv-dis is unavailable for compiled shader inspection")
+    source_path = ROOT / "src/vulkan/shaders/glsl/rnn_sequence.comp"
+    with tempfile.TemporaryDirectory() as directory:
+        binary = Path(directory) / "rnn_sequence.comp.spv"
+        subprocess.run(
+            ["glslc", "-Os", "-o", str(binary), str(source_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        disassembly = subprocess.run(
+            ["spirv-dis", str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    assert len(re.findall(r"\bOpDot\b", disassembly)) >= 2
+
+
 def _cpu_reference(input_tensor, weight, recurrent_weight, bias):
     state = torch.zeros(input_tensor.size(0), weight.size(0), dtype=input_tensor.dtype)
     outputs = []
@@ -113,6 +137,7 @@ def _differentiable_cpu_reference(input_tensor, weight, recurrent_weight, bias):
 
 @pytest.mark.parametrize("batch,sequence", [(1, 1), (1, 64), (16, 1), (16, 64)])
 def test_rnn_sequence_forward_parity_and_single_dispatch(vulkan_backend, batch, sequence):
+    pytorch_vulkan._C.synchronize()
     torch.manual_seed(41 + batch + sequence)
     input_cpu = torch.randn(batch, sequence, 8)
     weight_cpu = torch.randn(16, 8) * 0.1
@@ -135,11 +160,46 @@ def test_rnn_sequence_forward_parity_and_single_dispatch(vulkan_backend, batch, 
     # services. RNN resources must be represented by the shared snapshots only.
     assert resources[2] == services["pipeline_count"] + 6
     assert resources[3] == services["shader_modules"] + 6
+    expected_before_read = 1 if pytorch_vulkan._C.execution_mode() == "sync" else 0
+    assert pytorch_vulkan._C.compute_submitted_count() == expected_before_read
+    assert pytorch_vulkan._C.compute_completed_count() == expected_before_read
+    assert pytorch_vulkan._C.compute_wait_count() == expected_before_read
+    torch.testing.assert_close(
+        result.cpu(), _cpu_reference(input_cpu, weight_cpu, recurrent_cpu, bias_cpu),
+        rtol=3e-3,
+        atol=3e-3,
+    )
+    pytorch_vulkan._C.synchronize()
     assert pytorch_vulkan._C.compute_submitted_count() == 1
     assert pytorch_vulkan._C.compute_completed_count() == 1
     assert pytorch_vulkan._C.compute_wait_count() == 1
+
+
+@pytest.mark.parametrize(
+    "input_dimension,hidden_dimension,sequence",
+    [(7, 16, 2), (8, 13, 2), (259, 12, 3)],
+)
+def test_rnn_sequence_vectorized_forward_handles_dimension_tails(
+    vulkan_backend, input_dimension, hidden_dimension, sequence
+):
+    pytorch_vulkan._C.synchronize()
+    torch.manual_seed(907)
+    batch = 2
+    input_cpu = torch.randn(batch, sequence, input_dimension) * 0.1
+    weight_cpu = torch.randn(hidden_dimension, input_dimension) * 0.1
+    recurrent_cpu = torch.randn(hidden_dimension, hidden_dimension) * 0.1
+    bias_cpu = torch.randn(hidden_dimension) * 0.1
+
+    result = torch.ops.pytorch_vulkan.rnn_sequence(
+        input_cpu.to(vulkan_backend),
+        weight_cpu.to(vulkan_backend),
+        recurrent_cpu.to(vulkan_backend),
+        bias_cpu.to(vulkan_backend),
+    )
+
     torch.testing.assert_close(
-        result.cpu(), _cpu_reference(input_cpu, weight_cpu, recurrent_cpu, bias_cpu),
+        result.cpu(),
+        _differentiable_cpu_reference(input_cpu, weight_cpu, recurrent_cpu, bias_cpu),
         rtol=3e-3,
         atol=3e-3,
     )
@@ -245,6 +305,7 @@ def test_rnn_sequence_rejects_oversized_workgroup_dimension_without_activity(vul
 
 
 def test_rnn_sequence_training_scope_defers_submission_and_wait(vulkan_backend):
+    pytorch_vulkan._C.synchronize()
     inputs = _rnn_inputs(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.begin_training_step()
