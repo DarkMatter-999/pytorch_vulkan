@@ -217,6 +217,9 @@ def vulkan_backend(gm, example_inputs):
         call_started = time.perf_counter()
         for value in inputs:
             _validate_value(value)
+        # Keep queued work from earlier calls out of this call's counters.
+        from . import _C
+        _C.synchronize()
         before = _counter_snapshot()
         result = _linear_relu_replay(gm, inputs)
         if result is not None:
@@ -224,6 +227,9 @@ def vulkan_backend(gm, example_inputs):
         if result is None:
             result = gm(*inputs)
         _validate_value(result)
+        # Submission/completion/wait counters are populated when async batches
+        # are flushed, so capture this call's metrics only after synchronizing.
+        _C.synchronize()
         after = _counter_snapshot()
         _LAST_STATS["calls"] += 1
         _LAST_STATS["replay_time"] += time.perf_counter() - call_started

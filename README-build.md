@@ -9,8 +9,7 @@ The supported extension verification configuration is Linux with
 CPU-only project shell, and the standalone Vulkan device probe is optional.
 The selected device must expose a Vulkan compute queue; unsupported operations
 are rejected explicitly with no CPU fallback, and device loss is a failed run.
-The legacy OpenCL sources and `dlprimitives` submodule remain in the checkout
-as reference material, but are not entered by the active root build.
+Only the active Vulkan backend is maintained by this repository.
 
 ## Environment
 
@@ -186,7 +185,7 @@ The accepted Phase 6 model gate covers PyTorch 2.4.0's fixed F32 workloads:
 
 Every intermediate, output, and first-order gradient is contiguous F32 on
 `vk:0`. The implementation dispatches directly through Vulkan and does not
-use CPU fallback, payload readback, or `dlprimitives`. CPU transfers in model
+use CPU fallback or payload readback. CPU transfers in model
 tests are explicit comparison boundaries only. Fixed variants use PyTorch 2.4.0
 semantics and compare with the existing floating-point test tolerances.
 

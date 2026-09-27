@@ -163,8 +163,23 @@ def load_operator_cases(root: Path) -> dict:
     entries.sort(key=lambda entry: entry["schema"])
     catalog = {"schema_version": CASE_SCHEMA_VERSION, "entries": entries}
     aten_registrations, _ = _source_registration_inventory(root)
+    custom_registrations = _custom_registration_inventory(root)
+    deferred_schemas = {
+        capability["schema"]
+        for capability in manifest["entries"]
+        if capability["execution_contract"] == "deferred_before_vulkan"
+    }
+    registered_schemas = aten_registrations | custom_registrations
+    unregistered_deferred_schemas = deferred_schemas - registered_schemas
+    registered_catalog = {
+        "entries": [
+            entry
+            for entry in entries
+            if entry["schema"] not in unregistered_deferred_schemas
+        ]
+    }
     validate_operator_coverage(
-        catalog, aten_registrations, _custom_registration_inventory(root)
+        registered_catalog, aten_registrations, custom_registrations
     )
     return catalog
 

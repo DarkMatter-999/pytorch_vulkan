@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import tools.validate_vulkan_capabilities as capability_validator
 from tools.validate_vulkan_capabilities import (
     REQUIRED_ENTRY_KEYS,
     _source_registration_inventory,
@@ -133,6 +134,31 @@ def test_manifest_rejects_status_execution_contradiction():
 
     with pytest.raises(ValueError, match=r"entries\[0\]\.execution_contract"):
         validate_manifest_data(data, ROOT)
+
+
+def test_manifest_rejects_aliasing_inplace_with_no_overlap():
+    data = {"version": 1, "entries": [_entry()]}
+    data["entries"][0]["inplace"] = "validated_exact_alias_inplace"
+
+    with pytest.raises(ValueError, match=r"entries\[0\]\.aliasing.*same_storage_alias"):
+        validate_manifest_data(data, ROOT)
+
+
+def test_manifest_accepts_aliasing_inplace_with_same_storage_alias(tmp_path, monkeypatch):
+    data = {"version": 1, "entries": [_entry()]}
+    data["entries"][0]["inplace"] = "validated_exact_alias_inplace"
+    data["entries"][0]["aliasing"] = "same_storage_alias"
+    test_path = tmp_path / "tests/python/test_vulkan_conformance.py"
+    test_path.parent.mkdir(parents=True)
+    test_path.touch()
+    (tmp_path / "src").mkdir()
+    monkeypatch.setattr(
+        capability_validator,
+        "_source_registration_inventory",
+        lambda _source: ({"aten::example.default"}, set()),
+    )
+
+    validate_manifest_data(data, tmp_path)
 
 
 def test_manifest_validation_does_not_require_capability_matrix(tmp_path):

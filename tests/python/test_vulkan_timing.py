@@ -125,6 +125,7 @@ def test_gemm_timing_is_correlated_with_completed_submission(timestamp_queries):
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.reset_gpu_timing()
     output = torch.mm(left, right)
+    pytorch_vulkan._C.synchronize()
     samples = pytorch_vulkan._C.gpu_timing_snapshot()
 
     assert output.shape == (5, 3)
@@ -152,6 +153,7 @@ def test_training_timing_is_one_completed_scope_without_transfer_or_fallback(
     finally:
         pytorch_vulkan._C.end_training_step()
 
+    pytorch_vulkan._C.synchronize()
     samples = pytorch_vulkan._C.gpu_timing_snapshot()
     assert pytorch_vulkan._C.execution_counter_snapshot() == (2, 0, 0, 0)
     assert pytorch_vulkan._C.compute_submitted_count() == 1
@@ -162,6 +164,13 @@ def test_training_timing_is_one_completed_scope_without_transfer_or_fallback(
 
 def test_training_benchmark_contract_distinguishes_host_and_gpu_timing(timestamp_queries):
     benchmark = _training_benchmark_module()
+    snapshot = benchmark._C.gpu_timing_snapshot
+
+    def synchronized_snapshot():
+        pytorch_vulkan._C.synchronize()
+        return snapshot()
+
+    benchmark._C.gpu_timing_snapshot = synchronized_snapshot
     baseline = benchmark.make_model("mlp", "cpu", 17).state_dict()
     result, _, _, _ = benchmark.run(
         "mlp",
@@ -191,6 +200,7 @@ def test_timestamp_ring_reuses_slots_after_completed_submissions(timestamp_queri
         left = torch.ones(2, 8).to(timestamp_queries)
         right = torch.full((2, 8), 2.0).to(timestamp_queries)
         torch.add(left, right)
+        pytorch_vulkan._C.synchronize()
         samples = pytorch_vulkan._C.gpu_timing_snapshot()
         assert samples
         sample = samples[-1]
@@ -323,7 +333,7 @@ def test_device_loss_quarantines_timing_context_and_rejects_new_work(timestamp_q
     environment.pop("VK_INSTANCE_LAYERS", None)
     module_root = Path(pytorch_vulkan.__file__).resolve().parent.parent
     environment["PYTHONPATH"] = os.pathsep.join(
-        [str(module_root), environment.get("PYTHONPATH", "")]
+        [os.path.abspath("build"), str(module_root), environment.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
     result = subprocess.run(
         [sys.executable, "-c", script],

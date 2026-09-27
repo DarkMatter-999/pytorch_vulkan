@@ -65,9 +65,16 @@ def test_mm_and_addmm_use_one_gemm_dispatch(vulkan_backend):
     assert counters[1] == 0
     assert counters[2] == 0
     assert counters[3] == 0
-    assert pytorch_vulkan._C.compute_submitted_count() == 4
-    assert pytorch_vulkan._C.compute_completed_count() == 4
-    assert pytorch_vulkan._C.compute_wait_count() == 4
+    pytorch_vulkan._C.synchronize()
+    # Async batching correctly coalesces multiple dispatches into fewer submissions.
+    assert pytorch_vulkan._C.pending_compute_count() == 0
+    assert pytorch_vulkan._C.compute_submitted_count() >= 1
+    # completed/submitted/waits count different things: submitted counts
+    # vkQueueSubmit calls, completed counts fence completions observed from
+    # either the blocking-wait or the poll path. Async can place several
+    # fences in one submit, so completed may exceed submitted. Only the
+    # dispatch count and pending==0 are mode-agnostic exact invariants.
+    assert pytorch_vulkan._C.compute_completed_count() >= 1
     torch.testing.assert_close(mm_result.cpu(), expected_mm, rtol=2e-3, atol=2e-3)
     for result, expected in addmm_results:
         torch.testing.assert_close(result.cpu(), expected, rtol=2e-3, atol=2e-3)
@@ -107,6 +114,7 @@ def test_mm_backward_materializes_non_square_transposes_in_training_scope(
     cpu_output = torch.mm(cpu_mat1, cpu_mat2)
     cpu_output.backward(cpu_grad)
 
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.begin_training_step()
     try:
@@ -192,6 +200,7 @@ def test_gemm_training_scope_defers_submission_until_step_end(vulkan_backend):
     a = torch.randn(16, 16).to(vulkan_backend)
     b = torch.randn(16, 16).to(vulkan_backend)
 
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.begin_training_step()
     try:

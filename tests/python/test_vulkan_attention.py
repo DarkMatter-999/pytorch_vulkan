@@ -136,9 +136,11 @@ def test_linear_dweight_uses_gemm_scope_when_timestamps_supported(vulkan_backend
     vk_output = torch.nn.functional.linear(vk_input, vk_weight)
     if not pytorch_vulkan._C.timestamp_queries_supported():
         pytest.skip("Vulkan timestamp queries unsupported")
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_gpu_timing()
     pytorch_vulkan._C.reset_execution_counters()
     vk_output.backward(vk_grad)
+    pytorch_vulkan._C.synchronize()
     samples = pytorch_vulkan._C.gpu_timing_snapshot()
     assert samples
     assert [sample["scope"] for sample in samples] == ["gemm"]

@@ -167,14 +167,21 @@ def test_execution_counters_count_dispatch_and_explicit_cpu_transfer(vulkan_back
     "case_name",
     ["linear.forward", "mm.forward", "addmm.forward", "addmm.out"],
 )
-def test_gemm_frontends_complete_one_synchronous_dispatch(vulkan_backend, case_name):
+def test_gemm_frontends_complete_one_dispatch(vulkan_backend, case_name):
     case = next(case for case in ALL_CASES if case.name == case_name)
     run_and_compare(case, vulkan_backend)
+    pytorch_vulkan._C.synchronize()
     expected = 2 if case_name == "linear.forward" else 1
     assert pytorch_vulkan._C.compute_dispatch_count() == expected
-    assert pytorch_vulkan._C.compute_submitted_count() == expected
-    assert pytorch_vulkan._C.compute_completed_count() == expected
-    assert pytorch_vulkan._C.compute_wait_count() == expected
+    # Async batching may coalesce multiple dispatches into fewer submissions.
+    assert pytorch_vulkan._C.pending_compute_count() == 0
+    # completed/submitted/waits count different things: submitted counts
+    # vkQueueSubmit calls, completed counts fence completions observed from
+    # either the blocking-wait or the poll path. Async can place several
+    # fences in one submit, so completed may exceed submitted. Only the
+    # dispatch count and pending==0 are mode-agnostic exact invariants.
+    assert pytorch_vulkan._C.compute_completed_count() >= 1
+    assert pytorch_vulkan._C.compute_submitted_count() >= 1
     assert pytorch_vulkan._C.fallback_count() == 0
 
 

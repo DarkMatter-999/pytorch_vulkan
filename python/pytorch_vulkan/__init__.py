@@ -1,3 +1,5 @@
+import os
+
 import torch
 import inspect
 
@@ -6,6 +8,9 @@ from ._C import current_device, device_count, formatter_double_supported, is_ava
 from .compiler import compiler_stats, vulkan_backend
 from .compiler_metadata import validate_compiler_tensor_metadata
 from .serialization import load, save
+
+
+_INITIAL_PID = os.getpid()
 
 
 class _VulkanDeviceModule:
@@ -24,6 +29,27 @@ class _VulkanDeviceModule:
     @staticmethod
     def set_device(index):
         return set_device(index)
+
+    @staticmethod
+    def synchronize():
+        return _C.synchronize()
+
+    @staticmethod
+    def _is_in_bad_fork():
+        # Shim over the PID recorded at import. The backend already tracks this
+        # authoritatively via a pthread_atfork child handler
+        # (pytorch_vulkan::inherited_fork_state in src/vulkan_platform.cpp), but
+        # that symbol is not exposed to Python yet. Replace this with a binding
+        # to inherited_fork_state() so the two cannot disagree.
+        return os.getpid() != _INITIAL_PID
+
+    # manual_seed_all is deliberately NOT implemented. Seeding a device RNG is
+    # meaningless here: the Vulkan backend has no device random ops
+    # (src/random_ops.cpp is not in the build, and torch.randn(device="vk:0")
+    # is unsupported). PyTorch's warning that seeding "does not take effect" is
+    # therefore accurate and is left in place rather than silenced by a stub
+    # that would appear to work while doing nothing. Adding it properly requires
+    # a device RNG, which is out of scope.
 
 
 torch.utils.rename_privateuse1_backend("vk")

@@ -1821,7 +1821,16 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         bias == VK_NULL_HANDLE ? output_layout : bias_layout;
     std::scoped_lock lock(platform_.queue_mutex());
     try {
+        VulkanExecutionContext &context = platform_.execution_context();
+        const bool gemm_joins_recording =
+            context.recording() && !training_step_ &&
+            platform_.async_execution_enabled() && eager_dispatches_ < 16 &&
+            !context.timestamp_region_capacity_exhausted();
         record_dispatch("gemm");
+        const bool gemm_timestamp_scope = gemm_joins_recording &&
+            !context.timestamp_region_capacity_exhausted();
+        if (gemm_timestamp_scope)
+            context.begin_timestamp_scope("gemm");
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
         const VkDescriptorSet set = acquire_descriptor_set(gemm_descriptor_layout_, 5,
                                                            kGemmDescriptorPoolCapacity);
@@ -1876,6 +1885,8 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
                            sizeof(params), &params);
         record_dispatch_command(cmd, static_cast<uint32_t>(n_groups),
                                 static_cast<uint32_t>(m_groups), dispatch_batches);
+        if (gemm_timestamp_scope)
+            context.end_timestamp_scope();
         platform_.record_timing(
             VulkanTimingCategory::CommandRecord,
             std::chrono::duration<double>(std::chrono::steady_clock::now() -

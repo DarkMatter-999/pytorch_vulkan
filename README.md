@@ -29,5 +29,5 @@ The active capability sources are the authority for what passes this gate:
 - [operator capability matrix](docs/vulkan_operator_capability_matrix.md)
 - [machine-readable capability manifest](docs/vulkan_capabilities.json)
 
-Historical OpenCL and `dlprimitives` material remains in the checkout for
-reference only. It is not the active backend, build path, or support contract.
+The repository's active backend is Vulkan; its build and support contract are
+documented above.

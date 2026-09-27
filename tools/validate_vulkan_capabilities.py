@@ -206,6 +206,10 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             value = entry[field]
             if value not in allowed:
                 raise ValueError(f"{path}.{field}: unknown contract value {value!r}")
+        if entry["inplace"] == "validated_exact_alias_inplace" and entry["aliasing"] != "same_storage_alias":
+            raise ValueError(
+                f"{path}.aliasing: validated exact-alias in-place requires same_storage_alias"
+            )
         scalar_constraints = entry["scalar_constraints"]
         if not isinstance(scalar_constraints, list) or not scalar_constraints or not set(scalar_constraints) <= SCALAR_VALUES:
             raise ValueError(f"{path}.scalar_constraints: unknown contract value")

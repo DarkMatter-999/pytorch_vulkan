@@ -51,15 +51,22 @@ def test_float32_reduction_matches_cpu_and_preserves_gradient(
     descriptor_reuses = service_after["descriptor_reuses"] - service_before["descriptor_reuses"]
     assert descriptor_allocations + descriptor_reuses >= 1
     assert service_after["descriptor_pools"] <= service_after["descriptor_pool_limit"]
+    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=0, atol=0)
     assert counters[0] == 2
     assert counters[1] == 0
     assert counters[2] == 0
     assert counters[3] == 0
-    assert pytorch_vulkan._C.compute_submitted_count() == 2
-    assert pytorch_vulkan._C.compute_completed_count() == 2
-    assert pytorch_vulkan._C.compute_wait_count() == 2
-    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-6, atol=1e-6)
-    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=0, atol=0)
+    pytorch_vulkan._C.synchronize()
+    # Async batching can coalesce two dispatches into one queue submission.
+    assert pytorch_vulkan._C.pending_compute_count() == 0
+    # completed/submitted/waits count different things: submitted counts
+    # vkQueueSubmit calls, completed counts fence completions observed from
+    # either the blocking-wait or the poll path. Async can place several
+    # fences in one submit, so completed may exceed submitted. Only the
+    # dispatch count and pending==0 are mode-agnostic exact invariants.
+    assert pytorch_vulkan._C.compute_completed_count() >= 1
+    assert pytorch_vulkan._C.compute_submitted_count() >= 1
 
 
 @pytest.mark.parametrize("operation", [torch.sum, torch.mean])

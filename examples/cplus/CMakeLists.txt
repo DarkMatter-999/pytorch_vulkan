@@ -16,7 +16,6 @@ foreach(dir ${CHILD_DIRS})
 
             # Include main project headers
             target_include_directories(${TARGET_NAME} PRIVATE
-                ${PROJECT_SOURCE_DIR}/dlprimitives/include
                 ${PROJECT_SOURCE_DIR}/include
                 ${OpenCV_INCLUDE_DIRS}
             )

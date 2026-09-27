@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
-project(dlprim_backend LANGUAGES CXX)
+project(pytorch_vulkan LANGUAGES CXX)
 include(CTest)
 
 # The legacy OpenCL implementation is retained as reference material only.
@@ -315,10 +315,19 @@ if(BUILD_PYTHON_EXTENSION)
     set_target_properties(
         pytorch_vulkan_python
         PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pytorch_vulkan")
-    configure_file(
+    # Symlink, do not copy. These are plain Python sources, and a configure-time
+    # copy silently goes stale as soon as the source is edited without a
+    # re-configure -- so an edit-test loop runs against code that is not the code
+    # in the tree, and the mismatch is invisible. A real bug in compiler.py was
+    # chased for two rounds before this was found. A symlink always tracks the
+    # source. COPY_ON_ERROR degrades to a copy on platforms without symlink
+    # support, which is at worst the previous behaviour and at best never stale.
+    # NOTE: cmake_create_symlink was removed in CMake 4.x; file(CREATE_LINK)
+    # is the supported spelling.
+    file(CREATE_LINK 
         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/__init__.py"
         "${CMAKE_BINARY_DIR}/pytorch_vulkan/__init__.py"
-         COPYONLY)
+        SYMBOLIC COPY_ON_ERROR)
     add_custom_target(vulkan_reduction_shader_integrity
                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
                       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
@@ -397,16 +406,20 @@ if(BUILD_PYTHON_EXTENSION)
              add_test(NAME vulkan_linear_relu_backward_shader_integrity
                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
         endif()
-    configure_file(
-         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
-         "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
-          COPYONLY)
-     configure_file(
-         "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler.py"
-         "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler.py" COPYONLY)
-     configure_file(
-          "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler_metadata.py"
-          "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler_metadata.py" COPYONLY)
+    # Symlinked for the same reason as __init__.py above: a configure-time copy
+    # goes stale on any source edit that is not followed by a re-configure.
+    file(CREATE_LINK 
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/serialization.py"
+        "${CMAKE_BINARY_DIR}/pytorch_vulkan/serialization.py"
+        SYMBOLIC COPY_ON_ERROR)
+    file(CREATE_LINK 
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler.py"
+        "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler.py"
+        SYMBOLIC COPY_ON_ERROR)
+    file(CREATE_LINK 
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/pytorch_vulkan/compiler_metadata.py"
+        "${CMAKE_BINARY_DIR}/pytorch_vulkan/compiler_metadata.py"
+        SYMBOLIC COPY_ON_ERROR)
 
       if(BUILD_TESTING)
           add_test(NAME vulkan_manifest_validation

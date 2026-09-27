@@ -132,6 +132,10 @@ def _child(result_path, requested_device=None):
     expected = torch.mm(left_cpu, right_cpu)
     left = left_cpu.to(device)
     right = right_cpu.to(device)
+    # Drain the probe and host-to-device work before arming the counters. Under
+    # async execution that work may still be pending, and a later flush would
+    # otherwise be attributed to the measured GEMM.
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
     pytorch_vulkan._C.reset_gpu_timing()
     start = time.monotonic()
@@ -142,6 +146,10 @@ def _child(result_path, requested_device=None):
         raise RuntimeError(
             f"large GEMM produced shape {tuple(output.shape)}, expected {expected_shape}"
         )
+    # Submission counters are only populated once the batch is flushed, so the
+    # counters must be read after a synchronize. Dispatch counts are accurate
+    # before the flush, but submission/completion/wait counts are not.
+    pytorch_vulkan._C.synchronize()
     counters = pytorch_vulkan._C.execution_counter_snapshot()
     submissions = pytorch_vulkan._C.compute_submitted_count()
     completions = pytorch_vulkan._C.compute_completed_count()

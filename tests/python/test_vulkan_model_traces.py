@@ -121,7 +121,7 @@ def test_fixture_contracts_reject_unsupported_dtype_and_dimensions():
 def test_benchmark_artifact_requires_matching_cpu_and_vulkan_rows():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
 
     vulkan["parity"] = {"status": "measured", "loss_abs_difference": 0.001, "parameter_max_abs_difference": 0.001}
     validate_artifact(artifact)
@@ -133,7 +133,7 @@ def test_benchmark_artifact_requires_matching_cpu_and_vulkan_rows():
 def test_benchmark_artifact_rejects_parity_outside_model_tolerance():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu, parity={"status": "measured", "loss_abs_difference": 0.2437055, "parameter_max_abs_difference": 0.0})
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     with pytest.raises(ValueError, match="parity tolerance"):
         validate_artifact(artifact)
     vulkan["parity"]["loss_abs_difference"] = 0.0
@@ -145,7 +145,7 @@ def test_benchmark_artifact_rejects_parity_outside_model_tolerance():
 def test_artifact_rejects_duplicate_rows_and_counter_activity():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan, dict(vulkan)]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan, dict(vulkan)]}
     with pytest.raises(ValueError, match="exactly one CPU and one Vulkan"):
         validate_artifact(artifact)
     artifact["rows"] = [cpu, vulkan]
@@ -157,7 +157,7 @@ def test_artifact_rejects_duplicate_rows_and_counter_activity():
 def test_artifact_rejects_device_sequence_seed_and_timing_drift():
     cpu = _run_row("attention", AttentionFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     for field, value in (("device", "vulkan:0"), ("sequence_length", 1), ("seed", 3)):
         vulkan[field] = value
         with pytest.raises(ValueError):
@@ -171,7 +171,7 @@ def test_artifact_rejects_device_sequence_seed_and_timing_drift():
 def test_artifact_rejects_nonfinite_loss_and_host_mean():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     vulkan["loss"] = float("nan")
     with pytest.raises(ValueError, match="loss"):
         validate_artifact(artifact)
@@ -198,7 +198,7 @@ def test_parity_helper_records_measured_differences():
 def test_artifact_rejects_schema_model_and_exact_fixture_shape_drift():
     cpu = _run_row("attention", AttentionFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     for mutation, message in (({"schema_version": 2}, "schema"), ({"model": "unknown"}, "model"), ({"shape": [4, 128, 255]}, "invalid fixture shape"), ({"batch": 3}, "invalid fixture shape"), ({"sequence_length": 127}, "invalid fixture shape")):
         candidate = dict(artifact)
         candidate["rows"] = [dict(cpu), dict(vulkan)]
@@ -212,7 +212,7 @@ def test_artifact_rejects_schema_model_and_exact_fixture_shape_drift():
 def test_artifact_rejects_malformed_counter_types_and_cpu_activity():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     for row, field, value in ((cpu, "dispatches", 1), (vulkan, "dispatches", True), (vulkan, "waits", -1), (vulkan, "fallbacks", 1)):
         row[field] = value
         with pytest.raises(ValueError, match="counter"):
@@ -224,7 +224,7 @@ def test_artifact_rejects_malformed_counter_types_and_cpu_activity():
 def test_artifact_rejects_inconsistent_transfer_lifecycle_counters():
     cpu = _run_row("attention", AttentionFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
 
     invalid_rows = (
         {"transfer_operations": 1, "vulkan_copies": 0},
@@ -233,12 +233,12 @@ def test_artifact_rejects_inconsistent_transfer_lifecycle_counters():
         {"transfer_operations": 1, "transfer_submissions": 0, "transfer_completions": 0, "transfer_waits": 0},
     )
     for mutation in invalid_rows:
-        candidate = {"schema_version": 1, "seed": 1729, "rows": [dict(cpu), dict(vulkan)]}
+        candidate = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [dict(cpu), dict(vulkan)]}
         candidate["rows"][1].update(mutation)
         with pytest.raises(ValueError, match="transfer|counter"):
             validate_artifact(candidate)
 
-    valid = {"schema_version": 1, "seed": 1729, "rows": [dict(cpu), dict(vulkan)]}
+    valid = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [dict(cpu), dict(vulkan)]}
     valid["rows"][1].update({
         "vulkan_copies": 1,
         "transfer_operations": 1,
@@ -259,7 +259,7 @@ def test_artifact_accepts_compute_scoped_transfer_operations_without_standalone_
         transfer_completions=0,
         transfer_waits=0,
     )
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
 
     validate_artifact(artifact)
 
@@ -274,7 +274,7 @@ def test_artifact_rejects_standalone_transfer_lifecycle_over_operation_count():
         transfer_completions=405_504,
         transfer_waits=405_699,
     )
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
 
     with pytest.raises(ValueError, match="transfer submissions exceed transfer operations"):
         validate_artifact(artifact)
@@ -283,7 +283,7 @@ def test_artifact_rejects_standalone_transfer_lifecycle_over_operation_count():
 def test_artifact_requires_consistent_timing_means():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     vulkan["host_time"]["mean_ns"] = cpu["host_time"]["samples_ns"][0] + max(1.0, abs(cpu["host_time"]["samples_ns"][0]) * TIMING_MEAN_REL_TOLERANCE) * 2
     with pytest.raises(ValueError, match="timing mean"):
         validate_artifact(artifact)
@@ -292,7 +292,7 @@ def test_artifact_requires_consistent_timing_means():
 def test_artifact_validates_available_gpu_timing_shape_and_mean():
     cpu = _run_row("cnn", CNNFixture(), "cpu", warmups=0, repetitions=1)
     vulkan = _vulkan_row(cpu, gpu_time={"status": "available", "samples_ns": [10.0], "mean_ns": 10.0}, timing_source="gpu_timestamp", effective_tflops=1.0)
-    artifact = {"schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
+    artifact = {"execution_mode": "sync", "requested_execution_mode": "sync", "schema_version": 1, "seed": 1729, "rows": [cpu, vulkan]}
     validate_artifact(artifact)
     vulkan["gpu_time"]["samples_ns"] = []
     with pytest.raises(ValueError, match="GPU timing samples"):

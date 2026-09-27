@@ -818,7 +818,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "optimizer_update",
       "device": {
         "index": 0,
@@ -866,7 +866,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "optimizer_update",
       "device": {
         "index": 0,
@@ -914,7 +914,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "optimizer_update",
       "device": {
         "index": 0,
@@ -1464,7 +1464,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "first_order_or_none",
       "device": {
         "index": 0,
@@ -1800,7 +1800,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "optimizer_update",
       "device": {
         "index": 0,
@@ -2361,7 +2361,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "optimizer_update",
       "device": {
         "index": 0,
@@ -3497,7 +3497,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "optimizer_update",
       "device": {
         "index": 0,
@@ -3923,7 +3923,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -4259,7 +4259,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -5142,7 +5142,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -5520,7 +5520,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -5646,7 +5646,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -6702,7 +6702,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7182,7 +7182,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7350,7 +7350,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7434,7 +7434,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7476,7 +7476,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7602,7 +7602,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7728,7 +7728,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7770,7 +7770,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -7938,7 +7938,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -8022,7 +8022,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -8232,7 +8232,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -8274,7 +8274,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,
@@ -8321,7 +8321,7 @@
       ]
     },
     {
-      "aliasing": "no_overlap",
+      "aliasing": "same_storage_alias",
       "autograd": "not_applicable",
       "device": {
         "index": 0,

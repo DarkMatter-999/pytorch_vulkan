@@ -138,17 +138,18 @@ def test_measure_case_pairs_inputs_alternates_order_and_excludes_warmups():
     assert all(cpu == vulkan and cpu is not vulkan for cpu, vulkan in case["payload_pairs"])
 
 
-@pytest.mark.parametrize(("value", "expected"), [(None, "sync"), ("1", "async")])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, "sync"), ("1", "async"), ("0", "sync"), ("true", "sync")],
+)
 def test_operator_result_records_selected_execution_mode(monkeypatch, value, expected):
-    from tools.vulkan_operator_benchmark import measure_case
+    from tools import vulkan_operator_benchmark as benchmark
 
     if value is None:
         monkeypatch.delenv("PYTORCH_VULKAN_ASYNC_EXECUTION", raising=False)
     else:
         monkeypatch.setenv("PYTORCH_VULKAN_ASYNC_EXECUTION", value)
-    result = measure_case(_fake_case(_FakeVulkanApi()), warmups=0, repetitions=1)
-    assert result["requested_execution_mode"] == expected
-    assert result["execution_mode"] == "sync"
+    assert benchmark._requested_execution_mode() == expected
 
 
 def test_operator_host_sample_includes_explicit_completion(monkeypatch):

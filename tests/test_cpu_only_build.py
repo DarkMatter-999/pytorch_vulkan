@@ -47,4 +47,3 @@ def test_cpu_only_configuration_does_not_build_opencl_backend(tmp_path):
     )
     assert targets.returncode == 0, targets.stdout + targets.stderr
     assert "pt_ocl" not in targets.stdout
-    assert "dlprim_core" not in targets.stdout

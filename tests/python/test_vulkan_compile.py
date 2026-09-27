@@ -37,6 +37,7 @@ def _compile_and_check(model, cpu_model, cpu_input, device):
     vk_input = cpu_input.to(device)
     pytorch_vulkan._C.reset_execution_counters()
     first = compiled(vk_input)
+    pytorch_vulkan._C.synchronize()
     first_counters = (
         pytorch_vulkan._C.compute_dispatch_count(),
         pytorch_vulkan._C.compute_submitted_count(),
@@ -46,6 +47,7 @@ def _compile_and_check(model, cpu_model, cpu_input, device):
     )
     pytorch_vulkan._C.reset_execution_counters()
     second = compiled(vk_input)
+    pytorch_vulkan._C.synchronize()
     second_counters = (
         pytorch_vulkan._C.compute_dispatch_count(),
         pytorch_vulkan._C.compute_submitted_count(),
