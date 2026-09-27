@@ -17,6 +17,7 @@ layout(push_constant, std430) uniform Params {
 params;
 
 shared float softmax_partial[256];
+shared float reduction_partial[256];
 
 void main() {
   if (params.operation >= 5u && params.softmax_workgroup != 0u) {
@@ -62,6 +63,50 @@ void main() {
   }
 
   uint output_index = gl_GlobalInvocationID.x;
+  if (params.output_numel == 1u && params.operation < 5u) {
+    uint lane = gl_LocalInvocationID.x;
+    uint input_base = params.storage_offset;
+    float accumulator = params.operation == 4u ? 1.0 :
+                        (params.operation == 2u ? -3.402823466e+38 :
+                         (params.operation == 3u ? 3.402823466e+38 : 0.0));
+    for (uint index = lane; index < params.reduce_numel; index += 256u) {
+      uint reduced_remainder = index;
+      uint input_index = input_base;
+      for (int d = int(params.rank) - 1; d >= 0; --d) {
+        uint dim = uint(d);
+        if ((params.reduce_mask & (1u << dim)) != 0u) {
+          uint coordinate = reduced_remainder % params.sizes[dim];
+          reduced_remainder /= params.sizes[dim];
+          input_index += coordinate * params.strides[dim];
+        }
+      }
+      float candidate = input_data[input_index];
+      if (params.operation == 0u || params.operation == 1u) accumulator += candidate;
+      else if (params.operation == 2u) accumulator = max(accumulator, candidate);
+      else if (params.operation == 3u) accumulator = min(accumulator, candidate);
+      else accumulator *= candidate;
+    }
+    reduction_partial[lane] = accumulator;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+      if (lane < stride) {
+        if (params.operation == 0u || params.operation == 1u)
+          reduction_partial[lane] += reduction_partial[lane + stride];
+        else if (params.operation == 2u)
+          reduction_partial[lane] = max(reduction_partial[lane], reduction_partial[lane + stride]);
+        else if (params.operation == 3u)
+          reduction_partial[lane] = min(reduction_partial[lane], reduction_partial[lane + stride]);
+        else
+          reduction_partial[lane] *= reduction_partial[lane + stride];
+      }
+      barrier();
+    }
+    if (lane == 0u) {
+      float result = reduction_partial[0];
+      output_data[0] = params.operation == 1u ? result / float(params.reduce_numel) : result;
+    }
+    return;
+  }
   if (output_index >= params.output_numel)
     return;
   uint remainder = output_index;
