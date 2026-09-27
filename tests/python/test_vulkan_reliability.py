@@ -53,6 +53,8 @@ def test_large_resident_training_reuses_only_valid_execution_state(vulkan_backen
             # Drain deferred work from earlier tests before arming counters.
             pytorch_vulkan._C.synchronize()
             pytorch_vulkan._C.reset_execution_counters()
+            step_counters = None
+            step_pending = 0
             try:
                 pytorch_vulkan._C.begin_training_step()
                 assert pytorch_vulkan._C.training_step_active()
@@ -72,6 +74,11 @@ def test_large_resident_training_reuses_only_valid_execution_state(vulkan_backen
                 pytorch_vulkan._C.end_training_step()
                 assert not pytorch_vulkan._C.training_step_active()
                 assert pytorch_vulkan._C.compute_dispatch_count() > 0
+                # Measure the step here, before the CPU reference below. Those
+                # comparisons read parameters back with .cpu(), which are real
+                # explicit transfers and must not be counted against the step.
+                step_counters = pytorch_vulkan._C.execution_counter_snapshot()
+                step_pending = pytorch_vulkan._C.pending_compute_count()
                 cpu_optimizer.zero_grad(set_to_none=True)
                 cpu_output = cpu_model(cpu_inputs)
                 cpu_loss = (cpu_output - cpu_targets).mul(cpu_output - cpu_targets).sum()
@@ -89,13 +96,16 @@ def test_large_resident_training_reuses_only_valid_execution_state(vulkan_backen
                 if "Vulkan device lost" not in str(error):
                     raise
                 lost = True
-            counters = pytorch_vulkan._C.execution_counter_snapshot()
+            if step_counters is None:
+                step_counters = pytorch_vulkan._C.execution_counter_snapshot()
+                step_pending = pytorch_vulkan._C.pending_compute_count()
+            counters = step_counters
             if not lost:
                 assert counters[0] > 0
                 assert counters[1] == 0
             assert counters[2] == 0
             assert counters[3] == 0
-            assert pytorch_vulkan._C.pending_compute_count() == 0
+            assert step_pending == 0
             if not lost:
                 services = pytorch_vulkan._C.shared_service_snapshot()
                 assert services["pipeline_entries"] == baseline_services["pipeline_entries"]
