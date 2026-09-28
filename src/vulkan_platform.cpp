@@ -381,8 +381,11 @@ std::atomic<std::size_t> availability_probes{0};
 
 VulkanPlatform::VulkanPlatform(bool enable_validation)
     : validation_enabled_(enable_validation), async_execution_enabled_([] {
+          // Async is the default. PYTORCH_VULKAN_ASYNC_EXECUTION=0 selects the
+          // legacy synchronous execution mode; any other value, including
+          // unset, leaves async enabled.
           const char *value = std::getenv("PYTORCH_VULKAN_ASYNC_EXECUTION");
-          return value != nullptr && std::string(value) == "1";
+          return value == nullptr || std::string(value) != "0";
       }()) {
     pytorch_vulkan::platform_constructions.fetch_add(1, std::memory_order_relaxed);
     try {

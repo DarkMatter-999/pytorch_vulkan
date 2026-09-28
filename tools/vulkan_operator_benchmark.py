@@ -19,7 +19,11 @@ TIMING_SCOPES = {"operator", "gemm", "training"}
 
 
 def _requested_execution_mode():
-    return "async" if os.environ.get("PYTORCH_VULKAN_ASYNC_EXECUTION") == "1" else "sync"
+    # Report what the backend actually latched rather than re-deriving the
+    # selection rule from the environment, which would drift from it.
+    import pytorch_vulkan
+
+    return pytorch_vulkan._C.execution_mode()
 
 
 def _actual_execution_mode():

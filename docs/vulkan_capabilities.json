@@ -6492,7 +6492,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "first_order_backward",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -6505,8 +6505,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "reduction_identity_or_nan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -6517,7 +6517,7 @@
         "max": 8,
         "min": 0
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -6526,15 +6526,20 @@
       "shape_constraints": [
         "schema_mean_default"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "reduction.mean.default",
+          "supported": true
+        }
+      ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "not_differentiable",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -6547,8 +6552,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "reduction_identity_or_nan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -6559,7 +6564,7 @@
         "max": 8,
         "min": 0
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -6568,8 +6573,13 @@
       "shape_constraints": [
         "schema_mean_out"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "reduction.mean.out",
+          "supported": true
+        }
+      ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
@@ -7813,7 +7823,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "not_differentiable",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -7826,8 +7836,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "reduction_identity_or_nan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -7838,7 +7848,7 @@
         "max": 8,
         "min": 0
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -7847,15 +7857,20 @@
       "shape_constraints": [
         "schema_sum_intlist_out"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "reduction.sum.intlist.out",
+          "supported": true
+        }
+      ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "first_order_backward",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -7868,8 +7883,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "reduction_identity_or_nan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -7880,7 +7895,7 @@
         "max": 8,
         "min": 0
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -7889,8 +7904,13 @@
       "shape_constraints": [
         "schema_sum_default"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "reduction.sum.default",
+          "supported": true
+        }
+      ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
       ]

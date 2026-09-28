@@ -303,7 +303,7 @@ def run(
         "mode": mode if device.startswith("vk") else "cpu",
         "phase": phase,
         "requested_execution_mode": (
-            "async" if os.environ.get("PYTORCH_VULKAN_ASYNC_EXECUTION") == "1" else "sync"
+            _C.execution_mode() if device.startswith("vk") else "cpu"
         ),
         "execution_mode": _C.execution_mode() if device.startswith("vk") else "cpu",
         "training_scope": "not_applicable" if not training else training_scope,

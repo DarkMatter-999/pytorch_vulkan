@@ -25,8 +25,10 @@ def _execution_mode(value):
 
 
 def test_execution_mode_is_selected_before_platform_initialization():
-    assert _execution_mode(None) == "sync"
+    # Async is the default; sync is opt-in via PYTORCH_VULKAN_ASYNC_EXECUTION=0.
+    assert _execution_mode(None) == "async"
     assert _execution_mode("1") == "async"
+    assert _execution_mode("0") == "sync"
 
 
 def test_async_gpu_chain_and_ordered_transfer_boundaries():

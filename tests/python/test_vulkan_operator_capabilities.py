@@ -240,7 +240,12 @@ def test_source_registrations_cannot_be_supported_without_a_declaration():
     assert source_supported == DECLARED_OPERATION_MANIFEST
     assert {
         case.declaration_id for case in ALL_CASES if case.supported
-    } == source_supported
+    } == source_supported - {
+        "aten::mean.default",
+        "aten::mean.out",
+        "aten::sum.default",
+        "aten::sum.IntList_out",
+    }
 
 
 def test_every_deferred_roadmap_schema_has_an_explicit_reason():
@@ -469,6 +474,91 @@ def test_binary_float32_gradient_contract(vulkan_backend, operation):
         assert vk_input.grad.dtype is torch.float32
         assert vk_input.grad.shape == vk_input.shape
         torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=0, atol=0)
+
+
+def test_sum_default_float32_reduction_contract(vulkan_backend):
+    cpu_input = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    vk_input = cpu_input.to(vulkan_backend)
+
+    cpu_result = torch.sum(cpu_input)
+    vk_result = torch.sum(vk_input)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=0, atol=0)
+
+    cpu_strided = cpu_input.t()
+    vk_strided = vk_input.t()
+    assert not vk_strided.is_contiguous()
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(
+        torch.sum(vk_strided).cpu(), torch.sum(cpu_strided), rtol=0, atol=0
+    )
+
+    cpu_empty = torch.empty((0, 3), dtype=torch.float32)
+    vk_empty_result = torch.sum(cpu_empty.to(vulkan_backend))
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_empty_result.cpu(), torch.sum(cpu_empty), rtol=0, atol=0)
+    assert vk_empty_result.item() == 0
+
+    cpu_grad_input = cpu_input.clone().requires_grad_()
+    vk_grad_input = cpu_input.to(vulkan_backend).requires_grad_()
+    cpu_sum = torch.sum(cpu_grad_input)
+    vk_sum = torch.sum(vk_grad_input)
+    cpu_sum.backward()
+    vk_sum.backward()
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_grad_input.grad.cpu(), cpu_grad_input.grad, rtol=0, atol=0)
+
+
+def test_mean_default_float32_reduction_contract(vulkan_backend):
+    cpu_input = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    vk_input = cpu_input.to(vulkan_backend)
+
+    cpu_result = torch.mean(cpu_input)
+    vk_result = torch.mean(vk_input)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-6, atol=1e-6)
+
+    cpu_strided = cpu_input.t()
+    vk_strided = vk_input.t()
+    assert not vk_strided.is_contiguous()
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(
+        torch.mean(vk_strided).cpu(), torch.mean(cpu_strided), rtol=1e-6, atol=1e-6
+    )
+
+    cpu_empty = torch.empty((0, 3), dtype=torch.float32)
+    vk_empty_result = torch.mean(cpu_empty.to(vulkan_backend))
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(
+        vk_empty_result.cpu(), torch.mean(cpu_empty), equal_nan=True
+    )
+    assert vk_empty_result.item() != vk_empty_result.item()
+
+
+def test_sum_intlist_out_float32_reduction_contract(vulkan_backend):
+    cpu_input = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    vk_input = cpu_input.to(vulkan_backend)
+    cpu_out = torch.empty((), dtype=torch.float32)
+    vk_out = torch.empty((), dtype=torch.float32).to(vulkan_backend)
+    assert vk_out.is_contiguous()
+
+    torch.sum(cpu_input, dim=[0, 1], out=cpu_out)
+    torch.sum(vk_input, dim=[0, 1], out=vk_out)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_out.cpu(), cpu_out, rtol=0, atol=0)
+
+
+def test_mean_out_float32_reduction_contract(vulkan_backend):
+    cpu_input = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    vk_input = cpu_input.to(vulkan_backend)
+    cpu_out = torch.empty((), dtype=torch.float32)
+    vk_out = torch.empty((), dtype=torch.float32).to(vulkan_backend)
+    assert vk_out.is_contiguous()
+
+    torch.mean(cpu_input, dim=[0, 1], out=cpu_out)
+    torch.mean(vk_input, dim=[0, 1], out=vk_out)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_out.cpu(), cpu_out, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize("operation", [torch.neg, torch.abs, torch.relu])
