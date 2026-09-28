@@ -238,14 +238,7 @@ def test_source_registrations_cannot_be_supported_without_a_declaration():
     source_inventory, explicit_rejected = _source_registration_classifications()
     source_supported = source_inventory - ROADMAP_DEFERRED_SCHEMAS - explicit_rejected
     assert source_supported == DECLARED_OPERATION_MANIFEST
-    assert {
-        case.declaration_id for case in ALL_CASES if case.supported
-    } == source_supported - {
-        "aten::mean.default",
-        "aten::mean.out",
-        "aten::sum.default",
-        "aten::sum.IntList_out",
-    }
+    assert {case.declaration_id for case in ALL_CASES if case.supported} == source_supported
 
 
 def test_every_deferred_roadmap_schema_has_an_explicit_reason():

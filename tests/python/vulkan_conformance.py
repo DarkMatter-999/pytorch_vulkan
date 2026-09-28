@@ -1071,6 +1071,24 @@ def _cpu_mean(value, dim=None, keepdim=False):
     return torch.mean(value, dim=dim, keepdim=keepdim)
 
 
+def _sum_dims_out(value):
+    destination = torch.empty((), dtype=value.dtype, device=value.device)
+    return torch.ops.aten.sum.IntList_out(value, [0, 1], out=destination)
+
+
+def _mean_dims_out(value):
+    destination = torch.empty((), dtype=value.dtype, device=value.device)
+    return torch.ops.aten.mean.out(value, [0, 1], out=destination)
+
+
+def _cpu_sum_dims_out(value):
+    return torch.sum(value, dim=[0, 1])
+
+
+def _cpu_mean_dims_out(value):
+    return torch.mean(value, dim=[0, 1])
+
+
 def _cpu_argmax(value, dim=None, keepdim=False):
     return torch.argmax(value, dim=dim, keepdim=keepdim)
 
@@ -1625,6 +1643,46 @@ ALL_CASES = tuple(
         cpu_reference=_cpu_mean,
         expected_shape=(2,),
         check_gradients=True,
+    ),
+    _case(
+        "reduction.sum.default",
+        "reduction",
+        torch.sum,
+        _reduction,
+        cpu_reference=lambda value: torch.sum(value),
+        expected_shape=(),
+        check_gradients=True,
+    ),
+    _case(
+        "reduction.mean.default",
+        "reduction",
+        torch.mean,
+        _reduction,
+        cpu_reference=lambda value: torch.mean(value),
+        expected_shape=(),
+        check_gradients=True,
+        # The Vulkan reduction sums through a shared-memory tree, so the result
+        # differs from the CPU's sequential order by up to one float32 ULP.
+        rtol=1e-6,
+        atol=1e-6,
+    ),
+    _case(
+        "reduction.sum.intlist.out",
+        "reduction",
+        _sum_dims_out,
+        _reduction,
+        cpu_reference=_cpu_sum_dims_out,
+        expected_shape=(),
+    ),
+    _case(
+        "reduction.mean.out",
+        "reduction",
+        _mean_dims_out,
+        _reduction,
+        cpu_reference=_cpu_mean_dims_out,
+        expected_shape=(),
+        rtol=1e-6,
+        atol=1e-6,
     ),
     _case(
         "reduction.sum.keepdim.strided",

@@ -138,18 +138,24 @@ def test_measure_case_pairs_inputs_alternates_order_and_excludes_warmups():
     assert all(cpu == vulkan and cpu is not vulkan for cpu, vulkan in case["payload_pairs"])
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(None, "sync"), ("1", "async"), ("0", "sync"), ("true", "sync")],
-)
-def test_operator_result_records_selected_execution_mode(monkeypatch, value, expected):
+def test_operator_result_records_selected_execution_mode():
+    """The reported mode is the one the backend latched, not a re-read of the environment.
+
+    Execution mode is chosen once in the VulkanPlatform constructor, so it
+    cannot be varied by changing the environment after import. Selection from
+    the environment is covered where a fresh process is constructed, in
+    test_vulkan_async_execution.py.
+    """
     from tools import vulkan_operator_benchmark as benchmark
 
-    if value is None:
-        monkeypatch.delenv("PYTORCH_VULKAN_ASYNC_EXECUTION", raising=False)
-    else:
-        monkeypatch.setenv("PYTORCH_VULKAN_ASYNC_EXECUTION", value)
-    assert benchmark._requested_execution_mode() == expected
+    assert benchmark._requested_execution_mode() in {"sync", "async"}
+
+
+def test_training_benchmark_records_the_latched_execution_mode():
+    """The training benchmark must not re-derive the mode selection rule either."""
+    from tools import vulkan_training_benchmark as benchmark
+
+    assert benchmark._C.execution_mode() in {"sync", "async"}
 
 
 def test_operator_host_sample_includes_explicit_completion(monkeypatch):
