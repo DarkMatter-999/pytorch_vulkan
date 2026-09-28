@@ -33,6 +33,7 @@ shared float adjoint[256];
 shared float delta[256];
 shared float input_tile[256];
 shared float previous_state_tile[256];
+shared float reduction_partials[256];
 
 void main() {
   uint local = gl_LocalInvocationID.x;
@@ -141,32 +142,107 @@ void main() {
         delta[local] = adjoint[local] * (1.0 - state * state);
       }
       barrier();
-      for (uint input_index = local; input_index < params.input_dimension; input_index += 256u) {
+
+      const bool split_reduction = params.input_dimension * 2u <= 256u;
+      if (split_reduction) {
+        const uint hidden_half = params.hidden_dimension / 2u;
+        const bool upper_half = local >= params.input_dimension;
+        const uint input_index = upper_half ? local - params.input_dimension : local;
+        const uint hidden_begin = upper_half ? hidden_half : 0u;
+        const uint hidden_end = upper_half ? params.hidden_dimension : hidden_half;
         float value = 0.0;
-        for (uint hidden = 0u; hidden < params.hidden_dimension; ++hidden)
+        for (uint hidden = hidden_begin; hidden < hidden_end; ++hidden)
           value += delta[hidden] * input_weight[hidden * params.input_dimension + input_index];
-        gradient_input[step * params.input_dimension + input_index] = value;
+        reduction_partials[local] = value;
+        barrier();
+        if (!upper_half)
+          gradient_input[step * params.input_dimension + input_index] =
+              reduction_partials[local] + reduction_partials[local + params.input_dimension];
+        barrier();
+      } else {
+        for (uint input_index = local; input_index < params.input_dimension; input_index += 256u) {
+          float value = 0.0;
+          for (uint hidden = 0u; hidden < params.hidden_dimension; ++hidden)
+            value += delta[hidden] * input_weight[hidden * params.input_dimension + input_index];
+          gradient_input[step * params.input_dimension + input_index] = value;
+        }
       }
       if (local < params.hidden_dimension) {
-        for (uint input_index = 0u; input_index < params.input_dimension; ++input_index)
+        float acc0 = 0.0;
+        float acc1 = 0.0;
+        float acc2 = 0.0;
+        float acc3 = 0.0;
+        uint input_index = 0u;
+        for (; input_index + 3u < params.input_dimension; input_index += 4u) {
+          acc0 += input_buffer[step * params.input_dimension + input_index] * delta[local];
+          acc1 += input_buffer[step * params.input_dimension + input_index + 1u] * delta[local];
+          acc2 += input_buffer[step * params.input_dimension + input_index + 2u] * delta[local];
+          acc3 += input_buffer[step * params.input_dimension + input_index + 3u] * delta[local];
+          partial_input_weight[partial_weight_base + local * params.input_dimension + input_index] += acc0;
+          partial_input_weight[partial_weight_base + local * params.input_dimension + input_index + 1u] += acc1;
+          partial_input_weight[partial_weight_base + local * params.input_dimension + input_index + 2u] += acc2;
+          partial_input_weight[partial_weight_base + local * params.input_dimension + input_index + 3u] += acc3;
+          acc0 = 0.0;
+          acc1 = 0.0;
+          acc2 = 0.0;
+          acc3 = 0.0;
+        }
+        for (; input_index < params.input_dimension; ++input_index)
           partial_input_weight[partial_weight_base + local * params.input_dimension + input_index] +=
               input_buffer[step * params.input_dimension + input_index] * delta[local];
-        for (uint previous_hidden = 0u; previous_hidden < params.hidden_dimension; ++previous_hidden) {
-          float previous_state = sequence_index == 0u
-              ? 0.0
-              : saved_state[(step - 1u) * params.hidden_dimension + previous_hidden];
+
+        const uint previous_row = sequence_index == 0u
+            ? 0u
+            : (step - 1u) * params.hidden_dimension;
+        const bool has_previous = sequence_index != 0u;
+        float racc0 = 0.0;
+        float racc1 = 0.0;
+        float racc2 = 0.0;
+        float racc3 = 0.0;
+        uint previous_hidden = 0u;
+        for (; previous_hidden + 3u < params.hidden_dimension; previous_hidden += 4u) {
+          racc0 += (has_previous ? saved_state[previous_row + previous_hidden] : 0.0) * delta[local];
+          racc1 += (has_previous ? saved_state[previous_row + previous_hidden + 1u] : 0.0) * delta[local];
+          racc2 += (has_previous ? saved_state[previous_row + previous_hidden + 2u] : 0.0) * delta[local];
+          racc3 += (has_previous ? saved_state[previous_row + previous_hidden + 3u] : 0.0) * delta[local];
           partial_recurrent_weight[partial_recurrent_base +
-              local * params.hidden_dimension + previous_hidden] += previous_state * delta[local];
+              local * params.hidden_dimension + previous_hidden] += racc0;
+          partial_recurrent_weight[partial_recurrent_base +
+              local * params.hidden_dimension + previous_hidden + 1u] += racc1;
+          partial_recurrent_weight[partial_recurrent_base +
+              local * params.hidden_dimension + previous_hidden + 2u] += racc2;
+          partial_recurrent_weight[partial_recurrent_base +
+              local * params.hidden_dimension + previous_hidden + 3u] += racc3;
+          racc0 = 0.0;
+          racc1 = 0.0;
+          racc2 = 0.0;
+          racc3 = 0.0;
         }
+        for (; previous_hidden < params.hidden_dimension; ++previous_hidden)
+          partial_recurrent_weight[partial_recurrent_base +
+              local * params.hidden_dimension + previous_hidden] +=
+              (has_previous ? saved_state[previous_row + previous_hidden] : 0.0) * delta[local];
         partial_bias[partial_bias_base + local] += delta[local];
       }
       barrier();
       if (sequence_index > 0u && local < params.hidden_dimension) {
-        float previous_adjoint = 0.0;
-        for (uint hidden = 0u; hidden < params.hidden_dimension; ++hidden)
-          previous_adjoint += delta[hidden] *
-              recurrent_weight[hidden * params.hidden_dimension + local];
-        adjoint[local] = previous_adjoint;
+        float a0 = 0.0;
+        float a1 = 0.0;
+        float a2 = 0.0;
+        float a3 = 0.0;
+        uint hidden = 0u;
+        for (; hidden + 3u < params.hidden_dimension; hidden += 4u) {
+          a0 += delta[hidden] * recurrent_weight[hidden * params.hidden_dimension + local];
+          a1 += delta[hidden + 1u] *
+                recurrent_weight[(hidden + 1u) * params.hidden_dimension + local];
+          a2 += delta[hidden + 2u] *
+                recurrent_weight[(hidden + 2u) * params.hidden_dimension + local];
+          a3 += delta[hidden + 3u] *
+                recurrent_weight[(hidden + 3u) * params.hidden_dimension + local];
+        }
+        for (; hidden < params.hidden_dimension; ++hidden)
+          a0 += delta[hidden] * recurrent_weight[hidden * params.hidden_dimension + local];
+        adjoint[local] = a0 + a1 + a2 + a3;
       }
       barrier();
     }
