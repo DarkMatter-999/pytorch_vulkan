@@ -151,6 +151,28 @@ def test_assert_vulkan_result_checks_device_and_dtype(vulkan_backend):
     assert_vulkan_result(result, case)
 
 
+def test_nll_forward_none_writes_zero_total_weight(vulkan_backend):
+    case = next(
+        case for case in ALL_CASES
+        if case.name == "classification.nll-forward.none.wide"
+    )
+    logits, labels = case.inputs()
+    log_probs = torch.log_softmax(logits, dim=1).to(vulkan_backend)
+    labels = labels.to(vulkan_backend)
+    loss, total_weight = torch.ops.aten.nll_loss_forward.default(
+        log_probs, labels, None, 0, -100
+    )
+    pytorch_vulkan._C.synchronize()
+    expected = torch.nn.functional.nll_loss(
+        torch.log_softmax(logits, dim=1), labels.cpu(), reduction="none"
+    )
+    actual = loss.cpu()
+    assert actual.numel() == 512
+    assert torch.isfinite(actual).all()
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=5e-7)
+    assert total_weight.cpu().item() == 0.0
+
+
 def test_execution_counters_count_dispatch_and_explicit_cpu_transfer(vulkan_backend):
     source = torch.tensor([-2.0, 0.5, 3.0], dtype=torch.float32).to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()

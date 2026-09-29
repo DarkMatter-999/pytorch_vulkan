@@ -22,6 +22,7 @@ void main() {
   uint index = gl_GlobalInvocationID.x;
   if (p.mode == 2u || p.mode == 4u || p.mode == 5u) {
     if (p.mode == 5u) {
+      if (index == 0u) out1[0] = 0.0;
       if (index >= p.batch) return;
       int64_t label = labels[index];
       if (label == int64_t(p.ignore_index)) { out0[index] = 0.0; return; }

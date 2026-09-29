@@ -45,7 +45,7 @@
         }
       ],
       "tests": [
-        "tests/python/test_vulkan_capability_manifest.py",
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
@@ -2684,6 +2684,7 @@
       "schema": "aten::nll_loss_forward.default",
       "shape_constraints": [
         "2x3",
+        "512x5",
         "8x5"
       ],
       "status": "supported",
@@ -6576,6 +6577,7 @@
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
@@ -6623,6 +6625,7 @@
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
@@ -7907,6 +7910,7 @@
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
@@ -7954,6 +7958,7 @@
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ]
     },
@@ -8468,7 +8473,8 @@
         }
       ],
       "tests": [
-        "tests/python/test_vulkan_conformance.py"
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
       ]
     }
   ],

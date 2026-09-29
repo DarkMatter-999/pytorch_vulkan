@@ -135,4 +135,7 @@ def test_nll_schema_declares_real_shapes():
         shapes = committed[schema]["shape_constraints"]
         assert shapes == sorted(shapes)
         assert "unwitnessed" not in shapes
-        assert shapes == ["2x3", "8x5"]
+        expected = ["2x3", "8x5"]
+        if schema == "aten::nll_loss_forward.default":
+            expected.append("512x5")
+        assert shapes == sorted(expected)

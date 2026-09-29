@@ -24,11 +24,6 @@ from tools.vulkan_capability_declarations import DECLARATIONS  # noqa: E402
 
 MANIFEST = ROOT / "docs/vulkan_capabilities.json"
 
-_COMMITTED: dict[str, dict] = {
-    entry["schema"]: entry
-    for entry in json.loads(MANIFEST.read_text())["entries"]
-}
-
 ENTRY_ORDER = (
     'aten::bmm.default',
     'aten::_adaptive_avg_pool2d.default',
@@ -224,9 +219,20 @@ def _case_index() -> dict[str, dict[str, object]]:
     from vulkan_conformance import ALL_CASES
 
     index: dict[str, dict[str, object]] = {}
+    for schema in DECLARATIONS:
+        index[schema] = {
+            "test_cases": [],
+            "tests": {"tests/python/test_vulkan_operator_capabilities.py"},
+            "shapes": set(),
+        }
     for case in ALL_CASES:
         entry = index.setdefault(
-            case.declaration_id, {"test_cases": [], "tests": set(), "shapes": set()}
+            case.declaration_id,
+            {
+                "test_cases": [],
+                "tests": {"tests/python/test_vulkan_operator_capabilities.py"},
+                "shapes": set(),
+            },
         )
         entry["test_cases"].append(
             {"name": case.name, "supported": case.supported}
@@ -234,7 +240,6 @@ def _case_index() -> dict[str, dict[str, object]]:
         if not case.supported:
             continue
         entry["tests"].add("tests/python/test_vulkan_conformance.py")
-        entry["tests"].add("tests/python/test_vulkan_operator_capabilities.py")
         for shape in case.declared_shapes:
             entry["shapes"].add(shape)
     return index
@@ -250,9 +255,9 @@ def build_manifest() -> dict:
         declared = DECLARATIONS[schema]
         entry = dict(declared)
         entry["schema"] = schema
-        entry["test_cases"] = list(_COMMITTED[schema]["test_cases"])
-        entry["tests"] = list(_COMMITTED[schema]["tests"])
-        case = cases.get(schema, {"shapes": set()})
+        case = cases.get(schema, {"test_cases": [], "tests": set(), "shapes": set()})
+        entry["test_cases"] = list(case["test_cases"])
+        entry["tests"] = sorted(case["tests"])
         entry["shape_constraints"] = sorted(case["shapes"]) or ["unwitnessed"]
         entries.append(entry)
     return {"entries": entries, "version": 1}

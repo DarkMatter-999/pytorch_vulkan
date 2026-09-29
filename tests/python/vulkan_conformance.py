@@ -992,6 +992,12 @@ def _nll_forward_wide(*, requires_grad=False):
     )
 
 
+def _nll_forward_none_large(*, requires_grad=False):
+    logits = torch.randn(512, 5, dtype=torch.float32, requires_grad=requires_grad)
+    labels = torch.arange(512, dtype=torch.int64) % 5
+    return logits, labels
+
+
 def _nll_backward_wide(*, requires_grad=False):
     logits = torch.randn(8, 5, dtype=torch.float32)
     labels = torch.tensor([0, 4, 2, 1, 3, 2, 4, 0], dtype=torch.int64)
@@ -1011,10 +1017,6 @@ def _cpu_nll_backward_reduction(grad, log_probs, labels, reduction):
     )
     grad_outputs = grad.reshape(()) if reduction != "none" else grad
     return torch.autograd.grad(reference, log_probs, grad_outputs=grad_outputs)[0]
-
-
-def _nll_forward_none(*, requires_grad=False):
-    return _nll_forward_wide()
 
 
 def _nll_backward_reduction_inputs(reduction):
@@ -2276,12 +2278,12 @@ ALL_CASES = tuple(
         lambda logits, labels: torch.ops.aten.nll_loss_forward.default(
             torch.log_softmax(logits, dim=1), labels, None, 0, -100
         )[0],
-        _nll_forward_none,
+        _nll_forward_none_large,
         cpu_reference=lambda logits, labels: torch.nn.functional.nll_loss(
             torch.log_softmax(logits, dim=1), labels, reduction="none"
         ),
-        expected_shape=(8,),
-        declared_shapes=("8x5",),
+        expected_shape=(512,),
+        declared_shapes=("512x5",),
     ),
     _case(
         "classification.nll-backward.sum",
