@@ -2257,7 +2257,7 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
                                 const VulkanTensorLayout &weight_layout,
                                 const VulkanTensorLayout &bias_layout,
                                 const VulkanTensorLayout &output_layout,
-                                uint32_t operation) const {
+                                uint32_t operation, uint32_t kernel_height, uint32_t kernel_width) const {
     ModelMetadata metadata{};
     fill_layout_metadata(metadata.tensors[0], input_layout, "convolution input");
     fill_layout_metadata(metadata.tensors[1], weight_layout, "convolution weight");
@@ -2280,8 +2280,10 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
         operation == 0 ? dimension(output_layout, 2) : dimension(input_layout, 2);
     uint32_t output_width =
         operation == 0 ? dimension(output_layout, 3) : dimension(input_layout, 3);
-    uint32_t kernel_height = operation == 2 ? dimension(output_layout, 2) : 3;
-    uint32_t kernel_width = operation == 2 ? dimension(output_layout, 3) : 3;
+    if (operation != 2) {
+        kernel_height = dimension(weight_layout, 2);
+        kernel_width = dimension(weight_layout, 3);
+    }
     ConvolutionParams params{
         batch,         input_channels, input_height,  input_width,  output_channels,
         output_height, output_width,   kernel_height, kernel_width, operation};

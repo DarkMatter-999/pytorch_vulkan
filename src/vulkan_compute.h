@@ -58,7 +58,7 @@ class VulkanCompute final {
     void comparison_tensor(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
                            VkBuffer rhs, const VulkanTensorLayout &rhs_layout,
                            VkBuffer output, const VulkanTensorLayout &output_layout,
-                           uint32_t operation = 0) const;
+                            uint32_t operation = 0) const;
     void isfinite(VkBuffer input, const VulkanTensorLayout &input_layout,
                   VkBuffer output, const VulkanTensorLayout &output_layout) const;
     void masked_select_count(VkBuffer input, VkBuffer mask, VkBuffer counter,
@@ -177,7 +177,8 @@ class VulkanCompute final {
                      const VulkanTensorLayout &weight_layout,
                      const VulkanTensorLayout &bias_layout,
                      const VulkanTensorLayout &output_layout,
-                     uint32_t operation = 0) const;
+                     uint32_t operation = 0, uint32_t kernel_height = 0,
+                     uint32_t kernel_width = 0) const;
     void pooling(VkBuffer input, VkBuffer output,
                  const VulkanTensorLayout &input_layout,
                  const VulkanTensorLayout &output_layout, uint32_t batch,

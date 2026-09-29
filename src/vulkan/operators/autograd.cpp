@@ -53,7 +53,8 @@ class ConvolutionAutogradFunction final
                     at::Tensor(), at::Tensor(), at::Tensor()};
         auto saved = ctx->get_saved_variables();
         return {convolution_backward_input(grads[0], saved[1]),
-                convolution_backward_weight(grads[0], saved[0]),
+                convolution_backward_weight(grads[0], saved[0], saved[1].size(2),
+                                                    saved[1].size(3)),
                 ctx->saved_data["has_bias"].toBool()
                     ? convolution_backward_bias(grads[0])
                     : at::Tensor(),

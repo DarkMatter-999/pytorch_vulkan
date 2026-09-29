@@ -33,7 +33,8 @@ void validate_rank4(const at::Tensor &t, const char *name) {
     TORCH_CHECK(t.numel() > 0, "Vulkan convolution ", name, " rejects empty tensors");
 }
 at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
-               const at::Tensor &bias, uint32_t operation) {
+               const at::Tensor &bias, uint32_t operation,
+               int64_t kernel_height = 0, int64_t kernel_width = 0) {
     validate(input, "input");
     validate(weight, "weight");
     validate(bias, "bias");
@@ -52,51 +53,32 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
                 "Vulkan convolution rejects overlapping weight layouts");
     TORCH_CHECK(bias_layout.internal_overlap == VulkanOverlap::No,
                 "Vulkan convolution rejects overlapping bias layouts");
-    bool cnn = false;
+    TORCH_CHECK(input.scalar_type() == at::kFloat && weight.scalar_type() == at::kFloat &&
+                    bias.scalar_type() == at::kFloat,
+                "Vulkan convolution requires float32 tensors");
     if (operation == 0) {
-        cnn = input.size(1) == 3 && input.size(2) == 32 && input.size(3) == 32 &&
-              weight.sizes().equals({8, 3, 3, 3}) && bias.sizes().equals({8});
-        bool legacy = input.sizes().equals({2, 1, 8, 8}) &&
-                      weight.sizes().equals({4, 1, 3, 3}) && bias.sizes().equals({4});
-        TORCH_CHECK(cnn || legacy,
-                    "Vulkan convolution input has an unsupported fixed shape");
-    } else if (operation == 1) {
-        cnn = input.size(1) == 8 && input.size(2) == 32 && input.size(3) == 32 &&
-              weight.sizes().equals({8, 3, 3, 3});
-        bool legacy =
-            input.sizes().equals({2, 4, 8, 8}) && weight.sizes().equals({4, 1, 3, 3});
-        TORCH_CHECK(cnn || legacy,
-                    "Vulkan convolution backward grad has unsupported fixed shape");
-    } else if (operation == 2) {
-        cnn = input.size(1) == 8 && input.size(2) == 32 && input.size(3) == 32 &&
-              weight.sizes().equals({input.size(0), 3, 32, 32});
-        bool legacy =
-            input.sizes().equals({2, 4, 8, 8}) && weight.sizes().equals({2, 1, 8, 8});
-        TORCH_CHECK(cnn || legacy,
-                    "Vulkan convolution backward input has unsupported fixed shape");
-    } else {
-        cnn = input.size(1) == 8 && input.size(2) == 32 && input.size(3) == 32;
-        bool legacy = input.sizes().equals({2, 4, 8, 8});
-        TORCH_CHECK(cnn || legacy,
-                    "Vulkan convolution backward grad has unsupported fixed shape");
+        TORCH_CHECK(bias.dim() == 1, "Vulkan convolution bias requires rank 1");
+        TORCH_CHECK(input.size(1) == weight.size(1),
+                    "Vulkan convolution input channels must match weight.size(1)");
+        TORCH_CHECK(bias.size(0) == weight.size(0),
+                    "Vulkan convolution bias must have weight.size(0) = ",
+                    weight.size(0), " elements, got ", bias.size(0));
     }
-    if (cnn)
-        TORCH_CHECK(input.is_contiguous() && weight.is_contiguous() &&
-                        bias.is_contiguous(),
-                    "Vulkan convolution CNN schema requires contiguous layout");
-    int64_t channels = cnn ? 8 : 4;
-    if (operation == 0)
-        TORCH_CHECK(bias.dim() == 1 && bias.size(0) == channels,
-                    "Vulkan convolution bias has a fixed shape");
+    // Convolution shader indexing uses tensor metadata strides, preserving
+    // transposed views without introducing Vulkan copies.
+    const int64_t kernel_h = operation == 2 ? kernel_height : weight.size(2);
+    const int64_t kernel_w = operation == 2 ? kernel_width : weight.size(3);
+    const int64_t out_h = input.size(2) + 3 - kernel_h;
+    const int64_t out_w = input.size(3) + 3 - kernel_w;
     at::Tensor output =
         operation == 0
-            ? at::empty({input.size(0), weight.size(0), input.size(2), input.size(3)},
+            ? at::empty({input.size(0), weight.size(0), out_h, out_w},
                         input.options())
         : operation == 1
-            ? at::empty({input.size(0), weight.size(1), input.size(2), input.size(3)},
+            ? at::empty({input.size(0), weight.size(1), out_h, out_w},
                         input.options())
         : operation == 2
-            ? at::empty({input.size(1), weight.size(1), 3, 3}, input.options())
+            ? at::empty({input.size(1), weight.size(1), kernel_h, kernel_w}, input.options())
             : at::empty({input.size(1)}, input.options());
     const auto &in_data = input.storage().data_ptr();
     const auto &weight_data = weight.storage().data_ptr();
@@ -116,7 +98,9 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     platform.compute().convolution(
         allocation_buffer(in_data).buffer(), allocation_buffer(weight_data).buffer(),
         allocation_buffer(bias_data).buffer(), allocation_buffer(out_data).buffer(),
-        input_layout, weight_layout, bias_layout, output_layout, operation);
+        input_layout, weight_layout, bias_layout, output_layout, operation,
+        static_cast<uint32_t>(kernel_h),
+        static_cast<uint32_t>(kernel_w));
     return output;
 }
 } // namespace
@@ -138,8 +122,9 @@ at::Tensor convolution_backward_input(const at::Tensor &grad,
     return run(grad, weight, grad, 1);
 }
 at::Tensor convolution_backward_weight(const at::Tensor &grad,
-                                       const at::Tensor &input) {
-    return run(grad, input, grad, 2);
+                                       const at::Tensor &input,
+                                       int64_t kernel_height, int64_t kernel_width) {
+    return run(grad, input, grad, 2, kernel_height, kernel_width);
 }
 at::Tensor convolution_backward_bias(const at::Tensor &grad) {
     return run(grad, grad, grad, 3);
@@ -163,19 +148,11 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
                 "dilation, groups, and non-transposed parameters");
     TORCH_CHECK(output_mask[0] && output_mask[1] && output_mask[2],
                 "Vulkan convolution backward requires output_mask [true, true, true]");
-    bool cnn = grad_output.dim() == 4 && input.dim() == 4 && weight.dim() == 4 &&
-               grad_output.size(0) == input.size(0) &&
-               grad_output.sizes().equals({input.size(0), 8, 32, 32}) &&
-               input.sizes().equals({input.size(0), 3, 32, 32}) &&
-               weight.sizes().equals({8, 3, 3, 3});
-    bool legacy = grad_output.sizes().equals({2, 4, 8, 8}) &&
-                  input.sizes().equals({2, 1, 8, 8}) &&
-                  weight.sizes().equals({4, 1, 3, 3});
-    TORCH_CHECK(cnn || legacy,
-                "Vulkan convolution backward has unsupported fixed shape");
-    TORCH_CHECK(bias_sizes.has_value() &&
-                    (cnn ? bias_sizes->equals({8}) : bias_sizes->equals({4})),
-                "Vulkan convolution backward bias shape does not match schema");
+    TORCH_CHECK(grad_output.size(1) == weight.size(0) &&
+                    input.size(1) == weight.size(1),
+                "Vulkan convolution backward channel dimensions do not match");
+    TORCH_CHECK(bias_sizes.has_value() && bias_sizes->equals({weight.size(0)}),
+                "Vulkan convolution backward bias shape does not match weight");
     const auto grad_layout =
         inspect_vulkan_tensor_layout(grad_output, "convolution backward grad_output");
     const auto input_layout =
@@ -186,14 +163,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
                     input_layout.internal_overlap == VulkanOverlap::No &&
                     weight_layout.internal_overlap == VulkanOverlap::No,
                 "Vulkan convolution backward rejects overlapping layouts");
-    if (cnn)
-        TORCH_CHECK(grad_output.is_contiguous() && input.is_contiguous() &&
-                        weight.is_contiguous(),
-                    "Vulkan convolution CNN schema requires contiguous layout");
     TORCH_CHECK(grad_output.numel() > 0 && input.numel() > 0 && weight.numel() > 0,
                 "Vulkan convolution backward rejects empty tensors");
     return {convolution_backward_input(grad_output, weight),
-            convolution_backward_weight(grad_output, input),
+            convolution_backward_weight(grad_output, input, weight.size(2), weight.size(3)),
             convolution_backward_bias(grad_output)};
 }
 } // namespace pytorch_vulkan

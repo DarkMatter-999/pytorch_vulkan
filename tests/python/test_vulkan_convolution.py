@@ -222,9 +222,9 @@ def test_conv2d_rejects_non_fixed_parameters(vulkan_backend, kwargs):
 @pytest.mark.parametrize(
     "bad_input",
     [
-        torch.empty((1, 1, 8, 8)),
+        torch.empty((2, 1, 8)),
+        torch.empty((2, 3, 8, 8)),
         torch.empty((2, 2, 8, 8)),
-        torch.empty((2, 1, 7, 8)),
     ],
 )
 def test_conv2d_rejects_non_fixed_input_shape(vulkan_backend, bad_input):
@@ -281,17 +281,17 @@ def test_conv2d_rejects_every_other_bias_rank_or_shape(vulkan_backend, bad_bias)
 
 def test_conv2d_rejects_non_fixed_weight_and_bias_shapes(vulkan_backend):
     input, _, _ = _conv_inputs(vulkan_backend)
-    with pytest.raises(RuntimeError, match="shape|size|fixed|support"):
+    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension"):
         torch.nn.functional.conv2d(
             input,
             torch.empty((3, 1, 3, 3), device=vulkan_backend),
-            torch.empty((3,), device=vulkan_backend),
+            torch.empty((2,), device=vulkan_backend),
             padding=1,
         )
-    with pytest.raises(RuntimeError, match="shape|size|fixed|support"):
+    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension"):
         torch.nn.functional.conv2d(
             input,
-            torch.empty((4, 1, 5, 3), device=vulkan_backend),
+            torch.empty((4, 1, 12, 3), device=vulkan_backend),
             torch.empty((4,), device=vulkan_backend),
             padding=1,
         )

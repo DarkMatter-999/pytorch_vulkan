@@ -126,32 +126,6 @@ def test_cnn_rejects_wrong_device_and_overlapping_operands_before_work(vulkan_ba
     assert pytorch_vulkan._C.fallback_count() == 0
 
 
-def test_cnn_backward_rejects_noncontiguous_grad_output_before_work(vulkan_backend):
-    fixture, _, model, _, vk_input, _, _ = _pair(vulkan_backend)
-    weight = model[0].weight
-    grad_output = torch.ones((8, 8, 32, 32), device=vulkan_backend).transpose(2, 3)
-    assert not grad_output.is_contiguous()
-    pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="contiguous|layout"):
-        torch.ops.aten.convolution_backward.default(
-            grad_output,
-            vk_input,
-            weight,
-            [8],
-            [1, 1],
-            [1, 1],
-            [1, 1],
-            False,
-            [0, 0],
-            1,
-            [True, True, True],
-        )
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
-    assert pytorch_vulkan._C.fallback_count() == 0
-
-
 def test_cnn_backward_rejects_legacy_bias_size_before_work(vulkan_backend):
     fixture, _, model, _, vk_input, _, _ = _pair(vulkan_backend)
     weight = model[0].weight
@@ -196,8 +170,8 @@ def test_cnn_supported_batch_boundaries(vulkan_backend, batch):
     "mutator, message",
     [
         (lambda x: x.to(torch.float64), "float32|type|dtype"),
-        (lambda x: x[:, :, :, :-1], "shape"),
-        (lambda x: x.transpose(2, 3), "layout|contiguous"),
+        (lambda x: x[:, :2], "channel|shape|size"),
+        # Non-contiguous operands are supported zero-copy through tensor metadata strides.
     ],
 )
 def test_cnn_rejects_wrong_schema_before_vulkan_work(vulkan_backend, mutator, message):
