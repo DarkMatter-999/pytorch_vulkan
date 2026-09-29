@@ -2462,12 +2462,26 @@
       ],
       "schema": "aten::native_batch_norm.default",
       "shape_constraints": [
-        "unwitnessed"
+        "3x4x5x7",
+        "5x1x3x3",
+        "7x3"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "normalization.native-batch-norm",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-batch-norm.2d",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-batch-norm.4d",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-batch-norm.4d-single-channel",
           "supported": true
         }
       ],
@@ -2510,12 +2524,16 @@
       ],
       "schema": "aten::native_batch_norm_backward.default",
       "shape_constraints": [
-        "unwitnessed"
+        "3x4x5x7"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "normalization.native-batch-norm-backward",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-batch-norm-backward.4d",
           "supported": true
         }
       ],

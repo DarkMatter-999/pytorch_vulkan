@@ -925,6 +925,50 @@ def _normalization(*, requires_grad=False):
     )
 
 
+def _batch_norm_2d(*, requires_grad=False):
+    return (torch.randn(7, 3, dtype=torch.float32, requires_grad=requires_grad),)
+
+
+def _batch_norm_4d(*, requires_grad=False):
+    return (torch.randn(3, 4, 5, 7, dtype=torch.float32, requires_grad=requires_grad),)
+
+
+def _batch_norm_4d_single_channel(*, requires_grad=False):
+    return (torch.randn(5, 1, 3, 3, dtype=torch.float32, requires_grad=requires_grad),)
+
+
+def _batch_norm_parameters(channels, device=None):
+    return (
+        torch.ones(channels, dtype=torch.float32, device=device),
+        torch.zeros(channels, dtype=torch.float32, device=device),
+        torch.zeros(channels, dtype=torch.float32, device=device),
+        torch.ones(channels, dtype=torch.float32, device=device),
+    )
+
+
+def _cpu_native_batch_norm(value, weight, bias, running_mean, running_var,
+                           training, momentum, eps):
+    return torch.ops.aten.native_batch_norm(
+        value, weight, bias, running_mean, running_var, training, momentum, eps
+    )
+
+
+def _native_batch_norm(value):
+    weight, bias, running_mean, running_var = _batch_norm_parameters(
+        value.shape[1], value.device
+    )
+    return torch.ops.aten.native_batch_norm(
+        value, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+    )[0]
+
+
+def _cpu_native_batch_norm_with_parameters(value):
+    weight, bias, running_mean, running_var = _batch_norm_parameters(value.shape[1])
+    return _cpu_native_batch_norm(
+        value, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+    )[0]
+
+
 def _native_batch_norm_output(input, weight, bias, running_mean, running_var):
     return torch.ops.aten.native_batch_norm.default(
         input, weight, bias, running_mean, running_var, True, 0.1, 1e-5
@@ -938,6 +982,28 @@ def _normalization_backward(*, requires_grad=False):
     )
     return (
         torch.ones_like(input),
+        input,
+        weight,
+        running_mean,
+        running_var,
+        save_mean,
+        save_inv,
+    )
+
+
+def _normalization_backward_4d(*, requires_grad=False):
+    input = torch.arange(420, dtype=torch.float32).reshape(3, 4, 5, 7) / 16
+    input.requires_grad_(requires_grad)
+    weight, _, running_mean, running_var = _batch_norm_parameters(input.shape[1])
+    _, save_mean, save_inv = torch.ops.aten.native_batch_norm.default(
+        input, weight, torch.zeros_like(weight), running_mean, running_var,
+        True, 0.1, 1e-5
+    )
+    return (
+        (
+            torch.arange(420, dtype=torch.float32).remainder(7).reshape(3, 4, 5, 7)
+            - 3
+        ) / 4,
         input,
         weight,
         running_mean,
@@ -2225,6 +2291,51 @@ ALL_CASES = tuple(
         _normalization,
         cpu_reference=_native_batch_norm_output,
         expected_shape=(2, 4),
+        # Batch norm's per-channel statistics are float32 reductions; Vulkan
+        # and CPU summation order differ, so these outputs cannot meet a
+        # near-exact tolerance. The measured absolute error is below 1e-6,
+        # while relative error reached 3.7e-5, so both bounds need loosening.
+        rtol=1e-4,
+        atol=1e-6,
+    ),
+    _case(
+        "normalization.native-batch-norm.2d",
+        "normalization",
+        _native_batch_norm,
+        _batch_norm_2d,
+        cpu_reference=_cpu_native_batch_norm_with_parameters,
+        expected_shape=(7, 3),
+        declared_shapes=("7x3",),
+        # Batch norm's statistics are float32 reductions whose result depends
+        # on summation order; 40 sync runs exceeded the default relative bound.
+        rtol=1e-4,
+        atol=1e-6,
+    ),
+    _case(
+        "normalization.native-batch-norm.4d",
+        "normalization",
+        _native_batch_norm,
+        _batch_norm_4d,
+        cpu_reference=_cpu_native_batch_norm_with_parameters,
+        expected_shape=(3, 4, 5, 7),
+        declared_shapes=("3x4x5x7",),
+        # Batch norm's statistics are float32 reductions whose result depends
+        # on summation order; 40 sync runs exceeded the default tolerance.
+        rtol=1e-4,
+        atol=1e-6,
+    ),
+    _case(
+        "normalization.native-batch-norm.4d-single-channel",
+        "normalization",
+        _native_batch_norm,
+        _batch_norm_4d_single_channel,
+        cpu_reference=_cpu_native_batch_norm_with_parameters,
+        expected_shape=(5, 1, 3, 3),
+        declared_shapes=("5x1x3x3",),
+        # Batch norm's statistics are float32 reductions whose result depends
+        # on summation order; a sync run exceeded the default relative bound.
+        rtol=1e-4,
+        atol=1e-6,
     ),
     _case(
         "normalization.native-batch-norm-backward",
@@ -2233,6 +2344,15 @@ ALL_CASES = tuple(
         _normalization_backward,
         cpu_reference=_native_batch_norm_backward_output,
         expected_shape=(2, 4),
+    ),
+    _case(
+        "normalization.native-batch-norm-backward.4d",
+        "normalization",
+        _native_batch_norm_backward_output,
+        _normalization_backward_4d,
+        cpu_reference=_native_batch_norm_backward_output,
+        expected_shape=(3, 4, 5, 7),
+        declared_shapes=("3x4x5x7",),
     ),
     _case(
         "classification.nll-forward",
