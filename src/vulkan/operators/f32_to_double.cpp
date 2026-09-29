@@ -19,8 +19,8 @@ void validate_cpu_nll_labels(const at::Tensor &input) {
                 "Vulkan label transfer requires contiguous CPU int64 labels");
     const auto *labels = input.data_ptr<int64_t>();
     for (int64_t index = 0; index < input.numel(); ++index) {
-        TORCH_CHECK(labels[index] == -100 || (labels[index] >= 0 && labels[index] < 3),
-                    "Vulkan nll_loss labels must be ignore_index or in [0, classes) "
+        TORCH_CHECK(labels[index] >= 0 || labels[index] == -100,
+                    "Vulkan nll_loss labels must be non-negative or ignore_index "
                     "(range validation failed)");
     }
 }

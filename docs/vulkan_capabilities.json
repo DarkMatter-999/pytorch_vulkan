@@ -35,7 +35,7 @@
       ],
       "schema": "aten::bmm.default",
       "shape_constraints": [
-        "schema_bmm_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -83,7 +83,7 @@
       ],
       "schema": "aten::_adaptive_avg_pool2d.default",
       "shape_constraints": [
-        "schema_adaptive_avg_pool2d_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -139,7 +139,7 @@
       ],
       "schema": "aten::_adaptive_avg_pool2d_backward.default",
       "shape_constraints": [
-        "schema_adaptive_avg_pool2d_backward_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -187,7 +187,7 @@
       ],
       "schema": "aten::_copy_from.default",
       "shape_constraints": [
-        "schema_copy_from_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -235,7 +235,7 @@
       ],
       "schema": "aten::_log_softmax.default",
       "shape_constraints": [
-        "schema_log_softmax_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -283,7 +283,7 @@
       ],
       "schema": "aten::_log_softmax.out",
       "shape_constraints": [
-        "schema_log_softmax_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -331,7 +331,7 @@
       ],
       "schema": "aten::_log_softmax_backward_data.out",
       "shape_constraints": [
-        "schema_log_softmax_backward_data_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -379,7 +379,7 @@
       ],
       "schema": "aten::_reshape_alias.default",
       "shape_constraints": [
-        "schema_reshape_alias_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -427,7 +427,7 @@
       ],
       "schema": "aten::_softmax.default",
       "shape_constraints": [
-        "schema_softmax_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -475,7 +475,7 @@
       ],
       "schema": "aten::_softmax.out",
       "shape_constraints": [
-        "schema_softmax_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -523,7 +523,7 @@
       ],
       "schema": "aten::_softmax_backward_data.out",
       "shape_constraints": [
-        "schema_softmax_backward_data_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -571,7 +571,7 @@
       ],
       "schema": "aten::_to_copy.default",
       "shape_constraints": [
-        "schema_to_copy_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -619,7 +619,7 @@
       ],
       "schema": "aten::abs.default",
       "shape_constraints": [
-        "schema_abs_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -667,7 +667,7 @@
       ],
       "schema": "aten::add.Scalar",
       "shape_constraints": [
-        "schema_add_scalar"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -715,7 +715,7 @@
       ],
       "schema": "aten::add.Scalar_out",
       "shape_constraints": [
-        "schema_add_scalar_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -763,7 +763,7 @@
       ],
       "schema": "aten::add.Tensor",
       "shape_constraints": [
-        "schema_add_tensor"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -823,7 +823,7 @@
       ],
       "schema": "aten::add.out",
       "shape_constraints": [
-        "schema_add_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -871,7 +871,7 @@
       ],
       "schema": "aten::add_.Tensor",
       "shape_constraints": [
-        "schema_add_tensor"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -919,7 +919,7 @@
       ],
       "schema": "aten::addcdiv_.default",
       "shape_constraints": [
-        "schema_addcdiv_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -967,7 +967,7 @@
       ],
       "schema": "aten::addcmul_.default",
       "shape_constraints": [
-        "schema_addcmul_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1016,7 +1016,7 @@
       ],
       "schema": "aten::addmm.default",
       "shape_constraints": [
-        "schema_addmm_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1065,7 +1065,7 @@
       ],
       "schema": "aten::addmm.out",
       "shape_constraints": [
-        "schema_addmm_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1113,7 +1113,7 @@
       ],
       "schema": "aten::amax.default",
       "shape_constraints": [
-        "schema_amax_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1161,7 +1161,7 @@
       ],
       "schema": "aten::amax.out",
       "shape_constraints": [
-        "schema_amax_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1209,7 +1209,7 @@
       ],
       "schema": "aten::amin.default",
       "shape_constraints": [
-        "schema_amin_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1257,7 +1257,7 @@
       ],
       "schema": "aten::amin.out",
       "shape_constraints": [
-        "schema_amin_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1305,7 +1305,7 @@
       ],
       "schema": "aten::argmax.default",
       "shape_constraints": [
-        "schema_argmax_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1361,7 +1361,7 @@
       ],
       "schema": "aten::as_strided.default",
       "shape_constraints": [
-        "schema_as_strided_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1409,7 +1409,7 @@
       ],
       "schema": "aten::convolution.default",
       "shape_constraints": [
-        "schema_convolution_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1469,7 +1469,7 @@
       ],
       "schema": "aten::convolution_backward.default",
       "shape_constraints": [
-        "schema_convolution_backward_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1517,7 +1517,7 @@
       ],
       "schema": "aten::copy_.default",
       "shape_constraints": [
-        "schema_copy_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1565,7 +1565,7 @@
       ],
       "schema": "aten::div.Tensor",
       "shape_constraints": [
-        "schema_div_tensor"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1613,7 +1613,7 @@
       ],
       "schema": "aten::empty.memory_format",
       "shape_constraints": [
-        "schema_empty_memory_format"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1661,7 +1661,7 @@
       ],
       "schema": "aten::empty_strided.default",
       "shape_constraints": [
-        "schema_empty_strided_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1709,7 +1709,7 @@
       ],
       "schema": "aten::gelu.default",
       "shape_constraints": [
-        "schema_gelu_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1757,7 +1757,7 @@
       ],
       "schema": "aten::gelu_backward.grad_input",
       "shape_constraints": [
-        "schema_gelu_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1805,7 +1805,7 @@
       ],
       "schema": "aten::lerp.Scalar_out",
       "shape_constraints": [
-        "schema_lerp_scalar_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1853,7 +1853,7 @@
       ],
       "schema": "aten::lerp_.Scalar",
       "shape_constraints": [
-        "schema_lerp_scalar"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1902,7 +1902,7 @@
       ],
       "schema": "aten::linear.default",
       "shape_constraints": [
-        "schema_linear_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -1961,7 +1961,7 @@
       ],
       "schema": "aten::masked_select.default",
       "shape_constraints": [
-        "schema_masked_select_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2013,7 +2013,7 @@
       ],
       "schema": "aten::mean.dim",
       "shape_constraints": [
-        "schema_mean_dim"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2070,7 +2070,7 @@
       ],
       "schema": "aten::mm.default",
       "shape_constraints": [
-        "schema_mm_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2118,7 +2118,7 @@
       ],
       "schema": "aten::mse_loss.default",
       "shape_constraints": [
-        "schema_mse_loss_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2174,7 +2174,7 @@
       ],
       "schema": "aten::mse_loss_backward.default",
       "shape_constraints": [
-        "schema_mse_loss_backward_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2222,7 +2222,7 @@
       ],
       "schema": "aten::mul.Scalar",
       "shape_constraints": [
-        "schema_mul_scalar"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2270,7 +2270,7 @@
       ],
       "schema": "aten::mul.Scalar_out",
       "shape_constraints": [
-        "schema_mul_scalar_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2318,7 +2318,7 @@
       ],
       "schema": "aten::mul.Tensor",
       "shape_constraints": [
-        "schema_mul_tensor"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2366,7 +2366,7 @@
       ],
       "schema": "aten::mul.out",
       "shape_constraints": [
-        "schema_mul_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2414,7 +2414,7 @@
       ],
       "schema": "aten::mul_.Scalar",
       "shape_constraints": [
-        "schema_mul_scalar"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2462,7 +2462,7 @@
       ],
       "schema": "aten::native_batch_norm.default",
       "shape_constraints": [
-        "schema_native_batch_norm_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2510,7 +2510,7 @@
       ],
       "schema": "aten::native_batch_norm_backward.default",
       "shape_constraints": [
-        "schema_native_batch_norm_backward_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2558,7 +2558,7 @@
       ],
       "schema": "aten::neg.default",
       "shape_constraints": [
-        "schema_neg_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2620,12 +2620,25 @@
       ],
       "schema": "aten::nll_loss_backward.default",
       "shape_constraints": [
-        "schema_nll_loss_backward_default"
+        "2x3",
+        "8x5"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "classification.nll-backward",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.wide",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.sum",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.none",
           "supported": true
         }
       ],
@@ -2670,12 +2683,21 @@
       ],
       "schema": "aten::nll_loss_forward.default",
       "shape_constraints": [
-        "schema_nll_loss_forward_default"
+        "2x3",
+        "8x5"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "classification.nll-forward",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.wide",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.none.wide",
           "supported": true
         }
       ],
@@ -2718,7 +2740,7 @@
       ],
       "schema": "aten::prod.dim_int",
       "shape_constraints": [
-        "schema_prod_dim_int"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2766,7 +2788,7 @@
       ],
       "schema": "aten::prod.int_out",
       "shape_constraints": [
-        "schema_prod_int_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2814,7 +2836,7 @@
       ],
       "schema": "aten::relu.default",
       "shape_constraints": [
-        "schema_relu_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2862,7 +2884,7 @@
       ],
       "schema": "aten::reshape.default",
       "shape_constraints": [
-        "schema_reshape_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2910,7 +2932,7 @@
       ],
       "schema": "aten::rsub.Scalar",
       "shape_constraints": [
-        "schema_rsub_scalar"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -2958,7 +2980,7 @@
       ],
       "schema": "aten::rsub.Scalar_out",
       "shape_constraints": [
-        "schema_rsub_scalar_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3006,7 +3028,7 @@
       ],
       "schema": "aten::sigmoid.default",
       "shape_constraints": [
-        "schema_sigmoid_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3058,7 +3080,7 @@
       ],
       "schema": "aten::sigmoid_backward.grad_input",
       "shape_constraints": [
-        "schema_sigmoid_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3106,7 +3128,7 @@
       ],
       "schema": "aten::sqrt.out",
       "shape_constraints": [
-        "schema_sqrt_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3154,7 +3176,7 @@
       ],
       "schema": "aten::sub.Scalar",
       "shape_constraints": [
-        "schema_sub_scalar"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3202,7 +3224,7 @@
       ],
       "schema": "aten::sub.Scalar_out",
       "shape_constraints": [
-        "schema_sub_scalar_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3250,7 +3272,7 @@
       ],
       "schema": "aten::sub.Tensor",
       "shape_constraints": [
-        "schema_sub_tensor"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3298,7 +3320,7 @@
       ],
       "schema": "aten::sub.out",
       "shape_constraints": [
-        "schema_sub_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3346,7 +3368,7 @@
       ],
       "schema": "aten::sum.dim_IntList",
       "shape_constraints": [
-        "schema_sum_dim_intlist"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3406,7 +3428,7 @@
       ],
       "schema": "aten::tanh.default",
       "shape_constraints": [
-        "schema_tanh_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3454,7 +3476,7 @@
       ],
       "schema": "aten::tanh_backward.grad_input",
       "shape_constraints": [
-        "schema_tanh_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3502,7 +3524,7 @@
       ],
       "schema": "aten::view.default",
       "shape_constraints": [
-        "schema_view_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3550,7 +3572,7 @@
       ],
       "schema": "aten::zero_.default",
       "shape_constraints": [
-        "schema_zero_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -3598,7 +3620,7 @@
       ],
       "schema": "aten::_cat.default",
       "shape_constraints": [
-        "schema_cat_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3640,7 +3662,7 @@
       ],
       "schema": "aten::_copy_from_and_resize.default",
       "shape_constraints": [
-        "schema_copy_from_and_resize_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3682,7 +3704,7 @@
       ],
       "schema": "aten::_local_scalar_dense.default",
       "shape_constraints": [
-        "schema_local_scalar_dense_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3724,7 +3746,7 @@
       ],
       "schema": "aten::_native_multi_head_attention.default",
       "shape_constraints": [
-        "schema_native_multi_head_attention_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3766,7 +3788,7 @@
       ],
       "schema": "aten::_native_multi_head_attention.out",
       "shape_constraints": [
-        "schema_native_multi_head_attention_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3808,7 +3830,7 @@
       ],
       "schema": "aten::_transform_bias_rescale_qkv.default",
       "shape_constraints": [
-        "schema_transform_bias_rescale_qkv_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3850,7 +3872,7 @@
       ],
       "schema": "aten::_upsample_nearest_exact2d.out",
       "shape_constraints": [
-        "schema_upsample_nearest_exact2d_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3892,7 +3914,7 @@
       ],
       "schema": "aten::_upsample_nearest_exact2d_backward.grad_input",
       "shape_constraints": [
-        "schema_upsample_nearest_exact2d_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3934,7 +3956,7 @@
       ],
       "schema": "aten::abs.out",
       "shape_constraints": [
-        "schema_abs_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -3976,7 +3998,7 @@
       ],
       "schema": "aten::add_.Scalar",
       "shape_constraints": [
-        "schema_add_scalar"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4018,7 +4040,7 @@
       ],
       "schema": "aten::addcdiv.out",
       "shape_constraints": [
-        "schema_addcdiv_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4060,7 +4082,7 @@
       ],
       "schema": "aten::addcmul.out",
       "shape_constraints": [
-        "schema_addcmul_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4102,7 +4124,7 @@
       ],
       "schema": "aten::arange.start_out",
       "shape_constraints": [
-        "schema_arange_start_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4144,7 +4166,7 @@
       ],
       "schema": "aten::argmax.out",
       "shape_constraints": [
-        "schema_argmax_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4186,7 +4208,7 @@
       ],
       "schema": "aten::atan.out",
       "shape_constraints": [
-        "schema_atan_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4228,7 +4250,7 @@
       ],
       "schema": "aten::avg_pool2d.out",
       "shape_constraints": [
-        "schema_avg_pool2d_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4270,7 +4292,7 @@
       ],
       "schema": "aten::avg_pool2d_backward.grad_input",
       "shape_constraints": [
-        "schema_avg_pool2d_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4312,7 +4334,7 @@
       ],
       "schema": "aten::bernoulli_.float",
       "shape_constraints": [
-        "schema_bernoulli_float"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4354,7 +4376,7 @@
       ],
       "schema": "aten::binary_cross_entropy.default",
       "shape_constraints": [
-        "schema_binary_cross_entropy_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4396,7 +4418,7 @@
       ],
       "schema": "aten::binary_cross_entropy_backward.default",
       "shape_constraints": [
-        "schema_binary_cross_entropy_backward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4438,7 +4460,7 @@
       ],
       "schema": "aten::binary_cross_entropy_backward.grad_input",
       "shape_constraints": [
-        "schema_binary_cross_entropy_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4480,7 +4502,7 @@
       ],
       "schema": "aten::bitwise_and.Tensor_out",
       "shape_constraints": [
-        "schema_bitwise_and_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4522,7 +4544,7 @@
       ],
       "schema": "aten::bitwise_not.out",
       "shape_constraints": [
-        "schema_bitwise_not_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4564,7 +4586,7 @@
       ],
       "schema": "aten::bitwise_or.Tensor_out",
       "shape_constraints": [
-        "schema_bitwise_or_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4606,7 +4628,7 @@
       ],
       "schema": "aten::bitwise_xor.Tensor_out",
       "shape_constraints": [
-        "schema_bitwise_xor_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4649,7 +4671,7 @@
       ],
       "schema": "aten::bmm.out",
       "shape_constraints": [
-        "schema_bmm_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4691,7 +4713,7 @@
       ],
       "schema": "aten::cat.out",
       "shape_constraints": [
-        "schema_cat_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4733,7 +4755,7 @@
       ],
       "schema": "aten::ceil.default",
       "shape_constraints": [
-        "schema_ceil_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4775,7 +4797,7 @@
       ],
       "schema": "aten::ceil.out",
       "shape_constraints": [
-        "schema_ceil_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4817,7 +4839,7 @@
       ],
       "schema": "aten::clamp.out",
       "shape_constraints": [
-        "schema_clamp_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4859,7 +4881,7 @@
       ],
       "schema": "aten::clamp_min.out",
       "shape_constraints": [
-        "schema_clamp_min_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4901,7 +4923,7 @@
       ],
       "schema": "aten::convolution_backward_overrideable.default",
       "shape_constraints": [
-        "schema_convolution_backward_overrideable_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4943,7 +4965,7 @@
       ],
       "schema": "aten::convolution_overrideable.default",
       "shape_constraints": [
-        "schema_convolution_overrideable_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -4985,7 +5007,7 @@
       ],
       "schema": "aten::div.out",
       "shape_constraints": [
-        "schema_div_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5027,7 +5049,7 @@
       ],
       "schema": "aten::dot.default",
       "shape_constraints": [
-        "schema_dot_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5069,7 +5091,7 @@
       ],
       "schema": "aten::eq.Scalar_out",
       "shape_constraints": [
-        "schema_eq_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5111,7 +5133,7 @@
       ],
       "schema": "aten::eq.Tensor_out",
       "shape_constraints": [
-        "schema_eq_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5153,7 +5175,7 @@
       ],
       "schema": "aten::exp.out",
       "shape_constraints": [
-        "schema_exp_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5195,7 +5217,7 @@
       ],
       "schema": "aten::fill_.Scalar",
       "shape_constraints": [
-        "schema_fill_scalar"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5237,7 +5259,7 @@
       ],
       "schema": "aten::ge.Scalar_out",
       "shape_constraints": [
-        "schema_ge_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5279,7 +5301,7 @@
       ],
       "schema": "aten::ge.Tensor_out",
       "shape_constraints": [
-        "schema_ge_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5321,7 +5343,7 @@
       ],
       "schema": "aten::gelu.out",
       "shape_constraints": [
-        "schema_gelu_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5363,7 +5385,7 @@
       ],
       "schema": "aten::gt.Scalar",
       "shape_constraints": [
-        "schema_gt_scalar"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5405,7 +5427,7 @@
       ],
       "schema": "aten::gt.Scalar_out",
       "shape_constraints": [
-        "schema_gt_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5447,7 +5469,7 @@
       ],
       "schema": "aten::gt.Tensor_out",
       "shape_constraints": [
-        "schema_gt_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5489,7 +5511,7 @@
       ],
       "schema": "aten::hardsigmoid.out",
       "shape_constraints": [
-        "schema_hardsigmoid_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5531,7 +5553,7 @@
       ],
       "schema": "aten::hardsigmoid_backward.grad_input",
       "shape_constraints": [
-        "schema_hardsigmoid_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5573,7 +5595,7 @@
       ],
       "schema": "aten::hardswish_.default",
       "shape_constraints": [
-        "schema_hardswish_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5615,7 +5637,7 @@
       ],
       "schema": "aten::hardswish_backward.default",
       "shape_constraints": [
-        "schema_hardswish_backward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5657,7 +5679,7 @@
       ],
       "schema": "aten::hardtanh.default",
       "shape_constraints": [
-        "schema_hardtanh_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5699,7 +5721,7 @@
       ],
       "schema": "aten::hardtanh_.default",
       "shape_constraints": [
-        "schema_hardtanh_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5741,7 +5763,7 @@
       ],
       "schema": "aten::hardtanh_backward.default",
       "shape_constraints": [
-        "schema_hardtanh_backward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5783,7 +5805,7 @@
       ],
       "schema": "aten::isfinite.out",
       "shape_constraints": [
-        "schema_isfinite_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5825,7 +5847,7 @@
       ],
       "schema": "aten::le.Scalar_out",
       "shape_constraints": [
-        "schema_le_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5867,7 +5889,7 @@
       ],
       "schema": "aten::le.Tensor_out",
       "shape_constraints": [
-        "schema_le_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5909,7 +5931,7 @@
       ],
       "schema": "aten::leaky_relu.out",
       "shape_constraints": [
-        "schema_leaky_relu_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5951,7 +5973,7 @@
       ],
       "schema": "aten::leaky_relu_backward.grad_input",
       "shape_constraints": [
-        "schema_leaky_relu_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -5993,7 +6015,7 @@
       ],
       "schema": "aten::log.out",
       "shape_constraints": [
-        "schema_log_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6035,7 +6057,7 @@
       ],
       "schema": "aten::log_sigmoid_backward.default",
       "shape_constraints": [
-        "schema_log_sigmoid_backward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6077,7 +6099,7 @@
       ],
       "schema": "aten::log_sigmoid_backward.grad_input",
       "shape_constraints": [
-        "schema_log_sigmoid_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6119,7 +6141,7 @@
       ],
       "schema": "aten::log_sigmoid_forward.default",
       "shape_constraints": [
-        "schema_log_sigmoid_forward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6161,7 +6183,7 @@
       ],
       "schema": "aten::log_sigmoid_forward.output",
       "shape_constraints": [
-        "schema_log_sigmoid_forward_output"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6203,7 +6225,7 @@
       ],
       "schema": "aten::logit.default",
       "shape_constraints": [
-        "schema_logit_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6245,7 +6267,7 @@
       ],
       "schema": "aten::logit.out",
       "shape_constraints": [
-        "schema_logit_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6287,7 +6309,7 @@
       ],
       "schema": "aten::lt.Scalar",
       "shape_constraints": [
-        "schema_lt_scalar"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6329,7 +6351,7 @@
       ],
       "schema": "aten::lt.Scalar_out",
       "shape_constraints": [
-        "schema_lt_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6371,7 +6393,7 @@
       ],
       "schema": "aten::lt.Tensor_out",
       "shape_constraints": [
-        "schema_lt_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6413,7 +6435,7 @@
       ],
       "schema": "aten::max.default",
       "shape_constraints": [
-        "schema_max_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6455,7 +6477,7 @@
       ],
       "schema": "aten::max_pool2d_with_indices.default",
       "shape_constraints": [
-        "schema_max_pool2d_with_indices_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [
@@ -6502,7 +6524,7 @@
       ],
       "schema": "aten::maximum.out",
       "shape_constraints": [
-        "schema_maximum_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6544,7 +6566,7 @@
       ],
       "schema": "aten::mean.default",
       "shape_constraints": [
-        "schema_mean_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -6591,7 +6613,7 @@
       ],
       "schema": "aten::mean.out",
       "shape_constraints": [
-        "schema_mean_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -6638,7 +6660,7 @@
       ],
       "schema": "aten::min.default",
       "shape_constraints": [
-        "schema_min_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6680,7 +6702,7 @@
       ],
       "schema": "aten::minimum.out",
       "shape_constraints": [
-        "schema_minimum_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6723,7 +6745,7 @@
       ],
       "schema": "aten::mm.out",
       "shape_constraints": [
-        "schema_mm_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6765,7 +6787,7 @@
       ],
       "schema": "aten::mul_.Tensor",
       "shape_constraints": [
-        "schema_mul_tensor"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6807,7 +6829,7 @@
       ],
       "schema": "aten::native_dropout.default",
       "shape_constraints": [
-        "schema_native_dropout_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6849,7 +6871,7 @@
       ],
       "schema": "aten::native_dropout_backward.default",
       "shape_constraints": [
-        "schema_native_dropout_backward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6891,7 +6913,7 @@
       ],
       "schema": "aten::native_layer_norm.default",
       "shape_constraints": [
-        "schema_native_layer_norm_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6933,7 +6955,7 @@
       ],
       "schema": "aten::native_layer_norm_backward.default",
       "shape_constraints": [
-        "schema_native_layer_norm_backward_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -6975,7 +6997,7 @@
       ],
       "schema": "aten::ne.Scalar_out",
       "shape_constraints": [
-        "schema_ne_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7017,7 +7039,7 @@
       ],
       "schema": "aten::ne.Tensor",
       "shape_constraints": [
-        "schema_ne_tensor"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [
@@ -7064,7 +7086,7 @@
       ],
       "schema": "aten::ne.Tensor_out",
       "shape_constraints": [
-        "schema_ne_tensor_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7106,7 +7128,7 @@
       ],
       "schema": "aten::neg.out",
       "shape_constraints": [
-        "schema_neg_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [
@@ -7159,7 +7181,7 @@
       ],
       "schema": "aten::nll_loss_backward.grad_input",
       "shape_constraints": [
-        "schema_nll_loss_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7203,7 +7225,7 @@
       ],
       "schema": "aten::nll_loss_forward.output",
       "shape_constraints": [
-        "schema_nll_loss_forward_output"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7245,7 +7267,7 @@
       ],
       "schema": "aten::normal_.default",
       "shape_constraints": [
-        "schema_normal_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7287,7 +7309,7 @@
       ],
       "schema": "aten::pow.Tensor_Scalar_out",
       "shape_constraints": [
-        "schema_pow_tensor_scalar_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7329,7 +7351,7 @@
       ],
       "schema": "aten::reciprocal.out",
       "shape_constraints": [
-        "schema_reciprocal_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7371,7 +7393,7 @@
       ],
       "schema": "aten::relu.out",
       "shape_constraints": [
-        "schema_relu_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7413,7 +7435,7 @@
       ],
       "schema": "aten::resize_.default",
       "shape_constraints": [
-        "schema_resize_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7455,7 +7477,7 @@
       ],
       "schema": "aten::round.out",
       "shape_constraints": [
-        "schema_round_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7497,7 +7519,7 @@
       ],
       "schema": "aten::set_.source_Storage",
       "shape_constraints": [
-        "schema_set_source_storage"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7539,7 +7561,7 @@
       ],
       "schema": "aten::set_.source_Storage_storage_offset",
       "shape_constraints": [
-        "schema_set_source_storage_storage_offset"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7581,7 +7603,7 @@
       ],
       "schema": "aten::sgn.out",
       "shape_constraints": [
-        "schema_sgn_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7623,7 +7645,7 @@
       ],
       "schema": "aten::sigmoid.out",
       "shape_constraints": [
-        "schema_sigmoid_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7665,7 +7687,7 @@
       ],
       "schema": "aten::sigmoid_.default",
       "shape_constraints": [
-        "schema_sigmoid_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7707,7 +7729,7 @@
       ],
       "schema": "aten::silu.out",
       "shape_constraints": [
-        "schema_silu_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7749,7 +7771,7 @@
       ],
       "schema": "aten::silu_backward.grad_input",
       "shape_constraints": [
-        "schema_silu_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7791,7 +7813,7 @@
       ],
       "schema": "aten::sub_.Scalar",
       "shape_constraints": [
-        "schema_sub_scalar"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7833,7 +7855,7 @@
       ],
       "schema": "aten::sub_.Tensor",
       "shape_constraints": [
-        "schema_sub_tensor"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -7875,7 +7897,7 @@
       ],
       "schema": "aten::sum.IntList_out",
       "shape_constraints": [
-        "schema_sum_intlist_out"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -7922,7 +7944,7 @@
       ],
       "schema": "aten::sum.default",
       "shape_constraints": [
-        "schema_sum_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [
@@ -7969,7 +7991,7 @@
       ],
       "schema": "aten::tanh.out",
       "shape_constraints": [
-        "schema_tanh_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8011,7 +8033,7 @@
       ],
       "schema": "aten::tanh_.default",
       "shape_constraints": [
-        "schema_tanh_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8053,7 +8075,7 @@
       ],
       "schema": "aten::threshold_backward.grad_input",
       "shape_constraints": [
-        "schema_threshold_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8095,7 +8117,7 @@
       ],
       "schema": "aten::uniform_.default",
       "shape_constraints": [
-        "schema_uniform_default"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8137,7 +8159,7 @@
       ],
       "schema": "aten::upsample_bilinear2d.out",
       "shape_constraints": [
-        "schema_upsample_bilinear2d_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8179,7 +8201,7 @@
       ],
       "schema": "aten::upsample_bilinear2d_backward.grad_input",
       "shape_constraints": [
-        "schema_upsample_bilinear2d_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8221,7 +8243,7 @@
       ],
       "schema": "aten::upsample_nearest2d.out",
       "shape_constraints": [
-        "schema_upsample_nearest2d_out"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8263,7 +8285,7 @@
       ],
       "schema": "aten::upsample_nearest2d_backward.grad_input",
       "shape_constraints": [
-        "schema_upsample_nearest2d_backward_grad_input"
+        "unwitnessed"
       ],
       "status": "deferred",
       "test_cases": [],
@@ -8305,7 +8327,7 @@
       ],
       "schema": "aten::abs_.default",
       "shape_constraints": [
-        "schema_abs_default"
+        "unwitnessed"
       ],
       "status": "rejected",
       "test_cases": [],
@@ -8347,7 +8369,7 @@
       ],
       "schema": "aten::neg_.default",
       "shape_constraints": [
-        "schema_neg_default"
+        "unwitnessed"
       ],
       "status": "rejected",
       "test_cases": [
@@ -8394,7 +8416,7 @@
       ],
       "schema": "aten::relu_.default",
       "shape_constraints": [
-        "schema_relu_default"
+        "unwitnessed"
       ],
       "status": "rejected",
       "test_cases": [],
@@ -8436,7 +8458,7 @@
       ],
       "schema": "aten::stack.default",
       "shape_constraints": [
-        "schema_stack_default"
+        "unwitnessed"
       ],
       "status": "supported",
       "test_cases": [

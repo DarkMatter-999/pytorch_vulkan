@@ -33,7 +33,7 @@ def assert_contracts():
     assert "readonly buffer Labels { int64_t labels[]; }" in classification
     assert "label < 0" in classification
     assert "label >= int64_t(p.classes)" in classification
-    assert "p.mode == 4u" not in classification
+    assert "p.mode == 4u" in classification and "p.mode == 5u" in classification
 
 
 assert_contracts()

@@ -24,7 +24,7 @@ def _entry(schema="aten::example.default", *, status="supported"):
         "dtypes": {"inputs": ["float32"], "outputs": ["float32"]},
         "ranks": {"min": 0, "max": 8},
         "layouts": ["strided", "non-overlapping"],
-        "shape_constraints": ["schema_example_default"],
+        "shape_constraints": ["2x4"],
         "empty": "empty_output_supported",
         "aliasing": "no_overlap",
         "out": "not_applicable",
@@ -112,9 +112,9 @@ def test_manifest_rejects_unknown_closed_contract_values():
         validate_manifest_data(data, ROOT)
 
 
-def test_manifest_rejects_unknown_shape_constraint():
+def test_manifest_rejects_shape_token_naming_a_phantom_constraint():
     data = {"version": 1, "entries": [_entry()]}
-    data["entries"][0]["shape_constraints"] = ["invented_constraint"]
+    data["entries"][0]["shape_constraints"] = ["schema_example_default"]
 
     with pytest.raises(ValueError, match=r"entries\[0\]\.shape_constraints"):
         validate_manifest_data(data, ROOT)

@@ -24,6 +24,11 @@ from tools.vulkan_capability_declarations import DECLARATIONS  # noqa: E402
 
 MANIFEST = ROOT / "docs/vulkan_capabilities.json"
 
+_COMMITTED: dict[str, dict] = {
+    entry["schema"]: entry
+    for entry in json.loads(MANIFEST.read_text())["entries"]
+}
+
 ENTRY_ORDER = (
     'aten::bmm.default',
     'aten::_adaptive_avg_pool2d.default',
@@ -214,13 +219,6 @@ ENTRY_ORDER = (
     'aten::stack.default',
 )
 
-_COMMITTED: dict[str, dict] = {
-    entry["schema"]: entry
-    for entry in json.loads(MANIFEST.read_text())["entries"]
-}
-
-
-
 def _case_index() -> dict[str, dict[str, object]]:
     """Schema -> the declaration fields its supported cases contribute."""
     from vulkan_conformance import ALL_CASES
@@ -237,14 +235,14 @@ def _case_index() -> dict[str, dict[str, object]]:
             continue
         entry["tests"].add("tests/python/test_vulkan_conformance.py")
         entry["tests"].add("tests/python/test_vulkan_operator_capabilities.py")
-        for shape in getattr(case, "declared_shapes", ()):
+        for shape in case.declared_shapes:
             entry["shapes"].add(shape)
     return index
 
 
 def build_manifest() -> dict:
     schemas = set(DECLARATIONS)
-    # Read once, for the Task 1 passthrough only. Task 2 removes this.
+    cases = _case_index()
     entries = []
     for schema in ENTRY_ORDER:
         if schema not in schemas:
@@ -252,16 +250,10 @@ def build_manifest() -> dict:
         declared = DECLARATIONS[schema]
         entry = dict(declared)
         entry["schema"] = schema
-        # Preserve registry ordering during the lossless extraction stage.
         entry["test_cases"] = list(_COMMITTED[schema]["test_cases"])
-        # Test-file attribution has a few per-operator exceptions (for example,
-        # manifest-only checks); retain the committed attribution in this
-        # lossless extraction stage.
         entry["tests"] = list(_COMMITTED[schema]["tests"])
-        # R1: shape_constraints is passed through unchanged in this task so the
-        # generator is provably lossless. Task 2 replaces this line with a
-        # derivation from case.declared_shapes.
-        entry["shape_constraints"] = list(_COMMITTED[schema]["shape_constraints"])
+        case = cases.get(schema, {"shapes": set()})
+        entry["shape_constraints"] = sorted(case["shapes"]) or ["unwitnessed"]
         entries.append(entry)
     return {"entries": entries, "version": 1}
 

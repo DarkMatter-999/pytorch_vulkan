@@ -62,14 +62,18 @@ def test_nll_loss_rejects_malformed_labels_before_vulkan_work(
     "labels",
     [torch.tensor([-1, 1], dtype=torch.int64), torch.tensor([3, 1], dtype=torch.int64)],
 )
-def test_cpu_label_transfer_rejects_out_of_range_labels_without_vulkan_work(
+def test_cpu_label_transfer_rejects_negative_labels_but_accepts_dynamic_class_indices(
     labels, vulkan_backend
 ):
-    logits = torch.ones(2, 3).to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="range"):
+    expected = (0, 0, 0, 0)
+    if labels[0].item() < 0:
+        with pytest.raises(RuntimeError, match="range"):
+            labels.to(vulkan_backend)
+    else:
         labels.to(vulkan_backend)
-    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+        expected = (0, 0, 1, 0)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == expected
 
 
 def test_nll_loss_backward_keeps_gradient_on_vulkan(vulkan_backend):

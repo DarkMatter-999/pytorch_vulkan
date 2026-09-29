@@ -7,7 +7,7 @@ from tools import generate_vulkan_capabilities as generator
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMITTED = ROOT / "docs/vulkan_capabilities.json"
-DERIVED_FIELDS = frozenset({"schema", "test_cases", "tests", "shape_constraints"})
+DERIVED_FIELDS = frozenset({"schema", "test_cases", "tests"})
 
 
 def _committed_entries() -> dict[str, dict]:
@@ -123,3 +123,16 @@ def test_every_supported_schema_has_a_conformance_case():
     }
     assert len(supported) == 77
     assert supported == witnessed
+
+
+def test_committed_manifest_matches_regenerated_output():
+    assert COMMITTED.read_text() == generator.render(generator.build_manifest())
+
+
+def test_nll_schema_declares_real_shapes():
+    committed = _committed_entries()
+    for schema in ("aten::nll_loss_forward.default", "aten::nll_loss_backward.default"):
+        shapes = committed[schema]["shape_constraints"]
+        assert shapes == sorted(shapes)
+        assert "unwitnessed" not in shapes
+        assert shapes == ["2x3", "8x5"]

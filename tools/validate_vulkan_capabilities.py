@@ -39,6 +39,7 @@ KNOWN_LAYOUTS = frozenset(
     {"strided", "contiguous", "transposed-contiguous", "non-overlapping", "zero-offset"}
 )
 EMPTY_VALUES = frozenset({"empty_output_supported", "empty_rejected", "empty_deferred", "reduction_identity_or_nan", "zero_size_noop"})
+SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*x[1-9][0-9]*(?:x[1-9][0-9]*)*)")
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
@@ -189,10 +190,9 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             raise ValueError(f"{path}.layouts: invalid layout list")
         if not isinstance(entry["shape_constraints"], list) or not entry["shape_constraints"]:
             raise ValueError(f"{path}.shape_constraints: expected non-empty list")
-        shape_token = re.sub(r"[^a-z0-9]+", "_", schema.removeprefix("aten::").lower()).strip("_")
-        allowed_shapes = {"any_supported", f"schema_{shape_token}"}
-        if not set(entry["shape_constraints"]) <= allowed_shapes:
-            raise ValueError(f"{path}.shape_constraints: unknown constraint")
+        for shape in entry["shape_constraints"]:
+            if not isinstance(shape, str) or not SHAPE_PATTERN.fullmatch(shape):
+                raise ValueError(f"{path}.shape_constraints: malformed shape token {shape!r}")
         closed_fields = {
             "empty": EMPTY_VALUES,
             "aliasing": ALIASING_VALUES,

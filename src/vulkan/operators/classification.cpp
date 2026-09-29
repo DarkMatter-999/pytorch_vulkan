@@ -9,6 +9,8 @@
 #include <c10/util/Exception.h>
 #include <torch/library.h>
 
+#include <limits>
+
 namespace pytorch_vulkan {
 namespace {
 void validate_float(const at::Tensor &tensor, const char *name) {
@@ -21,20 +23,25 @@ void validate_float(const at::Tensor &tensor, const char *name) {
 }
 void validate_logits(const at::Tensor &logits) {
     validate_float(logits, "logits");
-    TORCH_CHECK(logits.dim() == 2 && logits.sizes().equals({2, 3}),
-                "Vulkan nll_loss supports logits shape (2, 3) only");
+    TORCH_CHECK(logits.dim() == 2, "Vulkan nll_loss requires 2-D logits, got ",
+                logits.dim(), " dimensions");
+    TORCH_CHECK(logits.size(0) > 0 && logits.size(1) > 0,
+                "Vulkan nll_loss requires a non-empty logits shape, got (",
+                logits.size(0), ", ", logits.size(1), ")");
 }
-void validate_labels(const at::Tensor &labels) {
+void validate_labels(const at::Tensor &labels, int64_t batch) {
     TORCH_CHECK(labels.device() == c10::Device(c10::DeviceType::PrivateUse1, 0) &&
                     labels.scalar_type() == at::kLong &&
                     labels.layout() == at::kStrided && labels.is_contiguous() &&
-                    labels.sizes().equals({2}),
-                "Vulkan nll_loss labels require contiguous vk:0 int64 shape (2)");
+                    labels.sizes().equals({batch}),
+                "Vulkan nll_loss labels require contiguous vk:0 int64 shape (",
+                batch, ")");
     TORCH_CHECK(is_validated_label_allocation(labels.storage().data_ptr()),
                 "Vulkan nll_loss labels have no validated CPU provenance");
 }
 void run(const at::Tensor *inputs[], uint32_t input_count, const at::Tensor *outputs[],
-         uint32_t output_count, uint32_t mode, int64_t ignore_index) {
+         uint32_t output_count, uint32_t mode, int32_t ignore_index, uint32_t batch,
+         uint32_t classes) {
     const auto &platform = allocation_platform(inputs[0]->storage().data_ptr());
     VulkanTensorLayout in_layouts[4];
     const VulkanBuffer *in_buffers[4];
@@ -59,10 +66,11 @@ void run(const at::Tensor *inputs[], uint32_t input_count, const at::Tensor *out
         int32_t ignore;
         uint32_t p0, p1;
         float momentum, eps;
-    } params{mode, 2, 1, 1, 3, static_cast<int32_t>(ignore_index), 0, 0, 0.0F, 0.0F};
+    } params{mode, batch, 1, 1, classes, ignore_index, 0, 0, 0.0F, 0.0F};
     platform.compute().compute_multi_output(
         in_buffers, in_layout_ptrs, out_buffers, out_layout_ptrs, input_count,
-        output_count, mode == 2 ? 1 : 6, &params, sizeof(params), true);
+        output_count, (mode == 2 || mode == 4) ? 1 :
+            (mode == 5 ? batch : batch * classes), &params, sizeof(params), true);
 }
 } // namespace
 
@@ -71,18 +79,25 @@ nll_loss_forward(const at::Tensor &self, const at::Tensor &target,
                  const c10::optional<at::Tensor> &weight, int64_t reduction,
                  c10::SymInt ignore_index) {
     validate_logits(self);
-    validate_labels(target);
+    validate_labels(target, self.size(0));
+    const int64_t batch = self.size(0);
+    const int64_t classes = self.size(1);
     TORCH_CHECK(!weight.has_value() || !weight->defined() || weight->numel() == 0,
                 "Vulkan nll_loss does not support class weights");
-    TORCH_CHECK(reduction == 1, "Vulkan nll_loss supports reduction=mean only");
-    TORCH_CHECK(ignore_index == -100,
-                "Vulkan nll_loss supports ignore_index=-100 only");
-    auto loss = at::empty({}, self.options());
+    TORCH_CHECK(reduction >= 0 && reduction <= 2,
+                "Vulkan nll_loss supports reduction none, mean, or sum");
+    TORCH_CHECK(ignore_index.expect_int() >= std::numeric_limits<int32_t>::min() &&
+                    ignore_index.expect_int() <= std::numeric_limits<int32_t>::max(),
+                "Vulkan nll_loss ignore_index does not fit in int32");
+    auto loss = reduction == 0 ? at::empty({batch}, self.options())
+                               : at::empty({}, self.options());
     auto total = at::empty({}, self.options());
     auto scratch = at::empty_like(self);
     const at::Tensor *inputs[] = {&scratch, &self, &target, &scratch};
     const at::Tensor *outputs[] = {&loss, &total};
-    run(inputs, 4, outputs, 2, 2, ignore_index.expect_int());
+    const uint32_t mode = reduction == 1 ? 2 : reduction == 2 ? 4 : 5;
+    run(inputs, 4, outputs, 2, mode, ignore_index.expect_int(),
+        static_cast<uint32_t>(batch), static_cast<uint32_t>(classes));
     return {loss, total};
 }
 
@@ -92,18 +107,25 @@ at::Tensor nll_loss_backward(const at::Tensor &grad_output, const at::Tensor &se
                              c10::SymInt ignore_index, const at::Tensor &total_weight) {
     validate_float(grad_output, "grad_output");
     validate_logits(self);
-    validate_labels(target);
+    validate_labels(target, self.size(0));
     validate_float(total_weight, "total_weight");
-    TORCH_CHECK(grad_output.dim() == 0 && total_weight.dim() == 0 &&
+    TORCH_CHECK(total_weight.dim() == 0 &&
                     (!weight.has_value() || !weight->defined() || weight->numel() == 0),
-                "Vulkan nll_loss backward requires scalar mean inputs and no weights");
-    TORCH_CHECK(
-        reduction == 1 && ignore_index == -100,
-        "Vulkan nll_loss backward supports mean reduction and ignore_index=-100 only");
+                "Vulkan nll_loss backward requires scalar total_weight and no weights");
+    TORCH_CHECK(reduction >= 0 && reduction <= 2,
+                "Vulkan nll_loss backward supports reduction none, mean, or sum");
+    TORCH_CHECK(grad_output.dim() == (reduction == 0 ? 1 : 0) &&
+                    (reduction != 0 || grad_output.size(0) == self.size(0)),
+                "Vulkan nll_loss backward grad_output shape does not match reduction");
+    TORCH_CHECK(ignore_index.expect_int() >= std::numeric_limits<int32_t>::min() &&
+                    ignore_index.expect_int() <= std::numeric_limits<int32_t>::max(),
+                "Vulkan nll_loss ignore_index does not fit in int32");
     auto output = at::empty_like(self);
     const at::Tensor *inputs[] = {&grad_output, &self, &target, &total_weight};
     const at::Tensor *outputs[] = {&output};
-    run(inputs, 4, outputs, 1, 3, ignore_index.expect_int());
+    const uint32_t mode = reduction == 0 ? 7 : reduction == 1 ? 3 : 6;
+    run(inputs, 4, outputs, 1, mode, ignore_index.expect_int(),
+        static_cast<uint32_t>(self.size(0)), static_cast<uint32_t>(self.size(1)));
     return output;
 }
 } // namespace pytorch_vulkan

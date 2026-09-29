@@ -36,7 +36,7 @@ def test_classification_shader_contract_keeps_int64_labels_and_bounds_guards():
     assert "readonly buffer Labels { int64_t labels[]; }" in source
     assert "label < 0" in source
     assert "label >= int64_t(p.classes)" in source
-    assert "p.mode == 4u" not in source
+    assert "p.mode == 4u" in source and "p.mode == 5u" in source
 
 
 def test_gemm_shader_contract_freezes_bindings_and_push_constant_offsets():

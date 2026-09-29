@@ -48,6 +48,7 @@ class ConformanceCase:
     execution_mode: str = "compute"
     convert_inputs: bool = True
     setup_inputs: Callable[[Any, str], Any] | None = None
+    declared_shapes: tuple[str, ...] = ()
 
     def inputs(self) -> tuple[Any, ...]:
         return self.input_factory(
@@ -984,9 +985,62 @@ def _nll_backward(*, requires_grad=False):
     return torch.ones(1, dtype=torch.float32), log_probs, labels, total.reshape(1)
 
 
+def _nll_forward_wide(*, requires_grad=False):
+    return (
+        torch.randn(8, 5, dtype=torch.float32, requires_grad=requires_grad),
+        torch.tensor([0, 4, 2, 1, 3, 2, 4, 0], dtype=torch.int64),
+    )
+
+
+def _nll_backward_wide(*, requires_grad=False):
+    logits = torch.randn(8, 5, dtype=torch.float32)
+    labels = torch.tensor([0, 4, 2, 1, 3, 2, 4, 0], dtype=torch.int64)
+    log_probs = torch.log_softmax(logits, dim=1)
+    _, total = torch.ops.aten.nll_loss_forward.default(log_probs, labels, None, 1, -100)
+    return torch.ones(1, dtype=torch.float32), log_probs, labels, total.reshape(1)
+
+
+def _cpu_nll_backward_wide(grad, log_probs, labels, total):
+    return _cpu_nll_backward_reduction(grad, log_probs, labels, "mean")
+
+
+def _cpu_nll_backward_reduction(grad, log_probs, labels, reduction):
+    log_probs = log_probs.detach().requires_grad_()
+    reference = torch.nn.functional.nll_loss(
+        log_probs, labels, reduction=reduction, ignore_index=-100
+    )
+    grad_outputs = grad.reshape(()) if reduction != "none" else grad
+    return torch.autograd.grad(reference, log_probs, grad_outputs=grad_outputs)[0]
+
+
+def _nll_forward_none(*, requires_grad=False):
+    return _nll_forward_wide()
+
+
+def _nll_backward_reduction_inputs(reduction):
+    def factory(*, requires_grad=False):
+        logits, labels = _nll_forward_wide()
+        log_probs = torch.log_softmax(logits, dim=1)
+        _, total = torch.ops.aten.nll_loss_forward.default(log_probs, labels, None, 1, -100)
+        grad = torch.arange(1, 9, dtype=torch.float32) if reduction == "none" else torch.ones(1, dtype=torch.float32)
+        return grad, log_probs, labels, total.reshape(1)
+    return factory
+
+
+def _nll_backward_reduction_output(reduction):
+    reduction_code = {"none": 0, "mean": 1, "sum": 2}[reduction]
+    def operation(grad, log_probs, labels, total):
+        return torch.ops.aten.nll_loss_backward.default(
+            grad if reduction_code == 0 else grad.reshape(()), log_probs, labels,
+            None, reduction_code, -100, total.reshape(())
+        )
+    return operation
+
+
 def _nll_backward_output(grad, log_probs, labels, total):
     return torch.ops.aten.nll_loss_backward.default(
-        grad.reshape(()), log_probs, labels, None, 1, -100, total.reshape(())
+        grad.reshape(()).to(log_probs.device), log_probs, labels, None, 1, -100,
+        total.reshape(()).to(log_probs.device)
     )
 
 
@@ -1230,6 +1284,7 @@ def _case(
     execution_mode="compute",
     convert_inputs=True,
     setup_inputs=None,
+    declared_shapes=(),
 ):
     manifest_case = _MANIFEST_CASES.get(name)
     if manifest_case is None:
@@ -1260,6 +1315,7 @@ def _case(
         execution_mode,
         convert_inputs,
         setup_inputs,
+        declared_shapes,
     )
     return case
 
@@ -2183,6 +2239,7 @@ ALL_CASES = tuple(
         _nll_forward,
         cpu_reference=_nll_forward_output,
         expected_shape=(),
+        declared_shapes=("2x3",),
     ),
     _case(
         "classification.nll-backward",
@@ -2191,6 +2248,62 @@ ALL_CASES = tuple(
         _nll_backward,
         cpu_reference=_nll_backward_output,
         expected_shape=(2, 3),
+        declared_shapes=("2x3",),
+    ),
+    _case(
+        "classification.nll-forward.wide",
+        "classification",
+        _nll_forward_output,
+        _nll_forward_wide,
+        cpu_reference=lambda logits, labels: torch.nn.functional.nll_loss(
+            torch.log_softmax(logits, dim=1), labels, reduction="mean"
+        ),
+        expected_shape=(),
+        declared_shapes=("8x5",),
+    ),
+    _case(
+        "classification.nll-backward.wide",
+        "classification",
+        _nll_backward_output,
+        _nll_backward_wide,
+        cpu_reference=_cpu_nll_backward_wide,
+        expected_shape=(8, 5),
+        declared_shapes=("8x5",),
+    ),
+    _case(
+        "classification.nll-forward.none.wide",
+        "classification",
+        lambda logits, labels: torch.ops.aten.nll_loss_forward.default(
+            torch.log_softmax(logits, dim=1), labels, None, 0, -100
+        )[0],
+        _nll_forward_none,
+        cpu_reference=lambda logits, labels: torch.nn.functional.nll_loss(
+            torch.log_softmax(logits, dim=1), labels, reduction="none"
+        ),
+        expected_shape=(8,),
+        declared_shapes=("8x5",),
+    ),
+    _case(
+        "classification.nll-backward.sum",
+        "classification",
+        _nll_backward_reduction_output("sum"),
+        _nll_backward_reduction_inputs("sum"),
+        cpu_reference=lambda grad, log_probs, labels, total: _cpu_nll_backward_reduction(
+            grad, log_probs, labels, "sum"
+        ),
+        expected_shape=(8, 5),
+        declared_shapes=("8x5",),
+    ),
+    _case(
+        "classification.nll-backward.none",
+        "classification",
+        _nll_backward_reduction_output("none"),
+        _nll_backward_reduction_inputs("none"),
+        cpu_reference=lambda grad, log_probs, labels, total: _cpu_nll_backward_reduction(
+            grad, log_probs, labels, "none"
+        ),
+        expected_shape=(8, 5),
+        declared_shapes=("8x5",),
     ),
     _case(
         "unary.neg.bool.rejected",

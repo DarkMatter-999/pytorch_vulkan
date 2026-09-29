@@ -20,16 +20,27 @@ float logsum(uint n) {
 }
 void main() {
   uint index = gl_GlobalInvocationID.x;
-  if (p.mode == 2u) {
+  if (p.mode == 2u || p.mode == 4u || p.mode == 5u) {
+    if (p.mode == 5u) {
+      if (index >= p.batch) return;
+      int64_t label = labels[index];
+      if (label == int64_t(p.ignore_index)) { out0[index] = 0.0; return; }
+      if (label < 0 || label >= int64_t(p.classes)) { out0[index] = 0.0; return; }
+      out0[index] = -(logits[index * p.classes + uint(label)] - logsum(index));
+      return;
+    }
     if (index != 0u) return;
     float loss = 0.0; float count = 0.0;
     for (uint n = 0u; n < p.batch; ++n) { int64_t label = labels[n]; if (label == int64_t(p.ignore_index)) continue; if (label < 0 || label >= int64_t(p.classes)) return; loss -= logits[n * p.classes + uint(label)] - logsum(n); count += 1.0; }
-    out0[0] = count == 0.0 ? 0.0 : loss / count; out1[0] = count;
-  } else if (p.mode == 3u) {
+    out0[0] = p.mode == 4u ? loss : count == 0.0 ? uintBitsToFloat(0x7fc00000u) : loss / count;
+    out1[0] = count;
+  } else if (p.mode == 3u || p.mode == 6u || p.mode == 7u) {
     if (index >= p.batch * p.classes) return;
     uint n = index / p.classes; uint c = index % p.classes; int64_t label = labels[n];
     if (label == int64_t(p.ignore_index)) { out0[index] = 0.0; return; }
     if (label < 0 || label >= int64_t(p.classes)) { out0[index] = 0.0; return; }
-    out0[index] = c == uint(label) ? -grad[0] / total[0] : 0.0;
+    float scale = p.mode == 3u ? grad[0] / total[0]
+        : p.mode == 6u ? grad[0] : grad[n];
+    out0[index] = c == uint(label) ? -scale : 0.0;
   }
 }
