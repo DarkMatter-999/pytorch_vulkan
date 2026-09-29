@@ -50,12 +50,13 @@ def test_large_resident_training_reuses_only_valid_execution_state(vulkan_backen
 
         lost = False
         for _ in range(3):
-            # Drain deferred work from earlier tests before arming counters.
-            pytorch_vulkan._C.synchronize()
             pytorch_vulkan._C.reset_execution_counters()
             step_counters = None
             step_pending = 0
             try:
+                # Drain deferred work before arming the step. This can surface
+                # a device loss caused by work queued during setup.
+                pytorch_vulkan._C.synchronize()
                 pytorch_vulkan._C.begin_training_step()
                 assert pytorch_vulkan._C.training_step_active()
                 optimizer.zero_grad(set_to_none=True)
