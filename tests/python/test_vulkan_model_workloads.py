@@ -203,7 +203,7 @@ def test_model_workload_unsupported_variants_are_rejected(vulkan_backend):
     bias = torch.randn(4, dtype=torch.float32).to(vulkan_backend)
 
     with pytest.raises(RuntimeError, match="convolution|stride|fixed"):
-        torch.nn.functional.conv2d(input, weight, bias, stride=2, padding=1)
+        torch.nn.functional.conv2d(input, weight, bias, groups=2, padding=1)
 
     with pytest.raises(RuntimeError, match="pooling|output|size|fixed"):
         torch.nn.functional.adaptive_avg_pool2d(

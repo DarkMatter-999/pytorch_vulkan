@@ -32,8 +32,53 @@ void validate_rank4(const at::Tensor &t, const char *name) {
                 " requires rank 4 NCHW input");
     TORCH_CHECK(t.numel() > 0, "Vulkan convolution ", name, " rejects empty tensors");
 }
+// PyTorch computes floor((H + 2p - d*(k-1) - 1) / s) + 1. Rejecting a negative
+// numerator first is what makes C++ truncation toward zero agree with floor:
+// CPU rejects any input whose padded extent is below the dilated kernel span,
+// so on every input CPU accepts the numerator is non-negative and the two
+// operations coincide. CPU accepts the rejected case by auto-padding the input
+// up to the kernel span, which this backend does not implement.
+void validate_geometry_axis(int64_t stride, int64_t padding, int64_t dilation,
+                            int64_t extent, int64_t kernel, const char *name) {
+    constexpr int64_t shader_int_max = std::numeric_limits<int32_t>::max();
+    TORCH_CHECK(stride >= 1, "Vulkan convolution ", name, " requires stride >= 1, got ", stride);
+    TORCH_CHECK(dilation >= 1, "Vulkan convolution ", name, " requires dilation >= 1, got ", dilation);
+    TORCH_CHECK(padding >= 0, "Vulkan convolution ", name, " requires padding >= 0, got ", padding);
+    TORCH_CHECK(stride <= shader_int_max && padding <= shader_int_max &&
+                    dilation <= shader_int_max,
+                "Vulkan convolution ", name,
+                " geometry values must fit signed 32-bit shader arithmetic");
+    // Shader coordinates combine output/input coordinates, padding and the
+    // dilated kernel offset in signed int. Bounding the padded extent covers
+    // both the forward mapping and op 1's inverse mapping (see below).
+    const int64_t padded = extent + 2 * padding;
+    TORCH_CHECK(padded <= shader_int_max,
+                "Vulkan convolution ", name,
+                " padded extent must fit signed 32-bit shader arithmetic");
+    const int64_t span = dilation * (kernel - 1) + 1;
+    TORCH_CHECK(span <= padded,
+                "Vulkan convolution ", name,
+                " kernel span ", span, " exceeds padded input extent ", padded,
+                " (extent ", extent, ", kernel ", kernel, ", padding ", padding,
+                ", dilation ", dilation, ")");
+}
+int64_t output_extent(int64_t extent, int64_t kernel, int64_t stride, int64_t padding,
+                      int64_t dilation, const char *name) {
+    validate_geometry_axis(stride, padding, dilation, extent, kernel, name);
+    // These bounds make the following int64_t extent arithmetic safe: tensor
+    // dimensions are uint32_t, and geometry is at most INT32_MAX.
+    const int64_t span = dilation * (kernel - 1) + 1;
+    const int64_t padded = extent + 2 * padding;
+    TORCH_CHECK(padded >= span, "Vulkan convolution ", name,
+                " kernel span ", span, " exceeds padded input extent ", padded,
+                " (extent ", extent, ", padding ", padding, ", dilation ", dilation,
+                "); CPU auto-pads this case, which Vulkan convolution does not");
+    return (padded - span) / stride + 1;
+}
 at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
                const at::Tensor &bias, uint32_t operation,
+               const ConvolutionGeometry &geometry = {},
+               int64_t grad_input_height = 0, int64_t grad_input_width = 0,
                int64_t kernel_height = 0, int64_t kernel_width = 0) {
     validate(input, "input");
     validate(weight, "weight");
@@ -68,10 +113,27 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     // transposed views without introducing Vulkan copies.
     const int64_t kernel_h = operation == 2 ? kernel_height : weight.size(2);
     const int64_t kernel_w = operation == 2 ? kernel_width : weight.size(3);
-    const int64_t out_h = operation == 1 ? input.size(2) - 3 + kernel_h
-                                         : input.size(2) + 3 - kernel_h;
-    const int64_t out_w = operation == 1 ? input.size(3) - 3 + kernel_w
-                                         : input.size(3) + 3 - kernel_w;
+    const int64_t checked_extent_h =
+        operation == 1 ? grad_input_height : operation == 2 ? weight.size(2) : input.size(2);
+    const int64_t checked_extent_w =
+        operation == 1 ? grad_input_width : operation == 2 ? weight.size(3) : input.size(3);
+    validate_geometry_axis(geometry.stride_height, geometry.padding_height,
+                           geometry.dilation_height, checked_extent_h, kernel_h, "height");
+    validate_geometry_axis(geometry.stride_width, geometry.padding_width,
+                           geometry.dilation_width, checked_extent_w, kernel_w, "width");
+    const int64_t out_h =
+        operation == 0 ? output_extent(input.size(2), kernel_h, geometry.stride_height,
+                                       geometry.padding_height, geometry.dilation_height,
+                                       "forward height")
+        : operation == 1 ? grad_input_height : input.size(2) + 3 - kernel_h;
+    const int64_t out_w =
+        operation == 0 ? output_extent(input.size(3), kernel_w, geometry.stride_width,
+                                       geometry.padding_width, geometry.dilation_width,
+                                       "forward width")
+        : operation == 1 ? grad_input_width : input.size(3) + 3 - kernel_w;
+    if (operation == 1)
+        TORCH_CHECK(grad_input_height > 0 && grad_input_width > 0,
+                    "Vulkan convolution backward grad_input extent must be supplied by the caller");
     at::Tensor output =
         operation == 0
             ? at::empty({input.size(0), weight.size(0), out_h, out_w},
@@ -102,7 +164,13 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
         allocation_buffer(bias_data).buffer(), allocation_buffer(out_data).buffer(),
         input_layout, weight_layout, bias_layout, output_layout, operation,
         static_cast<uint32_t>(kernel_h),
-        static_cast<uint32_t>(kernel_w));
+        static_cast<uint32_t>(kernel_w),
+        VulkanConvolutionGeometry{static_cast<uint32_t>(geometry.stride_height),
+                                  static_cast<uint32_t>(geometry.stride_width),
+                                  static_cast<uint32_t>(geometry.padding_height),
+                                  static_cast<uint32_t>(geometry.padding_width),
+                                  static_cast<uint32_t>(geometry.dilation_height),
+                                  static_cast<uint32_t>(geometry.dilation_width)});
     return output;
 }
 } // namespace
@@ -112,21 +180,39 @@ at::Tensor convolution(const at::Tensor &input, const at::Tensor &weight,
                        bool transposed, at::IntArrayRef output_padding,
                        int64_t groups) {
     TORCH_CHECK(bias.has_value(), "Vulkan convolution requires bias");
-    TORCH_CHECK(stride.equals({1, 1}) && padding.equals({1, 1}) &&
-                    dilation.equals({1, 1}) && output_padding.equals({0, 0}) &&
-                    !transposed && groups == 1,
-                "Vulkan convolution supports only fixed stride, padding, dilation, "
-                "groups, and non-transposed parameters");
-    return run(input, weight, *bias, 0);
+    TORCH_CHECK(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
+                "Vulkan convolution requires 2-D stride, padding and dilation");
+    TORCH_CHECK(stride[0] >= 1 && stride[1] >= 1 && dilation[0] >= 1 && dilation[1] >= 1 &&
+                    padding[0] >= 0 && padding[1] >= 0,
+                "Vulkan convolution requires stride and dilation >= 1 and padding >= 0");
+    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed && groups == 1,
+                "Vulkan convolution supports only groups == 1, non-transposed, and "
+                "zero output_padding");
+    return run(input, weight, *bias, 0,
+               {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1]});
 }
-at::Tensor convolution_backward_input(const at::Tensor &grad,
-                                      const at::Tensor &weight) {
-    return run(grad, weight, grad, 1);
+at::Tensor convolution_backward_input(const at::Tensor &grad, const at::Tensor &weight,
+                                       const ConvolutionGeometry &geometry,
+                                       int64_t input_height, int64_t input_width) {
+    const int64_t expected_height =
+        output_extent(input_height, weight.size(2), geometry.stride_height,
+                      geometry.padding_height, geometry.dilation_height,
+                      "backward height");
+    const int64_t expected_width =
+        output_extent(input_width, weight.size(3), geometry.stride_width,
+                      geometry.padding_width, geometry.dilation_width,
+                      "backward width");
+    TORCH_CHECK(grad.size(2) == expected_height && grad.size(3) == expected_width,
+                "Vulkan convolution backward grad_output spatial shape expected (",
+                expected_height, ", ", expected_width, "), actual (", grad.size(2),
+                ", ", grad.size(3), ")");
+    return run(grad, weight, grad, 1, geometry, input_height, input_width);
 }
 at::Tensor convolution_backward_weight(const at::Tensor &grad,
                                        const at::Tensor &input,
+                                       const ConvolutionGeometry &geometry,
                                        int64_t kernel_height, int64_t kernel_width) {
-    return run(grad, input, grad, 2, kernel_height, kernel_width);
+    return run(grad, input, grad, 2, geometry, 0, 0, kernel_height, kernel_width);
 }
 at::Tensor convolution_backward_bias(const at::Tensor &grad) {
     return run(grad, grad, grad, 3);
@@ -143,11 +229,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     validate_rank4(grad_output, "backward grad_output");
     validate_rank4(input, "backward input");
     validate_rank4(weight, "backward weight");
-    TORCH_CHECK(stride.equals({1, 1}) && padding.equals({1, 1}) &&
-                    dilation.equals({1, 1}) && output_padding.equals({0, 0}) &&
-                    !transposed && groups == 1,
-                "Vulkan convolution backward supports only fixed stride, padding, "
-                "dilation, groups, and non-transposed parameters");
+    TORCH_CHECK(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
+                "Vulkan convolution backward requires 2-D stride, padding and dilation");
+    TORCH_CHECK(stride[0] >= 1 && stride[1] >= 1 && dilation[0] >= 1 && dilation[1] >= 1 &&
+                    padding[0] >= 0 && padding[1] >= 0,
+                "Vulkan convolution backward requires stride and dilation >= 1 and padding >= 0");
+    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed && groups == 1,
+                "Vulkan convolution backward supports only groups == 1, non-transposed, "
+                "and zero output_padding");
     TORCH_CHECK(output_mask[0] && output_mask[1] && output_mask[2],
                 "Vulkan convolution backward requires output_mask [true, true, true]");
     TORCH_CHECK(grad_output.size(1) == weight.size(0) &&
@@ -167,8 +256,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
                 "Vulkan convolution backward rejects overlapping layouts");
     TORCH_CHECK(grad_output.numel() > 0 && input.numel() > 0 && weight.numel() > 0,
                 "Vulkan convolution backward rejects empty tensors");
-    return {convolution_backward_input(grad_output, weight),
-            convolution_backward_weight(grad_output, input, weight.size(2), weight.size(3)),
+    const ConvolutionGeometry geometry{stride[0], stride[1], padding[0], padding[1],
+                                       dilation[0], dilation[1]};
+    return {convolution_backward_input(grad_output, weight, geometry, input.size(2),
+                                       input.size(3)),
+            convolution_backward_weight(grad_output, input, geometry, weight.size(2),
+                                       weight.size(3)),
             convolution_backward_bias(grad_output)};
 }
 } // namespace pytorch_vulkan

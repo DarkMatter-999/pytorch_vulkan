@@ -18,6 +18,12 @@ layout(push_constant) uniform Params {
   uint kernel_height;
   uint kernel_width;
   uint operation;
+  uint stride_height;
+  uint stride_width;
+  uint padding_height;
+  uint padding_width;
+  uint dilation_height;
+  uint dilation_width;
 }
 params;
 uint ii(uint n, uint c, uint h, uint w) {
@@ -51,8 +57,10 @@ void main() {
     for (uint ic = 0u; ic < params.input_channels; ++ic)
       for (uint kh = 0u; kh < params.kernel_height; ++kh)
         for (uint kw = 0u; kw < params.kernel_width; ++kw) {
-          int ih = int(oh) + int(kh) - 1;
-          int iw = int(ow) + int(kw) - 1;
+          int ih = int(oh) * int(params.stride_height) +
+                   int(kh) * int(params.dilation_height) - int(params.padding_height);
+          int iw = int(ow) * int(params.stride_width) +
+                   int(kw) * int(params.dilation_width) - int(params.padding_width);
           if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
             value +=
                 input_values[ii(n, ic, uint(ih), uint(iw))] * weight_values[wi(oc, ic, kh, kw)];
@@ -70,8 +78,10 @@ void main() {
     for (uint oc = 0u; oc < params.output_channels; ++oc)
       for (uint kh = 0u; kh < params.kernel_height; ++kh)
         for (uint kw = 0u; kw < params.kernel_width; ++kw) {
-          int oh = int(ih) - int(kh) + 1;
-          int ow = int(iwv) - int(kw) + 1;
+          int th = int(ih) + int(params.padding_height) - int(kh) * int(params.dilation_height);
+          int tw = int(iwv) + int(params.padding_width) - int(kw) * int(params.dilation_width);
+          int oh = th % int(params.stride_height) == 0 ? th / int(params.stride_height) : -1;
+          int ow = tw % int(params.stride_width) == 0 ? tw / int(params.stride_width) : -1;
           if (oh >= 0 && oh < int(params.output_height) && ow >= 0 && ow < int(params.output_width))
             value +=
                 input_values[ii(n, oc, uint(oh), uint(ow))] * weight_values[wi(oc, ic, kh, kw)];
@@ -95,8 +105,10 @@ void main() {
       uint n = reduction_index / spatial;
       uint oh = (reduction_index / params.output_width) % params.output_height;
       uint ow = reduction_index % params.output_width;
-      int ih = int(oh) + int(kh) - 1;
-      int iw = int(ow) + int(kw) - 1;
+      int ih = int(oh) * int(params.stride_height) - int(params.padding_height) +
+               int(kh) * int(params.dilation_height);
+      int iw = int(ow) * int(params.stride_width) - int(params.padding_width) +
+               int(kw) * int(params.dilation_width);
       if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
         value += input_values[ii(n, oc, oh, ow)] * weight_values[bi(n, ic, uint(ih), uint(iw))];
     }

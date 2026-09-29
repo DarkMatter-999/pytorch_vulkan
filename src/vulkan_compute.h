@@ -16,6 +16,17 @@ struct DescriptorArenaSnapshot;
 
 using pytorch_vulkan::VulkanTensorLayout;
 
+namespace pytorch_vulkan {
+struct VulkanConvolutionGeometry {
+    uint32_t stride_height = 1;
+    uint32_t stride_width = 1;
+    uint32_t padding_height = 1;
+    uint32_t padding_width = 1;
+    uint32_t dilation_height = 1;
+    uint32_t dilation_width = 1;
+};
+} // namespace pytorch_vulkan
+
 class VulkanCompute final {
   public:
     explicit VulkanCompute(const VulkanPlatform &platform);
@@ -176,9 +187,10 @@ class VulkanCompute final {
                      const VulkanTensorLayout &input_layout,
                      const VulkanTensorLayout &weight_layout,
                      const VulkanTensorLayout &bias_layout,
-                     const VulkanTensorLayout &output_layout,
-                     uint32_t operation = 0, uint32_t kernel_height = 0,
-                     uint32_t kernel_width = 0) const;
+                      const VulkanTensorLayout &output_layout,
+                      uint32_t operation = 0, uint32_t kernel_height = 0,
+                      uint32_t kernel_width = 0,
+                      pytorch_vulkan::VulkanConvolutionGeometry geometry = {}) const;
     void pooling(VkBuffer input, VkBuffer output,
                  const VulkanTensorLayout &input_layout,
                  const VulkanTensorLayout &output_layout, uint32_t batch,

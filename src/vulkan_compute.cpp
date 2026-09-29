@@ -148,6 +148,8 @@ struct PoolingMetadata {
 struct ConvolutionParams {
     uint32_t batch, input_channels, input_height, input_width, output_channels,
         output_height, output_width, kernel_height, kernel_width, operation;
+    uint32_t stride_height, stride_width, padding_height, padding_width,
+        dilation_height, dilation_width;
 };
 struct MaskedParams {
     uint32_t element_count;
@@ -326,6 +328,9 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         if (properties.limits.maxPushConstantsSize < sizeof(MultiOutputParams))
             throw std::runtime_error(
                 "device maxPushConstantsSize is smaller than backward ABI");
+        if (properties.limits.maxPushConstantsSize < sizeof(ConvolutionParams))
+            throw std::invalid_argument(
+                "device maxPushConstantsSize is smaller than convolution ABI");
 
         const VkDescriptorSetLayoutBinding lhs_binding = {
             0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -2257,7 +2262,9 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
                                 const VulkanTensorLayout &weight_layout,
                                 const VulkanTensorLayout &bias_layout,
                                 const VulkanTensorLayout &output_layout,
-                                uint32_t operation, uint32_t kernel_height, uint32_t kernel_width) const {
+                                uint32_t operation, uint32_t kernel_height,
+                                uint32_t kernel_width,
+                                pytorch_vulkan::VulkanConvolutionGeometry geometry) const {
     ModelMetadata metadata{};
     fill_layout_metadata(metadata.tensors[0], input_layout, "convolution input");
     fill_layout_metadata(metadata.tensors[1], weight_layout, "convolution weight");
@@ -2290,7 +2297,9 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
     }
     ConvolutionParams params{
         batch,         input_channels, input_height,  input_width,  output_channels,
-        output_height, output_width,   kernel_height, kernel_width, operation};
+        output_height, output_width,   kernel_height, kernel_width, operation,
+        geometry.stride_height, geometry.stride_width, geometry.padding_height,
+        geometry.padding_width, geometry.dilation_height, geometry.dilation_width};
     const uint32_t output_numel = static_cast<uint32_t>(output_layout.numel);
     dispatch_model(input, weight, bias, output, input_layout.allocation_bytes,
                     weight_layout.allocation_bytes, bias_layout.allocation_bytes,

@@ -207,16 +207,64 @@ def test_convolution_backward_rejects_partial_output_masks(vulkan_backend, outpu
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"stride": 2},
-        {"padding": 0},
-        {"dilation": 2},
         {"groups": 2},
     ],
 )
-def test_conv2d_rejects_non_fixed_parameters(vulkan_backend, kwargs):
+def test_conv2d_rejects_unsupported_parameters(vulkan_backend, kwargs):
     input, weight, bias = _conv_inputs(vulkan_backend)
     with pytest.raises(RuntimeError, match="Vulkan convolution|fixed|support|channels"):
         torch.nn.functional.conv2d(input, weight, bias, **kwargs)
+
+
+def test_conv2d_rejects_geometry_outside_shader_int_range(vulkan_backend):
+    input = torch.randn((1, 1, 12, 12)).to(vulkan_backend)
+    weight = torch.randn((1, 1, 1, 1)).to(vulkan_backend)
+    bias = torch.randn((1,)).to(vulkan_backend)
+    with pytest.raises(RuntimeError, match="Vulkan convolution.*(range|represent|32-bit)"):
+        torch.nn.functional.conv2d(
+            input, weight, bias, stride=2**40, padding=2**40
+        )
+
+
+def test_conv2d_rejects_unrepresentable_shader_intermediates(vulkan_backend):
+    input = torch.randn((1, 1, 1, 1)).to(vulkan_backend)
+    weight = torch.randn((1, 1, 1, 1)).to(vulkan_backend)
+    bias = torch.randn((1,)).to(vulkan_backend)
+    with pytest.raises(RuntimeError, match="padded extent must fit signed 32-bit shader arithmetic"):
+        torch.nn.functional.conv2d(
+            input, weight, bias, stride=1_500_000_000, padding=1_500_000_000
+        )
+
+
+def test_convolution_backward_rejects_geometry_outside_shader_int_range(vulkan_backend):
+    grad = torch.empty((1, 1, 1, 1)).to(vulkan_backend)
+    input = torch.empty((1, 1, 1, 1)).to(vulkan_backend)
+    weight = torch.empty((1, 1, 1, 1)).to(vulkan_backend)
+    with pytest.raises(RuntimeError, match="geometry values must fit signed 32-bit shader arithmetic"):
+        torch.ops.aten.convolution_backward.default(
+            grad,
+            input,
+            weight,
+            [1],
+            [2**40, 1],
+            [1, 1],
+            [1, 1],
+            False,
+            [0, 0],
+            1,
+            [True, True, True],
+        )
+
+
+def test_convolution_backward_rejects_mismatched_grad_output_spatial_shape(vulkan_backend):
+    grad = torch.empty((1, 1, 4, 5)).to(vulkan_backend)
+    input = torch.empty((1, 1, 5, 5)).to(vulkan_backend)
+    weight = torch.empty((1, 1, 3, 3)).to(vulkan_backend)
+    with pytest.raises(RuntimeError, match="grad_output spatial shape.*expected.*actual"):
+        torch.ops.aten.convolution_backward.default(
+            grad, input, weight, [1], [1, 1], [1, 1], [1, 1], False, [0, 0], 1,
+            [True, True, True],
+        )
 
 
 @pytest.mark.parametrize(
@@ -281,14 +329,14 @@ def test_conv2d_rejects_every_other_bias_rank_or_shape(vulkan_backend, bad_bias)
 
 def test_conv2d_rejects_non_fixed_weight_and_bias_shapes(vulkan_backend):
     input, _, _ = _conv_inputs(vulkan_backend)
-    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension"):
+    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension|kernel span"):
         torch.nn.functional.conv2d(
             input,
             torch.empty((3, 1, 3, 3), device=vulkan_backend),
             torch.empty((2,), device=vulkan_backend),
             padding=1,
         )
-    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension"):
+    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension|kernel span"):
         torch.nn.functional.conv2d(
             input,
             torch.empty((4, 1, 12, 3), device=vulkan_backend),

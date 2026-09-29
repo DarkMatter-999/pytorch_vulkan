@@ -27,6 +27,15 @@ bool supports_multi_output_backward(const at::Tensor &tensor) {
            tensor.is_contiguous();
 }
 
+ConvolutionGeometry saved_geometry(torch::autograd::AutogradContext *ctx) {
+    const auto stride = ctx->saved_data["stride"].toIntVector();
+    const auto padding = ctx->saved_data["padding"].toIntVector();
+    const auto dilation = ctx->saved_data["dilation"].toIntVector();
+    TORCH_INTERNAL_ASSERT(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
+                          "Vulkan convolution autograd saved malformed geometry");
+    return {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1]};
+}
+
 class ConvolutionAutogradFunction final
     : public torch::autograd::Function<ConvolutionAutogradFunction> {
   public:
@@ -39,6 +48,9 @@ class ConvolutionAutogradFunction final
         at::AutoDispatchBelowAutograd guard;
         ctx->save_for_backward({input, weight});
         ctx->saved_data["has_bias"] = bias.has_value();
+        ctx->saved_data["stride"] = stride.vec();
+        ctx->saved_data["padding"] = padding.vec();
+        ctx->saved_data["dilation"] = dilation.vec();
         return pytorch_vulkan::convolution(input, weight, bias, stride, padding,
                                            dilation, transposed, output_padding,
                                            groups);
@@ -51,10 +63,12 @@ class ConvolutionAutogradFunction final
             return {at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor(), at::Tensor(), at::Tensor()};
+        const auto geometry = saved_geometry(ctx);
         auto saved = ctx->get_saved_variables();
-        return {convolution_backward_input(grads[0], saved[1]),
-                convolution_backward_weight(grads[0], saved[0], saved[1].size(2),
-                                                    saved[1].size(3)),
+        return {convolution_backward_input(grads[0], saved[1], geometry, saved[0].size(2),
+                                           saved[0].size(3)),
+                convolution_backward_weight(grads[0], saved[0], geometry, saved[1].size(2),
+                                            saved[1].size(3)),
                 ctx->saved_data["has_bias"].toBool()
                     ? convolution_backward_bias(grads[0])
                     : at::Tensor(),

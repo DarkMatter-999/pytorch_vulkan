@@ -1409,6 +1409,7 @@
       ],
       "schema": "aten::convolution.default",
       "shape_constraints": [
+        "2x3x10x10",
         "2x3x12x12",
         "2x4x10x10",
         "4x5x9x9"
@@ -1429,6 +1430,22 @@
         },
         {
           "name": "convolution.general.forward",
+          "supported": true
+        },
+        {
+          "name": "convolution.parameters.stride-2",
+          "supported": true
+        },
+        {
+          "name": "convolution.parameters.padding-0",
+          "supported": true
+        },
+        {
+          "name": "convolution.parameters.dilation-2",
+          "supported": true
+        },
+        {
+          "name": "convolution.parameters.combined",
           "supported": true
         },
         {
@@ -1483,10 +1500,23 @@
       ],
       "schema": "aten::convolution_backward.default",
       "shape_constraints": [
+        "2x3x12x12",
         "2x4x10x10"
       ],
       "status": "supported",
       "test_cases": [
+        {
+          "name": "convolution.parameters.stride-2.grad-input",
+          "supported": true
+        },
+        {
+          "name": "convolution.parameters.stride-2.grad-weight",
+          "supported": true
+        },
+        {
+          "name": "convolution.parameters.dilation-2.grad-bias",
+          "supported": true
+        },
         {
           "name": "convolution.backward",
           "supported": true
@@ -1502,6 +1532,10 @@
         {
           "name": "convolution.backward.general.grad-bias",
           "supported": true
+        },
+        {
+          "name": "convolution.backward.grad-output-spatial-shape.rejected",
+          "supported": false
         }
       ],
       "tests": [

@@ -715,6 +715,38 @@ def _conv_general(*, requires_grad=False):
     )
 
 
+def _conv_stride_2(*, requires_grad=False):
+    return (
+        torch.randn(2, 3, 12, 12, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(4, 3, 3, 3, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _conv_padding_0(*, requires_grad=False):
+    return (
+        torch.randn(2, 3, 10, 10, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(4, 3, 3, 3, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _conv_dilation_2(*, requires_grad=False):
+    return (
+        torch.randn(2, 3, 12, 12, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(4, 3, 3, 3, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _conv_combined(*, requires_grad=False):
+    return (
+        torch.randn(2, 3, 12, 12, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(4, 3, 3, 3, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
 def _conv_kernel_1x1(*, requires_grad=False):
     return (
         torch.randn(2, 4, 10, 10, dtype=torch.float32, requires_grad=requires_grad),
@@ -741,6 +773,11 @@ def _convolution_backward_inputs(*, requires_grad=False) -> tuple[torch.Tensor, 
     return torch.ones((2, 4, 8, 8), dtype=torch.float32), value, weight
 
 
+def _convolution_backward_mismatched_grad_inputs(*, requires_grad=False):
+    value, weight, _ = _convolution()
+    return torch.ones((2, 4, 7, 8), dtype=torch.float32), value, weight
+
+
 def _convolution_backward(grad, value, weight):
     return torch.ops.aten.convolution_backward.default(
         grad,
@@ -763,24 +800,37 @@ def _convolution_backward_general_inputs(*, requires_grad=False):
     return grad, value, weight
 
 
+def _convolution_backward_stride2_inputs(*, requires_grad=False):
+    value, weight, _ = _conv_stride_2()
+    return torch.ones((2, 4, 6, 6), dtype=torch.float32), value, weight
+
+
+def _convolution_backward_dilation2_inputs(*, requires_grad=False):
+    value, weight, _ = _conv_dilation_2()
+    return torch.ones((2, 4, 12, 12), dtype=torch.float32), value, weight
+
+
 def _convolution_backward_output(index):
-    def operation(grad, value, weight):
+    def operation(grad, value, weight, *, stride=1, padding=1, dilation=1, groups=1):
         return torch.ops.aten.convolution_backward.default(
-            grad, value, weight, [6], [1, 1], [1, 1], [1, 1], False,
-            [0, 0], 1, [True, True, True],
+            grad, value, weight, [weight.shape[0]], [stride, stride],
+            [padding, padding] if isinstance(padding, int) else padding,
+            [dilation, dilation], False, [0, 0], groups, [True, True, True],
         )[index]
 
     return operation
 
 
-def _cpu_convolution_backward_output(index, grad, value, weight):
+def _cpu_convolution_backward_output(
+    index, grad, value, weight, stride=1, padding=1, dilation=1, groups=1
+):
     if index == 0:
         return torch.nn.grad.conv2d_input(
-            value.shape, weight, grad, stride=1, padding=1
+            value.shape, weight, grad, stride=stride, padding=padding, dilation=dilation
         )
     if index == 1:
         return torch.nn.grad.conv2d_weight(
-            value, weight.shape, grad, stride=1, padding=1
+            value, weight.shape, grad, stride=stride, padding=padding, dilation=dilation
         )
     return grad.sum(dim=(0, 2, 3))
 
@@ -2195,6 +2245,95 @@ ALL_CASES = tuple(
         atol=2e-4,
     ),
     _case(
+        "convolution.parameters.stride-2",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_stride_2,
+        kwargs={"stride": 2, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 6, 6),
+        declared_shapes=("2x3x12x12",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.parameters.padding-0",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_padding_0,
+        kwargs={"stride": 1, "padding": 0, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 8, 8),
+        declared_shapes=("2x3x10x10",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.parameters.dilation-2",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_dilation_2,
+        kwargs={"stride": 1, "padding": 2, "dilation": 2, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 12, 12),
+        declared_shapes=("2x3x12x12",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.parameters.combined",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_combined,
+        kwargs={"stride": 2, "padding": (1, 0), "dilation": 2, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 5, 4),
+        declared_shapes=("2x3x12x12",),
+        check_gradients=True,
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.parameters.stride-2.grad-input",
+        "convolution",
+        _convolution_backward_output(0),
+        _convolution_backward_stride2_inputs,
+        kwargs={"stride": 2, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=lambda grad, value, weight, **kwargs: _cpu_convolution_backward_output(
+            0, grad, value, weight, **kwargs
+        ),
+        expected_shape=(2, 3, 12, 12),
+        declared_shapes=("2x3x12x12",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.parameters.stride-2.grad-weight",
+        "convolution",
+        _convolution_backward_output(1),
+        _convolution_backward_stride2_inputs,
+        kwargs={"stride": 2, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=lambda grad, value, weight, **kwargs: _cpu_convolution_backward_output(
+            1, grad, value, weight, **kwargs
+        ),
+        expected_shape=(4, 3, 3, 3),
+        declared_shapes=("2x3x12x12",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.parameters.dilation-2.grad-bias",
+        "convolution",
+        _convolution_backward_output(2),
+        _convolution_backward_dilation2_inputs,
+        kwargs={"stride": 1, "padding": 2, "dilation": 2, "groups": 1},
+        cpu_reference=lambda grad, value, weight, **kwargs: grad.sum(dim=(0, 2, 3)),
+        expected_shape=(4,),
+        declared_shapes=("2x3x12x12",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
         "convolution.general.kernel-1x1",
         "convolution",
         torch.nn.functional.conv2d,
@@ -2657,6 +2796,15 @@ ALL_CASES = tuple(
         supported=False,
         cpu_reference=_cpu_convolution,
         error_pattern=r"channel|size|shape",
+    ),
+    _case(
+        "convolution.backward.grad-output-spatial-shape.rejected",
+        "convolution",
+        _convolution_backward,
+        _convolution_backward_mismatched_grad_inputs,
+        supported=False,
+        cpu_reference=_convolution_backward,
+        error_pattern=r"grad_output spatial shape.*expected.*actual",
     ),
     _case(
         "unary.neg_.unsupported-overload.rejected",
