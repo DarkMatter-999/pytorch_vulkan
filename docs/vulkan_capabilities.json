@@ -1409,7 +1409,9 @@
       ],
       "schema": "aten::convolution.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x3x12x12",
+        "2x4x10x10",
+        "4x5x9x9"
       ],
       "status": "supported",
       "test_cases": [
@@ -1426,7 +1428,19 @@
           "supported": true
         },
         {
-          "name": "convolution.shape.rejected",
+          "name": "convolution.general.forward",
+          "supported": true
+        },
+        {
+          "name": "convolution.general.kernel-1x1",
+          "supported": true
+        },
+        {
+          "name": "convolution.general.kernel-5x5",
+          "supported": true
+        },
+        {
+          "name": "convolution.channels.shape.rejected",
           "supported": false
         }
       ],
@@ -1469,12 +1483,24 @@
       ],
       "schema": "aten::convolution_backward.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x4x10x10"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "convolution.backward",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.general.grad-input",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.kernel-1x1.grad-weight",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.general.grad-bias",
           "supported": true
         }
       ],

@@ -68,8 +68,10 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
     // transposed views without introducing Vulkan copies.
     const int64_t kernel_h = operation == 2 ? kernel_height : weight.size(2);
     const int64_t kernel_w = operation == 2 ? kernel_width : weight.size(3);
-    const int64_t out_h = input.size(2) + 3 - kernel_h;
-    const int64_t out_w = input.size(3) + 3 - kernel_w;
+    const int64_t out_h = operation == 1 ? input.size(2) - 3 + kernel_h
+                                         : input.size(2) + 3 - kernel_h;
+    const int64_t out_w = operation == 1 ? input.size(3) - 3 + kernel_w
+                                         : input.size(3) + 3 - kernel_w;
     at::Tensor output =
         operation == 0
             ? at::empty({input.size(0), weight.size(0), out_h, out_w},

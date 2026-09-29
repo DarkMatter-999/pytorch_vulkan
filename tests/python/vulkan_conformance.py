@@ -707,6 +707,35 @@ def _convolution_strided(
     )
 
 
+def _conv_general(*, requires_grad=False):
+    return (
+        torch.randn(4, 5, 9, 9, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(3, 5, 3, 3, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(3, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _conv_kernel_1x1(*, requires_grad=False):
+    return (
+        torch.randn(2, 4, 10, 10, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(6, 4, 1, 1, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(6, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _conv_kernel_5x5(*, requires_grad=False):
+    return (
+        torch.randn(2, 3, 12, 12, dtype=torch.float32, requires_grad=requires_grad),
+        torch.randn(4, 3, 5, 5, dtype=torch.float32, requires_grad=requires_grad),
+        torch.zeros(4, dtype=torch.float32, requires_grad=requires_grad),
+    )
+
+
+def _channel_mismatch_convolution(*, requires_grad=False):
+    value, weight, bias = _convolution()
+    return torch.cat((value, value), dim=1), weight, bias
+
+
 def _convolution_backward_inputs(*, requires_grad=False) -> tuple[torch.Tensor, ...]:
     value, weight, _ = _convolution()
     return torch.ones((2, 4, 8, 8), dtype=torch.float32), value, weight
@@ -726,6 +755,34 @@ def _convolution_backward(grad, value, weight):
         1,
         [True, True, True],
     )[0]
+
+
+def _convolution_backward_general_inputs(*, requires_grad=False):
+    value, weight, _ = _conv_kernel_1x1()
+    grad = torch.ones((2, 6, 12, 12), dtype=torch.float32)
+    return grad, value, weight
+
+
+def _convolution_backward_output(index):
+    def operation(grad, value, weight):
+        return torch.ops.aten.convolution_backward.default(
+            grad, value, weight, [6], [1, 1], [1, 1], [1, 1], False,
+            [0, 0], 1, [True, True, True],
+        )[index]
+
+    return operation
+
+
+def _cpu_convolution_backward_output(index, grad, value, weight):
+    if index == 0:
+        return torch.nn.grad.conv2d_input(
+            value.shape, weight, grad, stride=1, padding=1
+        )
+    if index == 1:
+        return torch.nn.grad.conv2d_weight(
+            value, weight.shape, grad, stride=1, padding=1
+        )
+    return grad.sum(dim=(0, 2, 3))
 
 
 def _pooling(*, requires_grad=False) -> tuple[torch.Tensor]:
@@ -882,11 +939,6 @@ def _cpu_out(value):
 
 def _bad_pool_params(value):
     return torch.ops.aten._adaptive_avg_pool2d.default(value, (2, 2))
-
-
-def _wrong_convolution(*, requires_grad=False):
-    value, weight, bias = _convolution()
-    return (value[:, :, :-1, :], weight, bias)
 
 
 def _argmax_bad_out(value):
@@ -1305,7 +1357,7 @@ def _linear_attention(*, requires_grad=False):
     )
 
 
-def _cpu_convolution(value, weight, bias, **kwargs):
+def _cpu_convolution(value, weight, bias=None, **kwargs):
     return torch.nn.functional.conv2d(value, weight, bias, **kwargs)
 
 
@@ -2131,6 +2183,42 @@ ALL_CASES = tuple(
         check_gradients=True,
     ),
     _case(
+        "convolution.general.forward",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_general,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(4, 3, 9, 9),
+        declared_shapes=("4x5x9x9",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.general.kernel-1x1",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_kernel_1x1,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 6, 12, 12),
+        declared_shapes=("2x4x10x10",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.general.kernel-5x5",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _conv_kernel_5x5,
+        kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
+        cpu_reference=_cpu_convolution,
+        expected_shape=(2, 4, 10, 10),
+        declared_shapes=("2x3x12x12",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
         "convolution.backward",
         "convolution",
         _convolution_backward,
@@ -2151,6 +2239,45 @@ ALL_CASES = tuple(
             [True, True, True],
         )[0],
         expected_shape=(2, 1, 8, 8),
+    ),
+    _case(
+        "convolution.backward.general.grad-input",
+        "convolution",
+        _convolution_backward_output(0),
+        _convolution_backward_general_inputs,
+        cpu_reference=lambda grad, value, weight: _cpu_convolution_backward_output(
+            0, grad, value, weight
+        ),
+        expected_shape=(2, 4, 10, 10),
+        declared_shapes=("2x4x10x10",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.backward.kernel-1x1.grad-weight",
+        "convolution",
+        _convolution_backward_output(1),
+        _convolution_backward_general_inputs,
+        cpu_reference=lambda grad, value, weight: _cpu_convolution_backward_output(
+            1, grad, value, weight
+        ),
+        expected_shape=(6, 4, 1, 1),
+        declared_shapes=("2x4x10x10",),
+        rtol=2e-4,
+        atol=2e-4,
+    ),
+    _case(
+        "convolution.backward.general.grad-bias",
+        "convolution",
+        _convolution_backward_output(2),
+        _convolution_backward_general_inputs,
+        cpu_reference=lambda grad, value, weight: _cpu_convolution_backward_output(
+            2, grad, value, weight
+        ),
+        expected_shape=(6,),
+        declared_shapes=("2x4x10x10",),
+        rtol=2e-4,
+        atol=2e-4,
     ),
     _case(
         "pooling.max.rejected",
@@ -2522,14 +2649,14 @@ ALL_CASES = tuple(
         error_pattern=r"output size|\(1, 1\)",
     ),
     _case(
-        "convolution.shape.rejected",
+        "convolution.channels.shape.rejected",
         "convolution",
         torch.nn.functional.conv2d,
-        _wrong_convolution,
+        _channel_mismatch_convolution,
         kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": 1},
         supported=False,
         cpu_reference=_cpu_convolution,
-        error_pattern=r"unsupported fixed shape|shape",
+        error_pattern=r"channel|size|shape",
     ),
     _case(
         "unary.neg_.unsupported-overload.rejected",

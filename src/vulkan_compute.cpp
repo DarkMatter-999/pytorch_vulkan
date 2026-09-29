@@ -2270,10 +2270,14 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
     uint32_t input_channels = operation == 0 || operation == 3
                                   ? dimension(input_layout, 1)
                                   : dimension(weight_layout, 1);
-    uint32_t input_height =
-        operation == 2 ? dimension(weight_layout, 2) : dimension(input_layout, 2);
-    uint32_t input_width =
-        operation == 2 ? dimension(weight_layout, 3) : dimension(input_layout, 3);
+    uint32_t input_height = operation == 2
+                                ? dimension(weight_layout, 2)
+                            : operation == 1 ? dimension(output_layout, 2)
+                                             : dimension(input_layout, 2);
+    uint32_t input_width = operation == 2
+                               ? dimension(weight_layout, 3)
+                           : operation == 1 ? dimension(output_layout, 3)
+                                            : dimension(input_layout, 3);
     uint32_t output_channels =
         operation == 0 ? dimension(output_layout, 1) : dimension(input_layout, 1);
     uint32_t output_height =
