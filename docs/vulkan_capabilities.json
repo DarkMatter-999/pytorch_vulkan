@@ -47,7 +47,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "attention.bmm.forward_backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            3
+          ]
+        ],
+        "ranks": [
+          3
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -74,7 +91,7 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 4
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -103,7 +120,25 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "aten._adaptive_avg_pool2d.global",
+          "aten._adaptive_avg_pool2d.global.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -130,7 +165,7 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 4
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -151,7 +186,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "aten._adaptive_avg_pool2d.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -177,8 +229,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -199,7 +251,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "transfer.copy_from.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -225,8 +294,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -247,7 +316,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.log-softmax.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -273,8 +359,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -295,7 +381,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.log-softmax.dim"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -321,8 +424,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -343,7 +446,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.log-softmax.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -369,8 +489,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -391,7 +511,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "view.reshape-alias.metadata"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -417,8 +554,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -439,7 +576,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.softmax.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -465,8 +619,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -487,7 +641,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.softmax.dim"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -513,8 +684,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -535,7 +706,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.softmax.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -561,8 +749,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -583,7 +771,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "transfer.to_copy.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -609,8 +814,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -631,7 +836,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.abs.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -657,8 +879,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -679,7 +901,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "scalar.add.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -705,8 +944,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -727,7 +966,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.add.scalar.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -753,8 +1009,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -787,7 +1043,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "binary.add.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -813,8 +1086,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -835,7 +1108,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.add.tensor.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -861,8 +1151,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -883,7 +1173,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.add.inplace"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -909,8 +1216,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -931,7 +1238,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.addcdiv.inplace"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -957,8 +1281,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -979,7 +1303,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.addcmul.inplace"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1028,7 +1369,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "addmm.forward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1077,7 +1435,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "addmm.out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1103,8 +1478,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1125,7 +1500,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.amax.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1151,8 +1543,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1173,7 +1565,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.amax.dim"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1199,8 +1608,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1221,7 +1630,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.amin.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1247,8 +1673,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1269,7 +1695,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.amin.dim"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1295,8 +1738,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1325,7 +1768,26 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "indexing.argmax.dim",
+          "indexing.argmax.optional-dim.keepdim",
+          "indexing.argmax.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1351,8 +1813,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1373,7 +1835,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "view.as-strided.metadata"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1400,7 +1879,7 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 4
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1464,7 +1943,33 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "convolution.cnn.forward",
+          "convolution.forward",
+          "convolution.forward.strided",
+          "convolution.general.forward",
+          "convolution.general.kernel-1x1",
+          "convolution.general.kernel-5x5",
+          "convolution.parameters.combined",
+          "convolution.parameters.dilation-2",
+          "convolution.parameters.padding-0",
+          "convolution.parameters.stride-2"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1491,7 +1996,7 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 4
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1541,7 +2046,30 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "convolution.backward",
+          "convolution.backward.general.grad-bias",
+          "convolution.backward.general.grad-input",
+          "convolution.backward.kernel-1x1.grad-weight",
+          "convolution.parameters.dilation-2.grad-bias",
+          "convolution.parameters.stride-2.grad-input",
+          "convolution.parameters.stride-2.grad-weight"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -1567,8 +2095,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1589,7 +2117,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "transfer.copy.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1615,8 +2160,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1637,7 +2182,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.div.scalar"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1663,8 +2225,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1685,7 +2247,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "transfer.empty.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1711,8 +2290,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1733,7 +2312,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "transfer.empty_strided.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1759,8 +2355,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1781,7 +2377,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.gelu.tanh.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1807,8 +2420,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1829,7 +2442,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.gelu.tanh.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1855,8 +2485,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1877,7 +2507,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.lerp.out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -1903,8 +2550,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -1925,7 +2572,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.lerp.inplace"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1982,7 +2646,31 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "linear.attention.3d",
+          "linear.forward",
+          "linear.forward.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            3
+          ]
+        ],
+        "ranks": [
+          2,
+          3
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -1993,8 +2681,7 @@
       },
       "dtypes": {
         "inputs": [
-          "float32",
-          "bool"
+          "float32"
         ],
         "outputs": [
           "float32"
@@ -2009,8 +2696,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [
@@ -2037,7 +2724,30 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "masked-select.bool-mask",
+          "masked-select.strided-value-view"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          1,
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2063,8 +2773,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2093,7 +2803,26 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.mean.dim",
+          "reduction.mean.empty-dim",
+          "reduction.mean.optional-dim"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2142,7 +2871,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "mm.forward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2168,8 +2914,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2198,7 +2944,26 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "loss.mse.mean",
+          "loss.mse.none",
+          "loss.mse.sum"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2224,8 +2989,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2246,7 +3011,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "loss.mse.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2272,8 +3054,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2294,7 +3076,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "scalar.mul.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2320,8 +3119,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2342,7 +3141,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.mul.scalar.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2368,8 +3184,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2390,7 +3206,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "binary.mul.float32.empty"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2416,8 +3249,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2438,7 +3271,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.mul.tensor.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -2464,8 +3314,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2486,7 +3336,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.mul.scalar.inplace"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2512,7 +3379,7 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 4,
+        "max": 2,
         "min": 2
       },
       "reason": "supported_contract",
@@ -2548,7 +3415,32 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "normalization.native-batch-norm",
+          "normalization.native-batch-norm.2d",
+          "normalization.native-batch-norm.4d",
+          "normalization.native-batch-norm.4d-single-channel"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          2,
+          4
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2574,7 +3466,7 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 4,
+        "max": 2,
         "min": 2
       },
       "reason": "supported_contract",
@@ -2600,7 +3492,30 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "normalization.native-batch-norm-backward",
+          "normalization.native-batch-norm-backward.4d"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          2,
+          4
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2626,8 +3541,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2660,7 +3575,30 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.neg.float32",
+          "unary.neg.float32.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          1,
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2671,8 +3609,7 @@
       },
       "dtypes": {
         "inputs": [
-          "float32",
-          "int64"
+          "float32"
         ],
         "outputs": [
           "float32"
@@ -2688,8 +3625,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 2,
-        "min": 2
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2723,7 +3660,27 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "classification.nll-backward",
+          "classification.nll-backward.none",
+          "classification.nll-backward.sum",
+          "classification.nll-backward.wide"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2734,8 +3691,7 @@
       },
       "dtypes": {
         "inputs": [
-          "float32",
-          "int64"
+          "float32"
         ],
         "outputs": [
           "float32"
@@ -2783,7 +3739,26 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "classification.nll-forward",
+          "classification.nll-forward.none.wide",
+          "classification.nll-forward.wide"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2809,8 +3784,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2831,7 +3806,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.prod.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2857,8 +3849,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2879,7 +3871,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.prod.dim"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2905,8 +3914,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2927,7 +3936,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.relu.float32.empty"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -2953,8 +3979,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2975,7 +4001,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "view.reshape.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3001,8 +4044,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3023,7 +4066,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "scalar.rsub.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3049,8 +4109,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3071,7 +4131,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.rsub.scalar.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3097,8 +4174,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3123,7 +4200,30 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.sigmoid.float32",
+          "unary.sigmoid.float32.empty"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          1,
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3149,8 +4249,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3171,7 +4271,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.sigmoid.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3197,8 +4314,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3219,7 +4336,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.sqrt.out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3245,8 +4379,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3267,7 +4401,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "scalar.sub.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3293,8 +4444,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3315,7 +4466,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.sub.scalar.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3341,8 +4509,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3363,7 +4531,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "binary.sub.float32.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3389,8 +4574,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3411,7 +4596,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "out.sub.tensor.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3437,8 +4639,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 3,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3471,7 +4673,31 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.sum.dim",
+          "reduction.sum.empty-dim",
+          "reduction.sum.keepdim.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            3
+          ]
+        ],
+        "ranks": [
+          2,
+          3
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3497,8 +4723,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3519,7 +4745,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.tanh.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3545,8 +4788,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3567,7 +4810,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "unary.tanh.backward"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3593,8 +4853,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3615,7 +4875,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "view.view.metadata"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -3641,8 +4918,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3663,7 +4940,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "optimizer.zero.inplace"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3705,7 +4999,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3747,7 +5047,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3789,7 +5095,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3831,7 +5143,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3873,7 +5191,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3915,7 +5239,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3957,7 +5287,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -3999,7 +5335,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4041,7 +5383,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -4083,7 +5431,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4125,7 +5479,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4167,7 +5527,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4209,7 +5575,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4251,7 +5623,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4293,7 +5671,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4335,7 +5719,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4377,7 +5767,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -4419,7 +5815,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4461,7 +5863,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4503,7 +5911,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4545,7 +5959,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4587,7 +6007,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4629,7 +6055,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4671,7 +6103,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4713,7 +6151,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4756,7 +6200,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4798,7 +6248,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4840,7 +6296,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4882,7 +6344,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4924,7 +6392,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -4966,7 +6440,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5008,7 +6488,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5050,7 +6536,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5092,7 +6584,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5134,7 +6632,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5176,7 +6680,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5218,7 +6728,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5260,7 +6776,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -5302,7 +6824,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5344,7 +6872,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5386,7 +6920,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5428,7 +6968,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5470,7 +7016,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5512,7 +7064,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5554,7 +7112,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5596,7 +7160,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5638,7 +7208,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -5680,7 +7256,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5722,7 +7304,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5764,7 +7352,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -5806,7 +7400,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5848,7 +7448,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5890,7 +7496,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5932,7 +7544,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -5974,7 +7592,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6016,7 +7640,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6058,7 +7688,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6100,7 +7736,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6142,7 +7784,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6184,7 +7832,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6226,7 +7880,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6268,7 +7928,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6310,7 +7976,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6352,7 +8024,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6394,7 +8072,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6436,7 +8120,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6478,7 +8168,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6520,7 +8216,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6567,7 +8269,13 @@
       ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6609,7 +8317,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6635,8 +8349,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -6657,7 +8371,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.mean.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6683,8 +8414,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -6705,7 +8436,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.mean.out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6747,7 +8495,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6789,7 +8543,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6832,7 +8592,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -6874,7 +8640,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6916,7 +8688,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -6958,7 +8736,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7000,7 +8784,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7042,7 +8832,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7084,7 +8880,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7131,7 +8933,13 @@
       ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7173,7 +8981,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7224,7 +9038,13 @@
       ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7268,7 +9088,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7312,7 +9138,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7354,7 +9186,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7396,7 +9234,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7438,7 +9282,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7480,7 +9330,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7522,7 +9378,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7564,7 +9426,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7606,7 +9474,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7648,7 +9522,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7690,7 +9570,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7732,7 +9618,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7774,7 +9666,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7816,7 +9714,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7858,7 +9762,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7900,7 +9810,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -7942,7 +9858,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -7968,8 +9890,8 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -7990,7 +9912,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.sum.intlist.out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8016,8 +9955,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -8038,7 +9977,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "reduction.sum.default"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8080,7 +10036,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -8122,7 +10084,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8164,7 +10132,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -8206,7 +10180,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8248,7 +10228,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8290,7 +10276,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8332,7 +10324,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8374,7 +10372,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -8416,7 +10420,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -8463,7 +10473,13 @@
       ],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "same_storage_alias",
@@ -8505,7 +10521,13 @@
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
     },
     {
       "aliasing": "no_overlap",
@@ -8553,7 +10575,24 @@
       "tests": [
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
-      ]
+      ],
+      "witnesses": {
+        "cases": [
+          "sequence.stack.float32"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
+      }
     }
   ],
   "version": 1

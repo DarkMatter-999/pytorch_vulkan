@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 REQUIRED_ENTRY_KEYS = frozenset(
     {
         "schema",
@@ -19,6 +18,7 @@ REQUIRED_ENTRY_KEYS = frozenset(
         "ranks",
         "layouts",
         "shape_constraints",
+        "witnesses",
         "empty",
         "aliasing",
         "out",
@@ -193,6 +193,36 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         for shape in entry["shape_constraints"]:
             if not isinstance(shape, str) or not SHAPE_PATTERN.fullmatch(shape):
                 raise ValueError(f"{path}.shape_constraints: malformed shape token {shape!r}")
+        witnesses = entry["witnesses"]
+        if not isinstance(witnesses, dict) or set(witnesses) != {"dtypes", "ranks", "pairs", "cases"}:
+            raise ValueError(f"{path}.witnesses: expected primary-input dtypes/ranks/pairs/cases")
+        for field in ("dtypes", "ranks", "cases"):
+            values = witnesses[field]
+            expected_type = int if field == "ranks" else str
+            if not isinstance(values, list) or any(type(value) is not expected_type for value in values):
+                raise ValueError(f"{path}.witnesses.{field}: expected list of {expected_type.__name__}")
+            if values != sorted(set(values)):
+                raise ValueError(f"{path}.witnesses.{field}: expected sorted unique values")
+        pairs = witnesses["pairs"]
+        if not isinstance(pairs, list) or any(
+            not isinstance(pair, list) or len(pair) != 2
+            or pair[0] not in KNOWN_DTYPES or type(pair[1]) is not int or pair[1] < 0
+            for pair in pairs
+        ) or pairs != [list(pair) for pair in sorted({tuple(pair) for pair in pairs})]:
+            raise ValueError(f"{path}.witnesses.pairs: expected sorted unique primary-input dtype/rank pairs")
+        if witnesses["dtypes"] != sorted({pair[0] for pair in pairs}) or witnesses["ranks"] != sorted({pair[1] for pair in pairs}):
+            raise ValueError(f"{path}.witnesses: dtype/rank unions differ from primary-input pairs")
+        if not set(witnesses["cases"]) <= {case.get("name") for case in entry["test_cases"]}:
+            raise ValueError(f"{path}.witnesses.cases: case is not present in test_cases")
+        if entry["status"] == "supported":
+            if not pairs or not witnesses["cases"]:
+                raise ValueError(f"{path}.witnesses: supported entry has no witnesses")
+            missing_dtypes = set(dtypes["inputs"]) - {pair[0] for pair in pairs}
+            if missing_dtypes:
+                raise ValueError(f"{schema}: declares input dtypes {sorted(missing_dtypes)} that no case exercised")
+            for rank in range(ranks["min"], ranks["max"] + 1):
+                if rank not in witnesses["ranks"]:
+                    raise ValueError(f"{schema}: declares ranks {ranks['min']}-{ranks['max']} but rank {rank} was never exercised")
         closed_fields = {
             "empty": EMPTY_VALUES,
             "aliasing": ALIASING_VALUES,

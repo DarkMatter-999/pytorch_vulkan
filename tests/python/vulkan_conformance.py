@@ -87,8 +87,26 @@ def record_coverage(
         return
     schema = _MANIFEST_CASES[case.name][0]
     tensors = [item for item in inputs if isinstance(item, torch.Tensor)]
+    positional_tensors = [
+        item for item in (*inputs, *case.args) if isinstance(item, torch.Tensor)
+    ]
+    primary = positional_tensors[0] if positional_tensors else None
+    operands = [
+        {
+            "role": "primary_input" if tensor is primary else "operand",
+            "dtype": str(tensor.dtype).removeprefix("torch."),
+            "rank": tensor.dim(),
+        }
+        for tensor in positional_tensors
+    ]
     _COVERAGE[case.name] = {
         "schema": schema,
+        "operands": operands,
+        "primary_input": (
+            {"dtype": operands[0]["dtype"], "rank": operands[0]["rank"]}
+            if operands
+            else None
+        ),
         "input_dtypes": sorted(
             {str(tensor.dtype).removeprefix("torch.") for tensor in tensors}
         ),

@@ -38,7 +38,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 4
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -72,7 +72,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 4
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -139,8 +139,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -241,8 +241,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -275,8 +275,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -309,8 +309,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -411,8 +411,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -445,8 +445,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -479,8 +479,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -513,8 +513,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -547,8 +547,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -683,8 +683,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -785,8 +785,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -819,8 +819,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -853,8 +853,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -887,8 +887,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -955,8 +955,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1023,8 +1023,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1091,8 +1091,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1195,8 +1195,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1229,8 +1229,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1263,8 +1263,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1297,8 +1297,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1365,8 +1365,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -1433,8 +1433,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2085,7 +2085,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 4
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2119,7 +2119,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 4
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2220,8 +2220,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2254,8 +2254,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2356,8 +2356,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2390,8 +2390,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2628,8 +2628,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -2696,8 +2696,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -3240,8 +3240,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -3274,8 +3274,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -3668,8 +3668,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         },
         "dtypes": {
             "inputs": [
-                "float32",
-                "bool"
+                "float32"
+
             ],
             "outputs": [
                 "float32"
@@ -3684,8 +3684,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [
@@ -3822,8 +3822,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -3856,8 +3856,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -3890,8 +3890,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4062,8 +4062,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4096,8 +4096,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4130,8 +4130,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4164,8 +4164,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4198,8 +4198,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4232,8 +4232,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4266,8 +4266,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4334,7 +4334,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 4,
+            "max": 2,
             "min": 2
         },
         "reason": "supported_contract",
@@ -4368,7 +4368,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 4,
+            "max": 2,
             "min": 2
         },
         "reason": "supported_contract",
@@ -4640,8 +4640,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4727,8 +4727,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         },
         "dtypes": {
             "inputs": [
-                "float32",
-                "int64"
+                "float32"
+
             ],
             "outputs": [
                 "float32"
@@ -4744,8 +4744,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 2,
-            "min": 2
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4799,8 +4799,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         },
         "dtypes": {
             "inputs": [
-                "float32",
-                "int64"
+                "float32"
+
             ],
             "outputs": [
                 "float32"
@@ -4954,8 +4954,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4988,8 +4988,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5056,8 +5056,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5158,8 +5158,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5260,8 +5260,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5294,8 +5294,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5430,8 +5430,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5532,8 +5532,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5634,8 +5634,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5702,8 +5702,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5736,8 +5736,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5770,8 +5770,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5804,8 +5804,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5906,8 +5906,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "contiguous_out_required",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5940,8 +5940,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -5974,8 +5974,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 3,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -6008,8 +6008,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -6110,8 +6110,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -6348,8 +6348,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -6382,8 +6382,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 1,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],

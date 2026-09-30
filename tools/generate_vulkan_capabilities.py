@@ -23,6 +23,7 @@ from tools.validate_vulkan_capabilities import (  # noqa: E402
 from tools.vulkan_capability_declarations import DECLARATIONS  # noqa: E402
 
 MANIFEST = ROOT / "docs/vulkan_capabilities.json"
+COVERAGE_RECORD = ROOT / "docs/vulkan_coverage.json"
 
 ENTRY_ORDER = (
     'aten::bmm.default',
@@ -245,7 +246,7 @@ def _case_index() -> dict[str, dict[str, object]]:
     return index
 
 
-def build_manifest() -> dict:
+def _build_manifest() -> dict:
     schemas = set(DECLARATIONS)
     cases = _case_index()
     entries = []
@@ -261,6 +262,61 @@ def build_manifest() -> dict:
         entry["shape_constraints"] = sorted(case["shapes"]) or ["unwitnessed"]
         entries.append(entry)
     return {"entries": entries, "version": 1}
+
+
+def load_coverage_record() -> dict[str, dict]:
+    return json.loads(COVERAGE_RECORD.read_text())
+
+
+def build_manifest() -> dict:
+    return build_coverage_manifest(load_coverage_record())
+
+
+def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]]:
+    witnesses: dict[str, dict[str, set]] = {}
+    for name, record in coverage.items():
+        if not record.get("parity"):
+            continue
+        bucket = witnesses.setdefault(
+            record["schema"],
+            {"dtypes": set(), "ranks": set(), "pairs": set(), "cases": set()},
+        )
+        primary = record.get("primary_input")
+        if primary is not None:
+            bucket["dtypes"].add(primary["dtype"])
+            bucket["ranks"].add(primary["rank"])
+            bucket["pairs"].add((primary["dtype"], primary["rank"]))
+        bucket["cases"].add(name)
+    return {
+        schema: {
+            key: [list(pair) for pair in sorted(value)] if key == "pairs" else sorted(value)
+            for key, value in bucket.items()
+        }
+        for schema, bucket in witnesses.items()
+    }
+
+
+def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
+    manifest = _build_manifest()
+    by_schema = _witnesses_by_schema(coverage)
+    for entry in manifest["entries"]:
+        entry["witnesses"] = by_schema.get(
+            entry["schema"], {"dtypes": [], "ranks": [], "pairs": [], "cases": []}
+        )
+        observed = sorted(
+            {
+                shape
+                for name in entry["witnesses"]["cases"]
+                for shape in coverage[name]["input_shapes"]
+            }
+        )
+        declared = [shape for shape in entry["shape_constraints"] if shape != "unwitnessed"]
+        if set(declared) - set(observed):
+            raise ValueError(
+                f"{entry['schema']}: declared shapes {sorted(set(declared) - set(observed))} "
+                f"were not exercised; observed {observed}"
+            )
+    return manifest
 
 
 def render(manifest: dict) -> str:
@@ -294,6 +350,7 @@ def _validate_declarations() -> None:
         "test_cases",
         "tests",
         "shape_constraints",
+        "witnesses",
     }
     for schema, declaration in sorted(DECLARATIONS.items()):
         keys = set(declaration)
