@@ -296,7 +296,6 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("ne.Scalar_out", &pytorch_vulkan::ne_scalar_out);
-    m.impl("isfinite.out", &pytorch_vulkan::isfinite_out);
     m.impl("eq.Tensor_out", &pytorch_vulkan::eq_tensor_out);
     m.impl("bitwise_and.Tensor_out", &pytorch_vulkan::bitwise_and_tensor_out);
     m.impl("masked_select", &pytorch_vulkan::masked_select);

@@ -4991,7 +4991,7 @@
       "scalar_constraints": [
         "none"
       ],
-      "schema": "aten::_cat.default",
+      "schema": "aten::concat.default",
       "shape_constraints": [
         "unwitnessed"
       ],
@@ -5359,7 +5359,7 @@
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -5367,10 +5367,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -5379,16 +5379,33 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "unary.abs-out",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "unary.abs-out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -5599,7 +5616,7 @@
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -5607,10 +5624,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -5619,16 +5636,33 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "comparison.argmax-out",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "comparison.argmax-out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -5976,14 +6010,14 @@
       },
       "dtypes": {
         "inputs": [
-          "float32"
+          "bool"
         ],
         "outputs": [
-          "float32"
+          "bool"
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -5991,10 +6025,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -6003,16 +6037,33 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "comparison.bitwise-and-out",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "comparison.bitwise-and-out"
+        ],
+        "dtypes": [
+          "bool"
+        ],
+        "pairs": [
+          [
+            "bool",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -6700,11 +6751,11 @@
           "float32"
         ],
         "outputs": [
-          "float32"
+          "bool"
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -6712,10 +6763,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -6724,16 +6775,33 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "comparison.eq-tensor-out",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "comparison.eq-tensor-out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -7472,7 +7540,7 @@
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "rejected_before_vulkan",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -7483,7 +7551,7 @@
         "max": 8,
         "min": 0
       },
-      "reason": "deferred_contract",
+      "reason": "schema_absent_from_pytorch_dispatcher",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -7492,7 +7560,7 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
+      "status": "rejected",
       "test_cases": [],
       "tests": [
         "tests/python/test_vulkan_operator_capabilities.py"
@@ -8852,11 +8920,11 @@
           "float32"
         ],
         "outputs": [
-          "float32"
+          "bool"
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -8864,10 +8932,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "scalar_supported"
@@ -8876,16 +8944,33 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "comparison.ne-scalar-out",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "comparison.ne-scalar-out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -8900,11 +8985,11 @@
           "float32"
         ],
         "outputs": [
-          "float32"
+          "bool"
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -8912,10 +8997,10 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -8924,21 +9009,37 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
+      "status": "supported",
       "test_cases": [
         {
           "name": "comparison.ne.nonzero-offset-input.rejected",
           "supported": false
+        },
+        {
+          "name": "comparison.ne-tensor",
+          "supported": true
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "comparison.ne-tensor"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -9005,7 +9106,7 @@
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -9013,10 +9114,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -9025,7 +9126,7 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
+      "status": "supported",
       "test_cases": [
         {
           "name": "unary.neg.invalid-out.rejected",
@@ -9034,16 +9135,32 @@
         {
           "name": "unary.neg.cpu-out.rejected",
           "supported": false
+        },
+        {
+          "name": "unary.neg-out",
+          "supported": true
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "unary.neg-out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {
@@ -9306,7 +9423,7 @@
         ]
       },
       "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -9314,10 +9431,10 @@
       ],
       "out": "contiguous_out_required",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -9326,16 +9443,33 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "unary.relu-out",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "unary.relu-out"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ]
       }
     },
     {

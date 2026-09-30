@@ -98,7 +98,7 @@ ENTRY_ORDER = (
     'aten::tanh_backward.grad_input',
     'aten::view.default',
     'aten::zero_.default',
-    'aten::_cat.default',
+    'aten::concat.default',
     'aten::_copy_from_and_resize.default',
     'aten::_local_scalar_dense.default',
     'aten::_native_multi_head_attention.default',

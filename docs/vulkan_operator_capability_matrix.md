@@ -181,7 +181,7 @@ aten::_adaptive_avg_pool2d.default,aten::convolution.default -->
 aten::abs_.default,aten::neg_.default,aten::relu_.default -->
 
 <!-- Vulkan conformance deferred schemas:
- aten::_cat.default,aten::_copy_from_and_resize.default,
+ aten::concat.default,aten::_copy_from_and_resize.default,
  aten::_local_scalar_dense.default,
  aten::_native_multi_head_attention.default,aten::_native_multi_head_attention.out,
  aten::_transform_bias_rescale_qkv.default,

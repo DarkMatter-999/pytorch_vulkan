@@ -1526,6 +1526,80 @@ def _cpu_adaptive_pool(value, output_size):
     return torch.nn.functional.adaptive_avg_pool2d(value, output_size)
 
 
+def _abs_out_inputs(*, requires_grad=False):
+    return torch.randn(3, 4), torch.empty(3, 4)
+
+
+def _cpu_abs_out(value, out_buffer):
+    out = out_buffer.clone()
+    return torch.ops.aten.abs.out(value, out=out)
+
+
+def _abs_out(value, out_buffer):
+    return torch.ops.aten.abs.out(value, out=out_buffer)
+
+
+def _out_inputs(*, requires_grad=False, dtype=torch.float32, shape=(3, 4)):
+    value = torch.randn(shape, dtype=dtype)
+    return value, torch.empty(shape, dtype=dtype)
+
+
+def _bool_out_inputs(*, requires_grad=False):
+    value = torch.randn(3, 4)
+    other = torch.randn(3, 4)
+    return value, other, torch.empty((3, 4), dtype=torch.bool)
+
+
+def _scalar_bool_out_inputs(*, requires_grad=False):
+    value = torch.randn(3, 4)
+    return value, torch.empty((3, 4), dtype=torch.bool)
+
+
+def _bitwise_bool_out_inputs(*, requires_grad=False):
+    value = torch.rand(3, 4) < 0.5
+    other = torch.rand(3, 4) < 0.5
+    return value, other, torch.empty((3, 4), dtype=torch.bool)
+
+
+def _cpu_out_via_op(op, *values):
+    out = values[-1].clone()
+    return op(*values[:-1], out=out)
+
+
+def _cpu_argmax_out(value, dim, out_buffer):
+    out = out_buffer.clone()
+    return torch.ops.aten.argmax.out(value, dim, False, out=out)
+
+
+def _argmax_inputs(*, requires_grad=False):
+    value = torch.randn(3, 4)
+    return value, torch.empty((3,), dtype=torch.int64)
+
+
+def _ne_scalar_out(value, out):
+    return torch.ops.aten.ne.Scalar_out(value, 0.0, out=out)
+
+
+def _neg_out(value, out):
+    return torch.ops.aten.neg.out(value, out=out)
+
+
+def _relu_out(value, out):
+    return torch.ops.aten.relu.out(value, out=out)
+
+
+def _eq_tensor_out(value, other, out):
+    return torch.ops.aten.eq.Tensor_out(value, other, out=out)
+
+
+def _bitwise_and_out(value, other, out):
+    return torch.ops.aten.bitwise_and.Tensor_out(value, other, out=out)
+
+
+def _argmax_out(value, out, dim, keepdim=False):
+    return torch.ops.aten.argmax.out(value, dim, keepdim, out=out)
+
+
 _MANIFEST_CASES = {
     case["name"]: (entry["schema"], case["supported"])
     for entry in _MANIFEST["entries"]
@@ -2963,6 +3037,32 @@ ALL_CASES = tuple(
         expected_shape=(0, 2),
         execution_mode="empty",
     ),
+    _case(
+        "unary.abs-out", "unary", _abs_out, _abs_out_inputs,
+        cpu_reference=_cpu_abs_out, supported=True,
+        expected_dtype=torch.float32, expected_shape=(3, 4),
+    ),
+    _case("unary.neg-out", "unary", _neg_out, _out_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.neg.out, value, out), supported=True,
+          expected_dtype=torch.float32, expected_shape=(3, 4)),
+    _case("unary.relu-out", "unary", _relu_out, _out_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.relu.out, value, out), supported=True,
+          expected_dtype=torch.float32, expected_shape=(3, 4)),
+    _case("comparison.ne-tensor", "comparison", torch.ne,
+          lambda **kwargs: (torch.randn(3, 4), torch.randn(3, 4)), supported=True,
+          expected_dtype=torch.bool, expected_shape=(3, 4), cpu_reference=torch.ne),
+    _case("comparison.eq-tensor-out", "comparison", _eq_tensor_out,
+          _bool_out_inputs, cpu_reference=lambda a, b, out: torch.ops.aten.eq.Tensor_out(a, b, out=out.clone()),
+          supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
+    _case("comparison.ne-scalar-out", "comparison", _ne_scalar_out,
+          _scalar_bool_out_inputs, cpu_reference=lambda a, out: torch.ops.aten.ne.Scalar_out(a, 0.0, out=out.clone()),
+          supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
+    _case("comparison.argmax-out", "comparison", _argmax_out, _argmax_inputs,
+          args=(1, False), cpu_reference=lambda value, out, dim, keepdim=False: _cpu_argmax_out(value, dim, out),
+          supported=True, expected_dtype=torch.int64, expected_shape=(3,)),
+    _case("comparison.bitwise-and-out", "comparison", _bitwise_and_out,
+          _bitwise_bool_out_inputs, cpu_reference=lambda a, b, out: torch.ops.aten.bitwise_and.Tensor_out(a, b, out=out.clone()),
+          supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
     )
     if case is not None
 )

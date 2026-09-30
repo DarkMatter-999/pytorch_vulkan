@@ -81,7 +81,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "status": "supported"
     },
-    'aten::_cat.default':     {
+    'aten::concat.default':     {
         "aliasing": "no_overlap",
         "autograd": "not_applicable",
         "device": {
@@ -700,32 +700,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["float32"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::abs_.default':     {
         "aliasing": "same_storage_alias",
@@ -1382,32 +1372,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "int64"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["int64"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::as_strided.default':     {
         "aliasing": "no_overlap",
@@ -1688,32 +1668,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["bool"], "outputs": ["bool"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::bitwise_not.out':     {
         "aliasing": "no_overlap",
@@ -2441,32 +2411,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["bool"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::exp.out':     {
         "aliasing": "no_overlap",
@@ -3062,7 +3022,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             ]
         },
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "rejected_before_vulkan",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
@@ -3073,12 +3033,12 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "max": 8,
             "min": 0
         },
-        "reason": "deferred_contract",
+        "reason": "schema_absent_from_pytorch_dispatcher",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "rejected"
     },
     'aten::le.Scalar_out':     {
         "aliasing": "no_overlap",
@@ -3669,7 +3629,6 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "dtypes": {
             "inputs": [
                 "float32"
-
             ],
             "outputs": [
                 "float32"
@@ -4521,32 +4480,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["bool"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "scalar_supported"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::ne.Tensor':     {
         "aliasing": "no_overlap",
@@ -4555,32 +4504,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["bool"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "not_applicable",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::ne.Tensor_out':     {
         "aliasing": "no_overlap",
@@ -4657,32 +4596,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["float32"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::neg_.default':     {
         "aliasing": "same_storage_alias",
@@ -4728,7 +4657,6 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "dtypes": {
             "inputs": [
                 "float32"
-
             ],
             "outputs": [
                 "float32"
@@ -4800,7 +4728,6 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "dtypes": {
             "inputs": [
                 "float32"
-
             ],
             "outputs": [
                 "float32"
@@ -5073,32 +5000,22 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "index": 0,
             "type": "PrivateUse1"
         },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
+        "dtypes": {"inputs": ["float32"], "outputs": ["float32"]},
         "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
         "out": "contiguous_out_required",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
+        "ranks": {"max": 2, "min": 2},
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::relu_.default':     {
         "aliasing": "same_storage_alias",

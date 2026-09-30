@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import torch
+
 REQUIRED_ENTRY_KEYS = frozenset(
     {
         "schema",
@@ -45,7 +47,7 @@ OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
 AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "not_applicable"})
 EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "rejected_before_vulkan", "deferred_before_vulkan"})
-REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract"})
+REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
 FEATURE_VALUES = frozenset({"vulkan_1_2_8bit_storage_int8"})
 TEST_VALUES = frozenset(
@@ -55,6 +57,27 @@ TEST_VALUES = frozenset(
         "tests/python/test_vulkan_operator_capabilities.py",
     }
 )
+
+
+def schema_exists(schema: str) -> bool:
+    """True when `schema` names a real PyTorch dispatcher overload.
+
+    Manifest keys are the canonical `aten::foo.overload` form. The `aten::`
+    prefix must be stripped BEFORE splitting on the dot, or the op lookup
+    silently misses.
+    """
+    if not schema.startswith("aten::"):
+        return False
+    op_name, _, overload = schema.removeprefix("aten::").partition(".")
+    op = getattr(torch.ops.aten, op_name, None)
+    if op is None:
+        return False
+    try:
+        return overload in op.overloads()
+    except (AttributeError, RuntimeError):
+        return False
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text())
@@ -193,6 +216,10 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         for shape in entry["shape_constraints"]:
             if not isinstance(shape, str) or not SHAPE_PATTERN.fullmatch(shape):
                 raise ValueError(f"{path}.shape_constraints: malformed shape token {shape!r}")
+        if entry["status"] != "rejected" and not schema_exists(entry["schema"]):
+            raise ValueError(
+                f"{path}.schema: {entry['schema']!r} (status={entry['status']!r}) is not a PyTorch dispatcher overload"
+            )
         witnesses = entry["witnesses"]
         if not isinstance(witnesses, dict) or set(witnesses) != {"dtypes", "ranks", "pairs", "cases"}:
             raise ValueError(f"{path}.witnesses: expected primary-input dtypes/ranks/pairs/cases")
@@ -268,11 +295,16 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             raise ValueError(f"{path}.execution_contract: invalid supported status contract")
         expected_reason = {
             "supported": "supported_contract",
-            "rejected": "explicit_source_rejection",
+            "rejected": entry["reason"],
             "deferred": "deferred_contract",
         }[entry["status"]]
         if entry["reason"] != expected_reason:
             raise ValueError(f"{path}.reason: inconsistent with status")
+        if entry["status"] == "rejected" and entry["reason"] not in {
+            "explicit_source_rejection",
+            "schema_absent_from_pytorch_dispatcher",
+        }:
+            raise ValueError(f"{path}.reason: invalid rejected-entry reason")
         if entry["status"] == "rejected" and entry["execution_contract"] != "rejected_before_vulkan":
             raise ValueError(f"{path}.execution_contract: rejected entry must reject before Vulkan")
         if entry["status"] == "deferred" and entry["execution_contract"] != "deferred_before_vulkan":
@@ -289,7 +321,13 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
     }
 
     source, explicit_rejected = _source_registration_inventory(root / "src")
-    if rejected != explicit_rejected:
+    schema_absent_rejected = {
+        entry["schema"]
+        for entry in entries
+        if entry["status"] == "rejected"
+        and entry["reason"] == "schema_absent_from_pytorch_dispatcher"
+    }
+    if rejected - schema_absent_rejected != explicit_rejected:
         raise ValueError("manifest rejected schemas drift from source registrations")
     if source - deferred - rejected != supported:
         raise ValueError("manifest supported schemas drift from source registrations")

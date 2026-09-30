@@ -6,11 +6,32 @@ import pytorch_vulkan
 import torch
 
 from tools import generate_vulkan_capabilities as generator
+from tools.validate_vulkan_capabilities import load_manifest, schema_exists
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMITTED = ROOT / "docs/vulkan_capabilities.json"
 COVERAGE_COMMITTED = ROOT / "docs/vulkan_coverage.json"
 DERIVED_FIELDS = frozenset({"schema", "test_cases", "tests", "witnesses"})
+
+
+def test_every_declared_schema_exists_in_pytorch_dispatcher():
+    """Supported and deferred claims must name real dispatcher schemas."""
+    manifest = load_manifest(Path("docs/vulkan_capabilities.json"))
+    missing = [
+        entry["schema"]
+        for entry in manifest["entries"]
+        if entry["status"] != "rejected" and not schema_exists(entry["schema"])
+    ]
+    assert missing == [], f"manifest names schemas absent from torch.ops.aten: {missing}"
+
+
+def test_schema_exists_helper_rejects_phantoms():
+    """The helper itself must discriminate: real schemas yes, phantoms no."""
+    assert schema_exists("aten::relu.out")
+    assert schema_exists("aten::abs.default")
+    assert schema_exists("aten::convolution.default")
+    assert not schema_exists("aten::isfinite.out")
+    assert not schema_exists("aten::_cat.default")
 
 
 def _committed_entries() -> dict[str, dict]:
@@ -100,14 +121,18 @@ def test_declaration_with_a_typoed_key_is_rejected(monkeypatch):
 
 def test_unregistered_declarations_are_roadmap_not_errors():
     roadmap = generator._roadmap_schemas()
-    assert len(roadmap) == 85
-    assert "aten::_cat.default" in roadmap
+    assert len(roadmap) == 86
+    assert "aten::concat.default" in roadmap
 
 
 def test_roadmap_declarations_have_no_implementation_witnesses():
     committed = _committed_entries()
     for schema in generator._roadmap_schemas():
+        if schema not in committed:
+            continue
         declaration = generator.DECLARATIONS[schema]
+        if declaration["status"] == "rejected":
+            continue
         assert declaration["status"] == "deferred"
         assert declaration["reason"] == "deferred_contract"
         assert committed[schema]["test_cases"] == []
@@ -124,7 +149,7 @@ def test_every_supported_schema_has_a_conformance_case():
         for schema, case in generator._case_index().items()
         if any(item["supported"] for item in case["test_cases"])
     }
-    assert len(supported) == 77
+    assert len(supported) == 85
     assert supported == witnessed
 
 

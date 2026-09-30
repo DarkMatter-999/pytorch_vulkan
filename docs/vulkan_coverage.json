@@ -582,6 +582,181 @@
     },
     "schema": "aten::nll_loss_forward.default"
   },
+  "comparison.argmax-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32",
+      "int64"
+    ],
+    "input_ranks": [
+      1,
+      2
+    ],
+    "input_shapes": [
+      "3",
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "int64",
+        "rank": 1,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "int64",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::argmax.out"
+  },
+  "comparison.bitwise-and-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "bool"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "bool",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "bool",
+        "rank": 2,
+        "role": "operand"
+      },
+      {
+        "dtype": "bool",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "bool",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "bool",
+      "rank": 2
+    },
+    "schema": "aten::bitwise_and.Tensor_out"
+  },
+  "comparison.eq-tensor-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "bool",
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      },
+      {
+        "dtype": "bool",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "bool",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::eq.Tensor_out"
+  },
+  "comparison.ne-scalar-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "bool",
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "bool",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "bool",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::ne.Scalar_out"
+  },
+  "comparison.ne-tensor": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "bool",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::ne.Tensor"
+  },
   "convolution.backward": {
     "gradients": false,
     "input_dtypes": [
@@ -3314,6 +3489,38 @@
     },
     "schema": "aten::_to_copy.default"
   },
+  "unary.abs-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::abs.out"
+  },
   "unary.abs.float32": {
     "gradients": true,
     "input_dtypes": [
@@ -3400,6 +3607,38 @@
     },
     "schema": "aten::gelu.default"
   },
+  "unary.neg-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::neg.out"
+  },
   "unary.neg.float32": {
     "gradients": true,
     "input_dtypes": [
@@ -3453,6 +3692,38 @@
       "rank": 2
     },
     "schema": "aten::neg.default"
+  },
+  "unary.relu-out": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::relu.out"
   },
   "unary.relu.float32.empty": {
     "gradients": false,
