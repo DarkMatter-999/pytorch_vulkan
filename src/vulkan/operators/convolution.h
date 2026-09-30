@@ -10,6 +10,7 @@ struct ConvolutionGeometry {
     int64_t padding_width = 1;
     int64_t dilation_height = 1;
     int64_t dilation_width = 1;
+    int64_t groups = 1;
 };
 at::Tensor convolution(const at::Tensor &, const at::Tensor &,
                        const c10::optional<at::Tensor> &, at::IntArrayRef,

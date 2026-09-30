@@ -490,12 +490,55 @@ def _conv_transpose_inputs(device):
     return cpu_input.to(device), cpu_weight.to(device), cpu_bias.to(device)
 
 
+@pytest.mark.parametrize("groups,outputs", [(1, 6), (2, 6), (4, 8), (4, 4)])
+def test_grouped_convolution_all_gradients_and_launch_extent(vulkan_backend, groups, outputs):
+    torch.manual_seed(3187)
+    value = torch.randn((2, 4, 8, 8))
+    weight = torch.randn((outputs, 4 // groups, 3, 3))
+    bias = torch.randn(outputs)
+    grad = torch.randn((2, outputs, 8, 8))
+    expected_forward = torch.nn.functional.conv2d(value, weight, bias, padding=1, groups=groups)
+    actual_forward = torch.nn.functional.conv2d(
+        value.to(vulkan_backend), weight.to(vulkan_backend), bias.to(vulkan_backend),
+        padding=1, groups=groups,
+    )
+    args = ([outputs], [1, 1], [1, 1], [1, 1], False, [0, 0], groups, [True, True, True])
+    expected = torch.ops.aten.convolution_backward.default(grad, value, weight, *args)
+    actual = torch.ops.aten.convolution_backward.default(
+        grad.to(vulkan_backend), value.to(vulkan_backend), weight.to(vulkan_backend), *args
+    )
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(actual_forward.cpu(), expected_forward, rtol=2e-4, atol=2e-4)
+    assert actual[1].shape == weight.shape
+    assert actual[1].numel() == outputs * (4 // groups) * 3 * 3 == weight.numel()
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result.cpu(), reference, rtol=2e-4, atol=2e-4)
+
+
+@pytest.mark.parametrize("groups,outputs", [(3, 6), (2, 5)])
+def test_grouped_convolution_divisibility_rejections_match_cpu(vulkan_backend, groups, outputs):
+    tensors = (torch.ones((2, 4, 8, 8)), torch.ones((outputs, 2, 3, 3)), torch.ones(outputs))
+    with pytest.raises(RuntimeError):
+        torch.nn.functional.conv2d(*tensors, padding=1, groups=groups)
+    with pytest.raises(RuntimeError, match="groups.*divide"):
+        torch.nn.functional.conv2d(*(t.to(vulkan_backend) for t in tensors), padding=1, groups=groups)
+
+
+@pytest.mark.parametrize("transposed,output_padding", [(True, [0, 0]), (False, [1, 0])])
+def test_convolution_retains_parameter_guards(vulkan_backend, transposed, output_padding):
+    tensors = tuple(torch.ones(shape) for shape in ((2, 4, 8, 8), (4, 4, 3, 3), (4,)))
+    args = ([2, 2], [1, 1], [1, 1], transposed, output_padding, 1)
+    torch.ops.aten.convolution.default(*tensors, *args)
+    with pytest.raises(RuntimeError, match="non-transposed.*zero.*output_padding"):
+        torch.ops.aten.convolution.default(*(t.to(vulkan_backend) for t in tensors), *args)
+
+
 @pytest.mark.parametrize("output_padding", [(0, 0), (1, 0)])
-def test_conv2d_rejects_transposed_at_vulkan_parameter_boundary(
+def test_conv_transpose2d_rejects_at_vulkan_parameter_boundary(
     vulkan_backend, output_padding
 ):
     input, weight, bias = _conv_transpose_inputs(vulkan_backend)
     with pytest.raises(RuntimeError, match="transposed|fixed|support|Vulkan"):
         torch.nn.functional.conv_transpose2d(
-            input, weight, bias, padding=1, output_padding=output_padding
+            input, weight, bias, stride=2, padding=1, output_padding=output_padding
         )

@@ -1180,6 +1180,474 @@
     },
     "schema": "aten::convolution.default"
   },
+  "convolution.groups.2.forward": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1,
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "6",
+      "6x2x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution.default"
+  },
+  "convolution.groups.2.grad-bias": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "2x6x8x8",
+      "6x2x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.2.grad-input": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "2x6x8x8",
+      "6x2x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.2.grad-weight": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "2x6x8x8",
+      "6x2x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.4.forward": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1,
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "8",
+      "8x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution.default"
+  },
+  "convolution.groups.4.grad-bias": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "2x8x8x8",
+      "8x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.4.grad-input": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "2x8x8x8",
+      "8x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.4.grad-weight": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "2x8x8x8",
+      "8x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.depthwise.forward": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1,
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "4",
+      "4x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution.default"
+  },
+  "convolution.groups.depthwise.grad-bias": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "4x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.depthwise.grad-input": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "4x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
+  "convolution.groups.depthwise.grad-weight": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x8x8",
+      "4x1x3x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default"
+  },
   "convolution.parameters.combined": {
     "gradients": true,
     "input_dtypes": [

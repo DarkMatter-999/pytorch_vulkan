@@ -150,6 +150,7 @@ struct ConvolutionParams {
         output_height, output_width, kernel_height, kernel_width, operation;
     uint32_t stride_height, stride_width, padding_height, padding_width,
         dilation_height, dilation_width;
+    uint32_t groups;
 };
 struct MaskedParams {
     uint32_t element_count;
@@ -2274,9 +2275,11 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
         return static_cast<uint32_t>(layout.sizes.at(index));
     };
     uint32_t batch = dimension(input_layout, 0);
-    uint32_t input_channels = operation == 0 || operation == 3
+    uint32_t input_channels = operation == 1
+                                  ? dimension(output_layout, 1)
+                              : operation == 0 || operation == 3
                                   ? dimension(input_layout, 1)
-                                  : dimension(weight_layout, 1);
+                                   : dimension(output_layout, 1);
     uint32_t input_height = operation == 2
                                 ? dimension(weight_layout, 2)
                             : operation == 1 ? dimension(output_layout, 2)
@@ -2299,8 +2302,13 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
         batch,         input_channels, input_height,  input_width,  output_channels,
         output_height, output_width,   kernel_height, kernel_width, operation,
         geometry.stride_height, geometry.stride_width, geometry.padding_height,
-        geometry.padding_width, geometry.dilation_height, geometry.dilation_width};
+        geometry.padding_width, geometry.dilation_height, geometry.dilation_width,
+        geometry.groups};
     const uint32_t output_numel = static_cast<uint32_t>(output_layout.numel);
+    if (operation == 2 &&
+        static_cast<uint64_t>(output_channels) * input_channels * kernel_height * kernel_width !=
+            output_layout.numel)
+        throw std::invalid_argument("Vulkan convolution grad_weight launch count does not match output extent");
     dispatch_model(input, weight, bias, output, input_layout.allocation_bytes,
                     weight_layout.allocation_bytes, bias_layout.allocation_bytes,
                     output_layout.allocation_bytes, &params, sizeof(params),

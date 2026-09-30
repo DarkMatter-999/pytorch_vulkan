@@ -1891,6 +1891,7 @@
         "2x3x10x10",
         "2x3x12x12",
         "2x4x10x10",
+        "2x4x8x8",
         "4x5x9x9"
       ],
       "status": "supported",
@@ -1914,6 +1915,34 @@
         {
           "name": "convolution.parameters.stride-2",
           "supported": true
+        },
+        {
+          "name": "convolution.groups.2.forward",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.4.forward",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.depthwise.forward",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.3.rejected",
+          "supported": false
+        },
+        {
+          "name": "convolution.groups.nondivisible.rejected",
+          "supported": false
+        },
+        {
+          "name": "convolution.parameters.transposed.rejected",
+          "supported": false
+        },
+        {
+          "name": "convolution.parameters.output-padding.rejected",
+          "supported": false
         },
         {
           "name": "convolution.parameters.padding-0",
@@ -1952,6 +1981,9 @@
           "convolution.general.forward",
           "convolution.general.kernel-1x1",
           "convolution.general.kernel-5x5",
+          "convolution.groups.2.forward",
+          "convolution.groups.4.forward",
+          "convolution.groups.depthwise.forward",
           "convolution.parameters.combined",
           "convolution.parameters.dilation-2",
           "convolution.parameters.padding-0",
@@ -2006,10 +2038,49 @@
       "schema": "aten::convolution_backward.default",
       "shape_constraints": [
         "2x3x12x12",
-        "2x4x10x10"
+        "2x4x10x10",
+        "2x4x8x8",
+        "2x6x8x8",
+        "2x8x8x8"
       ],
       "status": "supported",
       "test_cases": [
+        {
+          "name": "convolution.groups.2.grad-input",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.2.grad-weight",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.2.grad-bias",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.4.grad-input",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.4.grad-weight",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.4.grad-bias",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.depthwise.grad-input",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.depthwise.grad-weight",
+          "supported": true
+        },
+        {
+          "name": "convolution.groups.depthwise.grad-bias",
+          "supported": true
+        },
         {
           "name": "convolution.parameters.stride-2.grad-input",
           "supported": true
@@ -2053,6 +2124,15 @@
           "convolution.backward.general.grad-bias",
           "convolution.backward.general.grad-input",
           "convolution.backward.kernel-1x1.grad-weight",
+          "convolution.groups.2.grad-bias",
+          "convolution.groups.2.grad-input",
+          "convolution.groups.2.grad-weight",
+          "convolution.groups.4.grad-bias",
+          "convolution.groups.4.grad-input",
+          "convolution.groups.4.grad-weight",
+          "convolution.groups.depthwise.grad-bias",
+          "convolution.groups.depthwise.grad-input",
+          "convolution.groups.depthwise.grad-weight",
           "convolution.parameters.dilation-2.grad-bias",
           "convolution.parameters.stride-2.grad-input",
           "convolution.parameters.stride-2.grad-weight"

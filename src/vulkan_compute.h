@@ -24,6 +24,7 @@ struct VulkanConvolutionGeometry {
     uint32_t padding_width = 1;
     uint32_t dilation_height = 1;
     uint32_t dilation_width = 1;
+    uint32_t groups = 1;
 };
 } // namespace pytorch_vulkan
 

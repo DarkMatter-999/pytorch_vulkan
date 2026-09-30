@@ -103,8 +103,10 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
                 "Vulkan convolution requires float32 tensors");
     if (operation == 0) {
         TORCH_CHECK(bias.dim() == 1, "Vulkan convolution bias requires rank 1");
-        TORCH_CHECK(input.size(1) == weight.size(1),
-                    "Vulkan convolution input channels must match weight.size(1)");
+        TORCH_CHECK(input.size(1) % geometry.groups == 0 &&
+                        weight.size(0) % geometry.groups == 0 &&
+                        weight.size(1) == input.size(1) / geometry.groups,
+                    "Vulkan convolution grouped channel dimensions do not match");
         TORCH_CHECK(bias.size(0) == weight.size(0),
                     "Vulkan convolution bias must have weight.size(0) = ",
                     weight.size(0), " elements, got ", bias.size(0));
@@ -139,10 +141,10 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
             ? at::empty({input.size(0), weight.size(0), out_h, out_w},
                         input.options())
         : operation == 1
-            ? at::empty({input.size(0), weight.size(1), out_h, out_w},
+            ? at::empty({input.size(0), weight.size(1) * geometry.groups, out_h, out_w},
                         input.options())
         : operation == 2
-            ? at::empty({input.size(1), weight.size(1), kernel_h, kernel_w}, input.options())
+            ? at::empty({input.size(1), weight.size(1) / geometry.groups, kernel_h, kernel_w}, input.options())
             : at::empty({input.size(1)}, input.options());
     const auto &in_data = input.storage().data_ptr();
     const auto &weight_data = weight.storage().data_ptr();
@@ -168,9 +170,10 @@ at::Tensor run(const at::Tensor &input, const at::Tensor &weight,
         VulkanConvolutionGeometry{static_cast<uint32_t>(geometry.stride_height),
                                   static_cast<uint32_t>(geometry.stride_width),
                                   static_cast<uint32_t>(geometry.padding_height),
-                                  static_cast<uint32_t>(geometry.padding_width),
+         static_cast<uint32_t>(geometry.padding_width),
                                   static_cast<uint32_t>(geometry.dilation_height),
-                                  static_cast<uint32_t>(geometry.dilation_width)});
+                                  static_cast<uint32_t>(geometry.dilation_width),
+                                  static_cast<uint32_t>(geometry.groups)});
     return output;
 }
 } // namespace
@@ -185,11 +188,19 @@ at::Tensor convolution(const at::Tensor &input, const at::Tensor &weight,
     TORCH_CHECK(stride[0] >= 1 && stride[1] >= 1 && dilation[0] >= 1 && dilation[1] >= 1 &&
                     padding[0] >= 0 && padding[1] >= 0,
                 "Vulkan convolution requires stride and dilation >= 1 and padding >= 0");
-    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed && groups == 1,
-                "Vulkan convolution supports only groups == 1, non-transposed, and "
-                "zero output_padding");
+    TORCH_CHECK(groups >= 1, "Vulkan convolution requires groups >= 1, got ", groups);
+    TORCH_CHECK(input.size(1) % groups == 0 && weight.size(0) % groups == 0,
+                "Vulkan convolution requires groups ", groups,
+                " to divide both input channels (", input.size(1), ") and output channels (",
+                weight.size(0), ")");
+    TORCH_CHECK(weight.size(1) == input.size(1) / groups,
+                "Vulkan convolution grouped weight shape expects ", input.size(1) / groups,
+                " input channels per group, got ", weight.size(1));
+    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed,
+                "Vulkan convolution supports only non-transposed convolutions with zero "
+                "output_padding");
     return run(input, weight, *bias, 0,
-               {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1]});
+               {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1], groups});
 }
 at::Tensor convolution_backward_input(const at::Tensor &grad, const at::Tensor &weight,
                                        const ConvolutionGeometry &geometry,
@@ -234,14 +245,21 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     TORCH_CHECK(stride[0] >= 1 && stride[1] >= 1 && dilation[0] >= 1 && dilation[1] >= 1 &&
                     padding[0] >= 0 && padding[1] >= 0,
                 "Vulkan convolution backward requires stride and dilation >= 1 and padding >= 0");
-    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed && groups == 1,
-                "Vulkan convolution backward supports only groups == 1, non-transposed, "
-                "and zero output_padding");
+    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed,
+                "Vulkan convolution backward supports only non-transposed convolutions "
+                "with zero output_padding");
     TORCH_CHECK(output_mask[0] && output_mask[1] && output_mask[2],
                 "Vulkan convolution backward requires output_mask [true, true, true]");
-    TORCH_CHECK(grad_output.size(1) == weight.size(0) &&
-                    input.size(1) == weight.size(1),
-                "Vulkan convolution backward channel dimensions do not match");
+    TORCH_CHECK(groups >= 1, "Vulkan convolution backward requires groups >= 1, got ", groups);
+    TORCH_CHECK(input.size(1) % groups == 0 && weight.size(0) % groups == 0,
+                "Vulkan convolution backward requires groups ", groups,
+                " to divide both input channels (", input.size(1), ") and output channels (",
+                weight.size(0), ")");
+    TORCH_CHECK(weight.size(1) == input.size(1) / groups,
+                "Vulkan convolution backward grouped weight shape expects ", input.size(1) / groups,
+                " input channels per group, got ", weight.size(1));
+    TORCH_CHECK(grad_output.size(1) == weight.size(0),
+                "Vulkan convolution backward grad_output channels must match weight output channels");
     TORCH_CHECK(bias_sizes.has_value() && bias_sizes->equals({weight.size(0)}),
                 "Vulkan convolution backward bias shape does not match weight");
     const auto grad_layout =
@@ -257,7 +275,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     TORCH_CHECK(grad_output.numel() > 0 && input.numel() > 0 && weight.numel() > 0,
                 "Vulkan convolution backward rejects empty tensors");
     const ConvolutionGeometry geometry{stride[0], stride[1], padding[0], padding[1],
-                                       dilation[0], dilation[1]};
+                                       dilation[0], dilation[1], groups};
     return {convolution_backward_input(grad_output, weight, geometry, input.size(2),
                                        input.size(3)),
             convolution_backward_weight(grad_output, input, geometry, weight.size(2),

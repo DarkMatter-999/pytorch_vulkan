@@ -24,6 +24,7 @@ layout(push_constant) uniform Params {
   uint padding_width;
   uint dilation_height;
   uint dilation_width;
+  uint groups;
 }
 params;
 uint ii(uint n, uint c, uint h, uint w) {
@@ -54,7 +55,11 @@ void main() {
     uint n = index / (params.output_width * params.output_height * params.output_channels);
     TensorMetadata bm = metadata.tensors[2];
     float value = bias_values[bm.storage_offset + oc * bm.strides[0]];
-    for (uint ic = 0u; ic < params.input_channels; ++ic)
+    uint out_per_group = max(params.output_channels / max(params.groups, 1u), 1u);
+    uint in_per_group = max(params.input_channels / max(params.groups, 1u), 1u);
+    uint group = oc / out_per_group;
+    for (uint ic_local = 0u; ic_local < in_per_group; ++ic_local) {
+      uint ic_global = group * in_per_group + ic_local;
       for (uint kh = 0u; kh < params.kernel_height; ++kh)
         for (uint kw = 0u; kw < params.kernel_width; ++kw) {
           int ih = int(oh) * int(params.stride_height) +
@@ -63,8 +68,9 @@ void main() {
                    int(kw) * int(params.dilation_width) - int(params.padding_width);
           if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
             value +=
-                input_values[ii(n, ic, uint(ih), uint(iw))] * weight_values[wi(oc, ic, kh, kw)];
+                input_values[ii(n, ic_global, uint(ih), uint(iw))] * weight_values[wi(oc, ic_local, kh, kw)];
         }
+    }
     output_values[index] = value;
   } else if (params.operation == 1u) {
     uint count = params.batch * params.input_channels * params.input_height * params.input_width;
@@ -75,7 +81,11 @@ void main() {
     uint ic = (index / (params.input_width * params.input_height)) % params.input_channels;
     uint n = index / (params.input_width * params.input_height * params.input_channels);
     float value = 0.0;
-    for (uint oc = 0u; oc < params.output_channels; ++oc)
+    uint out_per_group = max(params.output_channels / max(params.groups, 1u), 1u);
+    uint in_per_group = max(params.input_channels / max(params.groups, 1u), 1u);
+    uint group = ic / in_per_group;
+    uint ic_local = ic - group * in_per_group;
+    for (uint oc = group * out_per_group; oc < (group + 1u) * out_per_group; ++oc)
       for (uint kh = 0u; kh < params.kernel_height; ++kh)
         for (uint kw = 0u; kw < params.kernel_width; ++kw) {
           int th = int(ih) + int(params.padding_height) - int(kh) * int(params.dilation_height);
@@ -84,7 +94,7 @@ void main() {
           int ow = tw % int(params.stride_width) == 0 ? tw / int(params.stride_width) : -1;
           if (oh >= 0 && oh < int(params.output_height) && ow >= 0 && ow < int(params.output_width))
             value +=
-                input_values[ii(n, oc, uint(oh), uint(ow))] * weight_values[wi(oc, ic, kh, kw)];
+                 input_values[ii(n, oc, uint(oh), uint(ow))] * weight_values[wi(oc, ic_local, kh, kw)];
         }
     output_values[index] = value;
   } else if (params.operation == 2u) {
@@ -95,8 +105,12 @@ void main() {
       return;
     uint kw = weight_index % params.kernel_width;
     uint kh = (weight_index / params.kernel_width) % params.kernel_height;
-    uint ic = (weight_index / (params.kernel_width * params.kernel_height)) % params.input_channels;
+    uint ic_local = (weight_index / (params.kernel_width * params.kernel_height)) % params.input_channels;
     uint oc = weight_index / (params.kernel_width * params.kernel_height * params.input_channels);
+    uint out_per_group = max(params.output_channels / max(params.groups, 1u), 1u);
+    uint in_per_group = params.input_channels;
+    uint group = oc / out_per_group;
+    uint ic_global = group * in_per_group + ic_local;
     uint lane = gl_LocalInvocationID.x;
     uint spatial = params.output_height * params.output_width;
     uint reduction_count = params.batch * spatial;
@@ -110,7 +124,7 @@ void main() {
       int iw = int(ow) * int(params.stride_width) - int(params.padding_width) +
                int(kw) * int(params.dilation_width);
       if (ih >= 0 && ih < int(params.input_height) && iw >= 0 && iw < int(params.input_width))
-        value += input_values[ii(n, oc, oh, ow)] * weight_values[bi(n, ic, uint(ih), uint(iw))];
+         value += input_values[ii(n, oc, oh, ow)] * weight_values[bi(n, ic_global, uint(ih), uint(iw))];
     }
     reduction_values[lane] = value;
     barrier();
@@ -124,7 +138,7 @@ void main() {
   } else if (params.operation == 3u) {
     uint channel = gl_WorkGroupID.x;
     uint lane = gl_LocalInvocationID.x;
-    if (channel >= params.input_channels)
+    if (channel >= params.output_channels)
       return;
     uint spatial = params.output_height * params.output_width;
     uint reduction_count = params.batch * spatial;

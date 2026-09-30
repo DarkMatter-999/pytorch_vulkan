@@ -924,16 +924,41 @@ def _convolution_backward_output(index):
     return operation
 
 
+def _grouped_convolution_inputs(groups, outputs, *, backward=False):
+    def factory(*, requires_grad=False):
+        generator = torch.Generator().manual_seed(3100 + groups + outputs)
+        value = torch.randn((2, 4, 8, 8), generator=generator)
+        weight = torch.randn((outputs, 4 // groups, 3, 3), generator=generator)
+        bias = torch.randn((outputs,), generator=generator)
+        if backward:
+            grad = torch.randn((2, outputs, 8, 8), generator=generator)
+            return grad, value, weight
+        return tuple(t.requires_grad_(requires_grad) for t in (value, weight, bias))
+
+    return factory
+
+
+def _grouped_nondivisible_inputs(*, requires_grad=False):
+    return torch.ones((2, 4, 8, 8)), torch.ones((5, 2, 3, 3)), torch.ones(5)
+
+
+def _convolution_parameter_guard(value, weight, bias, *, transposed=False, output_padding=(0, 0)):
+    return torch.ops.aten.convolution.default(
+        value, weight, bias, [2, 2], [1, 1], [1, 1], transposed,
+        list(output_padding), 1,
+    )
+
+
 def _cpu_convolution_backward_output(
     index, grad, value, weight, stride=1, padding=1, dilation=1, groups=1
 ):
     if index == 0:
         return torch.nn.grad.conv2d_input(
-            value.shape, weight, grad, stride=stride, padding=padding, dilation=dilation
+            value.shape, weight, grad, stride=stride, padding=padding, dilation=dilation, groups=groups
         )
     if index == 1:
         return torch.nn.grad.conv2d_weight(
-            value, weight.shape, grad, stride=stride, padding=padding, dilation=dilation
+            value, weight.shape, grad, stride=stride, padding=padding, dilation=dilation, groups=groups
         )
     return grad.sum(dim=(0, 2, 3))
 
@@ -1592,7 +1617,7 @@ def _cpu_argmax_out(value, dim, out_buffer):
 
 def _argmax_inputs(*, requires_grad=False):
     value = torch.randn(3, 4)
-    return value, torch.empty((3,), dtype=torch.int64)
+    return value, torch.zeros((3,), dtype=torch.int64)
 
 
 def _ne_scalar_out(value, out):
@@ -2451,6 +2476,79 @@ ALL_CASES = tuple(
         declared_shapes=("2x3x12x12",),
         rtol=2e-4,
         atol=2e-4,
+    ),
+    *(
+        _case(
+            f"convolution.groups.{label}.forward",
+            "convolution",
+            torch.nn.functional.conv2d,
+            _grouped_convolution_inputs(groups, outputs),
+            kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": groups},
+            supported=True,
+            cpu_reference=_cpu_convolution,
+            expected_shape=(2, outputs, 8, 8),
+            declared_shapes=("2x4x8x8",),
+            rtol=2e-4,
+            atol=2e-4,
+        )
+        for label, groups, outputs in (("2", 2, 6), ("4", 4, 8), ("depthwise", 4, 4))
+    ),
+    *(
+        _case(
+            f"convolution.groups.{label}.{gradient}",
+            "convolution",
+            _convolution_backward_output(index),
+            _grouped_convolution_inputs(groups, outputs, backward=True),
+            kwargs={"stride": 1, "padding": 1, "dilation": 1, "groups": groups},
+            supported=True,
+            cpu_reference=_convolution_backward_output(index),
+            expected_shape=shape,
+            declared_shapes=(f"2x{outputs}x8x8",),
+            rtol=2e-4,
+            atol=2e-4,
+        )
+        for label, groups, outputs in (("2", 2, 6), ("4", 4, 8), ("depthwise", 4, 4))
+        for index, gradient, shape in (
+            (0, "grad-input", (2, 4, 8, 8)),
+            (1, "grad-weight", (outputs, 4 // groups, 3, 3)),
+            (2, "grad-bias", (outputs,)),
+        )
+    ),
+    _case(
+        "convolution.groups.3.rejected",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _grouped_convolution_inputs(2, 6),
+        kwargs={"padding": 1, "groups": 3},
+        supported=False,
+        cpu_reference=_cpu_convolution,
+        error_pattern=r"groups.*divide",
+    ),
+    _case(
+        "convolution.groups.nondivisible.rejected",
+        "convolution",
+        torch.nn.functional.conv2d,
+        _grouped_nondivisible_inputs,
+        kwargs={"padding": 1, "groups": 2},
+        supported=False,
+        cpu_reference=_cpu_convolution,
+        error_pattern=r"groups.*divide",
+    ),
+    *(
+        _case(
+            f"convolution.parameters.{label}.rejected",
+            "convolution",
+            _convolution_parameter_guard,
+            _grouped_convolution_inputs(1, 4),
+            kwargs=kwargs,
+            supported=False,
+            cpu_reference=_convolution_parameter_guard,
+            error_pattern=r"non-transposed.*zero.*output_padding",
+        )
+        for label, kwargs in (
+            ("transposed", {"transposed": True}),
+            ("output-padding", {"output_padding": (1, 0)}),
+        )
     ),
     _case(
         "convolution.parameters.padding-0",
