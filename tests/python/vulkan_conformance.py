@@ -881,6 +881,11 @@ def _convolution_backward_mismatched_grad_inputs(*, requires_grad=False):
     return torch.ones((2, 4, 7, 8), dtype=torch.float32), value, weight
 
 
+def _convolution_backward_mismatched_batch_inputs(*, requires_grad=False):
+    value, weight, _ = _convolution()
+    return torch.ones((1, 4, 8, 8), dtype=torch.float32), value, weight
+
+
 def _convolution_backward(grad, value, weight):
     return torch.ops.aten.convolution_backward.default(
         grad,
@@ -3099,6 +3104,15 @@ ALL_CASES = tuple(
         supported=False,
         cpu_reference=_convolution_backward,
         error_pattern=r"grad_output spatial shape.*expected.*actual",
+    ),
+    _case(
+        "convolution.backward.grad-output-batch.rejected",
+        "convolution",
+        _convolution_backward,
+        _convolution_backward_mismatched_batch_inputs,
+        supported=False,
+        cpu_reference=_convolution_backward,
+        error_pattern=r"grad_output batch size must match input batch size: 1 vs 2",
     ),
     _case(
         "unary.neg_.unsupported-overload.rejected",

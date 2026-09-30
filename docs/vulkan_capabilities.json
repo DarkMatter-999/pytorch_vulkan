@@ -1967,6 +1967,10 @@
         {
           "name": "convolution.channels.shape.rejected",
           "supported": false
+        },
+        {
+          "name": "convolution.backward.grad-output-batch.rejected",
+          "supported": false
         }
       ],
       "tests": [

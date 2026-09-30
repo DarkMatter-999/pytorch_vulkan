@@ -258,6 +258,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     TORCH_CHECK(weight.size(1) == input.size(1) / groups,
                 "Vulkan convolution backward grouped weight shape expects ", input.size(1) / groups,
                 " input channels per group, got ", weight.size(1));
+    TORCH_CHECK(grad_output.size(0) == input.size(0),
+                "Vulkan convolution backward grad_output batch size must match input batch size: ",
+                grad_output.size(0), " vs ", input.size(0));
     TORCH_CHECK(grad_output.size(1) == weight.size(0),
                 "Vulkan convolution backward grad_output channels must match weight output channels");
     TORCH_CHECK(bias_sizes.has_value() && bias_sizes->equals({weight.size(0)}),
