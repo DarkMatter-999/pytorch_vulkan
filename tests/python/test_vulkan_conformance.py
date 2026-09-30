@@ -2,21 +2,23 @@ import os
 import re
 
 import pytest
-import torch
-
 import pytorch_vulkan
+import torch
+import vulkan_conformance as vc
 from vulkan_conformance import (
     ALL_CASES,
-    ConformanceCase,
     DECLARED_OPERATION_MANIFEST,
     MANIFEST_CASE_NAMES,
     ROADMAP_DEFERRED_SCHEMAS,
     SUPPORTED_CASES,
+    ConformanceCase,
     assert_gradients,
-    assert_vulkan_result,
     assert_no_vulkan_work,
-    run_case,
+    assert_vulkan_result,
+    coverage_snapshot,
+    record_coverage,
     run_and_compare,
+    run_case,
     to_vulkan_inputs,
 )
 
@@ -33,6 +35,12 @@ def vulkan_backend():
     except (NotImplementedError, RuntimeError) as error:
         pytest.skip(f"Vulkan tensor setup is unavailable: {error}")
     return device
+
+
+@pytest.fixture(scope="module", autouse=True)
+def record_conformance_coverage():
+    with vc.coverage_recording():
+        yield
 
 
 def test_registry_names_are_unique():
@@ -86,7 +94,9 @@ def test_declared_autograd_rejection_is_explicit(vulkan_backend, case):
 
 @pytest.mark.parametrize("case", SUPPORTED_CASES, ids=lambda case: case.name)
 def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
-    result, cpu_result = run_and_compare(case, vulkan_backend)
+    result, cpu_result, inputs = run_and_compare(
+        case, vulkan_backend, return_inputs=True
+    )
     assert_vulkan_result(result, case)
     assert case.execution_mode in {"compute", "copy", "metadata", "empty"}
     if case.execution_mode == "compute":
@@ -113,6 +123,47 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     torch.testing.assert_close(
         result.cpu(), cpu_result, rtol=case.rtol, atol=case.atol, equal_nan=True
     )
+    pytorch_vulkan._C.synchronize()
+    vc.mark_executed(case.name)
+    record_coverage(
+        case,
+        inputs,
+        result,
+        gradients=case.check_gradients,
+        parity=True,
+    )
+
+
+def test_executed_cases_match_recorded_cases():
+    """Executed and recorded cases must be symmetric for this test run."""
+    recorded = set(coverage_snapshot())
+    executed = vc.executed_snapshot()
+    missing = executed - recorded
+    unexpected = recorded - executed
+    assert not missing and not unexpected, (
+        f"executed but not recorded: {sorted(missing)}; "
+        f"recorded but not executed: {sorted(unexpected)}"
+    )
+
+
+def test_recorded_shapes_use_the_declared_shape_convention():
+    """Recorded shapes are compared against declared_shapes in a later task, and
+    declared_shapes is x-delimited and SHAPE_PATTERN-validated. A different
+    delimiter would make every declared shape look unexercised."""
+    from tools.validate_vulkan_capabilities import SHAPE_PATTERN
+
+    snapshot = coverage_snapshot()
+    # No "the suite must have run" assertion: that would make this test
+    # order-dependent, and it fails in isolation whenever nothing has run yet.
+    for name, record in snapshot.items():
+        for shape in record["input_shapes"]:
+            assert re.fullmatch(r"[0-9]+(?:x[0-9]+)*", shape), (
+                f"{name} recorded shape {shape!r} is not x-delimited"
+            )
+            if "x" in shape and all(int(extent) > 0 for extent in shape.split("x")):
+                assert SHAPE_PATTERN.fullmatch(shape), (
+                    f"{name} recorded shape {shape!r} does not match SHAPE_PATTERN"
+                )
 
 
 @pytest.mark.parametrize(

@@ -1,13 +1,14 @@
 """Small, executable operator cases shared by Vulkan conformance tests."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import torch
 import pytorch_vulkan
-from tools.validate_vulkan_capabilities import load_manifest
+import torch
 
+from tools.validate_vulkan_capabilities import load_manifest
 
 TensorFactory = Callable[[], tuple[Any, ...]]
 
@@ -54,6 +55,88 @@ class ConformanceCase:
         return self.input_factory(
             requires_grad=self.check_gradients or self.requires_grad_inputs
         )
+
+
+COVERAGE_RECORDING = False
+_COVERAGE: dict[str, dict[str, object]] = {}
+_EXECUTED: set[str] = set()
+
+
+def mark_executed(case_name: str) -> None:
+    _EXECUTED.add(case_name)
+
+
+def executed_snapshot() -> set[str]:
+    return set(_EXECUTED)
+
+
+def reset_executed() -> None:
+    _EXECUTED.clear()
+
+
+def record_coverage(
+    case: ConformanceCase,
+    inputs: tuple[Any, ...],
+    result: torch.Tensor,
+    *,
+    gradients: bool,
+    parity: bool,
+) -> None:
+    """Record what a case actually exercised using its runtime tensors."""
+    if not COVERAGE_RECORDING:
+        return
+    schema = _MANIFEST_CASES[case.name][0]
+    tensors = [item for item in inputs if isinstance(item, torch.Tensor)]
+    _COVERAGE[case.name] = {
+        "schema": schema,
+        "input_dtypes": sorted(
+            {str(tensor.dtype).removeprefix("torch.") for tensor in tensors}
+        ),
+        "input_ranks": sorted({tensor.dim() for tensor in tensors}),
+        # A rank-0 tensor has no extents to join, so it contributes no entry
+        # rather than a sentinel. "unwitnessed" already means "no shape witness
+        # exists" in shape_constraints, and reusing it here would make a scalar
+        # that genuinely ran indistinguishable from an entry with no witness.
+        # Its rank is recorded separately in input_ranks.
+        "input_shapes": sorted(
+            {
+                "x".join(str(extent) for extent in tensor.shape)
+                for tensor in tensors
+                if tensor.dim() > 0
+            }
+        ),
+        "output_dtype": str(result.dtype).removeprefix("torch."),
+        "output_rank": result.dim(),
+        "gradients": bool(gradients),
+        "parity": bool(parity),
+    }
+
+
+def coverage_snapshot() -> dict[str, dict[str, object]]:
+    return {name: dict(entry) for name, entry in _COVERAGE.items()}
+
+
+def reset_coverage() -> None:
+    _COVERAGE.clear()
+
+
+@contextmanager
+def coverage_recording():
+    global COVERAGE_RECORDING
+    previous_enabled = COVERAGE_RECORDING
+    previous_coverage = coverage_snapshot()
+    previous_executed = executed_snapshot()
+    reset_coverage()
+    reset_executed()
+    COVERAGE_RECORDING = True
+    try:
+        yield
+    finally:
+        reset_coverage()
+        _COVERAGE.update(previous_coverage)
+        reset_executed()
+        _EXECUTED.update(previous_executed)
+        COVERAGE_RECORDING = previous_enabled
 
 
 class CpuExpression(str):
@@ -433,7 +516,9 @@ def run_case(case: ConformanceCase, device: str = "vk:0") -> Any:
     return case.operation(*inputs, *case.args, **kwargs)
 
 
-def run_and_compare(case: ConformanceCase, device: str = "vk:0") -> tuple[Any, Any]:
+def run_and_compare(
+    case: ConformanceCase, device: str = "vk:0", *, return_inputs: bool = False
+) -> tuple[Any, ...]:
     """Compute the CPU reference and Vulkan result with counters scoped to execution."""
     cpu_inputs = case.inputs()
     reference_inputs = tuple(
@@ -457,7 +542,7 @@ def run_and_compare(case: ConformanceCase, device: str = "vk:0") -> tuple[Any, A
         assert dispatches == 0 and vulkan_copies == 0
     assert explicit_transfers == 0
     assert fallbacks == 0
-    return result, cpu_result
+    return (result, cpu_result, inputs) if return_inputs else (result, cpu_result)
 
 
 def assert_cpu_parity(case: ConformanceCase, result: torch.Tensor) -> None:
