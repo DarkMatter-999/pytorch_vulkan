@@ -692,6 +692,33 @@
     },
     "schema": "aten::eq.Tensor_out"
   },
+  "comparison.isfinite": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "2x2"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "bool",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::isfinite.default"
+  },
   "comparison.ne-scalar-out": {
     "gradients": false,
     "input_dtypes": [
@@ -1510,6 +1537,151 @@
       "rank": 2
     },
     "schema": "aten::argmax.default"
+  },
+  "inplace.add-scalar": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::add_.Scalar"
+  },
+  "inplace.fill-scalar": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::fill_.Scalar"
+  },
+  "inplace.mul-tensor": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::mul_.Tensor"
+  },
+  "inplace.sub-scalar": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::sub_.Scalar"
+  },
+  "inplace.sub-tensor": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::sub_.Tensor"
   },
   "linear.attention.3d": {
     "gradients": true,

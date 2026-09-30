@@ -151,6 +151,7 @@ ENTRY_ORDER = (
     'aten::hardtanh_.default',
     'aten::hardtanh_backward.default',
     'aten::isfinite.out',
+    'aten::isfinite.default',
     'aten::le.Scalar_out',
     'aten::le.Tensor_out',
     'aten::leaky_relu.out',

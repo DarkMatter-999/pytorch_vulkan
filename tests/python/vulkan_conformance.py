@@ -1561,6 +1561,25 @@ def _bitwise_bool_out_inputs(*, requires_grad=False):
     return value, other, torch.empty((3, 4), dtype=torch.bool)
 
 
+def _inplace_inputs(*, requires_grad=False):
+    return (torch.arange(1, 13, dtype=torch.float32).reshape(3, 4),)
+
+
+def _inplace_binary_inputs(*, requires_grad=False):
+    return (
+        torch.arange(1, 13, dtype=torch.float32).reshape(3, 4),
+        torch.full((3, 4), 2.0, dtype=torch.float32),
+    )
+
+
+def _cpu_inplace(op, value, *operands):
+    out = value.clone()
+    before = out.clone()
+    op(out, *operands)
+    assert not torch.equal(out, before), "in-place reference did not mutate its input"
+    return out
+
+
 def _cpu_out_via_op(op, *values):
     out = values[-1].clone()
     return op(*values[:-1], out=out)
@@ -3051,6 +3070,11 @@ ALL_CASES = tuple(
     _case("comparison.ne-tensor", "comparison", torch.ne,
           lambda **kwargs: (torch.randn(3, 4), torch.randn(3, 4)), supported=True,
           expected_dtype=torch.bool, expected_shape=(3, 4), cpu_reference=torch.ne),
+    _case("comparison.isfinite", "comparison", torch.ops.aten.isfinite.default,
+          lambda **kwargs: (torch.tensor([[0.0, float("inf")], [float("-inf"), float("nan")]]),),
+          supported=True, expected_dtype=torch.bool,
+          cpu_reference=lambda value: torch.isfinite(value.clone()),
+          declared_shapes=("2x2",)),
     _case("comparison.eq-tensor-out", "comparison", _eq_tensor_out,
           _bool_out_inputs, cpu_reference=lambda a, b, out: torch.ops.aten.eq.Tensor_out(a, b, out=out.clone()),
           supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
@@ -3063,6 +3087,16 @@ ALL_CASES = tuple(
     _case("comparison.bitwise-and-out", "comparison", _bitwise_and_out,
           _bitwise_bool_out_inputs, cpu_reference=lambda a, b, out: torch.ops.aten.bitwise_and.Tensor_out(a, b, out=out.clone()),
           supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
+    _case("inplace.add-scalar", "inplace", torch.ops.aten.add_.Scalar,
+          _inplace_inputs, args=(2.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.add_, value, scalar), supported=True, expected_shape=(3, 4)),
+    _case("inplace.sub-scalar", "inplace", torch.ops.aten.sub_.Scalar,
+          _inplace_inputs, args=(2.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.sub_, value, scalar), supported=True, expected_shape=(3, 4)),
+    _case("inplace.mul-tensor", "inplace", torch.ops.aten.mul_.Tensor,
+          _inplace_binary_inputs, cpu_reference=lambda value, other: _cpu_inplace(torch.Tensor.mul_, value, other), supported=True, expected_shape=(3, 4)),
+    _case("inplace.sub-tensor", "inplace", torch.ops.aten.sub_.Tensor,
+          _inplace_binary_inputs, cpu_reference=lambda value, other: _cpu_inplace(torch.Tensor.sub_, value, other), supported=True, expected_shape=(3, 4)),
+    _case("inplace.fill-scalar", "inplace", torch.ops.aten.fill_.Scalar,
+          _inplace_inputs, args=(0.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.fill_, value, scalar), supported=True, expected_shape=(3, 4)),
     )
     if case is not None
 )

@@ -118,6 +118,12 @@ at::Tensor &isfinite_out(const at::Tensor &self, at::Tensor &out) {
     return dispatch(self, out, true, 0.0F, "isfinite.out");
 }
 
+at::Tensor isfinite(const at::Tensor &self) {
+    validate_input(self, "isfinite");
+    at::Tensor out = at::empty(self.sizes(), self.options().dtype(at::kBool));
+    return isfinite_out(self, out);
+}
+
 at::Tensor &eq_tensor_out(const at::Tensor &self, const at::Tensor &other,
                           at::Tensor &out) {
     validate_input(self, "eq.Tensor_out");
@@ -295,8 +301,13 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+    m.impl("isfinite", &pytorch_vulkan::isfinite);
     m.impl("ne.Scalar_out", &pytorch_vulkan::ne_scalar_out);
     m.impl("eq.Tensor_out", &pytorch_vulkan::eq_tensor_out);
     m.impl("bitwise_and.Tensor_out", &pytorch_vulkan::bitwise_and_tensor_out);
     m.impl("masked_select", &pytorch_vulkan::masked_select);
+}
+
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+    m.impl("isfinite", &pytorch_vulkan::isfinite);
 }

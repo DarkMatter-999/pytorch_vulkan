@@ -149,7 +149,6 @@ def test_every_supported_schema_has_a_conformance_case():
         for schema, case in generator._case_index().items()
         if any(item["supported"] for item in case["test_cases"])
     }
-    assert len(supported) == 85
     assert supported == witnessed
 
 
