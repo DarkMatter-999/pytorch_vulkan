@@ -16,7 +16,10 @@ from tools.validate_vulkan_capabilities import (
 ROOT = Path(__file__).parents[2]
 
 
-def _entry(schema="aten::example.default", *, status="supported"):
+def _entry(schema="aten::abs.default", *, status="supported"):
+    # A real PyTorch schema, because the validator resolves every non-rejected
+    # entry against torch.ops.aten. A synthetic name here makes every assertion
+    # below fail on "not a dispatcher overload" before reaching its own check.
     return {
         "schema": schema,
         "status": status,
@@ -34,8 +37,20 @@ def _entry(schema="aten::example.default", *, status="supported"):
         "required_vulkan_features": [],
         "execution_contract": "vulkan_compute",
         "tests": ["tests/python/test_vulkan_conformance.py"],
-        "test_cases": [],
+        "test_cases": [{"name": "example.case", "supported": True}],
         "reason": "supported_contract",
+        # Stage 4 made `witnesses` a required, derived field: a declared rank
+        # or dtype must be exercised by a case's primary input. A fixture
+        # without it fails every assertion below on "missing keys" before
+        # reaching the check it is meant to exercise. It must also be
+        # self-consistent -- witness case names have to appear in test_cases,
+        # and the declared 0-8 rank range has to be covered.
+        "witnesses": {
+            "dtypes": ["float32"],
+            "ranks": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+            "pairs": [["float32", r] for r in range(9)],
+            "cases": ["example.case"],
+        },
     }
 
 
@@ -155,7 +170,7 @@ def test_manifest_accepts_aliasing_inplace_with_same_storage_alias(tmp_path, mon
     monkeypatch.setattr(
         capability_validator,
         "_source_registration_inventory",
-        lambda _source: ({"aten::example.default"}, set()),
+        lambda _source: ({"aten::abs.default"}, set()),
     )
 
     validate_manifest_data(data, tmp_path)

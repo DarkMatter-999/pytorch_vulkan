@@ -40,7 +40,15 @@ def _source_registration_classifications(root=Path("src")):
 
 _MANIFEST = load_manifest(Path("docs/vulkan_capabilities.json"))
 EXPLICIT_REJECTED_SOURCE_SCHEMAS = frozenset(
-    entry["schema"] for entry in _MANIFEST["entries"] if entry["status"] == "rejected"
+    entry["schema"]
+    for entry in _MANIFEST["entries"]
+    if entry["status"] == "rejected"
+    # Rejected for a *source-side* decision: the schema exists and is
+    # registered, and we decline it. Entries rejected as
+    # schema_absent_from_pytorch_dispatcher are a different category -- they
+    # have no registration to be explicit about, so they must not appear in
+    # the set compared against the source inventory below.
+    and entry["reason"] != "schema_absent_from_pytorch_dispatcher"
 )
 DEFERRED_SOURCE_SCHEMAS = frozenset(
     entry["schema"] for entry in _MANIFEST["entries"] if entry["status"] == "deferred"

@@ -472,11 +472,18 @@ def test_iter_cases_accounts_for_catalog_entries_and_backward_cases():
     }
     assert any(case.get("phase") == "backward" for case in cases)
     assert all(case.get("reason") for case in cases if case["status"] == "non_comparable")
-    add_scalar_inplace = next(
-        case for case in cases if case["schema"] == "aten::add_.Scalar"
+    # A registered in-place overload that is still deferred must be marked
+    # non-comparable with a deferred reason. aten::add_.Scalar became supported
+    # when it gained a conformance case, so use an in-place overload that
+    # remains deferred -- the property under test is "deferred, but registered",
+    # not any particular schema.
+    deferred_inplace = next(
+        case
+        for case in cases
+        if case["schema"] in {"aten::sigmoid_.default", "aten::tanh_.default"}
     )
-    assert add_scalar_inplace["status"] == "non_comparable"
-    assert "deferred" in add_scalar_inplace["reason"]
+    assert deferred_inplace["status"] == "non_comparable"
+    assert "deferred" in deferred_inplace["reason"]
 
 
 def test_backward_case_times_vulkan_backward_dispatches():
