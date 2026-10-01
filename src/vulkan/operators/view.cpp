@@ -7,17 +7,13 @@
 #include <ATen/MemoryOverlap.h>
 #include <ATen/TensorGeometry.h>
 #include <ATen/TensorUtils.h>
-#include <ATen/ops/alias.h>
+#include <ATen/core/TensorBody.h>
 #include <ATen/ops/as_strided.h>
+#include <c10/core/TensorImpl.h>
 #include <c10/util/Exception.h>
-#include <torch/autograd.h>
 #include <torch/library.h>
 
 #include <limits>
-
-namespace pytorch_vulkan {
-at::Tensor vulkan_contiguous_copy(const at::Tensor &source);
-}
 
 namespace {
 
@@ -73,35 +69,13 @@ at::Tensor metadata_only_view(const at::Tensor &self, at::IntArrayRef sizes,
                     " requires contiguous view metadata");
     }
 
-    at::Tensor result = at::_ops::alias::call(self);
+    auto result = at::detail::make_tensor<c10::TensorImpl>(
+        c10::TensorImpl::VIEW, c10::Storage(self.storage()), self.key_set(),
+        self.dtype());
     result.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides);
     result.unsafeGetTensorImpl()->set_storage_offset(requested_offset);
     return result;
 }
-
-class VulkanReshapeCopyAutogradFunction final
-    : public torch::autograd::Function<VulkanReshapeCopyAutogradFunction> {
-  public:
-    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
-                              const at::Tensor &self, std::vector<int64_t> sizes) {
-        at::AutoDispatchBelowAutograd guard;
-        ctx->save_for_backward({self});
-        return pytorch_vulkan::vulkan_contiguous_copy(self).view(sizes).detach();
-    }
-
-    static torch::autograd::variable_list
-    backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
-        at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined())
-            return {at::Tensor(), at::Tensor()};
-        const auto input = ctx->get_saved_variables()[0];
-        auto grad = grads[0].reshape(input.sizes());
-        // The copy's input is already a logical view. Return that logical
-        // gradient and let the preceding view node replay its own mapping.
-        return {grad, at::Tensor()};
-    }
-};
 
 } // namespace
 
@@ -129,28 +103,10 @@ at::Tensor reshape_alias_tensor(const at::Tensor &self, at::IntArrayRef size,
     return as_strided_tensor(self, size, stride, std::nullopt);
 }
 
-at::Tensor reshape_tensor(const at::Tensor &self, at::IntArrayRef size) {
-    const auto inferred_size = at::infer_size_dv(size, self.numel());
-    const auto stride =
-        at::detail::computeStride(self.sizes(), self.strides(), inferred_size);
-    if (stride.has_value()) {
-        // computeStride is reshape's compatibility contract; unlike view, it
-        // also accepts compatible non-contiguous source layouts.
-        return as_strided_tensor(self, inferred_size, *stride, std::nullopt);
-    }
-    return VulkanReshapeCopyAutogradFunction::apply(
-        self, std::vector<int64_t>(inferred_size.begin(), inferred_size.end()));
-}
-
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("as_strided", &pytorch_vulkan::as_strided_tensor);
     m.impl("view", &pytorch_vulkan::view_tensor);
     m.impl("_reshape_alias", &pytorch_vulkan::reshape_alias_tensor);
-    m.impl("reshape", &pytorch_vulkan::reshape_tensor);
-}
-
-TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
-    m.impl("reshape", &pytorch_vulkan::reshape_tensor);
 }

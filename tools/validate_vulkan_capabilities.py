@@ -6,10 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.vulkan_capability_declarations import (
+    STOCK_COMPOSITE_ROUTE_CONTRACT,
+    STOCK_COMPOSITE_ROUTES,
+)
 
 REQUIRED_ENTRY_KEYS = frozenset(
     {
@@ -78,6 +85,113 @@ def schema_exists(schema: str) -> bool:
         return False
 
 
+def load_coverage_evidence(root: Path) -> dict[str, Any]:
+    try:
+        coverage = json.loads((root / "docs/vulkan_coverage.json").read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("coverage evidence unavailable") from error
+    if not isinstance(coverage, dict):
+        raise ValueError("coverage evidence must be an object")
+    return coverage
+
+
+def validate_stock_composite_routes(
+    routes: dict[str, Any],
+    entries: list[dict[str, Any]],
+    coverage: dict[str, Any],
+    source: set[str],
+    explicit_rejected: set[str],
+) -> None:
+    """Validate the sole versioned composite route and its executed witness links."""
+    expected_schema = STOCK_COMPOSITE_ROUTE_CONTRACT["schema"]
+    route_entries = [entry for entry in entries if entry.get("schema") == expected_schema]
+    if not routes and not route_entries:
+        return
+    if set(routes) != {expected_schema}:
+        raise ValueError(
+            f"unknown stock-composite route(s): {sorted(set(routes) - {expected_schema})}"
+        )
+    route = routes[expected_schema]
+    if (
+        not isinstance(route, dict)
+        or set(route) != set(STOCK_COMPOSITE_ROUTE_CONTRACT)
+        or route.get("schema") != expected_schema
+        or route.get("reference") != STOCK_COMPOSITE_ROUTE_CONTRACT["reference"]
+        or route.get("dependencies") != STOCK_COMPOSITE_ROUTE_CONTRACT["dependencies"]
+    ):
+        raise ValueError("stock-composite route descriptor/reference/dependency closure is unqualified")
+    if torch.__version__.split("+", 1)[0] != route["reference"]["pytorch_version"]:
+        raise ValueError("stock-composite route PyTorch reference version mismatch")
+
+    # Check dispatcher schemas and direct Vulkan leaf registrations without
+    # representing stock generated clone/_unsafe_view routes as source kernels.
+    for dependency in route["dependencies"]:
+        if not schema_exists(dependency["schema"]):
+            raise ValueError(f"stock-composite dependency schema is unresolved: {dependency['schema']}")
+        if (
+            dependency["dispatch"] == "stock_generated_privateuse1"
+            and dependency["schema"] in source
+        ):
+            raise ValueError(
+                f"stock-generated dependency is misclassified as direct source: {dependency['schema']}"
+            )
+        leaf = dependency["vulkan_leaf"]
+        if not schema_exists(leaf) or leaf not in source or leaf in explicit_rejected:
+            raise ValueError(f"stock-composite dependency closure is unresolved at {leaf}")
+    if expected_schema in source or expected_schema in explicit_rejected:
+        raise ValueError("stock-composite route duplicates a direct or rejected source registration")
+
+    entries_by_schema = {entry["schema"]: entry for entry in entries}
+    entry = entries_by_schema.get(expected_schema)
+    if entry is None or entry.get("status") != "supported":
+        raise ValueError("stock-composite route has no supported manifest entry")
+    cases = {
+        case.get("name")
+        for case in entry.get("test_cases", [])
+        if isinstance(case, dict) and case.get("supported") is True
+    }
+    evidence_names = route["evidence_cases"]
+    if (
+        evidence_names != STOCK_COMPOSITE_ROUTE_CONTRACT["evidence_cases"]
+        or not evidence_names
+        or len(set(evidence_names)) != len(evidence_names)
+        or not set(evidence_names) <= cases
+    ):
+        raise ValueError("stock-composite route evidence case links are missing or unsupported")
+    expected_shapes = {
+        "view.reshape.copy.trainable-seed": "2x3",
+        "view.reshape.offset-copy.second-order": "4x6",
+    }
+    for name in evidence_names:
+        record = coverage.get(name)
+        if (
+            name not in expected_shapes
+            or not isinstance(record, dict)
+            or record.get("schema") != expected_schema
+            or record.get("parity") is not True
+            or record.get("gradients") is not True
+            or record.get("primary_input") != {"dtype": "float32", "rank": 2}
+            or record.get("input_shapes") != [expected_shapes[name]]
+            or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}
+        ):
+            raise ValueError(f"stock-composite route lacks matching executed route evidence: {name}")
+        execution = record.get("execution")
+        if (
+            not isinstance(execution, dict)
+            or set(execution) != {
+                "mode", "compute_dispatches", "vulkan_copies",
+                "explicit_transfers", "fallbacks",
+            }
+            or execution.get("mode") != "copy"
+            or any(type(execution.get(key)) is not int for key in (
+                "compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks"
+            ))
+            or execution["vulkan_copies"] <= 0
+            or execution["compute_dispatches"] != 0
+            or execution["explicit_transfers"] != 0
+            or execution["fallbacks"] != 0
+        ):
+            raise ValueError(f"stock-composite route execution evidence is invalid: {name}")
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text())
@@ -260,10 +374,7 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             ):
                 raise ValueError(f"{path}.witnesses.reverse_second_order_cases: expected sorted supported witness case links")
         if promoted:
-            try:
-                coverage = json.loads((root / "docs/vulkan_coverage.json").read_text())
-            except (OSError, json.JSONDecodeError) as error:
-                raise ValueError(f"{path}.witnesses.reverse_second_order_cases: coverage evidence unavailable") from error
+            coverage = load_coverage_evidence(root)
             for name in witnesses["reverse_second_order_cases"]:
                 record = coverage.get(name)
                 if (
@@ -355,6 +466,15 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
     }
 
     source, explicit_rejected = _source_registration_inventory(root / "src")
+    coverage = load_coverage_evidence(root) if STOCK_COMPOSITE_ROUTES else {}
+    validate_stock_composite_routes(
+        STOCK_COMPOSITE_ROUTES, entries, coverage, source, explicit_rejected
+    )
+    composite = set(STOCK_COMPOSITE_ROUTES)
+    if composite & source:
+        raise ValueError(f"stock-composite schemas have duplicate direct registrations: {sorted(composite & source)}")
+    if composite & explicit_rejected:
+        raise ValueError(f"stock-composite schemas are explicitly rejected: {sorted(composite & explicit_rejected)}")
     schema_absent_rejected = {
         entry["schema"]
         for entry in entries
@@ -363,8 +483,11 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
     }
     if rejected - schema_absent_rejected != explicit_rejected:
         raise ValueError("manifest rejected schemas drift from source registrations")
-    if source - deferred - rejected != supported:
+    direct_supported = source - deferred - rejected
+    if supported - composite != direct_supported:
         raise ValueError("manifest supported schemas drift from source registrations")
+    if not composite <= supported:
+        raise ValueError(f"manifest omits declared stock-composite routes: {sorted(composite - supported)}")
 
 
 def validate(root: Path) -> None:

@@ -9,7 +9,7 @@ from tools.validate_vulkan_capabilities import (
     _source_registration_inventory,
     load_manifest,
 )
-
+from tools.vulkan_capability_declarations import STOCK_COMPOSITE_ROUTES
 
 CASE_SCHEMA_VERSION = 1
 
@@ -169,7 +169,7 @@ def load_operator_cases(root: Path) -> dict:
         for capability in manifest["entries"]
         if capability["execution_contract"] == "deferred_before_vulkan"
     }
-    registered_schemas = aten_registrations | custom_registrations
+    registered_schemas = aten_registrations | custom_registrations | set(STOCK_COMPOSITE_ROUTES)
     unregistered_deferred_schemas = deferred_schemas - registered_schemas
     registered_catalog = {
         "entries": [
@@ -179,14 +179,15 @@ def load_operator_cases(root: Path) -> dict:
         ]
     }
     validate_operator_coverage(
-        registered_catalog, aten_registrations, custom_registrations
+        registered_catalog, aten_registrations, custom_registrations,
+        stock_composite_routes=set(STOCK_COMPOSITE_ROUTES),
     )
     return catalog
 
 
 def _runtime():
-    import torch
     import pytorch_vulkan
+    import torch
 
     if not pytorch_vulkan.is_available():
         raise RuntimeError("no suitable Vulkan device is available")
@@ -614,7 +615,11 @@ def iter_cases(catalog: dict, profiles=("small", "large")):
 
 
 def validate_operator_coverage(
-    catalog: dict, aten_registrations: set[str], custom_registrations: set[str]
+    catalog: dict,
+    aten_registrations: set[str],
+    custom_registrations: set[str],
+    *,
+    stock_composite_routes: set[str] | None = None,
 ) -> None:
     entries = catalog.get("entries")
     if not isinstance(entries, list):
@@ -625,7 +630,7 @@ def validate_operator_coverage(
     for index, entry in enumerate(entries):
         if entry.get("status") == "non_comparable" and not entry.get("reason", "").strip():
             raise ValueError(f"catalog entry {index} non_comparable status requires a reason")
-    expected = set(aten_registrations) | set(custom_registrations)
+    expected = set(aten_registrations) | set(custom_registrations) | (stock_composite_routes or set())
     actual = set(schemas)
     missing = sorted(expected - actual)
     extra = sorted(actual - expected)

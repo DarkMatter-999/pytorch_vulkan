@@ -19,8 +19,13 @@ sys.path.insert(0, str(ROOT / "tests/python"))
 from tools.validate_vulkan_capabilities import (  # noqa: E402
     REQUIRED_ENTRY_KEYS,
     _source_registration_inventory,
+    load_coverage_evidence,
+    validate_stock_composite_routes,
 )  # noqa: E402
-from tools.vulkan_capability_declarations import DECLARATIONS  # noqa: E402
+from tools.vulkan_capability_declarations import (  # noqa: E402
+    DECLARATIONS,
+    STOCK_COMPOSITE_ROUTES,
+)
 
 MANIFEST = ROOT / "docs/vulkan_capabilities.json"
 COVERAGE_RECORD = ROOT / "docs/vulkan_coverage.json"
@@ -302,6 +307,10 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
 
 def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
     manifest = _build_manifest()
+    source, rejected = _source_registration_inventory(ROOT / "src")
+    validate_stock_composite_routes(
+        STOCK_COMPOSITE_ROUTES, manifest["entries"], coverage, source, rejected
+    )
     by_schema = _witnesses_by_schema(coverage)
     for entry in manifest["entries"]:
         entry["witnesses"] = by_schema.get(
@@ -371,8 +380,15 @@ def _validate_declarations() -> None:
 
 def _roadmap_schemas() -> set[str]:
     """Return declared schemas that are not implemented registrations yet."""
-    registrations, _ = _source_registration_inventory(ROOT / "src")
-    return set(DECLARATIONS) - registrations
+    registrations, rejected = _source_registration_inventory(ROOT / "src")
+    validate_stock_composite_routes(
+        STOCK_COMPOSITE_ROUTES,
+        _build_manifest()["entries"],
+        load_coverage_evidence(ROOT),
+        registrations,
+        rejected,
+    )
+    return set(DECLARATIONS) - registrations - set(STOCK_COMPOSITE_ROUTES)
 
 
 if __name__ == "__main__":

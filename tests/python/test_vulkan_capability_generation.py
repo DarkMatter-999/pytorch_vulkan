@@ -123,6 +123,7 @@ def test_unregistered_declarations_are_roadmap_not_errors():
     roadmap = generator._roadmap_schemas()
     assert len(roadmap) == 86
     assert "aten::concat.default" in roadmap
+    assert "aten::reshape.default" not in roadmap
 
 
 def test_roadmap_declarations_have_no_implementation_witnesses():
@@ -225,12 +226,13 @@ def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage()
         name: record for name, record in coverage.items()
         if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}
     }
-    assert len(witnessed) == 6
+    assert len(witnessed) == 9
     for name, record in witnessed.items():
-        assert name.startswith("arithmetic.autograd.")
+        assert name.startswith(("arithmetic.autograd.", "view."))
         assert record["schema"] in {
             "aten::add.Tensor", "aten::add.Scalar", "aten::mul.Tensor",
             "aten::mul.Scalar", "aten::sum.default", "aten::sum.dim_IntList",
+            "aten::view.default", "aten::reshape.default",
         }
 
 
@@ -307,11 +309,14 @@ def _run_all_supported_cases():
                 result.cpu(), expected, rtol=case.rtol, atol=case.atol, equal_nan=True
             )
             pytorch_vulkan._C.synchronize()
-            reverse_autograd = (
-                vc.assert_reverse_second_order(case, inputs)
-                if case.name.startswith("arithmetic.autograd.")
-                else None
-            )
+            reverse_names = {
+                "arithmetic.autograd.add-tensor", "arithmetic.autograd.add-scalar",
+                "arithmetic.autograd.mul-tensor", "arithmetic.autograd.mul-scalar",
+                "arithmetic.autograd.sum-default", "arithmetic.autograd.sum-dim",
+                "view.view.trainable-seed", "view.reshape.copy.trainable-seed",
+                "view.reshape.offset-copy.second-order",
+            }
+            reverse_autograd = vc.assert_reverse_second_order(case, inputs) if case.name in reverse_names else None
             vc.record_coverage(
                 case,
                 inputs,

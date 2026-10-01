@@ -10,7 +10,9 @@ from tools.validate_vulkan_capabilities import (
     _source_registration_inventory,
     load_manifest,
     validate_manifest_data,
+    validate_stock_composite_routes,
 )
+from tools.vulkan_capability_declarations import STOCK_COMPOSITE_ROUTES
 
 ROOT = Path(__file__).parents[2]
 
@@ -227,11 +229,13 @@ def test_manifest_accepts_aliasing_inplace_with_same_storage_alias(tmp_path, mon
         "_source_registration_inventory",
         lambda _source: ({"aten::abs.default"}, set()),
     )
+    monkeypatch.setattr(capability_validator, "STOCK_COMPOSITE_ROUTES", {})
 
     validate_manifest_data(data, tmp_path)
 
 
-def test_manifest_validation_does_not_require_capability_matrix(tmp_path):
+def test_manifest_validation_does_not_require_capability_matrix(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_validator, "STOCK_COMPOSITE_ROUTES", {})
     validate_manifest_data({"version": 1, "entries": []}, tmp_path)
 
 
@@ -263,6 +267,121 @@ def test_manifest_rejected_inventory_is_checked_against_source_parser(tmp_path):
 def test_checked_in_manifest_covers_registered_source():
     manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
     validate_manifest_data(manifest, ROOT)
+
+
+def test_arbitrary_supported_schema_cannot_be_authorized_as_stock_composite(monkeypatch):
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    monkeypatch.setitem(
+        capability_validator.STOCK_COMPOSITE_ROUTES,
+        "aten::abs.default",
+        {"reference": "unjustified", "required_leaves": ()},
+    )
+    with pytest.raises(ValueError, match="unknown stock-composite route"):
+        validate_manifest_data(manifest, ROOT)
+
+
+def test_stock_composite_allowlist_route_must_be_present_in_manifest(monkeypatch):
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    monkeypatch.setitem(
+        capability_validator.STOCK_COMPOSITE_ROUTES,
+        "aten::view_as_real.default",
+        {"reference": "unjustified", "required_leaves": ()},
+    )
+    with pytest.raises(ValueError, match="unknown stock-composite route"):
+        validate_manifest_data(manifest, ROOT)
+
+
+def _stock_route_inputs():
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+    source, rejected = _source_registration_inventory(ROOT / "src")
+    return manifest["entries"], coverage, source, rejected
+
+
+def test_stock_route_rejects_unresolved_or_unqualified_required_dependency():
+    entries, coverage, source, rejected = _stock_route_inputs()
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    routes["aten::reshape.default"]["dependencies"][0]["vulkan_leaf"] = (
+        "aten::definitely_missing.default"
+    )
+    with pytest.raises(ValueError, match="dependency closure"):
+        validate_stock_composite_routes(routes, entries, coverage, source, rejected)
+
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    source_with_fake_stock_kernel = source | {"aten::clone.default"}
+    with pytest.raises(ValueError, match="misclassified as direct source"):
+        validate_stock_composite_routes(
+            routes, entries, coverage, source_with_fake_stock_kernel, rejected
+        )
+
+
+def test_stock_route_rejects_unexecuted_or_wrongly_linked_evidence():
+    entries, coverage, source, rejected = _stock_route_inputs()
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    routes["aten::reshape.default"]["evidence_cases"] = ["review.unexecuted"]
+    with pytest.raises(ValueError, match="evidence case links"):
+        validate_stock_composite_routes(routes, entries, coverage, source, rejected)
+
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    altered = copy.deepcopy(coverage)
+    del altered["view.reshape.copy.trainable-seed"]
+    with pytest.raises(ValueError, match="executed route evidence"):
+        validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+    altered = copy.deepcopy(coverage)
+    altered["view.reshape.copy.trainable-seed"]["schema"] = "aten::view.default"
+    with pytest.raises(ValueError, match="executed route evidence"):
+        validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+    altered = copy.deepcopy(coverage)
+    altered["view.reshape.copy.trainable-seed"]["parity"] = False
+    with pytest.raises(ValueError, match="executed route evidence"):
+        validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+    altered = copy.deepcopy(coverage)
+    altered["view.reshape.copy.trainable-seed"]["execution"] = {
+        "mode": "metadata",
+        "compute_dispatches": 0,
+        "vulkan_copies": 0,
+        "explicit_transfers": 0,
+        "fallbacks": 0,
+    }
+    with pytest.raises(ValueError, match="execution evidence"):
+        validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+    altered = copy.deepcopy(coverage)
+    altered["view.reshape.copy.trainable-seed"]["execution"] = {
+        "mode": "copy",
+        "compute_dispatches": 1,
+        "vulkan_copies": 1,
+        "explicit_transfers": 0,
+        "fallbacks": 0,
+    }
+    with pytest.raises(ValueError, match="execution evidence"):
+        validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+
+def test_stock_route_rejects_unknown_supported_route_with_fabricated_witness(monkeypatch):
+    entries, coverage, source, rejected = _stock_route_inputs()
+    view = next(entry for entry in entries if entry["schema"] == "aten::view.default")
+    fabricated = copy.deepcopy(view)
+    fabricated["schema"] = "aten::view_as_real.default"
+    fabricated["test_cases"] = [{"name": "review.unexecuted", "supported": True}]
+    fabricated["witnesses"]["cases"] = ["review.unexecuted"]
+    fabricated["witnesses"].pop("reverse_second_order_cases", None)
+    fabricated["autograd"] = "first_order_view_alias"
+    entries.append(fabricated)
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    routes["aten::view_as_real.default"] = {
+        "reference": "unjustified",
+        "dependencies": [],
+        "evidence_cases": ["review.unexecuted"],
+    }
+    with pytest.raises(ValueError, match="unknown stock-composite route"):
+        validate_stock_composite_routes(routes, entries, coverage, source, rejected)
+    monkeypatch.setattr(capability_validator, "STOCK_COMPOSITE_ROUTES", routes)
+    with pytest.raises(ValueError, match="unknown stock-composite route"):
+        validate_manifest_data({"version": 1, "entries": entries}, ROOT)
 
 
 def test_checked_in_gemm_manifest_matches_bounded_operator_contracts():

@@ -1,9 +1,8 @@
-from pathlib import Path
 import copy
 import importlib.util
+from pathlib import Path
 
 import pytest
-
 
 ROOT = Path(__file__).parents[2]
 _BENCHMARK_SPEC = importlib.util.spec_from_file_location(
@@ -390,6 +389,7 @@ def test_representative_family_cases_match_cpu(schema):
 )
 def test_masked_select_profiles_have_deterministic_shapes_and_density(profile, size, selected):
     import torch
+
     from tools.vulkan_operator_benchmark_cases import _arguments
 
     values, mask = _arguments(torch, "aten::masked_select.default", profile, 42)
@@ -425,8 +425,9 @@ def test_masked_select_catalog_exposes_density_profiles_without_changing_other_o
 
 
 def test_masked_select_prepare_pair_reuses_vulkan_mask_for_same_seed():
-    import torch
     import pytorch_vulkan
+    import torch
+
     from tools.vulkan_operator_benchmark_cases import build_case
 
     case = build_case("aten::masked_select.default", "wide_half", seed=123)
@@ -444,8 +445,8 @@ def test_masked_select_prepare_pair_reuses_vulkan_mask_for_same_seed():
 
 
 def test_masked_select_zero_profile_runs_with_empty_parity_and_no_dispatch():
-    import torch
     import pytorch_vulkan
+
     from tools.vulkan_operator_benchmark_cases import build_case
 
     case = build_case("aten::masked_select.default", "zero", seed=1729)
@@ -616,6 +617,7 @@ def test_large_rnn_benchmark_case_uses_a_numerically_stable_reference():
 
 def test_operator_catalog_covers_registered_aten_and_custom_schemas():
     from tools.validate_vulkan_capabilities import _source_registration_inventory
+    from tools.vulkan_capability_declarations import STOCK_COMPOSITE_ROUTES
     from tools.vulkan_operator_benchmark_cases import (
         _custom_registration_inventory,
         load_operator_cases,
@@ -628,6 +630,7 @@ def test_operator_catalog_covers_registered_aten_and_custom_schemas():
 
     assert len(schemas) == len(set(schemas))
     assert aten_registrations <= set(schemas)
+    assert set(STOCK_COMPOSITE_ROUTES) <= set(schemas)
     assert custom_registrations <= set(schemas)
     assert {"pytorch_vulkan::rnn_sequence", "pytorch_vulkan::linear_relu"} <= custom_registrations
     assert catalog["schema_version"] == 1

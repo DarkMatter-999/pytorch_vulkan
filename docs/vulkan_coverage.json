@@ -4814,6 +4814,44 @@
     },
     "schema": "aten::_reshape_alias.default"
   },
+  "view.reshape.copy.trainable-seed": {
+    "execution": {
+      "compute_dispatches": 0,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "mode": "copy",
+      "vulkan_copies": 1
+    },
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::reshape.default"
+  },
   "view.reshape.float32": {
     "gradients": true,
     "input_dtypes": [
@@ -4841,6 +4879,44 @@
     },
     "schema": "aten::reshape.default"
   },
+  "view.reshape.offset-copy.second-order": {
+    "execution": {
+      "compute_dispatches": 0,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "mode": "copy",
+      "vulkan_copies": 1
+    },
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "4x6"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::reshape.default"
+  },
   "view.view.metadata": {
     "gradients": false,
     "input_dtypes": [
@@ -4865,6 +4941,37 @@
     "primary_input": {
       "dtype": "float32",
       "rank": 2
+    },
+    "schema": "aten::view.default"
+  },
+  "view.view.trainable-seed": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "3x4"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
     },
     "schema": "aten::view.default"
   }

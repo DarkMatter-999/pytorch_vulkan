@@ -3,26 +3,30 @@ import re
 from pathlib import Path
 
 import pytest
-import torch
-
 import pytorch_vulkan
-from tools.validate_vulkan_capabilities import load_manifest
+import torch
 from vulkan_conformance import (
     ALL_CASES,
     DECLARED_OPERATION_MANIFEST,
+    PROMOTED_SCALAR_OUT_SCHEMAS,
+    REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES,
     ROADMAP_DEFERRED_REASON_BY_FAMILY,
     ROADMAP_DEFERRED_SCHEMAS,
     ROADMAP_OPERATION_FAMILIES,
-    PROMOTED_SCALAR_OUT_SCHEMAS,
-    REQUIRED_SCALAR_OUT_REJECTION_BOUNDARIES,
     SCALAR_OUT_CONTRACT_MATRIX,
 )
-
 
 from tools.validate_vulkan_capabilities import (
     _extract_privateuse1_blocks,
     _parse_m_impl_registrations,
+    load_manifest,
+)
+from tools.validate_vulkan_capabilities import (
     _source_registration_inventory as _shared_source_registration_inventory,
+)
+from tools.vulkan_capability_declarations import (
+    STOCK_COMPOSITE_ROUTE_CONTRACT,
+    STOCK_COMPOSITE_ROUTES,
 )
 
 
@@ -84,6 +88,32 @@ def test_declared_manifest_matches_source_registrations():
     assert ROADMAP_DEFERRED_SCHEMAS == DEFERRED_SOURCE_SCHEMAS
     assert source_explicit_rejected == EXPLICIT_REJECTED_SOURCE_SCHEMAS
     assert EXPLICIT_REJECTED_SOURCE_SCHEMAS
+    direct_supported = DECLARED_OPERATION_MANIFEST - set(STOCK_COMPOSITE_ROUTES)
+    assert direct_supported == source_inventory - DEFERRED_SOURCE_SCHEMAS - source_explicit_rejected
+    assert "aten::reshape.default" in STOCK_COMPOSITE_ROUTES
+    assert "aten::reshape.default" not in source_inventory
+
+
+def test_stock_composite_route_is_an_explicit_single_schema_allowlist():
+    assert set(STOCK_COMPOSITE_ROUTES) == {"aten::reshape.default"}
+    route = STOCK_COMPOSITE_ROUTES["aten::reshape.default"]
+    assert route == STOCK_COMPOSITE_ROUTE_CONTRACT
+    assert route["reference"] == {
+        "pytorch_version": "2.4.0",
+        "source": "aten/src/ATen/native/TensorShape.cpp::reshape_symint",
+        "routes": [
+            "view-compatible geometry -> _reshape_alias",
+            "otherwise -> clone(MemoryFormat::Contiguous) -> _unsafe_view",
+        ],
+    }
+    dependencies = {item["schema"]: item for item in route["dependencies"]}
+    assert dependencies["aten::clone.default"]["dispatch"] == "stock_generated_privateuse1"
+    assert dependencies["aten::clone.default"]["vulkan_leaf"] == "aten::copy_.default"
+    assert dependencies["aten::_unsafe_view.default"]["dispatch"] == "stock_generated_privateuse1"
+    assert dependencies["aten::_unsafe_view.default"]["vulkan_leaf"] == "aten::view.default"
+    source_inventory, _ = _source_registration_classifications()
+    assert "aten::clone.default" not in source_inventory
+    assert "aten::_unsafe_view.default" not in source_inventory
 def test_gemm_declarations_cover_supported_frontends_and_deferred_forms():
     assert {
         "aten::mm.default",
@@ -243,8 +273,10 @@ def test_source_registrations_cannot_be_supported_without_a_declaration():
     assert not _undeclared_source_registrations()
     source_inventory, explicit_rejected = _source_registration_classifications()
     source_supported = source_inventory - ROADMAP_DEFERRED_SCHEMAS - explicit_rejected
-    assert source_supported == DECLARED_OPERATION_MANIFEST
-    assert {case.declaration_id for case in ALL_CASES if case.supported} == source_supported
+    assert source_supported | set(STOCK_COMPOSITE_ROUTES) == DECLARED_OPERATION_MANIFEST
+    assert {
+        case.declaration_id for case in ALL_CASES if case.supported
+    } - set(STOCK_COMPOSITE_ROUTES) == source_supported
 
 
 def test_every_deferred_roadmap_schema_has_an_explicit_reason():

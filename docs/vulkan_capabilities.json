@@ -4073,7 +4073,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_view_alias",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -4087,7 +4087,7 @@
         ]
       },
       "empty": "empty_output_supported",
-      "execution_contract": "vulkan_compute",
+      "execution_contract": "vulkan_copy",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -4105,12 +4105,21 @@
       ],
       "schema": "aten::reshape.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x3",
+        "4x6"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "view.reshape.float32",
+          "supported": true
+        },
+        {
+          "name": "view.reshape.copy.trainable-seed",
+          "supported": true
+        },
+        {
+          "name": "view.reshape.offset-copy.second-order",
           "supported": true
         }
       ],
@@ -4120,7 +4129,9 @@
       ],
       "witnesses": {
         "cases": [
-          "view.reshape.float32"
+          "view.reshape.copy.trainable-seed",
+          "view.reshape.float32",
+          "view.reshape.offset-copy.second-order"
         ],
         "dtypes": [
           "float32"
@@ -4133,6 +4144,10 @@
         ],
         "ranks": [
           2
+        ],
+        "reverse_second_order_cases": [
+          "view.reshape.copy.trainable-seed",
+          "view.reshape.offset-copy.second-order"
         ]
       }
     },
@@ -4960,7 +4975,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_view_alias",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -4992,12 +5007,16 @@
       ],
       "schema": "aten::view.default",
       "shape_constraints": [
-        "unwitnessed"
+        "3x4"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "view.view.metadata",
+          "supported": true
+        },
+        {
+          "name": "view.view.trainable-seed",
           "supported": true
         }
       ],
@@ -5007,7 +5026,8 @@
       ],
       "witnesses": {
         "cases": [
-          "view.view.metadata"
+          "view.view.metadata",
+          "view.view.trainable-seed"
         ],
         "dtypes": [
           "float32"
@@ -5020,6 +5040,9 @@
         ],
         "ranks": [
           2
+        ],
+        "reverse_second_order_cases": [
+          "view.view.trainable-seed"
         ]
       }
     },

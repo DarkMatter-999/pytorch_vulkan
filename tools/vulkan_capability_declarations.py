@@ -12,6 +12,46 @@ the generator imports it, and that would close an import cycle.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
+# Explicit PyTorch composite route qualified through its Vulkan leaves. This is
+# intentionally separate from the direct PrivateUse1 source inventory.
+STOCK_COMPOSITE_ROUTE_CONTRACT = {
+    "schema": "aten::reshape.default",
+    "reference": {
+        "pytorch_version": "2.4.0",
+        "source": "aten/src/ATen/native/TensorShape.cpp::reshape_symint",
+        "routes": [
+            "view-compatible geometry -> _reshape_alias",
+            "otherwise -> clone(MemoryFormat::Contiguous) -> _unsafe_view",
+        ],
+    },
+    "dependencies": [
+        {
+            "schema": "aten::_reshape_alias.default",
+            "dispatch": "direct_privateuse1",
+            "vulkan_leaf": "aten::_reshape_alias.default",
+        },
+        {
+            "schema": "aten::clone.default",
+            "dispatch": "stock_generated_privateuse1",
+            "vulkan_leaf": "aten::copy_.default",
+        },
+        {
+            "schema": "aten::_unsafe_view.default",
+            "dispatch": "stock_generated_privateuse1",
+            "vulkan_leaf": "aten::view.default",
+        },
+    ],
+    "evidence_cases": [
+        "view.reshape.copy.trainable-seed",
+        "view.reshape.offset-copy.second-order",
+    ],
+}
+STOCK_COMPOSITE_ROUTES = {
+    STOCK_COMPOSITE_ROUTE_CONTRACT["schema"]: deepcopy(STOCK_COMPOSITE_ROUTE_CONTRACT)
+}
+
 DECLARATIONS: dict[str, dict[str, object]] = {
     'aten::_adaptive_avg_pool2d.default':     {
         "aliasing": "no_overlap",
@@ -5069,7 +5109,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::reshape.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_view_alias",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -5083,7 +5123,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             ]
         },
         "empty": "empty_output_supported",
-        "execution_contract": "vulkan_compute",
+        "execution_contract": "vulkan_copy",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
@@ -6259,7 +6299,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::view.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_view_alias",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"

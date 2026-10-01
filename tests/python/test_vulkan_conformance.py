@@ -23,6 +23,18 @@ from vulkan_conformance import (
     to_vulkan_inputs,
 )
 
+REVERSE_SECOND_ORDER_CASES = {
+    "arithmetic.autograd.add-tensor",
+    "arithmetic.autograd.add-scalar",
+    "arithmetic.autograd.mul-tensor",
+    "arithmetic.autograd.mul-scalar",
+    "arithmetic.autograd.sum-default",
+    "arithmetic.autograd.sum-dim",
+    "view.view.trainable-seed",
+    "view.reshape.copy.trainable-seed",
+    "view.reshape.offset-copy.second-order",
+}
+
 
 @pytest.fixture
 def vulkan_backend():
@@ -128,7 +140,7 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     vc.mark_executed(case.name)
     reverse_autograd = (
         assert_reverse_second_order(case, inputs)
-        if case.name.startswith("arithmetic.autograd.")
+        if case.name in REVERSE_SECOND_ORDER_CASES
         else None
     )
     record_coverage(

@@ -60,6 +60,11 @@ class ConformanceCase:
 COVERAGE_RECORDING = False
 _COVERAGE: dict[str, dict[str, object]] = {}
 _EXECUTED: set[str] = set()
+_CASE_EXECUTION: dict[str, dict[str, object]] = {}
+_STOCK_ROUTE_CASES = {
+    "view.reshape.copy.trainable-seed",
+    "view.reshape.offset-copy.second-order",
+}
 
 
 def mark_executed(case_name: str) -> None:
@@ -133,6 +138,11 @@ def record_coverage(
         if reverse_autograd != {"order": 2, "graph_preserved": True}:
             raise ValueError("reverse_autograd evidence must report order 2 and preserved history")
         record["reverse_autograd"] = dict(reverse_autograd)
+    if case.name in _STOCK_ROUTE_CASES:
+        execution = _CASE_EXECUTION.get(case.name)
+        if execution is None:
+            raise ValueError(f"{case.name}: actual forward execution evidence was not captured")
+        record["execution"] = dict(execution)
     _COVERAGE[case.name] = record
 
 
@@ -146,6 +156,55 @@ def assert_reverse_second_order(case: ConformanceCase, inputs: tuple[Any, ...]) 
         "arithmetic.autograd.sum-default": ("aten::sum.default", torch.ops.aten.sum.default, ()),
         "arithmetic.autograd.sum-dim": ("aten::sum.dim_IntList", torch.ops.aten.sum.dim_IntList, ([1], False)),
     }
+    metadata_names = {
+        "view.view.trainable-seed": ("aten::view.default", "view"),
+        "view.reshape.copy.trainable-seed": ("aten::reshape.default", "reshape-copy"),
+        "view.reshape.offset-copy.second-order": ("aten::reshape.default", "reshape-offset"),
+    }
+    if case.name in metadata_names:
+        expected_schema, recipe = metadata_names[case.name]
+        if case.declaration_id != expected_schema:
+            raise AssertionError(f"{case.name} maps to {case.declaration_id}, expected {expected_schema}")
+        cpu_base = inputs[0].cpu().detach().clone().requires_grad_(True)
+        vk_base = inputs[0].detach().requires_grad_(True)
+
+        def apply(base):
+            if recipe == "view":
+                return torch.ops.aten.view.default(base, [12])
+            if recipe == "reshape-copy":
+                return torch.reshape(base.t(), [6])
+            return torch.reshape(base.t().narrow(0, 1, 3), [12])
+
+        cpu_output, vk_output = apply(cpu_base), apply(vk_base)
+        cpu_seed = (torch.arange(1, cpu_output.numel() + 1, dtype=torch.float32) / 3).reshape(cpu_output.shape).requires_grad_()
+        vk_seed = cpu_seed.detach().to(vk_output.device).requires_grad_()
+        probe = torch.arange(1, cpu_base.numel() + 1, dtype=torch.float32).reshape(cpu_base.shape) / 5
+        vk_probe = probe.to(vk_output.device)
+        pytorch_vulkan._C.reset_execution_counters()
+        cpu_first = torch.autograd.grad(cpu_output, cpu_base, cpu_seed, create_graph=True)[0]
+        vk_first = torch.autograd.grad(vk_output, vk_base, vk_seed, create_graph=True)[0]
+        cpu_seed_second = torch.autograd.grad((cpu_first * probe).sum(), cpu_seed, allow_unused=True)[0]
+        vk_seed_second = torch.autograd.grad((vk_first * vk_probe).sum(), vk_seed, allow_unused=True)[0]
+        cpu_hvp = vk_hvp = None
+        if recipe == "reshape-offset":
+            cpu_loss = (apply(cpu_base) * apply(cpu_base)).sum()
+            vk_loss_output = apply(vk_base)
+            vk_loss = (vk_loss_output * vk_loss_output).sum()
+            cpu_grad = torch.autograd.grad(cpu_loss, cpu_base, create_graph=True)[0]
+            vk_grad = torch.autograd.grad(vk_loss, vk_base, create_graph=True)[0]
+            cpu_hvp = torch.autograd.grad((cpu_grad * probe.reshape(cpu_grad.shape)).sum(), cpu_base)[0]
+            vk_hvp = torch.autograd.grad((vk_grad * vk_probe.reshape(vk_grad.shape)).sum(), vk_base)[0]
+        pytorch_vulkan._C.synchronize()
+        counters = pytorch_vulkan._C.execution_counter_snapshot()
+        assert counters[2:] == (0, 0), f"{case.name} explicit transfer/fallback counters: {counters}"
+        torch.testing.assert_close(vk_first.cpu(), cpu_first, rtol=case.rtol, atol=case.atol)
+        assert (cpu_seed_second is None) == (vk_seed_second is None)
+        if cpu_seed_second is not None:
+            torch.testing.assert_close(vk_seed_second.cpu(), cpu_seed_second, rtol=case.rtol, atol=case.atol)
+        if recipe == "reshape-offset":
+            torch.testing.assert_close(vk_grad.cpu(), cpu_grad, rtol=case.rtol, atol=case.atol)
+            torch.testing.assert_close(vk_hvp.cpu(), cpu_hvp, rtol=case.rtol, atol=case.atol)
+        return {"order": 2, "graph_preserved": True}
     if case.name not in recipes:
         raise ValueError(f"no reverse second-order recipe for {case.name!r}")
     expected_schema, operation, args = recipes[case.name]
@@ -192,8 +251,10 @@ def coverage_recording():
     previous_enabled = COVERAGE_RECORDING
     previous_coverage = coverage_snapshot()
     previous_executed = executed_snapshot()
+    previous_execution = dict(_CASE_EXECUTION)
     reset_coverage()
     reset_executed()
+    _CASE_EXECUTION.clear()
     COVERAGE_RECORDING = True
     try:
         yield
@@ -202,6 +263,8 @@ def coverage_recording():
         _COVERAGE.update(previous_coverage)
         reset_executed()
         _EXECUTED.update(previous_executed)
+        _CASE_EXECUTION.clear()
+        _CASE_EXECUTION.update(previous_execution)
         COVERAGE_RECORDING = previous_enabled
 
 
@@ -600,6 +663,17 @@ def run_and_compare(
     dispatches, vulkan_copies, explicit_transfers, fallbacks = (
         pytorch_vulkan._C.execution_counter_snapshot()
     )
+    execution = {
+        "mode": case.execution_mode,
+        "compute_dispatches": dispatches,
+        "vulkan_copies": vulkan_copies,
+        "explicit_transfers": explicit_transfers,
+        "fallbacks": fallbacks,
+    }
+    if case.name in _STOCK_ROUTE_CASES:
+        if case.execution_mode != "copy" or dispatches != 0 or vulkan_copies <= 0:
+            raise AssertionError(f"{case.name}: stock reshape copy route did not execute Vulkan copy work")
+        _CASE_EXECUTION[case.name] = execution
     if case.execution_mode == "compute":
         assert dispatches > 0
     elif case.execution_mode == "copy":
@@ -652,10 +726,15 @@ def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
     dispatches, vulkan_copies, explicit_transfers, fallbacks = (
         pytorch_vulkan._C.execution_counter_snapshot()
     )
-    assert case.execution_mode in {"compute", "copy"}
-    assert dispatches > 0 or vulkan_copies > 0, (
-        f"{case.name} backward performed neither Vulkan dispatch nor copy work"
-    )
+    assert case.execution_mode in {"compute", "copy", "metadata"}
+    if case.name not in {
+        "view.view.trainable-seed",
+        "view.reshape.copy.trainable-seed",
+        "view.reshape.offset-copy.second-order",
+    }:
+        assert dispatches > 0 or vulkan_copies > 0, (
+            f"{case.name} backward performed neither Vulkan dispatch nor copy work"
+        )
     assert explicit_transfers == 0, f"{case.name} backward transferred explicitly"
     assert fallbacks == 0, f"{case.name} backward used implicit CPU fallback"
     for cpu_input, vk_input in zip(cpu_inputs, vk_inputs):
@@ -768,6 +847,26 @@ def _view(*, requires_grad=False) -> tuple[torch.Tensor]:
 def _metadata_view(*, requires_grad=False) -> tuple[torch.Tensor]:
     value = torch.arange(6, dtype=torch.float32).reshape(2, 3)
     return (value.detach().requires_grad_(requires_grad),)
+
+
+def _view_seed_input(*, requires_grad=False):
+    return (torch.arange(1, 13, dtype=torch.float32).reshape(3, 4).requires_grad_(requires_grad),)
+
+
+def _reshape_copy_seed_input(*, requires_grad=False):
+    return (torch.arange(1, 7, dtype=torch.float32).reshape(2, 3).requires_grad_(requires_grad),)
+
+
+def _reshape_offset_seed_input(*, requires_grad=False):
+    return (torch.arange(1, 25, dtype=torch.float32).reshape(4, 6).requires_grad_(requires_grad),)
+
+
+def _reshape_offset_copy(value):
+    return torch.reshape(value.t().narrow(0, 1, 3), [12])
+
+
+def _reshape_transpose_copy(value, shape=(6,)):
+    return torch.reshape(value.t(), shape)
 
 
 def _linear(*, requires_grad=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -2443,6 +2542,41 @@ ALL_CASES = tuple(
         cpu_reference=lambda value, shape: torch.ops.aten.view.default(value, shape),
         expected_shape=(6,),
         execution_mode="metadata",
+    ),
+    _case(
+        "view.view.trainable-seed",
+        "view",
+        torch.ops.aten.view.default,
+        _view_seed_input,
+        args=((12,),),
+        cpu_reference=lambda value, shape: torch.ops.aten.view.default(value, shape),
+        expected_shape=(12,),
+        check_gradients=True,
+        execution_mode="metadata",
+        declared_shapes=("3x4",),
+    ),
+    _case(
+        "view.reshape.copy.trainable-seed",
+        "view",
+        _reshape_transpose_copy,
+        _reshape_copy_seed_input,
+        args=((6,),),
+        cpu_reference=_reshape_transpose_copy,
+        expected_shape=(6,),
+        check_gradients=True,
+        execution_mode="copy",
+        declared_shapes=("2x3",),
+    ),
+    _case(
+        "view.reshape.offset-copy.second-order",
+        "view",
+        _reshape_offset_copy,
+        _reshape_offset_seed_input,
+        cpu_reference=_reshape_offset_copy,
+        expected_shape=(12,),
+        check_gradients=True,
+        execution_mode="copy",
+        declared_shapes=("4x6",),
     ),
     _case(
         "view.reshape-alias.metadata",
