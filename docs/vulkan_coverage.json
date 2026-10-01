@@ -77,6 +77,202 @@
     },
     "schema": "aten::addmm.out"
   },
+  "arithmetic.autograd.add-scalar": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1
+    ],
+    "input_shapes": [
+      "3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 1
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::add.Scalar"
+  },
+  "arithmetic.autograd.add-tensor": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1
+    ],
+    "input_shapes": [
+      "2"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 1
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::add.Tensor"
+  },
+  "arithmetic.autograd.mul-scalar": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1
+    ],
+    "input_shapes": [
+      "3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 1
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::mul.Scalar"
+  },
+  "arithmetic.autograd.mul-tensor": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 2,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::mul.Tensor"
+  },
+  "arithmetic.autograd.sum-default": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "2x2"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 0,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::sum.default"
+  },
+  "arithmetic.autograd.sum-dim": {
+    "gradients": true,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "2x2"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "reverse_autograd": {
+      "graph_preserved": true,
+      "order": 2
+    },
+    "schema": "aten::sum.dim_IntList"
+  },
   "aten._adaptive_avg_pool2d.backward": {
     "gradients": false,
     "input_dtypes": [
@@ -3773,6 +3969,33 @@
     ],
     "input_shapes": [
       "0x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 2,
+        "role": "primary_input"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 1,
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 2
+    },
+    "schema": "aten::sum.dim_IntList"
+  },
+  "reduction.sum.expanded-readable-input": {
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      2
+    ],
+    "input_shapes": [
+      "2x2"
     ],
     "operands": [
       {

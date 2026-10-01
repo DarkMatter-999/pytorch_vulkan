@@ -81,6 +81,7 @@ def record_coverage(
     *,
     gradients: bool,
     parity: bool,
+    reverse_autograd: dict | None = None,
 ) -> None:
     """Record what a case actually exercised using its runtime tensors."""
     if not COVERAGE_RECORDING:
@@ -99,7 +100,7 @@ def record_coverage(
         }
         for tensor in positional_tensors
     ]
-    _COVERAGE[case.name] = {
+    record = {
         "schema": schema,
         "operands": operands,
         "primary_input": (
@@ -128,6 +129,53 @@ def record_coverage(
         "gradients": bool(gradients),
         "parity": bool(parity),
     }
+    if reverse_autograd is not None:
+        if reverse_autograd != {"order": 2, "graph_preserved": True}:
+            raise ValueError("reverse_autograd evidence must report order 2 and preserved history")
+        record["reverse_autograd"] = dict(reverse_autograd)
+    _COVERAGE[case.name] = record
+
+
+def assert_reverse_second_order(case: ConformanceCase, inputs: tuple[Any, ...]) -> dict:
+    """Compare seeded first/second reverse derivatives for the six named schemas."""
+    recipes = {
+        "arithmetic.autograd.add-tensor": ("aten::add.Tensor", torch.ops.aten.add.Tensor, ()),
+        "arithmetic.autograd.add-scalar": ("aten::add.Scalar", torch.ops.aten.add.Scalar, (2.0,)),
+        "arithmetic.autograd.mul-tensor": ("aten::mul.Tensor", torch.ops.aten.mul.Tensor, ()),
+        "arithmetic.autograd.mul-scalar": ("aten::mul.Scalar", torch.ops.aten.mul.Scalar, (2.0,)),
+        "arithmetic.autograd.sum-default": ("aten::sum.default", torch.ops.aten.sum.default, ()),
+        "arithmetic.autograd.sum-dim": ("aten::sum.dim_IntList", torch.ops.aten.sum.dim_IntList, ([1], False)),
+    }
+    if case.name not in recipes:
+        raise ValueError(f"no reverse second-order recipe for {case.name!r}")
+    expected_schema, operation, args = recipes[case.name]
+    if case.declaration_id != expected_schema:
+        raise AssertionError(f"{case.name} maps to {case.declaration_id}, expected {expected_schema}")
+    cpu_inputs = tuple(item.cpu().detach().clone().requires_grad_(True) for item in inputs if isinstance(item, torch.Tensor))
+    vk_inputs = tuple(item.detach().requires_grad_(True) for item in inputs if isinstance(item, torch.Tensor))
+    cpu_output = operation(*cpu_inputs, *args)
+    vk_output = operation(*vk_inputs, *args)
+    cpu_seed = torch.arange(1, cpu_output.numel() + 1, dtype=cpu_output.dtype).reshape(cpu_output.shape) / 3
+    vk_seed = cpu_seed.to(vk_output.device).detach().requires_grad_(True)
+    cpu_seed = cpu_seed.detach().requires_grad_(True)
+    cpu_first = torch.autograd.grad(cpu_output, cpu_inputs, cpu_seed, create_graph=True)
+    vk_first = torch.autograd.grad(vk_output, vk_inputs, vk_seed, create_graph=True)
+    cpu_terms = []
+    vk_terms = []
+    for index, (cpu_gradient, vk_gradient) in enumerate(zip(cpu_first, vk_first)):
+        assert cpu_gradient.requires_grad == vk_gradient.requires_grad
+        torch.testing.assert_close(vk_gradient.cpu(), cpu_gradient, rtol=case.rtol, atol=case.atol)
+        probe = torch.arange(1, cpu_gradient.numel() + 1, dtype=cpu_gradient.dtype).reshape(cpu_gradient.shape) / (index + 5)
+        cpu_terms.append((cpu_gradient * probe).sum())
+        vk_terms.append((vk_gradient * probe.to(vk_gradient.device)).sum())
+    cpu_second = torch.autograd.grad(sum(cpu_terms), (*cpu_inputs, cpu_seed), allow_unused=True)
+    vk_second = torch.autograd.grad(sum(vk_terms), (*vk_inputs, vk_seed), allow_unused=True)
+    for cpu_gradient, vk_gradient in zip(cpu_second, vk_second):
+        assert (cpu_gradient is None) == (vk_gradient is None)
+        if cpu_gradient is not None:
+            torch.testing.assert_close(vk_gradient.cpu(), cpu_gradient, rtol=case.rtol, atol=case.atol)
+    pytorch_vulkan._C.synchronize()
+    return {"order": 2, "graph_preserved": True}
 
 
 def coverage_snapshot() -> dict[str, dict[str, object]]:
@@ -1108,8 +1156,12 @@ def _setup_double_offset(inputs, device):
     return (value[1:], value[0])
 
 
-def _overlapping(*, requires_grad=False) -> tuple[torch.Tensor]:
-    return (torch.empty_strided((2, 2), (1, 0), dtype=torch.float32),)
+def _expanded_read(*, requires_grad=False) -> tuple[torch.Tensor]:
+    return (torch.tensor([1.5, -2.0], dtype=torch.float32).unsqueeze(1).expand(2, 2),)
+
+
+def _mixed_expanded_overlap(*, requires_grad=False) -> tuple[torch.Tensor]:
+    return (torch.empty_strided((2, 2, 2), (0, 1, 1), dtype=torch.float32),)
 
 
 def _invalid_out(value):
@@ -2077,6 +2129,42 @@ ALL_CASES = tuple(
         expected_shape=(3,),
     ),
     _case(
+        "arithmetic.autograd.add-tensor", "arithmetic autograd",
+        torch.ops.aten.add.Tensor, _binary,
+        cpu_reference=torch.ops.aten.add.Tensor, check_gradients=True,
+        expected_shape=(2,),
+    ),
+    _case(
+        "arithmetic.autograd.add-scalar", "arithmetic autograd",
+        torch.ops.aten.add.Scalar, _unary, args=(2.0,),
+        cpu_reference=torch.ops.aten.add.Scalar, check_gradients=True,
+        expected_shape=(3,),
+    ),
+    _case(
+        "arithmetic.autograd.mul-tensor", "arithmetic autograd",
+        torch.ops.aten.mul.Tensor, _stack,
+        cpu_reference=torch.ops.aten.mul.Tensor, check_gradients=True,
+        expected_shape=(2, 3),
+    ),
+    _case(
+        "arithmetic.autograd.mul-scalar", "arithmetic autograd",
+        torch.ops.aten.mul.Scalar, _unary, args=(2.0,),
+        cpu_reference=torch.ops.aten.mul.Scalar, check_gradients=True,
+        expected_shape=(3,),
+    ),
+    _case(
+        "arithmetic.autograd.sum-default", "arithmetic autograd",
+        torch.ops.aten.sum.default, _reduction,
+        cpu_reference=torch.ops.aten.sum.default, check_gradients=True,
+        expected_shape=(),
+    ),
+    _case(
+        "arithmetic.autograd.sum-dim", "arithmetic autograd",
+        torch.ops.aten.sum.dim_IntList, _reduction, args=([1], False),
+        cpu_reference=torch.ops.aten.sum.dim_IntList, check_gradients=True,
+        expected_shape=(2,),
+    ),
+    _case(
         "reduction.sum.dim",
         "reduction",
         torch.sum,
@@ -3039,10 +3127,19 @@ ALL_CASES = tuple(
         error_pattern=r"requires equal tensor sizes; broadcasting is unsupported",
     ),
     _case(
-        "reduction.sum.non-contiguous-overlap.rejected",
+        "reduction.sum.expanded-readable-input",
         "reduction",
         torch.sum,
-        _overlapping,
+        _expanded_read,
+        args=(1,),
+        supported=True,
+        cpu_reference=_cpu_sum,
+    ),
+    _case(
+        "reduction.sum.mixed-expanded-overlap.rejected",
+        "reduction",
+        torch.sum,
+        _mixed_expanded_overlap,
         args=(1,),
         supported=False,
         cpu_reference=_cpu_sum,

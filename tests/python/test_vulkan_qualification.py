@@ -25,7 +25,7 @@ SCALAR_OUT_QUALIFICATION_CASES = {
         ),
         "negative_rejection": (
             "tests/python/test_vulkan_add.py::"
-            "test_scalar_contract_matrix_rejects_schema_specific_invalid_scalar_without_work"
+            "test_scalar_contract_matrix_rejects_invalid_scalar_without_work"
             if contract.output_mode == "functional"
             else (
                 "tests/python/test_vulkan_out.py::"

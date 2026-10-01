@@ -170,15 +170,13 @@ def test_scalar_out_contract_matrix_has_named_case_and_counter_contracts():
 
 
 def test_scalar_out_promotions_have_positive_and_negative_conformance_coverage():
-    cases_by_schema = {
-        case.declaration_id: case for case in ALL_CASES if case.supported
-    }
-    assert PROMOTED_SCALAR_OUT_SCHEMAS <= cases_by_schema.keys()
+    cases_by_name = {case.name: case for case in ALL_CASES if case.supported}
     for schema in PROMOTED_SCALAR_OUT_SCHEMAS:
-        case = cases_by_schema[schema]
+        contract = SCALAR_OUT_CONTRACT_MATRIX[schema]
+        case = cases_by_name[contract.case_name]
+        assert case.declaration_id == schema
         assert callable(case.cpu_reference)
         assert case.execution_mode == "compute"
-        assert case.name == SCALAR_OUT_CONTRACT_MATRIX[schema].case_name
     assert all(
         contract.rejection_boundaries
         for contract in SCALAR_OUT_CONTRACT_MATRIX.values()

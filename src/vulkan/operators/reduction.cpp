@@ -71,6 +71,13 @@ class ReductionAutograd final
         auto input = ctx->get_saved_variables()[0];
         pytorch_vulkan::validate_operator_rank(input.dim(),
                                                Mean ? "mean backward" : "sum backward");
+        const at::Tensor &grad = grads[0];
+        TORCH_CHECK(grad.device() == input.device(), "Vulkan ",
+                    Mean ? "mean" : "sum", " backward gradient device mismatch");
+        TORCH_CHECK(grad.scalar_type() == at::kFloat &&
+                        grad.layout() == at::kStrided,
+                    "Vulkan ", Mean ? "mean" : "sum",
+                    " backward requires strided float32 gradient");
         auto mask = static_cast<uint64_t>(ctx->saved_data["mask"].toInt());
         bool keepdim = ctx->saved_data["keepdim"].toBool();
         std::vector<int64_t> compact_shape, full_shape;
@@ -80,7 +87,10 @@ class ReductionAutograd final
             if (keepdim || !reduced)
                 compact_shape.push_back(reduced ? 1 : input.size(d));
         }
-        auto expanded = grads[0].reshape(compact_shape).reshape(full_shape);
+        TORCH_CHECK(grad.sizes().equals(compact_shape), "Vulkan ",
+                    Mean ? "mean" : "sum", " backward gradient shape mismatch");
+        at::Tensor readable_grad = grad.is_contiguous() ? grad : grad.contiguous();
+        auto expanded = readable_grad.reshape(compact_shape).reshape(full_shape);
         auto result = at::empty(input.sizes(), input.options());
         const auto expanded_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(
             expanded, "reduction gradient");
@@ -202,7 +212,10 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
                               pattern);
         return output;
     }
-    TORCH_CHECK(input_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
+    const bool expanded_read =
+        pytorch_vulkan::is_non_overlapping_except_broadcast_dims(input_layout);
+    TORCH_CHECK(input_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No ||
+                    (operation == 0u && expanded_read),
                 "Vulkan ", name, " rejects overlapping input views");
     auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(output, name);
     TORCH_CHECK(output_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No,
@@ -234,8 +247,13 @@ at::Tensor reduction_backward_dispatch(const at::Tensor &input,
                                        const at::Tensor &grad_output, int64_t dim,
                                        uint32_t operation, bool keepdim) {
     TORCH_CHECK(input.scalar_type() == at::kFloat && input.is_contiguous() &&
-                    forward.is_contiguous() && grad_output.is_contiguous(),
-                "Vulkan reduction backward requires contiguous float32 tensors");
+                    forward.is_contiguous(),
+                "Vulkan reduction backward requires contiguous float32 input and forward tensors");
+    auto readable_grad = grad_output.is_contiguous() ? grad_output
+                                                     : grad_output.contiguous();
+    TORCH_CHECK(readable_grad.scalar_type() == at::kFloat &&
+                    readable_grad.is_contiguous(),
+                "Vulkan reduction backward requires a contiguous float32 grad tensor");
     TORCH_CHECK(dim >= 0 && dim < input.dim(),
                 "Vulkan reduction backward dimension out of range");
     TORCH_CHECK(input.size(dim) > 0,
@@ -246,12 +264,12 @@ at::Tensor reduction_backward_dispatch(const at::Tensor &input,
     auto forward_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(
         forward, "reduction backward output");
     auto grad_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(
-        grad_output, "reduction backward grad");
+        readable_grad, "reduction backward grad");
     auto result_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(
         grad_input, "reduction backward result");
     const auto &input_data = input.storage().data_ptr();
     const auto &forward_data = forward.storage().data_ptr();
-    const auto &grad_data = grad_output.storage().data_ptr();
+    const auto &grad_data = readable_grad.storage().data_ptr();
     const auto &result_data = grad_input.storage().data_ptr();
     pytorch_vulkan::validate_allocation(input_data, input_layout.allocation_bytes,
                                         "reduction backward");
@@ -347,6 +365,15 @@ at::Tensor sum_tensor(const at::Tensor &input, c10::OptionalArrayRef<int64_t> di
                       bool keepdim, c10::optional<at::ScalarType> dtype) {
     TORCH_CHECK(!dtype || *dtype == at::kFloat,
                 "Vulkan sum supports only float32 output");
+    if (input.dim() == 0) {
+        validate_input(input, "sum");
+        pytorch_vulkan::validate_reduction_dtype(input.scalar_type(), false, "sum");
+        TORCH_CHECK(!dims || dims->empty() ||
+                        (dims->size() == 1 && ((*dims)[0] == 0 || (*dims)[0] == -1)),
+                    "Vulkan sum scalar dimension must be 0 or -1");
+        (void)pytorch_vulkan::inspect_vulkan_tensor_layout(input, "sum");
+        return input.clone();
+    }
     return dispatch(input, dims, keepdim, 0u, "sum");
 }
 at::Tensor mean_tensor(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims,
@@ -520,7 +547,7 @@ at::Tensor autograd_mean(const at::Tensor &input, c10::OptionalArrayRef<int64_t>
     return ReductionAutograd<true>::apply(input, dims, keepdim, dtype);
 }
 at::Tensor sum_default(const at::Tensor &input, c10::optional<at::ScalarType> dtype) {
-    return autograd_sum(input, c10::nullopt, false, dtype);
+    return sum_tensor(input, c10::nullopt, false, dtype);
 }
 at::Tensor mean_default(const at::Tensor &input, c10::optional<at::ScalarType> dtype) {
     return autograd_mean(input, c10::nullopt, false, dtype);
@@ -573,8 +600,6 @@ at::Tensor &log_softmax_backward_out(const at::Tensor &grad_output,
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
-    m.impl("sum", &pytorch_vulkan::sum_default);
-    m.impl("sum.dim_IntList", &pytorch_vulkan::autograd_sum);
     m.impl("mean", &pytorch_vulkan::mean_default);
     m.impl("mean.dim", &pytorch_vulkan::autograd_mean);
     m.impl("amax", &pytorch_vulkan::autograd_amax);

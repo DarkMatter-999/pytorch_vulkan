@@ -12,6 +12,7 @@ VulkanTensorLayout inspect_vulkan_view_layout(const at::Tensor &storage_owner,
                                               at::IntArrayRef strides,
                                               int64_t storage_offset,
                                               const char *label);
+bool is_non_overlapping_except_broadcast_dims(const VulkanTensorLayout &layout);
 
 int64_t vulkan_storage_offset(const VulkanTensorLayout &layout,
                               at::IntArrayRef coordinate);

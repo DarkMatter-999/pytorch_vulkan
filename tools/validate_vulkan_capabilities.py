@@ -45,7 +45,7 @@ SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*x[1-9][0-9]*(?:x[1-9][0-9
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
-AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "not_applicable"})
+AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "not_applicable"})
 EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "rejected_before_vulkan", "deferred_before_vulkan"})
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
@@ -221,7 +221,10 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
                 f"{path}.schema: {entry['schema']!r} (status={entry['status']!r}) is not a PyTorch dispatcher overload"
             )
         witnesses = entry["witnesses"]
-        if not isinstance(witnesses, dict) or set(witnesses) != {"dtypes", "ranks", "pairs", "cases"}:
+        if not isinstance(witnesses, dict) or set(witnesses) not in (
+            {"dtypes", "ranks", "pairs", "cases"},
+            {"dtypes", "ranks", "pairs", "cases", "reverse_second_order_cases"},
+        ):
             raise ValueError(f"{path}.witnesses: expected primary-input dtypes/ranks/pairs/cases")
         for field in ("dtypes", "ranks", "cases"):
             values = witnesses[field]
@@ -241,6 +244,37 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             raise ValueError(f"{path}.witnesses: dtype/rank unions differ from primary-input pairs")
         if not set(witnesses["cases"]) <= {case.get("name") for case in entry["test_cases"]}:
             raise ValueError(f"{path}.witnesses.cases: case is not present in test_cases")
+        promoted = entry["autograd"] == "reverse_second_order_witnessed"
+        if promoted != ("reverse_second_order_cases" in witnesses):
+            raise ValueError(f"{path}.witnesses.reverse_second_order_cases: required only for reverse_second_order_witnessed")
+        if "reverse_second_order_cases" in witnesses:
+            reverse_cases = witnesses["reverse_second_order_cases"]
+            supported_cases = {case["name"] for case in entry["test_cases"] if isinstance(case, dict) and case.get("supported") is True}
+            if (
+                not isinstance(reverse_cases, list)
+                or not reverse_cases
+                or any(type(name) is not str for name in reverse_cases)
+                or reverse_cases != sorted(set(reverse_cases))
+                or not set(reverse_cases) <= set(witnesses["cases"])
+                or not set(reverse_cases) <= supported_cases
+            ):
+                raise ValueError(f"{path}.witnesses.reverse_second_order_cases: expected sorted supported witness case links")
+        if promoted:
+            try:
+                coverage = json.loads((root / "docs/vulkan_coverage.json").read_text())
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError(f"{path}.witnesses.reverse_second_order_cases: coverage evidence unavailable") from error
+            for name in witnesses["reverse_second_order_cases"]:
+                record = coverage.get(name)
+                if (
+                    not isinstance(record, dict)
+                    or record.get("schema") != schema
+                    or record.get("parity") is not True
+                    or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}
+                    or type(record.get("reverse_autograd", {}).get("order")) is not int
+                    or type(record.get("reverse_autograd", {}).get("graph_preserved")) is not bool
+                ):
+                    raise ValueError(f"{path}.witnesses.reverse_second_order_cases: {name!r} lacks matching executed reverse evidence")
         if entry["status"] == "supported":
             if not pairs or not witnesses["cases"]:
                 raise ValueError(f"{path}.witnesses: supported entry has no witnesses")

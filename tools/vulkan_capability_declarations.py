@@ -753,7 +753,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::add.Scalar':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -821,7 +821,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::add.Tensor':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -4083,7 +4083,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::mul.Scalar':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -4151,7 +4151,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::mul.Tensor':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -5851,7 +5851,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::sum.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_backward",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -5885,7 +5885,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::sum.dim_IntList':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"

@@ -82,7 +82,7 @@ struct Params {
     float scalar;
     uint32_t element_count;
     uint32_t operation;
-    uint32_t padding;
+    float alpha;
 };
 struct PointwiseMetadata {
     uint32_t data[80];
@@ -1416,9 +1416,10 @@ void VulkanCompute::tensor_scalar(VkBuffer tensor,
                                   const VulkanTensorLayout &tensor_layout,
                                   VkBuffer output,
                                   const VulkanTensorLayout &output_layout, float scalar,
-                                  uint32_t operation, bool bool_dtype) const {
+                                  uint32_t operation, bool bool_dtype,
+                                  float alpha) const {
     dispatch(1, tensor, &tensor_layout, VK_NULL_HANDLE, nullptr, output, output_layout,
-             scalar, operation, false, bool_dtype);
+             scalar, operation, false, bool_dtype, false, 0, 0, alpha);
 }
 
 void VulkanCompute::tensor_scalar_alias(VkBuffer tensor,
@@ -1444,9 +1445,10 @@ void VulkanCompute::scalar_tensor(float scalar, VkBuffer tensor,
                                   const VulkanTensorLayout &tensor_layout,
                                   VkBuffer output,
                                   const VulkanTensorLayout &output_layout,
-                                  uint32_t operation, bool bool_dtype) const {
+                                  uint32_t operation, bool bool_dtype,
+                                  float alpha) const {
     dispatch(2, VK_NULL_HANDLE, nullptr, tensor, &tensor_layout, output, output_layout,
-             scalar, operation, false, bool_dtype);
+             scalar, operation, false, bool_dtype, false, 0, 0, alpha);
 }
 
 void VulkanCompute::scalar_tensor_alias(float scalar, VkBuffer tensor,
@@ -2818,7 +2820,8 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
                              const VulkanTensorLayout *rhs_layout, VkBuffer output,
                              const VulkanTensorLayout &output_layout, float scalar,
                              uint32_t operation, bool exact_alias, bool bool_dtype,
-                             bool bool_output, VkDeviceSize, VkDeviceSize) const {
+                             bool bool_output, VkDeviceSize, VkDeviceSize,
+                             float alpha) const {
     if (mode > 3 || output == VK_NULL_HANDLE ||
         ((mode != 2) && lhs_layout == nullptr) ||
         ((mode == 2) && rhs_layout == nullptr) ||
@@ -2934,7 +2937,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 pipeline_layouts_[pipeline_mode], 0, 1, &set, 0,
                                 nullptr);
-        Params params{scalar, elements, operation, 0};
+        Params params{scalar, elements, operation, alpha};
         vkCmdPushConstants(cmd, pipeline_layouts_[pipeline_mode],
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(params), &params);
         record_dispatch_command(cmd, groups, 1, 1);

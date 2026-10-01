@@ -1,7 +1,6 @@
 import pytest
-import torch
-
 import pytorch_vulkan
+import torch
 
 
 @pytest.fixture
@@ -53,16 +52,17 @@ def test_binary_tensor_gradients_match_cpu(vulkan_backend, operation):
     descriptor_reuses = service_after["descriptor_reuses"] - service_before["descriptor_reuses"]
     assert descriptor_allocations + descriptor_reuses >= 1
     assert service_after["descriptor_pools"] <= service_after["descriptor_pool_limit"]
-    assert counters[0] == 3
-    assert counters[1] == 0
+    expected_dispatches = 1 if operation is torch.add else 3
+    assert counters[0] == expected_dispatches
+    assert counters[1] == (2 if operation is torch.add else 0)
     assert counters[2] == 0
     assert counters[3] == 0
     if api.execution_mode() == "sync":
-        assert api.compute_submitted_count() == 3
-        assert api.compute_completed_count() == 3
-        assert api.compute_wait_count() == 3
+        assert api.compute_submitted_count() == expected_dispatches
+        assert api.compute_completed_count() == expected_dispatches
+        assert api.compute_wait_count() == expected_dispatches
     else:
-        assert api.compute_submitted_count() == 0
+        assert api.compute_submitted_count() == (1 if operation is torch.add else 0)
         assert api.compute_completed_count() == 0
         assert api.compute_wait_count() == 0
         assert api.pending_compute_count() > 0

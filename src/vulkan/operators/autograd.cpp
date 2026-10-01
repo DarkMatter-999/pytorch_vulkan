@@ -17,6 +17,10 @@
 namespace pytorch_vulkan {
 
 namespace {
+at::Tensor contiguous_gradient_read(const at::Tensor &gradient) {
+    return gradient.is_contiguous() ? gradient : gradient.contiguous();
+}
+
 bool disable_multi_output_backward() {
     const char *value = std::getenv("PYTORCH_VULKAN_DISABLE_MULTI_OUTPUT_BACKWARD");
     return value != nullptr && std::strcmp(value, "1") == 0;
@@ -99,16 +103,26 @@ class LinearAutogradFunction final
         if (!grad_outputs[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor()};
         const auto saved = ctx->get_saved_variables();
-        const at::Tensor &raw_grad = grad_outputs[0];
-
         const auto input_2d =
             saved[0].dim() == 2
                 ? saved[0]
                 : saved[0].reshape(
                       {saved[0].numel() / saved[0].size(-1), saved[0].size(-1)});
+        const at::Tensor &raw_grad = grad_outputs[0];
+        TORCH_CHECK(raw_grad.device() == saved[0].device(),
+                    "Vulkan linear backward gradient device mismatch");
+        TORCH_CHECK(raw_grad.scalar_type() == at::kFloat &&
+                        raw_grad.layout() == at::kStrided,
+                    "Vulkan linear backward requires strided float32 gradient");
+        TORCH_CHECK(raw_grad.dim() == saved[0].dim() &&
+                        raw_grad.size(-1) == saved[1].size(0) &&
+                        raw_grad.numel() == input_2d.size(0) * saved[1].size(0),
+                    "Vulkan linear backward gradient shape mismatch");
+        const at::Tensor readable_grad = contiguous_gradient_read(raw_grad);
         at::Tensor grad = raw_grad.dim() == 2
-                              ? raw_grad
-                              : raw_grad.reshape({input_2d.size(0), input_2d.size(1)});
+                              ? readable_grad
+                              : readable_grad.reshape(
+                                    {input_2d.size(0), saved[1].size(0)});
         at::Tensor grad_input;
         if (ctx->needs_input_grad(0)) {
             grad_input = linear_backward_input(grad, saved[1], input_2d);
@@ -141,7 +155,7 @@ class MmAutogradFunction final : public torch::autograd::Function<MmAutogradFunc
         if (!grad_outputs[0].defined())
             return {at::Tensor(), at::Tensor()};
         const auto saved = ctx->get_saved_variables();
-        const at::Tensor &grad = grad_outputs[0];
+        const at::Tensor grad = contiguous_gradient_read(grad_outputs[0]);
         return {ctx->needs_input_grad(0)
                     ? pytorch_vulkan::mm(
                           grad, pytorch_vulkan::transpose_contiguous_2d(saved[1]))
@@ -210,7 +224,7 @@ class AddmmAutogradFunction final
             return {at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor()};
         const auto saved = ctx->get_saved_variables();
-        const at::Tensor &grad = grad_outputs[0];
+        const at::Tensor grad = contiguous_gradient_read(grad_outputs[0]);
         const at::Scalar beta = ctx->saved_data["beta"].toScalar();
         const at::Scalar alpha = ctx->saved_data["alpha"].toScalar();
         auto scaled = [](const at::Tensor &tensor, const at::Scalar &scalar) {

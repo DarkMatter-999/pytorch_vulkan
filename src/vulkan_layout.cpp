@@ -226,6 +226,25 @@ VulkanTensorLayout inspect_vulkan_view_layout(const at::Tensor &storage_owner,
                           nullptr);
 }
 
+bool is_non_overlapping_except_broadcast_dims(const VulkanTensorLayout &layout) {
+    std::vector<int64_t> sizes;
+    std::vector<int64_t> strides;
+    bool has_broadcast_dimension = false;
+    for (size_t dim = 0; dim < layout.sizes.size(); ++dim) {
+        if (layout.sizes[dim] <= 1)
+            continue;
+        if (layout.strides[dim] == 0) {
+            has_broadcast_dimension = true;
+            continue;
+        }
+        sizes.push_back(layout.sizes[dim]);
+        strides.push_back(layout.strides[dim]);
+    }
+    return has_broadcast_dimension &&
+           classify_strided_overlap(sizes, strides, "expanded read") ==
+               VulkanOverlap::No;
+}
+
 int64_t vulkan_storage_offset(const VulkanTensorLayout &layout,
                               at::IntArrayRef coordinate) {
     TORCH_CHECK(coordinate.size() == static_cast<size_t>(layout.rank),

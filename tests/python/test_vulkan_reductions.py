@@ -53,8 +53,8 @@ def test_float32_reduction_matches_cpu_and_preserves_gradient(
     assert service_after["descriptor_pools"] <= service_after["descriptor_pool_limit"]
     torch.testing.assert_close(vk_result.cpu(), cpu_result, rtol=1e-6, atol=1e-6)
     torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=0, atol=0)
-    assert counters[0] == 2
-    assert counters[1] == 0
+    assert counters[0] == (1 if operation is torch.sum else 2)
+    assert counters[1] == (1 if operation is torch.sum else 0)
     assert counters[2] == 0
     assert counters[3] == 0
     pytorch_vulkan._C.synchronize()

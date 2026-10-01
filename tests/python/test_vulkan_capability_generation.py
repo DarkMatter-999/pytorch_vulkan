@@ -205,6 +205,35 @@ def test_auxiliary_and_output_ranks_do_not_witness_primary_input_rank():
     assert witness["dtypes"] == ["float32"]
 
 
+def test_reverse_second_order_witness_requires_executed_metadata_not_gradient_flag():
+    name = "arithmetic.autograd.add-tensor"
+    schema = "aten::add.Tensor"
+    base = {
+        "schema": schema,
+        "primary_input": {"dtype": "float32", "rank": 1},
+        "parity": True,
+        "gradients": True,
+    }
+    assert "reverse_second_order_cases" not in generator._witnesses_by_schema({name: base})[schema]
+    witnessed = dict(base, reverse_autograd={"order": 2, "graph_preserved": True})
+    assert generator._witnesses_by_schema({name: witnessed})[schema]["reverse_second_order_cases"] == [name]
+
+
+def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage():
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    witnessed = {
+        name: record for name, record in coverage.items()
+        if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}
+    }
+    assert len(witnessed) == 6
+    for name, record in witnessed.items():
+        assert name.startswith("arithmetic.autograd.")
+        assert record["schema"] in {
+            "aten::add.Tensor", "aten::add.Scalar", "aten::mul.Tensor",
+            "aten::mul.Scalar", "aten::sum.default", "aten::sum.dim_IntList",
+        }
+
+
 def test_declared_shapes_were_actually_exercised():
     import vulkan_conformance as vc
 
@@ -278,12 +307,18 @@ def _run_all_supported_cases():
                 result.cpu(), expected, rtol=case.rtol, atol=case.atol, equal_nan=True
             )
             pytorch_vulkan._C.synchronize()
+            reverse_autograd = (
+                vc.assert_reverse_second_order(case, inputs)
+                if case.name.startswith("arithmetic.autograd.")
+                else None
+            )
             vc.record_coverage(
                 case,
                 inputs,
                 result,
                 gradients=case.check_gradients,
                 parity=True,
+                reverse_autograd=reverse_autograd,
             )
         return vc.coverage_snapshot()
 

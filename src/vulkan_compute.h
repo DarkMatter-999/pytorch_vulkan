@@ -46,11 +46,11 @@ class VulkanCompute final {
     void tensor_scalar(VkBuffer tensor, const VulkanTensorLayout &tensor_layout,
                        VkBuffer output, const VulkanTensorLayout &output_layout,
                        float scalar, uint32_t operation = 0,
-                       bool bool_dtype = false) const;
+                       bool bool_dtype = false, float alpha = 1.0F) const;
     void scalar_tensor(float scalar, VkBuffer tensor,
-                       const VulkanTensorLayout &tensor_layout, VkBuffer output,
-                       const VulkanTensorLayout &output_layout, uint32_t operation = 0,
-                       bool bool_dtype = false) const;
+                        const VulkanTensorLayout &tensor_layout, VkBuffer output,
+                        const VulkanTensorLayout &output_layout, uint32_t operation = 0,
+                        bool bool_dtype = false, float alpha = 1.0F) const;
     void scalar_tensor_alias(float scalar, VkBuffer tensor,
                              const VulkanTensorLayout &tensor_layout, VkBuffer output,
                              const VulkanTensorLayout &output_layout,
@@ -237,9 +237,9 @@ class VulkanCompute final {
     void dispatch(uint32_t mode, VkBuffer lhs, const VulkanTensorLayout *lhs_layout,
                   VkBuffer rhs, const VulkanTensorLayout *rhs_layout, VkBuffer output,
                   const VulkanTensorLayout &output_layout, float scalar,
-                  uint32_t operation, bool exact_alias, bool bool_dtype,
-                  bool bool_output = false, VkDeviceSize lhs_offset = 0,
-                  VkDeviceSize output_offset = 0) const;
+                   uint32_t operation, bool exact_alias, bool bool_dtype,
+                   bool bool_output = false, VkDeviceSize lhs_offset = 0,
+                   VkDeviceSize output_offset = 0, float alpha = 1.0F) const;
     void dispatch_compound(VkBuffer self, const VulkanTensorLayout &self_layout,
                            VkBuffer tensor1, const VulkanTensorLayout &tensor1_layout,
                            VkBuffer tensor2, const VulkanTensorLayout &tensor2_layout,

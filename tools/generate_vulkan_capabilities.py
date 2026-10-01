@@ -280,7 +280,7 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
             continue
         bucket = witnesses.setdefault(
             record["schema"],
-            {"dtypes": set(), "ranks": set(), "pairs": set(), "cases": set()},
+            {"dtypes": set(), "ranks": set(), "pairs": set(), "cases": set(), "reverse_second_order_cases": set()},
         )
         primary = record.get("primary_input")
         if primary is not None:
@@ -288,10 +288,13 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
             bucket["ranks"].add(primary["rank"])
             bucket["pairs"].add((primary["dtype"], primary["rank"]))
         bucket["cases"].add(name)
+        if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}:
+            bucket["reverse_second_order_cases"].add(name)
     return {
         schema: {
             key: [list(pair) for pair in sorted(value)] if key == "pairs" else sorted(value)
             for key, value in bucket.items()
+            if key != "reverse_second_order_cases" or value
         }
         for schema, bucket in witnesses.items()
     }
@@ -304,6 +307,10 @@ def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
         entry["witnesses"] = by_schema.get(
             entry["schema"], {"dtypes": [], "ranks": [], "pairs": [], "cases": []}
         )
+        if entry["autograd"] == "reverse_second_order_witnessed":
+            reverse_cases = entry["witnesses"].get("reverse_second_order_cases", [])
+            if not reverse_cases:
+                raise ValueError(f"{entry['schema']}: reverse second-order declaration has no executed evidence")
         observed = sorted(
             {
                 shape

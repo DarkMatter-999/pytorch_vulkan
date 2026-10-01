@@ -101,10 +101,17 @@ float scalar_to_float(const at::Scalar &scalar, const char *operation_name) {
     TORCH_CHECK(!scalar.isComplex(), "Vulkan ", operation_name,
                 " requires a real numeric scalar");
     try {
+        // Keep the double conversion only for validation. The value sent to the
+        // float32 shader must follow PyTorch Scalar's storage-type-aware cast;
+        // routing int64 through double can round an integer twice at an f32
+        // midpoint.
         const double value = scalar.toDouble();
         TORCH_CHECK(std::isfinite(value), "Vulkan ", operation_name,
                     " does not support non-finite scalar values");
-        const float result = static_cast<float>(value);
+        TORCH_CHECK(std::abs(value) <= std::numeric_limits<float>::max(),
+                    "Vulkan ", operation_name,
+                    " scalar is outside float32 range");
+        const float result = scalar.toFloat();
         TORCH_CHECK(std::isfinite(result), "Vulkan ", operation_name,
                     " scalar is outside float32 range");
         TORCH_CHECK(value == 0.0 || result != 0.0, "Vulkan ", operation_name,
@@ -120,7 +127,8 @@ float scalar_to_float(const at::Scalar &scalar, const char *operation_name) {
 
 at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
                                   pytorch_vulkan::PointwiseOperation operation,
-                                  bool scalar_left, const char *operation_name) {
+                                  bool scalar_left, const char *operation_name,
+                                  float alpha = 1.0F) {
     const auto tensor_layout = validate_tensor(tensor, operation, operation_name);
     at::Tensor output =
         at::empty(tensor.sizes(), tensor.options().device(tensor.device()));
@@ -150,11 +158,11 @@ at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
     if (scalar_left) {
         tensor_platform.compute().scalar_tensor(scalar, tensor_buffer.buffer(),
                                                 tensor_layout, output_buffer.buffer(),
-                                                output_layout, op);
+                                                output_layout, op, false, alpha);
     } else {
         tensor_platform.compute().tensor_scalar(tensor_buffer.buffer(), tensor_layout,
                                                 output_buffer.buffer(), output_layout,
-                                                scalar, op);
+                                                scalar, op, false, alpha);
     }
     return output;
 }
@@ -214,16 +222,29 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
             scalar_to_float(alpha, operation_name));
         return output;
     }
-    TORCH_CHECK(operation == PointwiseOperation::Mul || alpha.toDouble() == 1.0,
-                "Vulkan ", operation_name, " supports only alpha == 1");
     TORCH_CHECK(lhs_wrapped_number != rhs_wrapped_number, "Vulkan ", operation_name,
                 " requires one Python numeric scalar and one Vulkan tensor; scalar "
                 "operand is unsupported");
+    at::Scalar scalar = lhs_wrapped_number ? lhs.item() : rhs.item();
+    float alpha_value = 1.0F;
+    if (operation == PointwiseOperation::Add && alpha.toDouble() != 1.0) {
+        alpha_value = scalar_to_float(alpha, operation_name);
+        const float scalar_value = scalar_to_float(scalar, operation_name);
+        if (lhs_wrapped_number) {
+            return dispatch_tensor_scalar(rhs, scalar_value, operation,
+                                          true, operation_name, alpha_value);
+        }
+        return dispatch_tensor_scalar(lhs, scalar_value, operation,
+                                      false, operation_name, alpha_value);
+    } else {
+        TORCH_CHECK(operation == PointwiseOperation::Mul || alpha.toDouble() == 1.0,
+                    "Vulkan ", operation_name, " supports only alpha == 1");
+    }
     if (lhs_wrapped_number) {
-        return pointwise_tensor_scalar(rhs, lhs.item(), operation, true,
+        return pointwise_tensor_scalar(rhs, scalar, operation, true,
                                        operation_name);
     }
-    return pointwise_tensor_scalar(lhs, rhs.item(), operation, false, operation_name);
+    return pointwise_tensor_scalar(lhs, scalar, operation, false, operation_name);
 }
 
 at::Tensor add_tensor(const at::Tensor &lhs, const at::Tensor &rhs,
@@ -247,9 +268,10 @@ at::Tensor pointwise_tensor_scalar(const at::Tensor &tensor, const at::Scalar &s
 
 at::Tensor add_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
                       const at::Scalar &alpha) {
-    TORCH_CHECK(alpha.toDouble() == 1.0, "Vulkan add supports only alpha == 1");
-    return pointwise_tensor_scalar(tensor, scalar, PointwiseOperation::Add, false,
-                                   "add");
+    const float alpha_value = scalar_to_float(alpha, "add");
+    const float scalar_value = scalar_to_float(scalar, "add");
+    return dispatch_tensor_scalar(tensor, scalar_value, PointwiseOperation::Add,
+                                  false, "add", alpha_value);
 }
 
 at::Tensor &add_out(const at::Tensor &lhs, const at::Tensor &rhs,
@@ -305,9 +327,4 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("fill_.Scalar", &pytorch_vulkan::dispatch_fill);
     m.impl("lerp.Scalar_out", &pytorch_vulkan::lerp_scalar_out);
     m.impl("lerp_.Scalar", &pytorch_vulkan::lerp_scalar_inplace);
-}
-
-TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
-    m.impl("add.Tensor", &pytorch_vulkan::autograd_add_tensor);
-    m.impl("add.Scalar", &pytorch_vulkan::autograd_add_scalar);
 }

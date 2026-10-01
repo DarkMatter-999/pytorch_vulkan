@@ -602,7 +602,9 @@ def test_rnn_sequence_training_step_updates_parameters_with_one_lifecycle(vulkan
     for actual, expected in zip(vk_parameters, cpu_parameters):
         torch.testing.assert_close(actual.cpu(), expected, rtol=3e-3, atol=3e-3)
     torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=3e-3, atol=3e-3)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 15
+    # Stock generated sum backward expands the scalar seed as metadata; unlike
+    # the retired custom sum backward it adds no broadcast compute dispatch.
+    assert pytorch_vulkan._C.compute_dispatch_count() == 14
     assert counters[1] == 0
     assert counters[2] == 0
     assert pytorch_vulkan._C.fallback_count() == 0

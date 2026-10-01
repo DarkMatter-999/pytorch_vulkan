@@ -12,7 +12,6 @@ from tools.validate_vulkan_capabilities import (
     validate_manifest_data,
 )
 
-
 ROOT = Path(__file__).parents[2]
 
 
@@ -125,6 +124,62 @@ def test_manifest_rejects_unknown_closed_contract_values():
 
     with pytest.raises(ValueError, match=r"entries\[0\]\.empty"):
         validate_manifest_data(data, ROOT)
+
+
+def test_manifest_rejects_reverse_evidence_without_promoted_enum():
+    data = {"version": 1, "entries": [_entry()]}
+    data["entries"][0]["witnesses"]["reverse_second_order_cases"] = ["example.case"]
+    with pytest.raises(ValueError, match="reverse_second_order_cases"):
+        validate_manifest_data(data, ROOT)
+
+
+def test_manifest_rejects_promoted_enum_without_reverse_cases():
+    data = {"version": 1, "entries": [_entry()]}
+    data["entries"][0]["autograd"] = "reverse_second_order_witnessed"
+    with pytest.raises(ValueError, match="reverse_second_order_cases"):
+        validate_manifest_data(data, ROOT)
+
+
+@pytest.mark.parametrize("metadata", [
+    {"order": 1, "graph_preserved": True},
+    {"order": 2, "graph_preserved": False},
+    {"order": 2, "graph_preserved": 1},
+    {"order": 2, "unknown": True},
+])
+def test_manifest_rejects_invalid_reverse_autograd_metadata(metadata):
+    data = {"version": 1, "entries": [_entry()]}
+    data["entries"][0]["reverse_autograd"] = metadata
+    with pytest.raises(ValueError, match="reverse_autograd"):
+        validate_manifest_data(data, ROOT)
+
+
+@pytest.mark.parametrize("metadata", [
+    {"order": 1, "graph_preserved": True},
+    {"order": 2, "graph_preserved": False},
+    {"order": 2, "graph_preserved": 1},
+    {"order": 2, "graph_preserved": True, "source": "invented"},
+])
+def test_manifest_rejects_unproven_reverse_case_links(tmp_path, monkeypatch, metadata):
+    data = {"version": 1, "entries": [_entry()]}
+    entry = data["entries"][0]
+    entry["autograd"] = "reverse_second_order_witnessed"
+    entry["witnesses"]["reverse_second_order_cases"] = ["example.case"]
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "vulkan_coverage.json").write_text(json.dumps({"example.case": {
+        "schema": "aten::abs.default", "parity": True, "reverse_autograd": metadata
+    }}))
+    test_path = tmp_path / "tests/python/test_vulkan_conformance.py"
+    test_path.parent.mkdir(parents=True)
+    test_path.touch()
+    (tmp_path / "src").mkdir()
+    monkeypatch.setattr(
+        capability_validator,
+        "_source_registration_inventory",
+        lambda _source: ({"aten::abs.default"}, set()),
+    )
+    with pytest.raises(ValueError, match="lacks matching executed reverse evidence"):
+        validate_manifest_data(data, tmp_path)
 
 
 def test_manifest_rejects_shape_token_naming_a_phantom_constraint():

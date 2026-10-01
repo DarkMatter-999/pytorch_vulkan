@@ -159,15 +159,26 @@ native_batch_norm_backward(const at::Tensor &grad_out, const at::Tensor &input,
     TORCH_CHECK(weight && running_mean && running_var && save_mean && save_invstd,
                 "Vulkan native_batch_norm_backward requires all saved tensors");
     validate_common(input, weight, weight, running_mean, running_var);
-    validate(grad_out, "grad_out", false);
-    validate(*save_mean, "save_mean", true, input.size(1));
-    validate(*save_invstd, "save_invstd", true, input.size(1));
+    TORCH_CHECK(grad_out.device() == c10::Device(c10::DeviceType::PrivateUse1, 0),
+                "Vulkan native_batch_norm grad_out requires vk:0");
+    TORCH_CHECK(grad_out.scalar_type() == at::kFloat &&
+                    grad_out.layout() == at::kStrided,
+                "Vulkan native_batch_norm grad_out requires strided float32");
     TORCH_CHECK(grad_out.sizes().equals(input.sizes()),
                 "Vulkan native_batch_norm_backward shape mismatch");
+    const auto grad_layout = inspect_vulkan_tensor_layout(grad_out, "grad_out");
+    TORCH_CHECK(grad_layout.internal_overlap == VulkanOverlap::No ||
+                    is_non_overlapping_except_broadcast_dims(grad_layout),
+                "Vulkan native_batch_norm grad_out has unsupported overlapping layout");
+    validate(*save_mean, "save_mean", true, input.size(1));
+    validate(*save_invstd, "save_invstd", true, input.size(1));
+    const at::Tensor readable_grad =
+        grad_out.is_contiguous() ? grad_out : grad_out.contiguous();
+    validate(readable_grad, "grad_out", false);
     auto dx = at::empty_like(input);
     auto dw = at::empty_like(*weight);
     auto db = at::empty_like(*weight);
-    run(grad_out, *weight, *weight, *running_mean, *running_var, &input,
+    run(readable_grad, *weight, *weight, *running_mean, *running_var, &input,
         save_mean.operator->(), save_invstd.operator->(), dx, dw, db, 1, 0.1, eps);
     return {dx, dw, db};
 }

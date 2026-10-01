@@ -5,12 +5,26 @@ import argparse
 import hashlib
 import pathlib
 import re
+import struct
 import subprocess
 import tempfile
 
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def verify_arithmetic_capabilities(binary, name):
+    """All shared modes must load without optional 16/64-bit arithmetic."""
+    words = struct.unpack(f"<{len(binary) // 4}I", binary)
+    index = 5
+    while index < len(words):
+        count, opcode = words[index] >> 16, words[index] & 0xFFFF
+        if count == 0 or index + count > len(words):
+            raise SystemExit(f"{name}: malformed SPIR-V instruction")
+        if opcode == 17 and words[index + 1] in {9, 10, 11}:
+            raise SystemExit(f"{name}: optional arithmetic capability {words[index + 1]}")
+        index += count
 
 
 def main():
@@ -52,7 +66,7 @@ def main():
     ]
     with tempfile.TemporaryDirectory() as directory:
         binaries = []
-        for _, mode, bool_dtype, bool_output in names:
+        for name, mode, bool_dtype, bool_output in names:
             path = (
                 pathlib.Path(directory)
                 / f"pointwise_{mode}_{int(bool_dtype)}_{int(bool_output)}.spv"
@@ -63,7 +77,9 @@ def main():
             if bool_output:
                 command.append("-DPOINTWISE_BOOL_OUTPUT")
             subprocess.run(command + ["-o", str(path), str(source)], check=True)
-            binaries.append(path.read_bytes())
+            binary = path.read_bytes()
+            verify_arithmetic_capabilities(binary, name)
+            binaries.append(binary)
 
     actual = {
         "source_sha256": sha256(source.read_bytes()),

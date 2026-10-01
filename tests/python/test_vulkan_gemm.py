@@ -100,6 +100,47 @@ def test_mm_backward_matches_cpu_reference(vulkan_backend):
     torch.testing.assert_close(vk_mat2.grad.cpu(), cpu_mat2.grad, rtol=2e-3, atol=2e-3)
 
 
+@pytest.mark.parametrize("operation", ["mm", "addmm"])
+def test_gemm_backward_reads_expanded_nonuniform_gradient(operation, vulkan_backend):
+    torch.manual_seed(143)
+    cpu_mat1 = torch.randn(5, 7, requires_grad=True)
+    cpu_mat2 = torch.randn(7, 3, requires_grad=True)
+    vk_mat1 = cpu_mat1.detach().to(vulkan_backend).requires_grad_()
+    vk_mat2 = cpu_mat2.detach().to(vulkan_backend).requires_grad_()
+    seed = torch.tensor([[1.0], [-2.0], [3.5], [0.25], [-4.0]])
+    cpu_grad = seed.expand(5, 3)
+    vk_grad = seed.to(vulkan_backend).expand(5, 3)
+
+    if operation == "mm":
+        cpu_output = torch.mm(cpu_mat1, cpu_mat2)
+        vk_output = torch.mm(vk_mat1, vk_mat2)
+        cpu_grads = torch.autograd.grad(cpu_output, (cpu_mat1, cpu_mat2), cpu_grad)
+        pytorch_vulkan._C.synchronize()
+        pytorch_vulkan._C.reset_execution_counters()
+        vk_grads = torch.autograd.grad(vk_output, (vk_mat1, vk_mat2), vk_grad)
+    else:
+        cpu_self = torch.randn(5, 3, requires_grad=True)
+        vk_self = cpu_self.detach().to(vulkan_backend).requires_grad_()
+        cpu_output = torch.addmm(cpu_self, cpu_mat1, cpu_mat2, alpha=0.5, beta=2.0)
+        vk_output = torch.addmm(vk_self, vk_mat1, vk_mat2, alpha=0.5, beta=2.0)
+        cpu_grads = torch.autograd.grad(
+            cpu_output, (cpu_self, cpu_mat1, cpu_mat2), cpu_grad
+        )
+        pytorch_vulkan._C.synchronize()
+        pytorch_vulkan._C.reset_execution_counters()
+        vk_grads = torch.autograd.grad(
+            vk_output, (vk_self, vk_mat1, vk_mat2), vk_grad
+        )
+
+    assert pytorch_vulkan._C.vulkan_copy_count() > 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    assert all(value.device == torch.device(vulkan_backend) for value in vk_grads)
+    pytorch_vulkan._C.synchronize()
+    for actual, expected in zip(vk_grads, cpu_grads):
+        torch.testing.assert_close(actual.cpu(), expected, rtol=2e-3, atol=2e-3)
+
+
 def test_mm_backward_materializes_non_square_transposes_in_training_scope(
     vulkan_backend,
 ):

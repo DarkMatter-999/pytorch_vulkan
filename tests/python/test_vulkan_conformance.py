@@ -14,6 +14,7 @@ from vulkan_conformance import (
     ConformanceCase,
     assert_gradients,
     assert_no_vulkan_work,
+    assert_reverse_second_order,
     assert_vulkan_result,
     coverage_snapshot,
     record_coverage,
@@ -125,12 +126,18 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     )
     pytorch_vulkan._C.synchronize()
     vc.mark_executed(case.name)
+    reverse_autograd = (
+        assert_reverse_second_order(case, inputs)
+        if case.name.startswith("arithmetic.autograd.")
+        else None
+    )
     record_coverage(
         case,
         inputs,
         result,
         gradients=case.check_gradients,
         parity=True,
+        reverse_autograd=reverse_autograd,
     )
 
 

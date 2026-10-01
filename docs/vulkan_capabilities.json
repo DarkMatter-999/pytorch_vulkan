@@ -857,7 +857,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -896,6 +896,10 @@
         {
           "name": "scalar.add.float32",
           "supported": true
+        },
+        {
+          "name": "arithmetic.autograd.add-scalar",
+          "supported": true
         }
       ],
       "tests": [
@@ -904,6 +908,7 @@
       ],
       "witnesses": {
         "cases": [
+          "arithmetic.autograd.add-scalar",
           "scalar.add.float32"
         ],
         "dtypes": [
@@ -917,6 +922,9 @@
         ],
         "ranks": [
           1
+        ],
+        "reverse_second_order_cases": [
+          "arithmetic.autograd.add-scalar"
         ]
       }
     },
@@ -987,7 +995,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -1028,6 +1036,10 @@
           "supported": true
         },
         {
+          "name": "arithmetic.autograd.add-tensor",
+          "supported": true
+        },
+        {
           "name": "binary.add.double.rejected",
           "supported": false
         },
@@ -1046,6 +1058,7 @@
       ],
       "witnesses": {
         "cases": [
+          "arithmetic.autograd.add-tensor",
           "binary.add.float32"
         ],
         "dtypes": [
@@ -1059,6 +1072,9 @@
         ],
         "ranks": [
           1
+        ],
+        "reverse_second_order_cases": [
+          "arithmetic.autograd.add-tensor"
         ]
       }
     },
@@ -3116,7 +3132,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -3155,6 +3171,10 @@
         {
           "name": "scalar.mul.float32",
           "supported": true
+        },
+        {
+          "name": "arithmetic.autograd.mul-scalar",
+          "supported": true
         }
       ],
       "tests": [
@@ -3163,6 +3183,7 @@
       ],
       "witnesses": {
         "cases": [
+          "arithmetic.autograd.mul-scalar",
           "scalar.mul.float32"
         ],
         "dtypes": [
@@ -3176,6 +3197,9 @@
         ],
         "ranks": [
           1
+        ],
+        "reverse_second_order_cases": [
+          "arithmetic.autograd.mul-scalar"
         ]
       }
     },
@@ -3246,7 +3270,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -3285,6 +3309,10 @@
         {
           "name": "binary.mul.float32.empty",
           "supported": true
+        },
+        {
+          "name": "arithmetic.autograd.mul-tensor",
+          "supported": true
         }
       ],
       "tests": [
@@ -3293,6 +3321,7 @@
       ],
       "witnesses": {
         "cases": [
+          "arithmetic.autograd.mul-tensor",
           "binary.mul.float32.empty"
         ],
         "dtypes": [
@@ -3306,6 +3335,9 @@
         ],
         "ranks": [
           2
+        ],
+        "reverse_second_order_cases": [
+          "arithmetic.autograd.mul-tensor"
         ]
       }
     },
@@ -4701,7 +4733,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -4738,6 +4770,10 @@
       "status": "supported",
       "test_cases": [
         {
+          "name": "arithmetic.autograd.sum-dim",
+          "supported": true
+        },
+        {
           "name": "reduction.sum.dim",
           "supported": true
         },
@@ -4750,7 +4786,11 @@
           "supported": true
         },
         {
-          "name": "reduction.sum.non-contiguous-overlap.rejected",
+          "name": "reduction.sum.expanded-readable-input",
+          "supported": true
+        },
+        {
+          "name": "reduction.sum.mixed-expanded-overlap.rejected",
           "supported": false
         }
       ],
@@ -4760,8 +4800,10 @@
       ],
       "witnesses": {
         "cases": [
+          "arithmetic.autograd.sum-dim",
           "reduction.sum.dim",
           "reduction.sum.empty-dim",
+          "reduction.sum.expanded-readable-input",
           "reduction.sum.keepdim.strided"
         ],
         "dtypes": [
@@ -4780,6 +4822,9 @@
         "ranks": [
           2,
           3
+        ],
+        "reverse_second_order_cases": [
+          "arithmetic.autograd.sum-dim"
         ]
       }
     },
@@ -10301,7 +10346,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_backward",
+      "autograd": "reverse_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -10338,6 +10383,10 @@
       "status": "supported",
       "test_cases": [
         {
+          "name": "arithmetic.autograd.sum-default",
+          "supported": true
+        },
+        {
           "name": "reduction.sum.default",
           "supported": true
         }
@@ -10348,6 +10397,7 @@
       ],
       "witnesses": {
         "cases": [
+          "arithmetic.autograd.sum-default",
           "reduction.sum.default"
         ],
         "dtypes": [
@@ -10361,6 +10411,9 @@
         ],
         "ranks": [
           2
+        ],
+        "reverse_second_order_cases": [
+          "arithmetic.autograd.sum-default"
         ]
       }
     },

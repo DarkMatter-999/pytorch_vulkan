@@ -47,8 +47,3 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("mul_.Tensor", &mul_inplace_tensor);
     m.impl("mul_.Scalar", &mul_inplace_scalar);
 }
-
-TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
-    m.impl("mul.Tensor", &pytorch_vulkan::autograd_mul_tensor);
-    m.impl("mul.Scalar", &pytorch_vulkan::autograd_mul_scalar);
-}

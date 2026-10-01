@@ -217,3 +217,14 @@ aten::sum.IntList_out,aten::sum.default,
 aten::threshold_backward.grad_input,aten::uniform_.default,aten::upsample_bilinear2d.out,
 aten::upsample_bilinear2d_backward.grad_input,aten::upsample_nearest2d.out,
 aten::upsample_nearest2d_backward.grad_input -->
+# Autograd evidence vocabulary
+
+`reverse_second_order_witnessed` describes generated reverse-autograd behavior
+only on the named `witnesses.reverse_second_order_cases`. Each linked case must
+have parity execution evidence in `docs/vulkan_coverage.json` with
+`reverse_autograd: {"order": 2, "graph_preserved": true}` recorded only after
+CPU/Vulkan first- and seeded second-derivative comparisons. The vocabulary does
+not imply arbitrary higher-order differentiation, forward AD/JVP, `torch.func`,
+or transform support, and does not require a constant derivative to itself have
+history. Existing primary-input dtype/rank witnesses remain independent of this
+case-scoped derivative evidence.

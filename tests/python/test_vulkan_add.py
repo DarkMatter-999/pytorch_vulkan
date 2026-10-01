@@ -1,7 +1,6 @@
 import pytest
-import torch
-
 import pytorch_vulkan
+import torch
 from vulkan_conformance import (
     SCALAR_OUT_CONTRACT_MATRIX,
     SCALAR_OUT_FUNCTIONAL_CASES,
@@ -255,13 +254,13 @@ def test_scalar_contract_matrix_empty_counters_follow_declaration(vulkan_backend
 @pytest.mark.parametrize(
     "contract", SCALAR_OUT_FUNCTIONAL_CASES, ids=lambda case: case.case_name
 )
-def test_scalar_contract_matrix_rejects_schema_specific_invalid_scalar_without_work(
+def test_scalar_contract_matrix_rejects_invalid_scalar_without_work(
     vulkan_backend, contract
 ):
     tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
     invalid = {"scalar": float("nan")}
-    if contract.schema in {"aten::add.Scalar", "aten::rsub.Scalar"}:
+    if contract.schema == "aten::rsub.Scalar":
         invalid = {"alpha": 2.0}
 
     with pytest.raises(RuntimeError, match=r"Vulkan|alpha|non-finite"):
@@ -271,6 +270,103 @@ def test_scalar_contract_matrix_rejects_schema_specific_invalid_scalar_without_w
     assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     assert pytorch_vulkan._C.fallback_count() == 0
+
+
+def test_scalar_add_nonunit_alpha_matches_cpu(vulkan_backend):
+    contract = SCALAR_OUT_CONTRACT_MATRIX["aten::add.Scalar"]
+    cpu_tensor = torch.tensor([1.0, -2.0], dtype=torch.float32)
+    vk_tensor = cpu_tensor.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+
+    cpu_result = torch.add(cpu_tensor, contract.scalar, alpha=2.0)
+    vk_result = invoke_scalar_out_contract(contract, vk_tensor, alpha=2.0)
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert counters[0] > 0
+    assert counters[1:] == (0, 0, 0)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_result.cpu(), cpu_result)
+
+
+@pytest.mark.parametrize(
+    "tensor_value,scalar,alpha",
+    [
+        (-10000001024.0, 1e10, 1.00000006),
+        (-11000000512.0, 1e10, 1.1),
+    ],
+)
+@pytest.mark.parametrize("scalar_left", [False, True])
+def test_scalar_add_nonunit_alpha_preserves_cpu_cancellation(
+    vulkan_backend, tensor_value, scalar, alpha, scalar_left
+):
+    cpu_tensor = torch.tensor([tensor_value], dtype=torch.float32, requires_grad=True)
+    vk_tensor = cpu_tensor.detach().to(vulkan_backend).requires_grad_()
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    cpu_result = torch.add(scalar, cpu_tensor, alpha=alpha) if scalar_left else torch.add(
+        cpu_tensor, scalar, alpha=alpha
+    )
+    vk_result = torch.add(scalar, vk_tensor, alpha=alpha) if scalar_left else torch.add(
+        vk_tensor, scalar, alpha=alpha
+    )
+    forward_counters = pytorch_vulkan._C.execution_counter_snapshot()
+    seed = torch.tensor([2.25], dtype=torch.float32)
+    cpu_result.backward(seed)
+    vk_seed = seed.to(vulkan_backend)
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_result.backward(vk_seed)
+    pytorch_vulkan._C.synchronize()
+    assert vk_result.device == torch.device("vk:0")
+    assert forward_counters[0] > 0
+    assert forward_counters[1:] == (0, 0, 0)
+    torch.testing.assert_close(vk_result.cpu(), cpu_result.detach())
+    torch.testing.assert_close(vk_tensor.grad.cpu(), cpu_tensor.grad, rtol=0, atol=0)
+
+
+def test_scalar_left_add_invalid_alpha_operands_reject_before_work(vulkan_backend):
+    tensor = torch.tensor([1.0, 3.0], device=vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="non-finite scalar"):
+        torch.add(float("nan"), tensor, alpha=2.0)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["scalar-right-alpha", "scalar-left-alpha", "explicit-scalar-alpha", "tensor-alpha", "scalar-value", "mul-scalar"],
+)
+def test_integer_scalar_conversion_matches_torch_storage_rounding(vulkan_backend, route):
+    integer = 2**60 + 2**36 + 1
+    cpu_input = torch.tensor([-(2**60 + 2**37)], dtype=torch.float32)
+    vk_input = cpu_input.to(vulkan_backend)
+
+    if route == "scalar-right-alpha":
+        expected = torch.add(cpu_input, 1.0, alpha=integer)
+        actual = torch.add(vk_input, 1.0, alpha=integer)
+    elif route == "scalar-left-alpha":
+        expected = torch.add(1.0, cpu_input, alpha=integer)
+        actual = torch.add(1.0, vk_input, alpha=integer)
+    elif route == "explicit-scalar-alpha":
+        expected = torch.ops.aten.add.Scalar(cpu_input, 1.0, integer)
+        actual = torch.ops.aten.add.Scalar(vk_input, 1.0, integer)
+    elif route == "tensor-alpha":
+        cpu_other = torch.ones_like(cpu_input)
+        vk_other = cpu_other.to(vulkan_backend)
+        expected = torch.add(cpu_input, cpu_other, alpha=integer)
+        actual = torch.add(vk_input, vk_other, alpha=integer)
+    elif route == "scalar-value":
+        expected = torch.add(cpu_input, integer)
+        actual = torch.add(vk_input, integer)
+    else:
+        cpu_input = torch.ones(1, dtype=torch.float32)
+        vk_input = cpu_input.to(vulkan_backend)
+        expected = torch.mul(cpu_input, integer)
+        actual = torch.mul(vk_input, integer)
+
+    pytorch_vulkan._C.synchronize()
+    assert actual.device == torch.device("vk:0")
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
@@ -516,12 +612,11 @@ def test_unsupported_scalar_values_are_rejected(vulkan_backend, operation, scala
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 
-@pytest.mark.parametrize("operation", [torch.add, torch.sub])
-def test_invalid_scalar_alpha_is_rejected_before_vulkan_work(vulkan_backend, operation):
+def test_sub_scalar_nonunit_alpha_is_rejected_before_vulkan_work(vulkan_backend):
     tensor = torch.ones((2,), dtype=torch.float32, device=vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match=r"alpha == 1"):
-        operation(tensor, 2.0, alpha=2.0)
+        torch.sub(tensor, 2.0, alpha=2.0)
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 
