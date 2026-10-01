@@ -8,6 +8,17 @@ explicitly; they do not silently fall back to CPU.
 The reproducible source-build and extension verification procedure is in
 [README-build.md](README-build.md).
 
+## Development direction
+
+The goal is CPU/CUDA-comparable functionality through the ordinary PyTorch API.
+Backend development follows the supported PyTorch version's schemas,
+implementations and autograd rules, reusing its generated/composite machinery
+and implementing the required Vulkan primitives. See the
+[PyTorch-reference-first development standard](docs/backend-development-standard.md).
+
+This is the project direction, not a claim that the current experimental subset
+already provides full compatibility.
+
 ## Quick Start
 
 Use the existing `build/` directory or follow the complete source-build
