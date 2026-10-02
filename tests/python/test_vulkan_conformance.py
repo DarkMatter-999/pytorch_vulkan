@@ -33,6 +33,8 @@ REVERSE_SECOND_ORDER_CASES = {
     "view.view.trainable-seed",
     "view.reshape.copy.trainable-seed",
     "view.reshape.offset-copy.second-order",
+    "cat.rank4.native-seed",
+    "cat.offset.trainable-seed",
 }
 
 
@@ -183,6 +185,27 @@ def test_recorded_shapes_use_the_declared_shape_convention():
                 assert SHAPE_PATTERN.fullmatch(shape), (
                     f"{name} recorded shape {shape!r} does not match SHAPE_PATTERN"
                 )
+
+
+def test_cat_tensor_list_evidence_tracks_actual_order_and_metadata():
+    case = next(case for case in ALL_CASES if case.name == "cat.rank2.forward")
+    tensors = [torch.ones((2, 3)), torch.ones((2, 4))]
+    output = torch.empty((2, 7))
+    with vc.coverage_recording():
+        vc.mark_executed(case.name)
+        vc.record_coverage(case, (tensors,), output, gradients=False, parity=True)
+        original = vc.coverage_snapshot()[case.name]
+        assert [item["shape"] for item in original["tensor_lists"][0]["tensors"]] == [[2, 3], [2, 4]]
+        variants = (
+            [tensors[1], tensors[0]],
+            [tensors[0].to(torch.float64), tensors[1]],
+            [tensors[0].reshape(6), tensors[1]],
+            [tensors[0], torch.ones((2, 5))],
+        )
+        for changed in variants:
+            vc.reset_coverage()
+            vc.record_coverage(case, (changed,), output, gradients=False, parity=True)
+            assert vc.coverage_snapshot()[case.name]["tensor_lists"] != original["tensor_lists"]
 
 
 @pytest.mark.parametrize(

@@ -6,8 +6,22 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_cat_gather_generator_is_deterministic_and_verified(tmp_path):
+    generator = ROOT / "tools/generate_cat_gather_spv.py"
+    outputs = []
+    for name in ("cat_a", "cat_b"):
+        output = tmp_path / name
+        subprocess.run(["python3", str(generator), "--output-dir", str(output)], check=True)
+        outputs.append(output)
+    for name in ("cat_gather_spv.h", "cat_gather_spv.sha256"):
+        assert (outputs[0] / name).read_bytes() == (outputs[1] / name).read_bytes()
+    subprocess.run(["python3", str(ROOT / "tools/verify_cat_gather_spv.py")], check=True)
+    source = (ROOT / "src/vulkan/shaders/glsl/cat_gather.comp").read_text()
+    assert "layout(local_size_x = 256" in source
+    assert "if (n - 1u - ordinal < step) break;" in source
 
 
 def test_gemm_generator_is_deterministic_and_records_hashes(tmp_path):

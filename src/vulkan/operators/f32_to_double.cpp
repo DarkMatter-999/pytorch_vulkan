@@ -14,6 +14,18 @@
 
 namespace {
 
+at::Tensor allocate_vulkan_transfer_output(
+    const at::Tensor &input, const at::TensorOptions &options,
+    c10::optional<at::MemoryFormat> memory_format) {
+    const bool preserve_channels_last =
+        input.dim() == 4 && input.suggest_memory_format() == at::MemoryFormat::ChannelsLast &&
+        (!memory_format || *memory_format == at::MemoryFormat::Preserve);
+    if ((memory_format && *memory_format == at::MemoryFormat::ChannelsLast) ||
+        preserve_channels_last)
+        return at::empty(input.sizes(), options, at::MemoryFormat::ChannelsLast);
+    return at::empty(input.sizes(), options);
+}
+
 void validate_cpu_nll_labels(const at::Tensor &input) {
     TORCH_CHECK(input.is_contiguous(),
                 "Vulkan label transfer requires contiguous CPU int64 labels");
@@ -38,9 +50,8 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan formatter Double payload readback to CPU is unsupported");
         TORCH_CHECK(requested_dtype == input.scalar_type(),
                     "Vulkan _to_copy requested dtype does not match source dtype");
-        auto output =
-            at::empty(input.sizes(),
-                      input.options().dtype(requested_dtype).device(output_device));
+        auto output = at::empty(
+            input.sizes(), input.options().dtype(requested_dtype).device(output_device));
         pytorch_vulkan::copy_tensor(output, input, non_blocking);
         return output;
     }
@@ -59,9 +70,9 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
             validate_cpu_nll_labels(input);
             label_guard.emplace();
         }
-        auto output =
-            at::empty(input.sizes(),
-                      input.options().dtype(requested_dtype).device(output_device));
+        auto output = allocate_vulkan_transfer_output(
+            input, input.options().dtype(requested_dtype).device(output_device),
+            memory_format);
         pytorch_vulkan::copy_tensor(output, input, non_blocking);
         return output;
     }

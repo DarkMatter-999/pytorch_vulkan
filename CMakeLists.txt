@@ -133,18 +133,39 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
          add_custom_target(vulkan_gemm_shader_generate DEPENDS
                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
-         add_custom_target(vulkan_gemm_shader_integrity
+          add_custom_target(vulkan_gemm_shader_integrity
                            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
                            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/gemm.comp
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
-                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
+                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
+          add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.h
+                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.sha256
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/cat_gather.comp
+            VERBATIM)
+          add_custom_target(vulkan_cat_gather_shader_generate DEPENDS
+                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.h
+                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.sha256)
+          add_custom_target(vulkan_cat_gather_shader_integrity
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/cat_gather.comp
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.h
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.sha256)
+          add_dependencies(vulkan_platform vulkan_cat_gather_shader_generate
+                           vulkan_cat_gather_shader_integrity)
           add_dependencies(vulkan_platform vulkan_gemm_shader_generate
                            vulkan_gemm_shader_integrity)
           if(BUILD_TESTING)
-            add_test(NAME vulkan_gemm_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
+             add_test(NAME vulkan_gemm_shader_integrity
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
+             add_test(NAME vulkan_cat_gather_shader_integrity
+                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py)
             add_test(NAME vulkan_rnn_sequence_shader_integrity
                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py)
           endif()
@@ -274,6 +295,19 @@ if(BUILD_PYTHON_EXTENSION)
                           vulkan_platform
                           ${TORCH_LIBRARIES})
 
+    add_executable(vulkan_cat_test tests/cpp/vulkan_cat_test.cpp
+                   src/vulkan/operators/cat.cpp)
+    target_compile_features(vulkan_cat_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_cat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                               ${TORCH_INCLUDE_DIRS})
+    if(TORCH_CXX_FLAGS)
+        target_compile_options(vulkan_cat_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_cat_test PRIVATE vulkan_allocator ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_cat_test COMMAND vulkan_cat_test)
+    endif()
+
     pybind11_add_module(
         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/autograd.cpp
         src/vulkan/operators/add.cpp
@@ -294,7 +328,8 @@ if(BUILD_PYTHON_EXTENSION)
                 src/vulkan/operators/normalization.cpp src/vulkan/operators/normalization.h
                 src/vulkan/operators/classification.cpp src/vulkan/operators/classification.h
                 src/vulkan/operators/f32_to_double.cpp
-              src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h)
+        src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h
+        src/vulkan/operators/cat.cpp src/vulkan/operators/cat.h)
           target_sources(pytorch_vulkan_python PRIVATE src/vulkan/operators/rnn.cpp
                          src/vulkan/operators/rnn.h)
     target_compile_features(pytorch_vulkan_python PRIVATE cxx_std_17)

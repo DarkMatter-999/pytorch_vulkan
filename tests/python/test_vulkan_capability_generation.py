@@ -6,7 +6,12 @@ import pytorch_vulkan
 import torch
 
 from tools import generate_vulkan_capabilities as generator
-from tools.validate_vulkan_capabilities import load_manifest, schema_exists
+from tools import validate_vulkan_capabilities as capability_validator
+from tools.validate_vulkan_capabilities import (
+    load_manifest,
+    schema_exists,
+    validate_tensor_list_evidence,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMITTED = ROOT / "docs/vulkan_capabilities.json"
@@ -226,14 +231,78 @@ def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage()
         name: record for name, record in coverage.items()
         if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}
     }
-    assert len(witnessed) == 9
+    assert len(witnessed) == 11
     for name, record in witnessed.items():
-        assert name.startswith(("arithmetic.autograd.", "view."))
+        assert name.startswith(("arithmetic.autograd.", "view.", "cat."))
         assert record["schema"] in {
             "aten::add.Tensor", "aten::add.Scalar", "aten::mul.Tensor",
             "aten::mul.Scalar", "aten::sum.default", "aten::sum.dim_IntList",
-            "aten::view.default", "aten::reshape.default",
+            "aten::view.default", "aten::reshape.default", "aten::cat.default",
         }
+
+
+def test_cat_tensor_list_evidence_validator_binds_aggregates_to_members():
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    record = coverage["cat.rank2.forward"]
+    validate_tensor_list_evidence({"cat.rank2.forward": record})
+    changed = json.loads(json.dumps(record))
+    changed["tensor_lists"][0]["tensors"].reverse()
+    with pytest.raises(ValueError, match="malformed tensor-list member|aggregate coverage metadata"):
+        validate_tensor_list_evidence({"cat.rank2.forward": changed})
+    changed = json.loads(json.dumps(record))
+    changed["primary_input"]["rank"] = 4
+    with pytest.raises(ValueError, match="aggregate coverage metadata"):
+        validate_tensor_list_evidence({"cat.rank2.forward": changed})
+
+
+def test_cat_tensor_list_validator_requires_exact_named_witnesses():
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    for name in list(coverage):
+        if name.startswith("cat."):
+            coverage[name].pop("tensor_lists", None)
+    with pytest.raises(ValueError, match="required executed cat.default TensorList witness"):
+        validate_tensor_list_evidence(coverage, require_complete=True)
+
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    coverage["cat.rank4.native-seed"] = json.loads(json.dumps(coverage["cat.rank2.forward"]))
+    with pytest.raises(ValueError, match="named witness"):
+        validate_tensor_list_evidence(coverage, require_complete=True)
+
+
+def test_cat_generation_refuses_missing_named_witness():
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    del coverage["cat.rank1.forward"]
+    with pytest.raises(ValueError, match="required executed cat.default TensorList witness"):
+        generator.build_coverage_manifest(coverage)
+
+
+@pytest.mark.parametrize("mutation", ["secondary_dtype", "output_dtype", "all_float64"])
+def test_cat_float32_tensorlist_identity_is_mandatory_for_validation_and_generation(
+    mutation, monkeypatch
+):
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    record = coverage["cat.rank4.native-seed"]
+    tensors = record["tensor_lists"][0]["tensors"]
+    if mutation == "secondary_dtype":
+        tensors[1]["dtype"] = "float64"
+        record["operands"][1]["dtype"] = "float64"
+        record["input_dtypes"] = ["float32", "float64"]
+    elif mutation == "output_dtype":
+        record["output_dtype"] = "float64"
+    else:
+        for tensor, operand in zip(tensors, record["operands"]):
+            tensor["dtype"] = "float64"
+            operand["dtype"] = "float64"
+        record["input_dtypes"] = ["float64"]
+        record["primary_input"]["dtype"] = "float64"
+
+    with pytest.raises(ValueError, match="float32"):
+        validate_tensor_list_evidence(coverage, require_complete=True)
+    with pytest.raises(ValueError, match="float32"):
+        generator.build_coverage_manifest(coverage)
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="float32"):
+        capability_validator.validate_manifest_data(load_manifest(COMMITTED), ROOT)
 
 
 def test_declared_shapes_were_actually_exercised():
@@ -315,8 +384,10 @@ def _run_all_supported_cases():
                 "arithmetic.autograd.sum-default", "arithmetic.autograd.sum-dim",
                 "view.view.trainable-seed", "view.reshape.copy.trainable-seed",
                 "view.reshape.offset-copy.second-order",
+                "cat.rank4.native-seed", "cat.offset.trainable-seed",
             }
             reverse_autograd = vc.assert_reverse_second_order(case, inputs) if case.name in reverse_names else None
+            vc.mark_executed(case.name)
             vc.record_coverage(
                 case,
                 inputs,

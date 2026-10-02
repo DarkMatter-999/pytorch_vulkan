@@ -130,6 +130,7 @@ ENTRY_ORDER = (
     'aten::bitwise_xor.Tensor_out',
     'aten::bmm.out',
     'aten::cat.out',
+    'aten::cat.default',
     'aten::ceil.default',
     'aten::ceil.out',
     'aten::clamp.out',
@@ -306,6 +307,9 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
 
 
 def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
+    from tools.validate_vulkan_capabilities import validate_tensor_list_evidence
+
+    validate_tensor_list_evidence(coverage, require_complete=True)
     manifest = _build_manifest()
     source, rejected = _source_registration_inventory(ROOT / "src")
     validate_stock_composite_routes(

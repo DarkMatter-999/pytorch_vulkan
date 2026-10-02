@@ -1,0 +1,28 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(set=0,binding=0,std430) readonly buffer Input { float src[]; };
+layout(set=0,binding=1,std430) writeonly buffer Output { float dst[]; };
+layout(set=0,binding=2,std430) readonly buffer Metadata { uint words[]; };
+void main() {
+  uint rank = words[0], axis = words[1], axis_begin = words[2], n = words[3];
+  uint ordinal = gl_GlobalInvocationID.x;
+  uint step = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+  while (ordinal < n) {
+    uint rem = ordinal;
+    uint coord[4] = uint[4](0u, 0u, 0u, 0u);
+    for (int d = 3; d >= 0; --d) if (uint(d) < rank) {
+      uint extent = words[4u + uint(d)];
+      coord[d] = rem % extent;
+      rem /= extent;
+    }
+    uint src_index = words[12], dst_index = 0u;
+    for (uint d = 0u; d < rank; ++d) {
+      uint out_coord = coord[d] + (d == axis ? axis_begin : 0u);
+      src_index += coord[d] * words[8u + d];
+      dst_index += out_coord * words[17u + d];
+    }
+    dst[dst_index] = src[src_index];
+    if (n - 1u - ordinal < step) break;
+    ordinal += step;
+  }
+}

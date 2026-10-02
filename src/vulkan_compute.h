@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -224,6 +225,13 @@ class VulkanCompute final {
     DescriptorArenaSnapshot descriptor_arena_snapshot() const;
     std::size_t pipeline_count() const;
     std::size_t shader_module_count() const;
+    void cat_gather(VkBuffer input, VkDeviceSize input_range, VkBuffer output,
+                    VkDeviceSize output_range, const std::array<uint32_t, 21>&,
+                    uint32_t input_numel) const;
+    void validate_cat_gather(VkDeviceSize input_range, VkDeviceSize output_range,
+                             uint32_t input_numel) const;
+    VkDeviceSize cat_max_storage_buffer_range() const { return max_storage_buffer_range_; }
+    uint32_t cat_max_workgroup_count_x() const { return max_compute_workgroup_count_x_; }
     void reset_descriptor_resource_counters() const;
     void begin_training_step() const;
     void end_training_step() const;
@@ -378,6 +386,10 @@ class VulkanCompute final {
     VkPipelineLayout rnn_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule rnn_shader_ = VK_NULL_HANDLE;
     VkPipeline rnn_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout cat_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout cat_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule cat_shader_ = VK_NULL_HANDLE;
+    VkPipeline cat_pipeline_ = VK_NULL_HANDLE;
     VkDeviceSize max_storage_buffer_range_ = 0;
     uint32_t max_push_constants_size_ = 0;
     uint32_t max_compute_workgroup_count_x_ = 0;

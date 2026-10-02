@@ -92,7 +92,19 @@ def record_coverage(
     if not COVERAGE_RECORDING:
         return
     schema = _MANIFEST_CASES[case.name][0]
-    tensors = [item for item in inputs if isinstance(item, torch.Tensor)]
+    def walk(value, path):
+        if isinstance(value, torch.Tensor):
+            return [(value, path)]
+        if isinstance(value, (list, tuple)):
+            return [item for index, child in enumerate(value) for item in walk(child, f"{path}[{index}]")]
+        if isinstance(value, dict):
+            return [item for key, child in value.items() for item in walk(child, f"{path}[{key!r}]")]
+        return []
+
+    walked = [item for index, value in enumerate(inputs) for item in walk(value, f"inputs[{index}]")]
+    direct_tensors = [item for item in inputs if isinstance(item, torch.Tensor)]
+    has_nested_inputs = any(isinstance(item, (list, tuple, dict)) for item in inputs)
+    tensors = [tensor for tensor, _ in walked] if has_nested_inputs else direct_tensors
     positional_tensors = [
         item for item in (*inputs, *case.args) if isinstance(item, torch.Tensor)
     ]
@@ -138,6 +150,33 @@ def record_coverage(
         if reverse_autograd != {"order": 2, "graph_preserved": True}:
             raise ValueError("reverse_autograd evidence must report order 2 and preserved history")
         record["reverse_autograd"] = dict(reverse_autograd)
+    if inputs and isinstance(inputs[0], (list, tuple)):
+        listed = list(inputs[0])
+        if listed and all(isinstance(item, torch.Tensor) for item in listed):
+            if case.name not in _EXECUTED:
+                raise ValueError(f"{case.name}: TensorList coverage requires a marked executed case")
+            if schema != "aten::cat.default":
+                raise ValueError(f"{case.name}: TensorList cat evidence has unexpected schema {schema}")
+            def skipped(item):
+                return item.numel() == 0 and item.dim() == 1
+            primary_tensor = next((item for item in listed if not skipped(item)), listed[0])
+            record["primary_input"] = {
+                "dtype": str(primary_tensor.dtype).removeprefix("torch."),
+                "rank": primary_tensor.dim(),
+            }
+            record["operands"] = [
+                {"role": "primary_input" if tensor is primary_tensor else "operand",
+                 "dtype": str(tensor.dtype).removeprefix("torch."), "rank": tensor.dim()}
+                for tensor in listed
+            ]
+            record["input_dtypes"] = sorted({str(t.dtype).removeprefix("torch.") for t in tensors})
+            record["input_ranks"] = sorted({t.dim() for t in tensors})
+            record["input_shapes"] = sorted({"x".join(map(str, t.shape)) for t in tensors if t.dim() > 0})
+            record["tensor_lists"] = [{
+                "role": "primary_input", "path": "inputs[0]",
+                "tensors": [{"position": i, "dtype": str(t.dtype).removeprefix("torch."),
+                             "rank": t.dim(), "shape": list(t.shape)} for i, t in enumerate(listed)],
+            }]
     if case.name in _STOCK_ROUTE_CASES:
         execution = _CASE_EXECUTION.get(case.name)
         if execution is None:
@@ -161,6 +200,41 @@ def assert_reverse_second_order(case: ConformanceCase, inputs: tuple[Any, ...]) 
         "view.reshape.copy.trainable-seed": ("aten::reshape.default", "reshape-copy"),
         "view.reshape.offset-copy.second-order": ("aten::reshape.default", "reshape-offset"),
     }
+    if case.name in {"cat.rank4.native-seed", "cat.offset.trainable-seed"}:
+        if case.declaration_id != "aten::cat.default":
+            raise AssertionError(f"{case.name} maps to {case.declaration_id}")
+        cpu_sources = case.inputs()[0]
+        cpu_bases = [value.detach().clone().requires_grad_(True) for value in cpu_sources]
+        vk_views = inputs[0]
+        cpu_views = cpu_bases
+        if case.name == "cat.offset.trainable-seed":
+            cpu_views = [value.transpose(2, 3)[:, :, 1:5, 1:4] for value in cpu_bases]
+            assert [(tuple(t.shape), tuple(t.stride()), t.storage_offset()) for t in vk_views] == [
+                ((2, 3, 4, 3), (90, 30, 1, 6), 7), ((2, 2, 4, 3), (60, 30, 1, 6), 7)]
+            assert [(tuple(t.shape), tuple(t.stride()), t.storage_offset()) for t in cpu_views] == [
+                (tuple(t.shape), tuple(t.stride()), t.storage_offset()) for t in vk_views]
+        cpu_dim = case.args[0]
+        cpu_output = torch.cat(cpu_views, dim=cpu_dim)
+        cpu_seed = torch.arange(1, cpu_output.numel() + 1, dtype=torch.float32).reshape(cpu_output.shape).div(7).requires_grad_()
+        vk_seed = cpu_seed.detach().to(vk_views[0].device).requires_grad_()
+        probes = [torch.arange(1, g.numel() + 1, dtype=torch.float32).reshape(g.shape).div(5 + i)
+                  for i, g in enumerate(cpu_views)]
+        vk_probes = [probe.to(vk_views[0].device) for probe in probes]
+        pytorch_vulkan._C.synchronize()
+        pytorch_vulkan._C.reset_execution_counters()
+        vk_output = torch.cat(vk_views, dim=cpu_dim)
+        cpu_first = torch.autograd.grad(cpu_output, cpu_views, cpu_seed, create_graph=True)
+        vk_first = torch.autograd.grad(vk_output, vk_views, vk_seed, create_graph=True)
+        cpu_second = torch.autograd.grad(sum((g * probe).sum() for g, probe in zip(cpu_first, probes)), cpu_seed)[0]
+        vk_second = torch.autograd.grad(sum((g * probe).sum() for g, probe in zip(vk_first, vk_probes)), vk_seed)[0]
+        pytorch_vulkan._C.synchronize()
+        counters = pytorch_vulkan._C.execution_counter_snapshot()
+        assert counters[2:] == (0, 0), f"{case.name} transfer/fallback counters: {counters}"
+        torch.testing.assert_close(vk_output.cpu(), cpu_output, rtol=case.rtol, atol=case.atol)
+        for actual, expected in zip(vk_first, cpu_first):
+            torch.testing.assert_close(actual.cpu(), expected, rtol=case.rtol, atol=case.atol)
+        torch.testing.assert_close(vk_second.cpu(), cpu_second, rtol=case.rtol, atol=case.atol)
+        return {"order": 2, "graph_preserved": True}
     if case.name in metadata_names:
         expected_schema, recipe = metadata_names[case.name]
         if case.declaration_id != expected_schema:
@@ -654,10 +728,14 @@ def run_and_compare(
         value.clone() if isinstance(value, torch.Tensor) else value
         for value in cpu_inputs
     )
+    if case.setup_inputs is not None:
+        reference_inputs = case.setup_inputs(reference_inputs, "cpu")
     cpu_result = case.cpu_reference(
         *reference_inputs, *case.args, **(case.kwargs or {})
     )
     inputs = to_vulkan_inputs(cpu_inputs, device)
+    if case.setup_inputs is not None:
+        inputs = case.setup_inputs(inputs, device)
     pytorch_vulkan._C.reset_execution_counters()
     result = case.operation(*inputs, *case.args, **(case.kwargs or {}))
     dispatches, vulkan_copies, explicit_transfers, fallbacks = (
@@ -1943,8 +2021,69 @@ def _rscalar_out(value):
     return torch.ops.aten.rsub.Scalar_out(value, 2.0, 1.0, out=torch.empty_like(value))
 
 
+def _cat_values(shapes, *, requires_grad=False, channels_last=False):
+    values = []
+    for index, shape in enumerate(shapes):
+        value = (torch.arange(1, torch.tensor(shape).prod().item() + 1, dtype=torch.float32)
+                 .reshape(shape) + index * 30)
+        if channels_last:
+            value = value.contiguous(memory_format=torch.channels_last)
+        values.append(value.detach().requires_grad_(requires_grad))
+    return (values,)
+
+
+def _cat_native(*, requires_grad=False):
+    import torch.nn.functional as F
+    gen = torch.Generator(device="cpu").manual_seed(73)
+    x = torch.randn((1, 4, 6, 7), generator=gen)
+    weight = torch.randn((6, 2, 3, 2), generator=gen)
+    grad_output = torch.randn((1, 6, 3, 5), generator=gen)
+    grad_input = torch.randn((1, 4, 6, 7), generator=gen)
+    assert tuple(F.conv2d(x, weight, stride=(2, 1), padding=(1, 0), dilation=(1, 2), groups=2).shape) == (1, 6, 3, 5)
+    groups = []
+    for group in range(2):
+        vi = grad_input[:, group * 2:(group + 1) * 2].permute(1, 0, 2, 3)
+        go = grad_output[:, group * 3:(group + 1) * 3].permute(1, 0, 2, 3)
+        groups.append(F.conv2d(vi, go, stride=(1, 2), padding=(1, 0), dilation=(2, 1)).detach().requires_grad_(requires_grad))
+    return (groups,)
+
+
+def _cat_offset(*, requires_grad=False):
+    return ([torch.arange(n, dtype=torch.float32).reshape(shape).detach().requires_grad_(requires_grad)
+             for n, shape in ((180, (2, 3, 5, 6)), (120, (2, 2, 5, 6)))],)
+
+
+def _cat_offset_setup(inputs, device):
+    del device
+    return [base.transpose(2, 3)[:, :, 1:5, 1:4] for base in inputs[0]],
+
+
+def _cat_call(tensors, dim):
+    return torch.cat(tensors, dim=dim)
+
+
+def _cat_reference(tensors, dim):
+    return torch.cat(tensors, dim=dim)
+
+
+def _cat_channels_last(*, requires_grad=False):
+    return _cat_values(((2, 2, 3, 4), (2, 2, 3, 4)), requires_grad=requires_grad, channels_last=True)
+
+
+def _cat_empty(*, requires_grad=False):
+    del requires_grad
+    return ([torch.empty((0,), dtype=torch.float32), torch.arange(6, dtype=torch.float32).reshape(2, 3)],)
+
+
 ALL_CASES = tuple(
     case for case in (
+    _case("cat.rank1.forward", "cat", _cat_call, lambda **kw: _cat_values(((2,), (3,)), **kw), args=(0,), cpu_reference=_cat_reference, expected_shape=(5,)),
+    _case("cat.rank2.forward", "cat", _cat_call, lambda **kw: _cat_values(((2, 3), (2, 4)), **kw), args=(1,), cpu_reference=_cat_reference, expected_shape=(2, 7), declared_shapes=("2x3", "2x4")),
+    _case("cat.rank3.forward", "cat", _cat_call, lambda **kw: _cat_values(((2, 2, 3), (2, 2, 4)), **kw), args=(2,), cpu_reference=_cat_reference, expected_shape=(2, 2, 7), declared_shapes=("2x2x3", "2x2x4")),
+    _case("cat.rank4.native-seed", "cat", _cat_call, _cat_native, args=(1,), cpu_reference=_cat_reference, expected_shape=(2, 6, 4, 2), requires_grad_inputs=True, declared_shapes=("2x3x4x2",)),
+    _case("cat.offset.trainable-seed", "cat", _cat_call, _cat_offset, args=(1,), cpu_reference=_cat_reference, expected_shape=(2, 5, 4, 3), requires_grad_inputs=True, setup_inputs=_cat_offset_setup, declared_shapes=("2x3x4x3", "2x2x4x3")),
+    _case("cat.channels-last.forward", "cat", _cat_call, _cat_channels_last, args=(1,), cpu_reference=_cat_reference, expected_shape=(2, 4, 3, 4), declared_shapes=("2x2x3x4",)),
+    _case("cat.empty.reference", "cat", _cat_call, _cat_empty, args=(1,), cpu_reference=_cat_reference, expected_shape=(2, 3), execution_mode="compute", declared_shapes=("2x3",)),
     _case(
         "unary.neg.float32",
         "unary",

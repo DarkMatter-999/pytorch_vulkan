@@ -95,6 +95,71 @@ def load_coverage_evidence(root: Path) -> dict[str, Any]:
     return coverage
 
 
+def validate_tensor_list_evidence(coverage: dict[str, Any], *, require_complete: bool = False) -> None:
+    """Check cat Tensor[] metadata is internally bound to its executed case record."""
+    expected = {
+        "cat.rank1.forward": [[2], [3]],
+        "cat.rank2.forward": [[2, 3], [2, 4]],
+        "cat.rank3.forward": [[2, 2, 3], [2, 2, 4]],
+        "cat.rank4.native-seed": [[2, 3, 4, 2], [2, 3, 4, 2]],
+        "cat.offset.trainable-seed": [[2, 3, 4, 3], [2, 2, 4, 3]],
+        "cat.channels-last.forward": [[2, 2, 3, 4], [2, 2, 3, 4]],
+        "cat.empty.reference": [[0], [2, 3]],
+    }
+    for name in expected if require_complete else coverage.keys() & expected.keys():
+        record = coverage.get(name)
+        if (not isinstance(record, dict) or "tensor_lists" not in record
+                or record.get("schema") != "aten::cat.default"
+                or record.get("parity") is not True):
+            raise ValueError(f"{name}: required executed cat.default TensorList witness is missing")
+    for name, record in coverage.items():
+        if name.startswith("cat.") and record.get("schema") == "aten::cat.default" and "tensor_lists" not in record:
+            raise ValueError(f"{name}: executed cat witness is missing mandatory TensorList evidence")
+        if "tensor_lists" not in record:
+            continue
+        if name not in {
+            "cat.rank1.forward", "cat.rank2.forward", "cat.rank3.forward",
+            "cat.rank4.native-seed", "cat.offset.trainable-seed",
+            "cat.channels-last.forward", "cat.empty.reference",
+        } or record.get("schema") != "aten::cat.default" or record.get("parity") is not True:
+            raise ValueError(f"{name}: TensorList evidence is not attached to an executed cat.default case")
+        lists = record["tensor_lists"]
+        if not isinstance(lists, list) or len(lists) != 1 or lists[0].get("role") != "primary_input" or lists[0].get("path") != "inputs[0]":
+            raise ValueError(f"{name}: malformed primary TensorList path")
+        tensors = lists[0].get("tensors")
+        if not isinstance(tensors, list) or not tensors:
+            raise ValueError(f"{name}: empty or malformed actual TensorList")
+        for index, tensor in enumerate(tensors):
+            if (not isinstance(tensor, dict) or set(tensor) != {"position", "dtype", "rank", "shape"}
+                    or tensor["position"] != index or tensor["dtype"] not in KNOWN_DTYPES
+                    or type(tensor["rank"]) is not int or tensor["rank"] < 0
+                    or not isinstance(tensor["shape"], list)
+                    or len(tensor["shape"]) != tensor["rank"]
+                    or any(type(size) is not int or size < 0 for size in tensor["shape"])):
+                raise ValueError(f"{name}: malformed tensor-list member {index}")
+        if any(tensor.get("dtype") != "float32" for tensor in tensors):
+            raise ValueError(f"{name}: named cat TensorList members must all be float32")
+        if record.get("output_dtype") != "float32":
+            raise ValueError(f"{name}: named cat witness output dtype must be float32")
+        if name in expected and [tensor["shape"] for tensor in tensors] != expected[name]:
+            raise ValueError(f"{name}: actual TensorList geometry does not match its named witness")
+        if name == "cat.rank4.native-seed" and record.get("primary_input") != {"dtype": "float32", "rank": 4}:
+            raise ValueError(f"{name}: native reverse witness must retain rank-four primary metadata")
+        dtypes = sorted({tensor["dtype"] for tensor in tensors})
+        ranks = sorted({tensor["rank"] for tensor in tensors})
+        shapes = sorted({"x".join(map(str, tensor["shape"])) for tensor in tensors if tensor["rank"] > 0})
+        primary = next((tensor for tensor in tensors if not (tensor["rank"] == 1 and tensor["shape"] == [0])), tensors[0])
+        if (record.get("input_dtypes") != dtypes or record.get("input_ranks") != ranks
+                or record.get("input_shapes") != shapes
+                or record.get("primary_input") != {"dtype": primary["dtype"], "rank": primary["rank"]}):
+            raise ValueError(f"{name}: aggregate coverage metadata differs from its actual TensorList")
+        if record.get("operands") != [
+            {"role": "primary_input" if tensor is primary else "operand", "dtype": tensor["dtype"], "rank": tensor["rank"]}
+            for tensor in tensors
+        ]:
+            raise ValueError(f"{name}: operands differ from actual TensorList members")
+
+
 def validate_stock_composite_routes(
     routes: dict[str, Any],
     entries: list[dict[str, Any]],
@@ -467,9 +532,33 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
 
     source, explicit_rejected = _source_registration_inventory(root / "src")
     coverage = load_coverage_evidence(root) if STOCK_COMPOSITE_ROUTES else {}
+    validate_tensor_list_evidence(
+        coverage,
+        require_complete=any(entry.get("schema") == "aten::cat.default" for entry in entries),
+    )
     validate_stock_composite_routes(
         STOCK_COMPOSITE_ROUTES, entries, coverage, source, explicit_rejected
     )
+    for entry in entries:
+        if entry.get("schema") != "aten::cat.default":
+            continue
+        actual = {
+            name: record for name, record in coverage.items()
+            if record.get("schema") == "aten::cat.default" and record.get("parity") is True
+        }
+        dtypes = sorted({record["primary_input"]["dtype"] for record in actual.values()})
+        ranks = sorted({record["primary_input"]["rank"] for record in actual.values()})
+        pairs = sorted({(record["primary_input"]["dtype"], record["primary_input"]["rank"])
+                        for record in actual.values()})
+        reverse = sorted(name for name, record in actual.items()
+                         if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True})
+        expected_witnesses = {"dtypes": dtypes, "ranks": ranks,
+                              "pairs": [list(pair) for pair in pairs],
+                              "cases": sorted(actual)}
+        if reverse:
+            expected_witnesses["reverse_second_order_cases"] = reverse
+        if entry.get("witnesses") != expected_witnesses:
+            raise ValueError("aten::cat.default manifest witnesses differ from validated TensorList records")
     composite = set(STOCK_COMPOSITE_ROUTES)
     if composite & source:
         raise ValueError(f"stock-composite schemas have duplicate direct registrations: {sorted(composite & source)}")

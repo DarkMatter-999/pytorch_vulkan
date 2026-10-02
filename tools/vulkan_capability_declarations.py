@@ -1931,6 +1931,40 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "status": "deferred"
     },
+    'aten::cat.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "reverse_second_order_witnessed",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 1
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
     'aten::ceil.default':     {
         "aliasing": "no_overlap",
         "autograd": "not_applicable",

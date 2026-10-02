@@ -6478,6 +6478,127 @@
     },
     {
       "aliasing": "no_overlap",
+      "autograd": "reverse_second_order_witnessed",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 1
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::cat.default",
+      "shape_constraints": [
+        "2x2x3",
+        "2x2x3x4",
+        "2x2x4",
+        "2x2x4x3",
+        "2x3",
+        "2x3x4x2",
+        "2x3x4x3",
+        "2x4"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "cat.rank1.forward",
+          "supported": true
+        },
+        {
+          "name": "cat.rank2.forward",
+          "supported": true
+        },
+        {
+          "name": "cat.rank3.forward",
+          "supported": true
+        },
+        {
+          "name": "cat.rank4.native-seed",
+          "supported": true
+        },
+        {
+          "name": "cat.offset.trainable-seed",
+          "supported": true
+        },
+        {
+          "name": "cat.channels-last.forward",
+          "supported": true
+        },
+        {
+          "name": "cat.empty.reference",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "cat.channels-last.forward",
+          "cat.empty.reference",
+          "cat.offset.trainable-seed",
+          "cat.rank1.forward",
+          "cat.rank2.forward",
+          "cat.rank3.forward",
+          "cat.rank4.native-seed"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "reverse_second_order_cases": [
+          "cat.offset.trainable-seed",
+          "cat.rank4.native-seed"
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
       "autograd": "not_applicable",
       "device": {
         "index": 0,

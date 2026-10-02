@@ -4,6 +4,7 @@
 #include "vulkan/pipeline_cache.h"
 #include "vulkan/shader_registry.h"
 #include "vulkan/shaders/generated/convolution_spv.h"
+#include "vulkan/shaders/generated/cat_gather_spv.h"
 #include "vulkan/shaders/generated/f32_to_double_spv.h"
 #include "vulkan/shaders/generated/formatter_double_spv.h"
 #include "vulkan/shaders/generated/gemm_spv.h"
@@ -959,6 +960,40 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                      vulkan_rnn_sequence_shader::kCodeSize / sizeof(uint32_t)),
              {}, 0},
             rnn_pipeline_layout_, rnn_shader_, rnn_pipeline_info);
+
+        const VkDescriptorSetLayoutBinding cat_bindings[] = {
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo cat_layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        cat_layout.bindingCount = 3;
+        cat_layout.pBindings = cat_bindings;
+        check_result(vkCreateDescriptorSetLayout(device_, &cat_layout, nullptr,
+                                                   &cat_descriptor_layout_),
+                     "could not create cat descriptor-set layout");
+        cat_shader_ = platform_.shader_registry().get_or_create(
+            {"cat_gather", vulkan_shader_code_hash(vulkan_cat_gather_shader::kCode,
+                   vulkan_cat_gather_shader::kCodeSize / sizeof(uint32_t))},
+            vulkan_cat_gather_shader::kCode,
+            vulkan_cat_gather_shader::kCodeSize / sizeof(uint32_t));
+        VkPipelineLayoutCreateInfo cat_pipeline_layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        cat_pipeline_layout.setLayoutCount = 1;
+        cat_pipeline_layout.pSetLayouts = &cat_descriptor_layout_;
+        cat_pipeline_layout_ = platform_.pipeline_cache().get_or_create_layout(
+            {reinterpret_cast<uint64_t>(cat_descriptor_layout_), 0, 0, 0},
+            cat_pipeline_layout);
+        VkPipelineShaderStageCreateInfo cat_stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        cat_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cat_stage.module = cat_shader_;
+        cat_stage.pName = "main";
+        VkComputePipelineCreateInfo cat_pipeline_info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        cat_pipeline_info.stage = cat_stage;
+        cat_pipeline_info.layout = cat_pipeline_layout_;
+        cat_pipeline_ = platform_.pipeline_cache().get_or_create(
+            {"cat_gather", reinterpret_cast<uint64_t>(cat_descriptor_layout_),
+             vulkan_shader_code_hash(vulkan_cat_gather_shader::kCode,
+                   vulkan_cat_gather_shader::kCodeSize / sizeof(uint32_t)), {}, 0},
+            cat_pipeline_layout_, cat_shader_, cat_pipeline_info);
     } catch (const std::exception &error) {
         for (auto &pipeline : pipelines_)
             pipeline = VK_NULL_HANDLE;
@@ -975,6 +1010,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         f32_to_double_pipeline_ = VK_NULL_HANDLE;
         gemm_pipeline_ = VK_NULL_HANDLE;
         rnn_pipeline_ = VK_NULL_HANDLE;
+        cat_pipeline_ = VK_NULL_HANDLE;
         for (auto &layout : pipeline_layouts_)
             layout = VK_NULL_HANDLE;
         for (auto &layout : compound_pipeline_layouts_)
@@ -1158,6 +1194,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
         if (rnn_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, rnn_descriptor_layout_, nullptr);
+        if (cat_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, cat_descriptor_layout_, nullptr);
         throw contextual_error("initialization failed", error);
     }
 }
@@ -1178,6 +1216,9 @@ VulkanCompute::~VulkanCompute() {
     f32_to_double_pipeline_ = VK_NULL_HANDLE;
     gemm_pipeline_ = VK_NULL_HANDLE;
     rnn_pipeline_ = VK_NULL_HANDLE;
+    cat_pipeline_ = VK_NULL_HANDLE;
+    cat_pipeline_layout_ = VK_NULL_HANDLE;
+    cat_shader_ = VK_NULL_HANDLE;
     for (auto &layout : pipeline_layouts_)
         layout = VK_NULL_HANDLE;
     for (auto &layout : compound_pipeline_layouts_)
@@ -1237,6 +1278,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, gemm_pipeline_, nullptr);
     if (rnn_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, rnn_pipeline_, nullptr);
+    if (cat_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, cat_pipeline_, nullptr);
     for (uint32_t mode = 0; mode < 8; ++mode)
         shader_modules_[mode] = VK_NULL_HANDLE;
     compound_shader_modules_[0] = VK_NULL_HANDLE;
@@ -1335,6 +1378,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, gemm_pipeline_layout_, nullptr);
     if (rnn_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, rnn_pipeline_layout_, nullptr);
+    if (cat_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, cat_pipeline_layout_, nullptr);
     for (auto layout : descriptor_set_layouts_) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device_, layout, nullptr);
@@ -1384,6 +1429,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
     if (rnn_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, rnn_descriptor_layout_, nullptr);
+    if (cat_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, cat_descriptor_layout_, nullptr);
 }
 
 void VulkanCompute::add(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
@@ -2650,6 +2697,65 @@ void VulkanCompute::dispatch_extra(
     } catch (const std::exception &error) {
         fail_recording("reduction dispatch", error);
     }
+}
+
+void VulkanCompute::cat_gather(VkBuffer input, VkDeviceSize input_range,
+                               VkBuffer output, VkDeviceSize output_range,
+                               const std::array<uint32_t, 21> &metadata,
+                               uint32_t input_numel) const {
+    if (input_numel == 0) return;
+    validate_cat_gather(input_range, output_range, input_numel);
+    const uint32_t groups = static_cast<uint32_t>(std::min<uint64_t>(
+        (static_cast<uint64_t>(input_numel) + 255) / 256,
+        std::min<uint64_t>(max_compute_workgroup_count_x_, UINT32_MAX / 256)));
+    if (!input || !output || groups == 0)
+        throw std::invalid_argument("Vulkan cat gather has invalid buffers or grid");
+    std::scoped_lock lock(platform_.queue_mutex());
+    std::shared_ptr<VulkanBuffer> metadata_buffer;
+    try {
+        record_dispatch();
+        VkCommandBuffer cmd = platform_.execution_context().command_buffer();
+        metadata_buffer = std::make_shared<VulkanBuffer>(
+            platform_, sizeof(metadata), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        metadata_buffer->write(metadata.data(), sizeof(metadata));
+        const VkDescriptorSet set = acquire_descriptor_set(cat_descriptor_layout_, 3);
+        VkDescriptorBufferInfo infos[] = {{input, 0, input_range},
+                                          {output, 0, output_range},
+                                          {metadata_buffer->buffer(), 0, sizeof(metadata)}};
+        VkWriteDescriptorSet writes[3]{};
+        for (uint32_t binding = 0; binding < 3; ++binding) {
+            writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[binding].dstSet = set;
+            writes[binding].dstBinding = binding;
+            writes[binding].descriptorCount = 1;
+            writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[binding].pBufferInfo = &infos[binding];
+        }
+        vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cat_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                cat_pipeline_layout_, 0, 1, &set, 0, nullptr);
+        record_dispatch_command(cmd, groups, 1, 1);
+        platform_.execution_context().defer_destruction([metadata_buffer] {});
+        finish_dispatch();
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::exception &error) {
+        fail_recording("cat gather", error);
+    }
+}
+
+void VulkanCompute::validate_cat_gather(VkDeviceSize input_range,
+                                        VkDeviceSize output_range,
+                                        uint32_t input_numel) const {
+    if (input_range > max_storage_buffer_range_ || output_range > max_storage_buffer_range_ ||
+        (input_numel && sizeof(std::array<uint32_t,21>) > max_storage_buffer_range_))
+        throw std::invalid_argument("Vulkan cat descriptor range exceeds device limit");
+    if (input_numel == 0) return;
+    if (input_numel > UINT32_MAX || max_compute_workgroup_count_x_ == 0)
+        throw std::invalid_argument("Vulkan cat input or dispatch limit is unsupported");
+    if (input_numel > 0 && input_range < sizeof(float))
+        throw std::invalid_argument("Vulkan cat input descriptor range is too small");
 }
 
 void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer output,
