@@ -35,9 +35,11 @@ ConvolutionGeometry saved_geometry(torch::autograd::AutogradContext *ctx) {
     const auto stride = ctx->saved_data["stride"].toIntVector();
     const auto padding = ctx->saved_data["padding"].toIntVector();
     const auto dilation = ctx->saved_data["dilation"].toIntVector();
+    const auto groups = ctx->saved_data["groups"].toInt();
     TORCH_INTERNAL_ASSERT(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
                           "Vulkan convolution autograd saved malformed geometry");
-    return {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1]};
+    return {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1],
+            groups};
 }
 
 class ConvolutionAutogradFunction final
@@ -51,10 +53,11 @@ class ConvolutionAutogradFunction final
                               at::IntArrayRef output_padding, int64_t groups) {
         at::AutoDispatchBelowAutograd guard;
         ctx->save_for_backward({input, weight});
-        ctx->saved_data["has_bias"] = bias.has_value();
+        ctx->saved_data["has_bias"] = bias.has_value() && bias->defined();
         ctx->saved_data["stride"] = stride.vec();
         ctx->saved_data["padding"] = padding.vec();
         ctx->saved_data["dilation"] = dilation.vec();
+        ctx->saved_data["groups"] = groups;
         return pytorch_vulkan::convolution(input, weight, bias, stride, padding,
                                            dilation, transposed, output_padding,
                                            groups);
@@ -67,21 +70,22 @@ class ConvolutionAutogradFunction final
             return {at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor(), at::Tensor(), at::Tensor()};
-        const auto geometry = saved_geometry(ctx);
         auto saved = ctx->get_saved_variables();
-        return {convolution_backward_input(grads[0], saved[1], geometry, saved[0].size(2),
-                                           saved[0].size(3)),
-                convolution_backward_weight(grads[0], saved[0], geometry, saved[1].size(2),
-                                            saved[1].size(3)),
-                ctx->saved_data["has_bias"].toBool()
-                    ? convolution_backward_bias(grads[0])
-                    : at::Tensor(),
-                at::Tensor(),
-                at::Tensor(),
-                at::Tensor(),
-                at::Tensor(),
-                at::Tensor(),
-                at::Tensor()};
+        const auto geometry = saved_geometry(ctx);
+        const auto stride = ctx->saved_data["stride"].toIntVector();
+        const auto padding = ctx->saved_data["padding"].toIntVector();
+        const auto dilation = ctx->saved_data["dilation"].toIntVector();
+        const bool has_bias = ctx->saved_data["has_bias"].toBool();
+        const std::array<bool, 3> mask{
+            ctx->needs_input_grad(0), ctx->needs_input_grad(1),
+            has_bias && ctx->needs_input_grad(2)};
+        const std::array<int64_t, 2> output_padding{0, 0};
+        auto backward_grads = pytorch_vulkan::convolution_backward(
+            grads[0], saved[0], saved[1], c10::nullopt, stride, padding, dilation,
+            false, output_padding, geometry.groups, mask);
+        return {std::get<0>(backward_grads), std::get<1>(backward_grads),
+                std::get<2>(backward_grads), at::Tensor(), at::Tensor(), at::Tensor(),
+                at::Tensor(), at::Tensor(), at::Tensor()};
     }
 };
 class LinearAutogradFunction final

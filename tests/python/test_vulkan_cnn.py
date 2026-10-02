@@ -104,51 +104,59 @@ def test_cnn_rejects_wrong_device_and_overlapping_operands_before_work(vulkan_ba
         assert pytorch_vulkan._C.explicit_transfer_count() == 0
         assert pytorch_vulkan._C.fallback_count() == 0
 
-    grad = torch.ones((1, 8, 32, 32), device=vulkan_backend).expand(8, 8, 32, 32)
-    input_value = valid.requires_grad_()
-    pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="overlap|layout"):
-        torch.ops.aten.convolution_backward.default(
-            grad,
-            input_value,
-            weight,
-            [8],
-            [1, 1],
-            [1, 1],
-            [1, 1],
-            False,
-            [0, 0],
-            1,
-            [True, True, True],
+    cpu_input = inputs.detach()
+    cpu_weight = model[0].weight.detach()
+    cpu_grad_base = torch.ones((1, 8, 32, 32), dtype=torch.float32)
+    cpu_grad = cpu_grad_base.expand(8, 8, 32, 32)
+    with torch.backends.mkldnn.flags(enabled=False):
+        cpu_results = torch.ops.aten.convolution_backward.default(
+            cpu_grad, cpu_input, cpu_weight, [8], [1, 1], [1, 1], [1, 1],
+            False, [0, 0], 1, [True, True, True],
         )
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
-    assert pytorch_vulkan._C.fallback_count() == 0
+    grad = cpu_grad_base.to(vulkan_backend).expand(8, 8, 32, 32)
+    input_value = cpu_input.to(vulkan_backend).requires_grad_()
+    weight_value = cpu_weight.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_results = torch.ops.aten.convolution_backward.default(
+        grad, input_value, weight_value, [8], [1, 1], [1, 1], [1, 1],
+        False, [0, 0], 1, [True, True, True],
+    )
+    pytorch_vulkan._C.synchronize()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert counters[0] == 3
+    assert counters[1:] == (0, 0, 0)
+    for actual, expected in zip(vk_results, cpu_results):
+        assert actual.shape == expected.shape
+        torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
 
 
-def test_cnn_backward_rejects_legacy_bias_size_before_work(vulkan_backend):
-    fixture, _, model, _, vk_input, _, _ = _pair(vulkan_backend)
-    weight = model[0].weight
-    grad_output = torch.ones((8, 8, 32, 32), device=vulkan_backend)
-    pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="bias"):
-        torch.ops.aten.convolution_backward.default(
-            grad_output,
-            vk_input,
-            weight,
-            [4],
-            [1, 1],
-            [1, 1],
-            [1, 1],
-            False,
-            [0, 0],
-            1,
-            [True, True, True],
+def test_cnn_backward_bias_size_is_advisory_and_dbias_uses_cout(vulkan_backend):
+    fixture = CNNFixture(batch=8)
+    cpu_model = fixture.make_cpu()
+    cpu_input, _ = fixture.make_inputs()
+    cpu_weight = cpu_model[0].weight.detach()
+    cpu_grad = torch.ones((8, 8, 32, 32), dtype=torch.float32)
+    schema_args = ([4], [1, 1], [1, 1], [1, 1], False, [0, 0], 1, [True, True, True])
+    with torch.backends.mkldnn.flags(enabled=False):
+        cpu_results = torch.ops.aten.convolution_backward.default(
+            cpu_grad, cpu_input, cpu_weight, *schema_args,
         )
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
-    assert pytorch_vulkan._C.fallback_count() == 0
+    vk_input = cpu_input.to(vulkan_backend)
+    weight = cpu_weight.to(vulkan_backend)
+    grad_output = cpu_grad.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_results = torch.ops.aten.convolution_backward.default(
+        grad_output, vk_input, weight, *schema_args,
+    )
+    pytorch_vulkan._C.synchronize()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert counters == (3, 0, 0, 0)
+    assert vk_results[2].shape == (8,)
+    for actual, expected in zip(vk_results, cpu_results):
+        assert actual.shape == expected.shape
+        torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
 
 
 def test_cnn_benchmark_initializes_backend_before_cpu_reference(vulkan_backend):

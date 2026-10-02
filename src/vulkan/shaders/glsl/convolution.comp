@@ -25,6 +25,7 @@ layout(push_constant) uniform Params {
   uint dilation_height;
   uint dilation_width;
   uint groups;
+  uint has_bias;
 }
 params;
 uint ii(uint n, uint c, uint h, uint w) {
@@ -53,8 +54,11 @@ void main() {
     uint oh = (index / params.output_width) % params.output_height;
     uint oc = (index / (params.output_width * params.output_height)) % params.output_channels;
     uint n = index / (params.output_width * params.output_height * params.output_channels);
-    TensorMetadata bm = metadata.tensors[2];
-    float value = bias_values[bm.storage_offset + oc * bm.strides[0]];
+    float value = 0.0;
+    if (params.has_bias != 0u) {
+      TensorMetadata bm = metadata.tensors[2];
+      value = bias_values[bm.storage_offset + oc * bm.strides[0]];
+    }
     uint out_per_group = max(params.output_channels / max(params.groups, 1u), 1u);
     uint in_per_group = max(params.input_channels / max(params.groups, 1u), 1u);
     uint group = oc / out_per_group;

@@ -189,10 +189,16 @@ class VulkanCompute final {
                      const VulkanTensorLayout &input_layout,
                      const VulkanTensorLayout &weight_layout,
                      const VulkanTensorLayout &bias_layout,
-                      const VulkanTensorLayout &output_layout,
-                      uint32_t operation = 0, uint32_t kernel_height = 0,
-                      uint32_t kernel_width = 0,
-                      pytorch_vulkan::VulkanConvolutionGeometry geometry = {}) const;
+                     const VulkanTensorLayout &output_layout, uint32_t operation,
+                     uint32_t kernel_height, uint32_t kernel_width,
+                     pytorch_vulkan::VulkanConvolutionGeometry geometry,
+                     bool has_bias) const;
+    void validate_convolution_dispatch(VkDeviceSize input_bytes,
+                                       VkDeviceSize weight_bytes,
+                                       VkDeviceSize bias_bytes,
+                                       VkDeviceSize output_bytes,
+                                       uint32_t output_numel,
+                                       bool workgroup_per_output) const;
     void pooling(VkBuffer input, VkBuffer output,
                  const VulkanTensorLayout &input_layout,
                  const VulkanTensorLayout &output_layout, uint32_t batch,

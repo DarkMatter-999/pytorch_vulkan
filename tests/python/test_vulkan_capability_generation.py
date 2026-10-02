@@ -305,6 +305,210 @@ def test_cat_float32_tensorlist_identity_is_mandatory_for_validation_and_generat
         capability_validator.validate_manifest_data(load_manifest(COMMITTED), ROOT)
 
 
+def _convolution_record(mask, bias_present):
+    name = "convolution.backward.bias-present.mask-" if bias_present else "convolution.backward.bias-absent.mask-"
+    name += "".join("1" if bit else "0" for bit in mask)
+    shapes = {
+        "input": [1, 4, 5, 6],
+        "weight": [4, 2, 2, 2],
+        "bias": [4],
+        "grad_output": [1, 4, 4, 5],
+    }
+    operands = {}
+    for role, shape in shapes.items():
+        if role == "bias" and not bias_present:
+            operands[role] = {"defined": False}
+            continue
+        strides = [shape[1] * shape[2] * shape[3], shape[2] * shape[3], shape[3], 1] if len(shape) == 4 else [1]
+        operands[role] = {
+            "defined": True, "dtype": "float32", "rank": len(shape),
+            "shape": shape, "strides": strides, "storage_offset": 0,
+            "format": "contiguous",
+        }
+    return name, {
+        "schema": "aten::convolution_backward.default",
+        "primary_input": {"dtype": "float32", "rank": 4},
+        "input_dtypes": ["float32"], "input_ranks": [4],
+        "input_shapes": ["1x4x4x5", "1x4x5x6", "4x2x2x2"],
+        "operands": [{"role": "primary_input", "dtype": "float32", "rank": 4}],
+        "output_slots": [
+            {"index": index, "defined": bit, **({"dtype": "float32", "rank": len(shapes[role]), "shape": shapes[role]} if bit else {})}
+            for index, (bit, role) in enumerate(zip(mask, ("input", "weight", "bias")))
+        ],
+        "convolution_context": {
+            "device": "vk:0", "cpu_oracle": "aten::convolution_backward.default",
+            "forward_bias_present": bias_present, "output_mask": mask,
+        },
+        "convolution_operands": operands,
+        "schema_args": {
+            "bias_sizes": [4], "stride": [1, 1], "padding": [0, 0],
+            "dilation": [1, 1], "transposed": False,
+            "output_padding": [0, 0], "groups": 2, "output_mask": mask,
+        },
+        "execution": {
+            "compute_dispatches": sum(mask), "vulkan_copies": 0,
+            "explicit_transfers": 0, "fallbacks": 0,
+            "buffer_creations_delta": sum(mask), "live_allocations_delta": sum(mask),
+        },
+        "gradients": False, "parity": True,
+    }
+
+
+def test_convolution_evidence_validator_binds_case_identity_to_actual_metadata():
+    from tools.validate_vulkan_capabilities import validate_convolution_evidence
+
+    name = "convolution.backward.bias-absent.mask-000"
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    validate_convolution_evidence(coverage, require_complete=True)
+    generator.build_coverage_manifest(coverage)
+    record = coverage[name]
+
+    changed = json.loads(json.dumps(record))
+    changed["convolution_context"]["output_mask"] = [True, False, False]
+    changed["output_slots"][0] = {"index": 0, "defined": True, "dtype": "float32", "rank": 4, "shape": [1, 4, 5, 6]}
+    changed["schema_args"]["output_mask"] = [True, False, False]
+    changed["execution"]["compute_dispatches"] = 1
+    coverage[name] = changed
+    with pytest.raises(ValueError, match="case identity"):
+        validate_convolution_evidence(coverage)
+    with pytest.raises(ValueError, match="case identity"):
+        generator.build_coverage_manifest(coverage)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing", "dtype", "slot", "slot_dtype", "defined", "counter",
+        "negative_counter", "mask000_copy", "mask000_resource", "metadata",
+        "device", "oracle", "parity",
+    ],
+)
+def test_convolution_evidence_rejects_consistent_looking_tampering(mutation, monkeypatch):
+    from tools.validate_vulkan_capabilities import validate_convolution_evidence
+
+    name = (
+        "convolution.backward.bias-absent.mask-001"
+        if mutation == "slot_dtype" else
+        "convolution.backward.bias-absent.mask-000"
+    )
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    record = coverage[name]
+    if mutation == "missing":
+        del coverage[name]
+        with pytest.raises(ValueError, match="required executed convolution witness"):
+            validate_convolution_evidence(coverage, require_complete=True)
+        with pytest.raises(ValueError, match="required executed convolution witness"):
+            generator.build_coverage_manifest(coverage)
+        monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+        with pytest.raises(ValueError, match="required executed convolution witness"):
+            capability_validator.validate_manifest_data(load_manifest(COMMITTED), ROOT)
+        return
+    if mutation == "dtype":
+        def rewrite_dtype(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "dtype" and child == "float32":
+                        value[key] = "float64"
+                    else:
+                        rewrite_dtype(child)
+            elif isinstance(value, list):
+                for child in value:
+                    rewrite_dtype(child)
+        rewrite_dtype(record)
+        record["input_dtypes"] = ["float64"]
+    elif mutation == "slot":
+        record["output_slots"][0]["shape"] = [9, 9, 9, 9]
+    elif mutation == "slot_dtype":
+        record["output_slots"][2]["dtype"] = "float64"
+    elif mutation == "defined":
+        record["output_slots"][2] = {"index": 2, "defined": True, "dtype": "float32", "rank": 1, "shape": [4]}
+    elif mutation == "counter":
+        record["execution"]["compute_dispatches"] = 1
+    elif mutation == "negative_counter":
+        record["execution"]["fallbacks"] = -1
+    elif mutation == "mask000_copy":
+        record["execution"]["vulkan_copies"] = 1
+    elif mutation == "mask000_resource":
+        record["execution"]["buffer_creations_delta"] = 1
+    elif mutation == "metadata":
+        record["convolution_operands"]["weight"]["strides"] = [1, 1, 1, 1]
+    elif mutation == "device":
+        record["convolution_context"]["device"] = "vk:1"
+    elif mutation == "oracle":
+        record["convolution_context"]["cpu_oracle"] = "torch.nn.functional.conv2d"
+    else:
+        record["parity"] = False
+    with pytest.raises(ValueError):
+        validate_convolution_evidence(coverage)
+    with pytest.raises(ValueError):
+        generator.build_coverage_manifest(coverage)
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError):
+        capability_validator.validate_manifest_data(load_manifest(COMMITTED), ROOT)
+
+
+@pytest.mark.parametrize(
+    ("schema", "case", "mutation"),
+    [
+        ("aten::convolution.default", "convolution.forward.bias-absent", "input_dtype"),
+        ("aten::convolution.default", "convolution.forward.bias-present", "output_dtype"),
+        ("aten::convolution.default", "convolution.forward.bias-absent", "rank_pair"),
+        ("aten::convolution.default", "convolution.forward.bias-present", "case_link"),
+        ("aten::convolution.default", "convolution.forward.bias-absent", "unsupported_case"),
+        ("aten::convolution_backward.default", "convolution.backward.bias-absent.mask-000", "input_dtype"),
+        ("aten::convolution_backward.default", "convolution.backward.bias-present.mask-111", "output_dtype"),
+        ("aten::convolution_backward.default", "convolution.backward.bias-absent.mask-000", "rank_pair"),
+        ("aten::convolution_backward.default", "convolution.backward.bias-absent.mask-000", "case_link"),
+        ("aten::convolution_backward.default", "convolution.backward.bias-present.mask-000", "unsupported_case"),
+    ],
+)
+def test_convolution_manifest_claims_are_bound_to_coverage(schema, case, mutation, monkeypatch):
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    manifest = load_manifest(COMMITTED)
+    entry = next(item for item in manifest["entries"] if item["schema"] == schema)
+    if mutation == "input_dtype":
+        entry["dtypes"]["inputs"] = ["float64"]
+        entry["witnesses"]["dtypes"] = ["float64"]
+        entry["witnesses"]["pairs"] = [["float64", 4]]
+    elif mutation == "output_dtype":
+        entry["dtypes"]["outputs"] = ["float64"]
+    elif mutation == "rank_pair":
+        entry["ranks"] = {"min": 3, "max": 3}
+        entry["witnesses"]["ranks"] = [3]
+        entry["witnesses"]["pairs"] = [["float32", 3]]
+    elif mutation == "case_link":
+        entry["witnesses"]["cases"].remove(case)
+        entry["test_cases"] = [item for item in entry["test_cases"] if item["name"] != case]
+    else:
+        next(item for item in entry["test_cases"] if item["name"] == case)["supported"] = False
+
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="convolution"):
+        capability_validator.validate_manifest_data(manifest, ROOT)
+
+
+def test_convolution_manifest_cannot_erase_the_complete_forward_witness_set(monkeypatch):
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    manifest = load_manifest(COMMITTED)
+    entry = next(
+        item for item in manifest["entries"]
+        if item["schema"] == "aten::convolution.default"
+    )
+    required = {"convolution.forward.bias-present", "convolution.forward.bias-absent"}
+    for name in required:
+        del coverage[name]
+    entry["witnesses"]["cases"] = [
+        name for name in entry["witnesses"]["cases"] if name not in required
+    ]
+    entry["test_cases"] = [
+        case for case in entry["test_cases"] if case["name"] not in required
+    ]
+
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="required executed convolution witness"):
+        capability_validator.validate_manifest_data(manifest, ROOT)
+
+
 def test_declared_shapes_were_actually_exercised():
     import vulkan_conformance as vc
 
@@ -374,10 +578,7 @@ def _run_all_supported_cases():
     with vc.coverage_recording():
         for case in vc.SUPPORTED_CASES:
             result, expected, inputs = vc.run_and_compare(case, return_inputs=True)
-            torch.testing.assert_close(
-                result.cpu(), expected, rtol=case.rtol, atol=case.atol, equal_nan=True
-            )
-            pytorch_vulkan._C.synchronize()
+            vc.assert_result_parity(result, expected, case)
             reverse_names = {
                 "arithmetic.autograd.add-tensor", "arithmetic.autograd.add-scalar",
                 "arithmetic.autograd.mul-tensor", "arithmetic.autograd.mul-scalar",

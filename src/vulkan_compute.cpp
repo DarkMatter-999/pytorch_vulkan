@@ -31,6 +31,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 namespace {
 
@@ -152,7 +153,37 @@ struct ConvolutionParams {
     uint32_t stride_height, stride_width, padding_height, padding_width,
         dilation_height, dilation_width;
     uint32_t groups;
+    uint32_t has_bias;
 };
+static_assert(sizeof(uint32_t) == 4, "convolution ABI requires 32-bit uint32_t");
+#define ASSERT_CONVOLUTION_PARAM(field, offset)                                      \
+    static_assert(std::is_same_v<decltype(ConvolutionParams::field), uint32_t>,       \
+                  "convolution ABI field type mismatch: " #field);                  \
+    static_assert(sizeof(ConvolutionParams::field) == 4,                              \
+                  "convolution ABI field width mismatch: " #field);                 \
+    static_assert(offsetof(ConvolutionParams, field) == offset,                       \
+                  "convolution ABI field offset mismatch: " #field)
+ASSERT_CONVOLUTION_PARAM(batch, 0);
+ASSERT_CONVOLUTION_PARAM(input_channels, 4);
+ASSERT_CONVOLUTION_PARAM(input_height, 8);
+ASSERT_CONVOLUTION_PARAM(input_width, 12);
+ASSERT_CONVOLUTION_PARAM(output_channels, 16);
+ASSERT_CONVOLUTION_PARAM(output_height, 20);
+ASSERT_CONVOLUTION_PARAM(output_width, 24);
+ASSERT_CONVOLUTION_PARAM(kernel_height, 28);
+ASSERT_CONVOLUTION_PARAM(kernel_width, 32);
+ASSERT_CONVOLUTION_PARAM(operation, 36);
+ASSERT_CONVOLUTION_PARAM(stride_height, 40);
+ASSERT_CONVOLUTION_PARAM(stride_width, 44);
+ASSERT_CONVOLUTION_PARAM(padding_height, 48);
+ASSERT_CONVOLUTION_PARAM(padding_width, 52);
+ASSERT_CONVOLUTION_PARAM(dilation_height, 56);
+ASSERT_CONVOLUTION_PARAM(dilation_width, 60);
+ASSERT_CONVOLUTION_PARAM(groups, 64);
+ASSERT_CONVOLUTION_PARAM(has_bias, 68);
+#undef ASSERT_CONVOLUTION_PARAM
+static_assert(sizeof(ConvolutionParams) == 72,
+              "convolution push-constant ABI size mismatch");
 struct MaskedParams {
     uint32_t element_count;
 };
@@ -2314,7 +2345,8 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
                                 const VulkanTensorLayout &output_layout,
                                 uint32_t operation, uint32_t kernel_height,
                                 uint32_t kernel_width,
-                                pytorch_vulkan::VulkanConvolutionGeometry geometry) const {
+                                pytorch_vulkan::VulkanConvolutionGeometry geometry,
+                                bool has_bias) const {
     ModelMetadata metadata{};
     fill_layout_metadata(metadata.tensors[0], input_layout, "convolution input");
     fill_layout_metadata(metadata.tensors[1], weight_layout, "convolution weight");
@@ -2352,7 +2384,7 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
         output_height, output_width,   kernel_height, kernel_width, operation,
         geometry.stride_height, geometry.stride_width, geometry.padding_height,
         geometry.padding_width, geometry.dilation_height, geometry.dilation_width,
-        geometry.groups};
+        geometry.groups, static_cast<uint32_t>(has_bias)};
     const uint32_t output_numel = static_cast<uint32_t>(output_layout.numel);
     if (operation == 2 &&
         static_cast<uint64_t>(output_channels) * input_channels * kernel_height * kernel_width !=
@@ -2364,6 +2396,28 @@ void VulkanCompute::convolution(VkBuffer input, VkBuffer weight, VkBuffer bias,
                     output_numel, convolution_pipeline_, convolution_pipeline_layout_,
                     convolution_descriptor_layout_, &metadata, sizeof(metadata),
                     operation == 2 || operation == 3);
+}
+
+void VulkanCompute::validate_convolution_dispatch(
+    VkDeviceSize input_bytes, VkDeviceSize weight_bytes, VkDeviceSize bias_bytes,
+    VkDeviceSize output_bytes, uint32_t output_numel,
+    bool workgroup_per_output) const {
+    const uint64_t dispatch_groups = workgroup_per_output
+        ? static_cast<uint64_t>(output_numel)
+        : (static_cast<uint64_t>(output_numel) + kWorkgroupSize - 1) /
+              kWorkgroupSize;
+    if (input_bytes == 0 || weight_bytes == 0 || bias_bytes == 0 ||
+        output_bytes == 0 || output_numel == 0 ||
+        input_bytes > max_storage_buffer_range_ ||
+        weight_bytes > max_storage_buffer_range_ ||
+        bias_bytes > max_storage_buffer_range_ ||
+        output_bytes > max_storage_buffer_range_)
+        throw std::invalid_argument("Vulkan convolution has an invalid descriptor range");
+    if (dispatch_groups == 0 || dispatch_groups > max_compute_workgroup_count_x_)
+        throw std::invalid_argument("Vulkan convolution dispatch group count exceeds device limit");
+    if (sizeof(ConvolutionParams) > max_push_constants_size_ ||
+        sizeof(ModelMetadata) == 0 || sizeof(ModelMetadata) > max_storage_buffer_range_)
+        throw std::invalid_argument("Vulkan convolution parameter or metadata size exceeds device limit");
 }
 
 void VulkanCompute::pooling(VkBuffer input, VkBuffer output,

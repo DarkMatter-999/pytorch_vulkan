@@ -1987,6 +1987,14 @@
         {
           "name": "convolution.backward.grad-output-batch.rejected",
           "supported": false
+        },
+        {
+          "name": "convolution.forward.bias-present",
+          "supported": true
+        },
+        {
+          "name": "convolution.forward.bias-absent",
+          "supported": true
         }
       ],
       "tests": [
@@ -1997,6 +2005,8 @@
         "cases": [
           "convolution.cnn.forward",
           "convolution.forward",
+          "convolution.forward.bias-absent",
+          "convolution.forward.bias-present",
           "convolution.forward.strided",
           "convolution.general.forward",
           "convolution.general.kernel-1x1",
@@ -2132,6 +2142,70 @@
         {
           "name": "convolution.backward.grad-output-spatial-shape.rejected",
           "supported": false
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-000",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-100",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-010",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-110",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-001",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-101",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-011",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-present.mask-111",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-000",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-100",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-010",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-110",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-001",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-101",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-011",
+          "supported": true
+        },
+        {
+          "name": "convolution.backward.bias-absent.mask-111",
+          "supported": true
         }
       ],
       "tests": [
@@ -2141,6 +2215,22 @@
       "witnesses": {
         "cases": [
           "convolution.backward",
+          "convolution.backward.bias-absent.mask-000",
+          "convolution.backward.bias-absent.mask-001",
+          "convolution.backward.bias-absent.mask-010",
+          "convolution.backward.bias-absent.mask-011",
+          "convolution.backward.bias-absent.mask-100",
+          "convolution.backward.bias-absent.mask-101",
+          "convolution.backward.bias-absent.mask-110",
+          "convolution.backward.bias-absent.mask-111",
+          "convolution.backward.bias-present.mask-000",
+          "convolution.backward.bias-present.mask-001",
+          "convolution.backward.bias-present.mask-010",
+          "convolution.backward.bias-present.mask-011",
+          "convolution.backward.bias-present.mask-100",
+          "convolution.backward.bias-present.mask-101",
+          "convolution.backward.bias-present.mask-110",
+          "convolution.backward.bias-present.mask-111",
           "convolution.backward.general.grad-bias",
           "convolution.backward.general.grad-input",
           "convolution.backward.kernel-1x1.grad-weight",

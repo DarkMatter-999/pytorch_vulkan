@@ -95,6 +95,197 @@ def load_coverage_evidence(root: Path) -> dict[str, Any]:
     return coverage
 
 
+def validate_convolution_evidence(
+    coverage: dict[str, Any], *, require_complete: bool = False
+) -> None:
+    """Bind the new convolution witnesses to their names, real tensor roles and schemas."""
+    required = {"convolution.forward.bias-present", "convolution.forward.bias-absent"}
+    required |= {
+        f"convolution.backward.bias-{state}.mask-{mask:03b}"
+        for state in ("present", "absent") for mask in range(8)
+    }
+    named = {name for name in coverage if name.startswith("convolution.forward.bias-")
+             or name.startswith("convolution.backward.bias-")}
+    if named - required:
+        raise ValueError(f"unexpected named convolution evidence cases: {sorted(named - required)}")
+    if require_complete and not required <= set(coverage):
+        missing = sorted(required - set(coverage))
+        raise ValueError(f"required executed convolution witness is missing: {missing}")
+
+    input_shape = [1, 4, 5, 6]
+    weight_shape = [4, 2, 2, 2]
+    bias_shape = [4]
+    grad_shape = [1, 4, 4, 5]
+    def expected_operand(shape):
+        strides = (
+            [shape[1] * shape[2] * shape[3], shape[2] * shape[3], shape[3], 1]
+            if len(shape) == 4 else [1]
+        )
+        return {"defined": True, "dtype": "float32", "rank": len(shape),
+                "shape": shape, "strides": strides, "storage_offset": 0,
+                "format": "contiguous"}
+
+    for name in sorted(named):
+        record = coverage[name]
+        if not isinstance(record, dict) or record.get("parity") is not True:
+            raise ValueError(f"{name}: convolution evidence must be a parity-checked execution")
+        is_forward = name.startswith("convolution.forward.")
+        bias_present = ".bias-present" in name
+        expected_schema = "aten::convolution.default" if is_forward else "aten::convolution_backward.default"
+        if record.get("schema") != expected_schema:
+            raise ValueError(f"{name}: convolution schema does not match case identity")
+        context = record.get("convolution_context")
+        expected_oracle = "torch.nn.functional.conv2d" if is_forward else "aten::convolution_backward.default"
+        expected_context_keys = {"device", "cpu_oracle", "forward_bias_present"}
+        if not is_forward:
+            expected_context_keys.add("output_mask")
+        if (not isinstance(context, dict) or set(context) != expected_context_keys
+                or context.get("device") != "vk:0" or context.get("cpu_oracle") != expected_oracle):
+            raise ValueError(f"{name}: convolution execution device or CPU oracle is inconsistent")
+        if context.get("forward_bias_present") is not bias_present:
+            raise ValueError(f"{name}: forward bias state does not match case identity")
+        if is_forward:
+            mask = None
+            expected_roles = {"input": expected_operand(input_shape),
+                              "weight": expected_operand(weight_shape),
+                              "bias": expected_operand(bias_shape) if bias_present else {"defined": False}}
+            expected_args = {"stride": [1, 1], "padding": [0, 0],
+                             "dilation": [1, 1], "groups": 2}
+            if "output_slots" in record:
+                raise ValueError(f"{name}: forward single-Tensor result cannot contain tuple output slots")
+            if record.get("output_dtype") != "float32" or record.get("output_rank") != 4:
+                raise ValueError(f"{name}: forward output witness differs from actual result")
+            expected_shapes = [input_shape, weight_shape] + ([bias_shape] if bias_present else [])
+        else:
+            try:
+                mask_text = name.rsplit("mask-", 1)[1]
+                if len(mask_text) != 3 or set(mask_text) - {"0", "1"}:
+                    raise ValueError
+                mask = [digit == "1" for digit in mask_text]
+            except (IndexError, ValueError) as error:
+                raise ValueError(f"{name}: invalid output mask case identity") from error
+            if context.get("output_mask") != mask:
+                raise ValueError(f"{name}: output_mask does not match case identity")
+            expected_roles = {"grad_output": expected_operand(grad_shape),
+                              "input": expected_operand(input_shape),
+                              "weight": expected_operand(weight_shape),
+                              "bias": expected_operand(bias_shape) if bias_present else {"defined": False}}
+            expected_args = {"bias_sizes": [4], "stride": [1, 1], "padding": [0, 0],
+                             "dilation": [1, 1], "transposed": False,
+                             "output_padding": [0, 0], "groups": 2, "output_mask": mask}
+            expected_shapes = [grad_shape, input_shape, weight_shape] + ([bias_shape] if bias_present else [])
+            slots = record.get("output_slots")
+            expected_slots = []
+            shapes_by_slot = (input_shape, weight_shape, bias_shape)
+            for index, requested in enumerate(mask):
+                slot = {"index": index, "defined": requested}
+                if requested:
+                    shape = shapes_by_slot[index]
+                    slot.update(dtype="float32", rank=len(shape), shape=shape)
+                expected_slots.append(slot)
+            if slots != expected_slots:
+                raise ValueError(f"{name}: output slots do not match schema mask/geometry")
+            if "output_dtype" in record or "output_rank" in record:
+                raise ValueError(f"{name}: tuple results cannot use legacy single-Tensor output witnesses")
+        operands = record.get("convolution_operands")
+        if operands != expected_roles:
+            raise ValueError(f"{name}: actual convolution operand metadata does not match named geometry/roles")
+        if record.get("schema_args") != expected_args:
+            raise ValueError(f"{name}: actual convolution schema arguments do not match case identity")
+        primary = record.get("primary_input")
+        if primary != {"dtype": "float32", "rank": 4}:
+            raise ValueError(f"{name}: primary schema input dtype/rank witness is inconsistent")
+        expected_ranks = sorted({operand["rank"] for operand in expected_roles.values()
+                                 if operand.get("defined")})
+        if record.get("input_dtypes") != ["float32"] or record.get("input_ranks") != expected_ranks:
+            raise ValueError(f"{name}: aggregate convolution input dtype/rank witnesses are inconsistent")
+        shape_tokens = sorted({"x".join(map(str, shape)) for shape in expected_shapes})
+        if record.get("input_shapes") != shape_tokens:
+            raise ValueError(f"{name}: aggregate convolution shapes differ from actual operand roles")
+        execution = record.get("execution")
+        execution_keys = {"compute_dispatches", "vulkan_copies", "explicit_transfers",
+                          "fallbacks", "buffer_creations_delta", "live_allocations_delta"}
+        if not isinstance(execution, dict) or set(execution) != execution_keys or any(
+            type(value) is not int or value < 0 for value in execution.values()
+        ):
+            raise ValueError(f"{name}: execution deltas are missing, malformed, or negative")
+        expected_dispatches = 1 if is_forward else sum(mask)
+        if execution["compute_dispatches"] != expected_dispatches:
+            raise ValueError(f"{name}: dispatch count does not match requested outputs")
+        if any(execution[key] for key in ("vulkan_copies", "explicit_transfers", "fallbacks")):
+            raise ValueError(f"{name}: convolution witness recorded copy, transfer, or fallback work")
+        if not is_forward and not any(mask) and any(
+            execution[key] for key in ("buffer_creations_delta", "live_allocations_delta")
+        ):
+            raise ValueError(f"{name}: mask 000 recorded result allocation")
+
+
+def validate_convolution_manifest_bindings(
+    entries: list[dict[str, Any]], coverage: dict[str, Any]
+) -> None:
+    """Require ordinary convolution declarations to match executed coverage."""
+    schemas = ("aten::convolution.default", "aten::convolution_backward.default")
+    for schema in schemas:
+        entry = next((item for item in entries if item.get("schema") == schema), None)
+        if entry is None:
+            continue
+        actual = {
+            name: record for name, record in coverage.items()
+            if isinstance(record, dict)
+            and record.get("schema") == schema
+            and record.get("parity") is True
+        }
+        if not actual:
+            raise ValueError(f"{schema}: no validated convolution coverage records")
+        try:
+            pairs = sorted({
+                (record["primary_input"]["dtype"], record["primary_input"]["rank"])
+                for record in actual.values()
+            })
+            output_dtypes = set()
+            for record in actual.values():
+                if "output_dtype" in record:
+                    output_dtypes.add(record["output_dtype"])
+                else:
+                    output_dtypes.update(
+                        slot["dtype"] for slot in record["output_slots"]
+                        if slot["defined"]
+                    )
+            expected = {
+                "dtypes": sorted({dtype for dtype, _ in pairs}),
+                "ranks": sorted({rank for _, rank in pairs}),
+                "pairs": [list(pair) for pair in pairs],
+                "cases": sorted(actual),
+            }
+        except (KeyError, TypeError) as error:
+            raise ValueError(f"{schema}: malformed validated convolution coverage metadata") from error
+        if entry.get("witnesses") != expected:
+            raise ValueError(f"{schema}: manifest witnesses differ from validated convolution records")
+        if (
+            entry["dtypes"]["inputs"] != expected["dtypes"]
+            or entry["dtypes"]["outputs"] != sorted(output_dtypes)
+        ):
+            raise ValueError(f"{schema}: manifest dtypes differ from validated convolution records")
+        if entry["ranks"] != {"min": expected["ranks"][0], "max": expected["ranks"][-1]}:
+            raise ValueError(f"{schema}: manifest ranks differ from validated convolution records")
+        supported_cases = {
+            case["name"] for case in entry.get("test_cases", [])
+            if isinstance(case, dict) and case.get("supported") is True
+        }
+        required_named = (
+            {"convolution.forward.bias-present", "convolution.forward.bias-absent"}
+            if schema == "aten::convolution.default"
+            else {
+                f"convolution.backward.bias-{state}.mask-{mask:03b}"
+                for state in ("present", "absent") for mask in range(8)
+            }
+        )
+        if not required_named <= supported_cases:
+            raise ValueError(
+                f"{schema}: required named convolution coverage cases are not supported test_cases"
+            )
+
+
 def validate_tensor_list_evidence(coverage: dict[str, Any], *, require_complete: bool = False) -> None:
     """Check cat Tensor[] metadata is internally bound to its executed case record."""
     expected = {
@@ -532,6 +723,16 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
 
     source, explicit_rejected = _source_registration_inventory(root / "src")
     coverage = load_coverage_evidence(root) if STOCK_COMPOSITE_ROUTES else {}
+    validate_convolution_evidence(
+        coverage,
+        require_complete=any(
+            entry.get("schema") in {
+                "aten::convolution.default", "aten::convolution_backward.default"
+            }
+            for entry in entries
+        ),
+    )
+    validate_convolution_manifest_bindings(entries, coverage)
     validate_tensor_list_evidence(
         coverage,
         require_complete=any(entry.get("schema") == "aten::cat.default" for entry in entries),

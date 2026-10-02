@@ -115,7 +115,17 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     assert_vulkan_result(result, case)
     assert case.execution_mode in {"compute", "copy", "metadata", "empty"}
     if case.execution_mode == "compute":
-        assert pytorch_vulkan._C.compute_dispatch_count() > 0
+        if case.name.startswith("convolution.backward.bias-"):
+            assert pytorch_vulkan._C.compute_dispatch_count() == sum(case.args[-1])
+            execution = vc._CASE_EXECUTION[case.name]
+            if not any(case.args[-1]):
+                assert execution["vulkan_copies"] == 0
+                assert execution["explicit_transfers"] == 0
+                assert execution["fallbacks"] == 0
+                assert execution["buffer_creations_delta"] == 0
+                assert execution["live_allocations_delta"] == 0
+        else:
+            assert pytorch_vulkan._C.compute_dispatch_count() > 0
         if case.name not in {"linear.forward", "linear.forward.strided"}:
             assert pytorch_vulkan._C.vulkan_copy_count() == 0
     elif case.execution_mode == "copy":
@@ -135,10 +145,7 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
         assert pytorch_vulkan._C.compute_dispatch_count() == 0
         assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
-    torch.testing.assert_close(
-        result.cpu(), cpu_result, rtol=case.rtol, atol=case.atol, equal_nan=True
-    )
-    pytorch_vulkan._C.synchronize()
+    vc.assert_result_parity(result, cpu_result, case)
     vc.mark_executed(case.name)
     reverse_autograd = (
         assert_reverse_second_order(case, inputs)
@@ -242,6 +249,47 @@ def test_assert_vulkan_result_checks_device_and_dtype(vulkan_backend):
     case = next(case for case in ALL_CASES if case.supported)
     result = run_case(case, vulkan_backend)
     assert_vulkan_result(result, case)
+
+
+def test_tuple_result_parity_preserves_tensor_and_none_slots():
+    case = ConformanceCase(
+        "tuple.test", "test", "aten::convolution_backward.default",
+        lambda: None, lambda: (), lambda: None,
+        expected_shapes=((2,), None, (1,)),
+    )
+    actual = (torch.tensor([1.0, 2.0]), None, torch.tensor([3.0]))
+    expected = (torch.tensor([1.0, 2.0]), None, torch.tensor([3.0]))
+
+    vc.assert_result_parity(actual, expected, case)
+
+    with pytest.raises(AssertionError, match="slot 1"):
+        vc.assert_result_parity((actual[0], torch.empty(0), actual[2]), expected, case)
+
+
+def test_tuple_result_parity_checks_slot_shapes():
+    case = ConformanceCase(
+        "tuple.shape", "test", "aten::convolution_backward.default",
+        lambda: None, lambda: (), lambda: None,
+        expected_shapes=((2,), None, (1,)),
+    )
+    with pytest.raises(AssertionError, match="shape"):
+        vc.assert_result_parity((torch.ones(3), None, torch.ones(1)),
+                                (torch.ones(2), None, torch.ones(1)), case)
+
+
+def test_named_convolution_bias_and_mask_evidence_executes_independently(vulkan_backend):
+    from tools.validate_vulkan_capabilities import validate_convolution_evidence
+
+    cases = tuple(
+        case for case in SUPPORTED_CASES
+        if case.name.startswith("convolution.forward.bias-")
+        or case.name.startswith("convolution.backward.bias-")
+    )
+    coverage = vc.run_convolution_evidence_cases(cases)
+    expected = {case.name for case in cases}
+    assert len(expected) == 18
+    assert set(coverage) == expected
+    validate_convolution_evidence(coverage, require_complete=True)
 
 
 def test_nll_forward_none_writes_zero_total_weight(vulkan_backend):
