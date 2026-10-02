@@ -5625,6 +5625,3481 @@
     },
     "schema": "aten::convolution_backward.default"
   },
+  "convolution.transposed.backward.bias-absent.mask-000": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [],
+      "expected_result_slots": [],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        false,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 0,
+      "compute_dispatches": 0,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 0,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": null,
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        false,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-001": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        3
+      ],
+      "expected_result_slots": [
+        2
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        false,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        false,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-010": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        2
+      ],
+      "expected_result_slots": [
+        1
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        true,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [
+        999
+      ],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        true,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-011": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        2,
+        3
+      ],
+      "expected_result_slots": [
+        1,
+        2
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        true,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 4,
+      "compute_dispatches": 2,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 2,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": null,
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        true,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-100": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0
+      ],
+      "expected_result_slots": [
+        0
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        false,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        false,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-101": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0,
+        3
+      ],
+      "expected_result_slots": [
+        0,
+        2
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        false,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 4,
+      "compute_dispatches": 2,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 2,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [
+        999
+      ],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        false,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-110": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0,
+        2
+      ],
+      "expected_result_slots": [
+        0,
+        1
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        true,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 4,
+      "compute_dispatches": 2,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 2,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": null,
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        true,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-absent.mask-111": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0,
+        2,
+        3
+      ],
+      "expected_result_slots": [
+        0,
+        1,
+        2
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        true,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 6,
+      "compute_dispatches": 3,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 3,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        true,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-000": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [],
+      "expected_result_slots": [],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        false,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 0,
+      "compute_dispatches": 0,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 0,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": null,
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        false,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-001": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        3
+      ],
+      "expected_result_slots": [
+        2
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        false,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        false,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-010": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        2
+      ],
+      "expected_result_slots": [
+        1
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        true,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [
+        999
+      ],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        true,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-011": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        2,
+        3
+      ],
+      "expected_result_slots": [
+        1,
+        2
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        false,
+        true,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 4,
+      "compute_dispatches": 2,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 2,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": false,
+        "index": 0
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": null,
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        false,
+        true,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-100": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0
+      ],
+      "expected_result_slots": [
+        0
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        false,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        false,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-101": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0,
+        3
+      ],
+      "expected_result_slots": [
+        0,
+        2
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        false,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 4,
+      "compute_dispatches": 2,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 2,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": false,
+        "index": 1
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [
+        999
+      ],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        false,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-110": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0,
+        2
+      ],
+      "expected_result_slots": [
+        0,
+        1
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        true,
+        false
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 4,
+      "compute_dispatches": 2,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 2,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": false,
+        "index": 2
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": null,
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        true,
+        false
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.backward.bias-present.mask-111": {
+    "convolution_context": {
+      "cpu_oracle": "aten::convolution_backward.default",
+      "device": "vk:0",
+      "direction": "backward",
+      "expected_numerical_operations": [
+        0,
+        2,
+        3
+      ],
+      "expected_result_slots": [
+        0,
+        1,
+        2
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "output_mask": [
+        true,
+        true,
+        true
+      ],
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "grad_output": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          6,
+          8,
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          288,
+          48,
+          6,
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 6,
+      "compute_dispatches": 3,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 3,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "2x6x8x6",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_slots": [
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 0,
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 1,
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ]
+      },
+      {
+        "defined": true,
+        "dtype": "float32",
+        "index": 2,
+        "rank": 1,
+        "shape": [
+          6
+        ]
+      }
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution_backward.default",
+    "schema_args": {
+      "bias_sizes": [],
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_mask": [
+        true,
+        true,
+        true
+      ],
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.forward.bias-absent": {
+    "convolution_context": {
+      "cpu_oracle": "torch.nn.functional.conv_transpose2d",
+      "device": "vk:0",
+      "direction": "forward",
+      "expected_numerical_operations": [
+        1
+      ],
+      "expected_result_slots": [
+        0
+      ],
+      "forward_bias_present": false,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": false,
+          "device": "cpu",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        },
+        "vulkan": {
+          "defined": false,
+          "device": "vk:0",
+          "dtype": null,
+          "rank": null,
+          "shape": null,
+          "storage_offset": null,
+          "strides": null
+        }
+      }
+    },
+    "convolution_operands": {
+      "bias": {
+        "defined": false
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "4x3x2x3"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "output_shape": [
+      2,
+      6,
+      8,
+      6
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution.default",
+    "schema_args": {
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
+  "convolution.transposed.forward.bias-present": {
+    "convolution_context": {
+      "cpu_oracle": "torch.nn.functional.conv_transpose2d",
+      "device": "vk:0",
+      "direction": "forward",
+      "expected_numerical_operations": [
+        1
+      ],
+      "expected_result_slots": [
+        0
+      ],
+      "forward_bias_present": true,
+      "mapping_id": "transposed-convolution-stage-e-v1",
+      "warm_forward_bias": {
+        "cpu": {
+          "defined": true,
+          "device": "cpu",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        },
+        "vulkan": {
+          "defined": true,
+          "device": "vk:0",
+          "dtype": "float32",
+          "rank": 1,
+          "shape": [
+            6
+          ],
+          "storage_offset": 0,
+          "strides": [
+            1
+          ]
+        }
+      }
+    },
+    "convolution_operands": {
+      "bias": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 1,
+        "shape": [
+          6
+        ],
+        "storage_offset": 0,
+        "strides": [
+          1
+        ]
+      },
+      "input": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          2,
+          4,
+          3,
+          4
+        ],
+        "storage_offset": 0,
+        "strides": [
+          48,
+          12,
+          4,
+          1
+        ]
+      },
+      "weight": {
+        "defined": true,
+        "dtype": "float32",
+        "format": "contiguous",
+        "rank": 4,
+        "shape": [
+          4,
+          3,
+          2,
+          3
+        ],
+        "storage_offset": 0,
+        "strides": [
+          18,
+          6,
+          3,
+          1
+        ]
+      }
+    },
+    "execution": {
+      "buffer_creations_delta": 2,
+      "compute_dispatches": 1,
+      "explicit_transfers": 0,
+      "fallbacks": 0,
+      "live_allocations_delta": 1,
+      "vulkan_copies": 0
+    },
+    "gradients": false,
+    "input_dtypes": [
+      "float32"
+    ],
+    "input_ranks": [
+      1,
+      4
+    ],
+    "input_shapes": [
+      "2x4x3x4",
+      "4x3x2x3",
+      "6"
+    ],
+    "operands": [
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "primary_input"
+      },
+      {
+        "dtype": "float32",
+        "rank": 4,
+        "role": "operand"
+      },
+      {
+        "dtype": "float32",
+        "rank": 1,
+        "role": "operand"
+      }
+    ],
+    "output_dtype": "float32",
+    "output_rank": 4,
+    "output_shape": [
+      2,
+      6,
+      8,
+      6
+    ],
+    "parity": true,
+    "primary_input": {
+      "dtype": "float32",
+      "rank": 4
+    },
+    "schema": "aten::convolution.default",
+    "schema_args": {
+      "dilation": [
+        3,
+        2
+      ],
+      "groups": 2,
+      "output_padding": [
+        2,
+        0
+      ],
+      "padding": [
+        1,
+        1
+      ],
+      "stride": [
+        2,
+        1
+      ],
+      "transposed": true
+    }
+  },
   "indexing.argmax.dim": {
     "gradients": false,
     "input_dtypes": [

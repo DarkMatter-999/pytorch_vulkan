@@ -48,7 +48,7 @@ KNOWN_LAYOUTS = frozenset(
     {"strided", "contiguous", "transposed-contiguous", "non-overlapping", "zero-offset"}
 )
 EMPTY_VALUES = frozenset({"empty_output_supported", "empty_rejected", "empty_deferred", "reduction_identity_or_nan", "zero_size_noop"})
-SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*x[1-9][0-9]*(?:x[1-9][0-9]*)*)")
+SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*(?:x[1-9][0-9]*)*)")
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
@@ -57,6 +57,22 @@ EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", 
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
 FEATURE_VALUES = frozenset({"vulkan_1_2_8bit_storage_int8"})
+ORDINARY_CONVOLUTION_REQUIRED_CASES = frozenset({
+    "convolution.forward.bias-present", "convolution.forward.bias-absent",
+    *(f"convolution.backward.bias-{state}.mask-{mask:03b}"
+      for state in ("present", "absent") for mask in range(8)),
+})
+TRANSPOSED_CONVOLUTION_REQUIRED_CASES = frozenset({
+    "convolution.transposed.forward.bias-present",
+    "convolution.transposed.forward.bias-absent",
+    *(f"convolution.transposed.backward.bias-{state}.mask-{mask:03b}"
+      for state in ("present", "absent") for mask in range(8)),
+})
+CONVOLUTION_REQUIRED_CASES = ORDINARY_CONVOLUTION_REQUIRED_CASES | TRANSPOSED_CONVOLUTION_REQUIRED_CASES
+TRANSPOSED_MAPPING_ID = "transposed-convolution-stage-e-v1"
+# python/pytorch_vulkan/__init__.py renames PrivateUse1 to the public ``vk``
+# spelling before any evidence Tensor is allocated.
+TRANSPOSED_DEVICE = "vk:0"
 TEST_VALUES = frozenset(
     {
         "tests/python/test_vulkan_capability_manifest.py",
@@ -99,11 +115,7 @@ def validate_convolution_evidence(
     coverage: dict[str, Any], *, require_complete: bool = False
 ) -> None:
     """Bind the new convolution witnesses to their names, real tensor roles and schemas."""
-    required = {"convolution.forward.bias-present", "convolution.forward.bias-absent"}
-    required |= {
-        f"convolution.backward.bias-{state}.mask-{mask:03b}"
-        for state in ("present", "absent") for mask in range(8)
-    }
+    required = ORDINARY_CONVOLUTION_REQUIRED_CASES
     named = {name for name in coverage if name.startswith("convolution.forward.bias-")
              or name.startswith("convolution.backward.bias-")}
     if named - required:
@@ -218,6 +230,135 @@ def validate_convolution_evidence(
             execution[key] for key in ("buffer_creations_delta", "live_allocations_delta")
         ):
             raise ValueError(f"{name}: mask 000 recorded result allocation")
+    _validate_transposed_convolution_evidence(coverage, require_complete=require_complete)
+
+
+def _validate_transposed_convolution_evidence(coverage: dict[str, Any], *, require_complete: bool) -> None:
+    input_shape, weight_shape, grad_shape, bias_shape = (
+        [2, 4, 3, 4], [4, 3, 2, 3], [2, 6, 8, 6], [6]
+    )
+
+    def operand(shape):
+        strides = [1] * len(shape)
+        for index in range(len(shape) - 2, -1, -1):
+            strides[index] = strides[index + 1] * shape[index + 1]
+        return {"defined": True, "dtype": "float32", "rank": len(shape),
+                "shape": shape, "strides": strides, "storage_offset": 0,
+                "format": "contiguous"}
+
+    def warm_bias(present, device):
+        if not present:
+            return {"defined": False, "dtype": None, "rank": None, "shape": None,
+                    "strides": None, "storage_offset": None, "device": device}
+        return {"defined": True, "dtype": "float32", "rank": 1, "shape": bias_shape,
+                "strides": [1], "storage_offset": 0, "device": device}
+
+    named = {name for name in coverage if name.startswith("convolution.transposed.")}
+    unexpected = named - TRANSPOSED_CONVOLUTION_REQUIRED_CASES
+    if unexpected:
+        raise ValueError(f"unexpected named transposed convolution cases: {sorted(unexpected)}")
+    missing = TRANSPOSED_CONVOLUTION_REQUIRED_CASES - set(coverage)
+    if require_complete and missing:
+        raise ValueError(f"required executed convolution witness is missing: {sorted(missing)}")
+    for name in sorted(named):
+        record = coverage[name]
+        forward = name.startswith("convolution.transposed.forward.")
+        bias_present = ".bias-present" in name
+        direction = "forward" if forward else "backward"
+        schema = "aten::convolution.default" if forward else "aten::convolution_backward.default"
+        if not isinstance(record, dict) or record.get("schema") != schema or record.get("parity") is not True:
+            raise ValueError(f"{name}: case identity/schema is not a parity-checked execution")
+        context = record.get("convolution_context")
+        oracle = "torch.nn.functional.conv_transpose2d" if forward else "aten::convolution_backward.default"
+        expected_context_keys = {
+            "device", "cpu_oracle", "forward_bias_present", "direction",
+            "warm_forward_bias", "expected_numerical_operations",
+            "expected_result_slots", "mapping_id",
+        }
+        if not forward:
+            expected_context_keys.add("output_mask")
+        if not isinstance(context, dict) or "warm_forward_bias" not in context:
+            raise ValueError(f"{name}: warm bias context is missing or malformed")
+        if (set(context) != expected_context_keys
+                or context.get("device") != TRANSPOSED_DEVICE
+                or context.get("direction") != direction or context.get("cpu_oracle") != oracle
+                or context.get("mapping_id") != TRANSPOSED_MAPPING_ID):
+            raise ValueError(f"{name}: direction, device, oracle, or case identity mismatch")
+        warm = context.get("warm_forward_bias")
+        if not isinstance(warm, dict) or set(warm) != {"cpu", "vulkan"}:
+            raise ValueError(f"{name}: warm bias context is missing or malformed")
+        if warm.get("cpu") != warm_bias(bias_present, "cpu") or warm.get("vulkan") != warm_bias(bias_present, TRANSPOSED_DEVICE):
+            raise ValueError(f"{name}: warm bias context metadata/parity mismatch")
+        if context.get("forward_bias_present") is not bias_present:
+            raise ValueError(f"{name}: forward_bias_present does not match actual warm bias")
+        if forward:
+            expected_ops, expected_slots = [1], [0]
+            roles = {"input": operand(input_shape), "weight": operand(weight_shape),
+                     "bias": operand(bias_shape) if bias_present else {"defined": False}}
+            args = {"stride": [2, 1], "padding": [1, 1], "dilation": [3, 2],
+                    "transposed": True, "output_padding": [2, 0], "groups": 2}
+            shapes = [input_shape, weight_shape] + ([bias_shape] if bias_present else [])
+            if (record.get("output_dtype") != "float32" or record.get("output_rank") != 4
+                    or record.get("output_shape") != grad_shape or "output_slots" in record):
+                raise ValueError(f"{name}: forward output shape/dtype witness mismatch")
+            mask = None
+        else:
+            try:
+                bits = name.rsplit("mask-", 1)[1]
+                if len(bits) != 3 or set(bits) - {"0", "1"}:
+                    raise ValueError
+                mask = [bit == "1" for bit in bits]
+            except (IndexError, ValueError) as error:
+                raise ValueError(f"{name}: invalid output mask case identity") from error
+            expected_ops = [op for op, bit in zip((0, 2, 3), mask) if bit]
+            expected_slots = [slot for slot, bit in enumerate(mask) if bit]
+            roles = {"grad_output": operand(grad_shape), "input": operand(input_shape),
+                     "weight": operand(weight_shape)}
+            bias_sizes = record.get("schema_args", {}).get("bias_sizes")
+            if type(bias_sizes) not in (list, type(None)) or bias_sizes not in (None, [], [6], [999]):
+                raise ValueError(f"{name}: advisory bias_sizes metadata is invalid")
+            args = {"bias_sizes": bias_sizes, "stride": [2, 1], "padding": [1, 1],
+                    "dilation": [3, 2], "transposed": True, "output_padding": [2, 0],
+                    "groups": 2, "output_mask": mask}
+            slots = []
+            for index, requested in enumerate(mask):
+                slot = {"index": index, "defined": requested}
+                if requested:
+                    shape = (input_shape, weight_shape, bias_shape)[index]
+                    slot.update(dtype="float32", rank=len(shape), shape=shape)
+                slots.append(slot)
+            if (record.get("output_slots") != slots or "output_dtype" in record
+                    or "output_rank" in record or "output_shape" in record):
+                raise ValueError(f"{name}: output slot definitions/shapes mismatch")
+            if context.get("output_mask") != mask:
+                raise ValueError(f"{name}: output_mask does not match case identity")
+            shapes = [grad_shape, input_shape, weight_shape]
+        if context.get("expected_numerical_operations") != expected_ops:
+            raise ValueError(f"{name}: expected numerical operation mapping mismatch")
+        if context.get("expected_result_slots") != expected_slots:
+            raise ValueError(f"{name}: expected semantic result slot mapping mismatch")
+        if record.get("convolution_operands") != roles or record.get("schema_args") != args:
+            raise ValueError(f"{name}: actual operand metadata or schema args mismatch")
+        if record.get("primary_input") != {"dtype": "float32", "rank": 4}:
+            raise ValueError(f"{name}: primary schema input dtype/rank mismatch")
+        expected_ranks = sorted({len(shape) for shape in shapes})
+        if (record.get("input_dtypes") != ["float32"]
+                or record.get("input_ranks") != expected_ranks
+                or record.get("input_shapes") != sorted({"x".join(map(str, shape)) for shape in shapes})):
+            raise ValueError(f"{name}: aggregate operand metadata mismatch")
+        execution = record.get("execution")
+        keys = {"compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks",
+                "buffer_creations_delta", "live_allocations_delta"}
+        if not isinstance(execution, dict) or set(execution) != keys or any(
+            type(value) is not int or value < 0 for value in execution.values()
+        ):
+            raise ValueError(f"{name}: malformed execution counters")
+        if execution["compute_dispatches"] != (1 if forward else sum(mask)):
+            raise ValueError(f"{name}: dispatch count mismatch")
+        if any(execution[key] for key in ("vulkan_copies", "explicit_transfers", "fallbacks")):
+            raise ValueError(f"{name}: copy, transfer, or fallback counters are nonzero")
+        if not forward and not any(mask) and any(execution[key] for key in ("buffer_creations_delta", "live_allocations_delta")):
+            raise ValueError(f"{name}: mask 000 recorded buffer creation or live allocation")
 
 
 def validate_convolution_manifest_bindings(
@@ -283,6 +424,15 @@ def validate_convolution_manifest_bindings(
         if not required_named <= supported_cases:
             raise ValueError(
                 f"{schema}: required named convolution coverage cases are not supported test_cases"
+            )
+        transposed_required = {
+            name for name in TRANSPOSED_CONVOLUTION_REQUIRED_CASES
+            if (schema == "aten::convolution.default")
+            == name.startswith("convolution.transposed.forward.")
+        }
+        if not transposed_required <= supported_cases:
+            raise ValueError(
+                f"{schema}: required named transposed convolution cases are not supported test_cases"
             )
 
 

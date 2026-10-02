@@ -1,5 +1,7 @@
 import os
 import re
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import pytorch_vulkan
@@ -109,13 +111,15 @@ def test_declared_autograd_rejection_is_explicit(vulkan_backend, case):
 
 @pytest.mark.parametrize("case", SUPPORTED_CASES, ids=lambda case: case.name)
 def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
+    convolution_context = {} if case.convolution_direction is not None else None
     result, cpu_result, inputs = run_and_compare(
-        case, vulkan_backend, return_inputs=True
+        case, vulkan_backend, return_inputs=True,
+        convolution_context_out=convolution_context,
     )
     assert_vulkan_result(result, case)
     assert case.execution_mode in {"compute", "copy", "metadata", "empty"}
     if case.execution_mode == "compute":
-        if case.name.startswith("convolution.backward.bias-"):
+        if case.convolution_direction == "backward" or case.name.startswith("convolution.backward.bias-"):
             assert pytorch_vulkan._C.compute_dispatch_count() == sum(case.args[-1])
             execution = vc._CASE_EXECUTION[case.name]
             if not any(case.args[-1]):
@@ -159,6 +163,7 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
         gradients=case.check_gradients,
         parity=True,
         reverse_autograd=reverse_autograd,
+        convolution_context=convolution_context,
     )
 
 
@@ -278,18 +283,160 @@ def test_tuple_result_parity_checks_slot_shapes():
 
 
 def test_named_convolution_bias_and_mask_evidence_executes_independently(vulkan_backend):
-    from tools.validate_vulkan_capabilities import validate_convolution_evidence
-
-    cases = tuple(
-        case for case in SUPPORTED_CASES
-        if case.name.startswith("convolution.forward.bias-")
-        or case.name.startswith("convolution.backward.bias-")
+    from tools.validate_vulkan_capabilities import (
+        CONVOLUTION_REQUIRED_CASES,
+        validate_convolution_evidence,
     )
-    coverage = vc.run_convolution_evidence_cases(cases)
-    expected = {case.name for case in cases}
-    assert len(expected) == 18
+
+    cases = {case.name for case in SUPPORTED_CASES
+             if case.name.startswith("convolution.forward.bias-")
+             or case.name.startswith("convolution.backward.bias-")
+             or case.convolution_direction is not None}
+    coverage = vc.run_convolution_evidence_cases()
+    expected = set(CONVOLUTION_REQUIRED_CASES)
+    assert len(expected) == 36
+    assert cases == expected
     assert set(coverage) == expected
     validate_convolution_evidence(coverage, require_complete=True)
+
+
+def test_transposed_convolution_registry_declares_all_directional_roles():
+    cases = {case.name: case for case in ALL_CASES if case.name.startswith("convolution.transposed.")}
+    assert len(cases) == 18
+    forward = cases["convolution.transposed.forward.bias-present"]
+    assert forward.convolution_direction == "forward"
+    assert forward.convolution_numerical_operations == (1,)
+    assert forward.convolution_result_slots == (0,)
+    assert forward.convolution_operand_roles == ("input", "weight", "bias")
+    backward = cases["convolution.transposed.backward.bias-present.mask-010"]
+    assert backward.convolution_direction == "backward"
+    assert backward.convolution_numerical_operations == (2,)
+    assert backward.convolution_result_slots == (1,)
+    assert backward.convolution_operand_roles == ("grad_output", "input", "weight")
+    assert cases["convolution.transposed.backward.bias-absent.mask-000"].convolution_numerical_operations == ()
+    for state in ("present", "absent"):
+        for bits in range(8):
+            mask = tuple(bool(bits & (1 << shift)) for shift in range(3))
+            case = cases[f"convolution.transposed.backward.bias-{state}.mask-{''.join('1' if b else '0' for b in mask)}"]
+            assert case.args[-1] == list(mask)
+            assert case.convolution_numerical_operations == tuple(
+                op for op, requested in zip((0, 2, 3), mask) if requested
+            )
+            assert case.convolution_result_slots == tuple(
+                index for index, requested in enumerate(mask) if requested
+            )
+    hints = {repr(case.args[0]) for case in cases.values()
+             if case.convolution_direction == "backward"}
+    assert hints == {"None", "[]", "[999]"}
+
+
+def test_convolution_context_metadata_reads_actual_tensor_device_and_layout():
+    value = torch.arange(12, dtype=torch.float32).reshape(3, 4).t()
+    metadata = vc._convolution_tensor_metadata(value, str(value.device))
+    assert metadata == {
+        "defined": True,
+        "dtype": "float32",
+        "rank": 2,
+        "shape": [4, 3],
+        "strides": [1, 4],
+        "storage_offset": 0,
+        "device": "cpu",
+    }
+    absent = vc._convolution_tensor_metadata(None, "cpu")
+    assert absent == {
+        "defined": False, "dtype": None, "rank": None, "shape": None,
+        "strides": None, "storage_offset": None, "device": "cpu",
+    }
+
+
+def test_transposed_context_warmup_uses_actual_bias_and_preserves_schema_inputs():
+    case = next(case for case in ALL_CASES
+                if case.name == "convolution.transposed.backward.bias-present.mask-000")
+    inputs = case.inputs()
+    returned, capture = case.convolution_context_setup(inputs, "cpu")
+    assert len(returned) == 3
+    assert all(actual is expected for actual, expected in zip(returned, inputs))
+    assert set(capture) == {"warm_forward_bias"}
+    assert capture["warm_forward_bias"] == vc._convolution_tensor_metadata(
+        torch.randn((6,), generator=torch.Generator(device="cpu").manual_seed(9917)), "cpu"
+    )
+
+
+def test_transposed_run_clears_caller_context_when_capture_contract_is_missing():
+    case = next(case for case in ALL_CASES
+                if case.name == "convolution.transposed.forward.bias-present")
+    output = {"stale": {"warm_forward_bias": "previous case"}}
+    with pytest.raises(ValueError, match="requires fresh context capture"):
+        run_and_compare(replace(case, convolution_context_setup=None), convolution_context_out=output)
+    assert output == {}
+
+
+def test_transposed_context_setup_exception_leaves_no_execution_or_context():
+    case = next(case for case in ALL_CASES
+                if case.name == "convolution.transposed.forward.bias-present")
+
+    def fail_setup(_inputs, _device):
+        raise RuntimeError("context setup failed")
+
+    output = {"stale": True}
+    with pytest.raises(RuntimeError, match="context setup failed"):
+        run_and_compare(replace(case, convolution_context_setup=fail_setup),
+                        convolution_context_out=output)
+    assert output == {}
+    assert case.name not in vc._CASE_EXECUTION
+
+
+def test_transposed_operation_exception_leaves_no_execution_or_context(monkeypatch):
+    case = next(case for case in ALL_CASES
+                if case.name == "convolution.transposed.forward.bias-present")
+    _install_fake_convolution_runtime(monkeypatch, (0, 0, 0, 0))
+
+    def fail_operation(*_args):
+        raise RuntimeError("measured operation failed")
+
+    output = {"stale": True}
+    with pytest.raises(RuntimeError, match="measured operation failed"):
+        run_and_compare(replace(case, operation=fail_operation),
+                        convolution_context_out=output)
+    assert output == {}
+    assert case.name not in vc._CASE_EXECUTION
+
+
+def test_transposed_nonzero_vulkan_copies_do_not_publish_execution_or_context(monkeypatch):
+    case = next(case for case in ALL_CASES
+                if case.name == "convolution.transposed.forward.bias-present")
+    _install_fake_convolution_runtime(monkeypatch, (1, 1, 0, 0))
+    output = {"stale": True}
+    with pytest.raises(AssertionError, match="vulkan_copies.*0"):
+        run_and_compare(case, convolution_context_out=output)
+    assert output == {}
+    assert case.name not in vc._CASE_EXECUTION
+
+
+def _install_fake_convolution_runtime(monkeypatch, counters):
+    class FakeRuntime:
+        @staticmethod
+        def synchronize():
+            pass
+
+        @staticmethod
+        def reset_execution_counters():
+            pass
+
+        @staticmethod
+        def timing_breakdown():
+            return {"buffer_creations": 0}
+
+        @staticmethod
+        def live_resource_snapshot():
+            return [0] * 7
+
+        @staticmethod
+        def execution_counter_snapshot():
+            return counters
+
+    monkeypatch.setattr(vc, "pytorch_vulkan", SimpleNamespace(_C=FakeRuntime()))
+    monkeypatch.setattr(vc, "to_vulkan_inputs", lambda inputs, _device: tuple(inputs))
 
 
 def test_nll_forward_none_writes_zero_total_weight(vulkan_backend):

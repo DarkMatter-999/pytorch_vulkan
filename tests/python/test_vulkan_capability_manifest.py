@@ -64,6 +64,115 @@ def test_manifest_has_unique_schema_entries_and_required_contract_keys():
         assert REQUIRED_ENTRY_KEYS <= entry.keys()
 
 
+def _transposed_manifest_fixture(monkeypatch):
+    from test_vulkan_capability_generation import _complete_convolution_fixture
+
+    from tools import generate_vulkan_capabilities as generator
+
+    coverage = _complete_convolution_fixture()
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    data = generator.build_coverage_manifest(coverage)
+    return data, coverage
+
+
+def _change_transposed_weight_and_aggregate_dtype(record):
+    record["convolution_operands"]["weight"]["dtype"] = "float64"
+    record["input_dtypes"] = ["float32", "float64"]
+
+
+def _rewrite_transposed_mask(record):
+    mask = [False, False, False]
+    record["convolution_context"]["output_mask"] = mask
+    record["schema_args"]["output_mask"] = mask
+
+
+def test_manifest_accepts_complete_transposed_convolution_runtime_fixture(monkeypatch):
+    data, _ = _transposed_manifest_fixture(monkeypatch)
+    validate_manifest_data(data, ROOT)
+
+
+@pytest.mark.parametrize("mutation,match", [
+    (lambda record: record["convolution_context"]["warm_forward_bias"]["vulkan"].update(dtype="float64"), "warm bias"),
+    (lambda record: record["convolution_context"]["warm_forward_bias"]["vulkan"].update(rank=2), "warm bias"),
+    (lambda record: record["convolution_context"]["warm_forward_bias"]["vulkan"].update(defined=False), "warm bias"),
+    (lambda record: record["convolution_context"].update(forward_bias_present=False), "forward_bias_present"),
+    (lambda record: record["convolution_context"]["warm_forward_bias"]["vulkan"].update(device="cpu"), "warm bias"),
+    (lambda record: record["convolution_context"].pop("warm_forward_bias"), "warm bias"),
+    (_change_transposed_weight_and_aggregate_dtype, "operand metadata"),
+    (lambda record: record["output_slots"][0].update(dtype="float64"), "output slot"),
+    (lambda record: record["convolution_context"].update(direction="forward"), "direction"),
+    (lambda record: record["convolution_context"].update(expected_numerical_operations=[1]), "operation"),
+    (lambda record: record["convolution_context"].update(expected_result_slots=[1]), "slot"),
+    (_rewrite_transposed_mask, "output_mask"),
+    (lambda record: record["execution"].update(compute_dispatches=0), "dispatch"),
+])
+def test_manifest_rejects_transposed_convolution_coverage_tampering(monkeypatch, mutation, match):
+    data, coverage = _transposed_manifest_fixture(monkeypatch)
+    target = "convolution.transposed.backward.bias-present.mask-100"
+    mutation(coverage[target])
+    with pytest.raises(ValueError, match=match):
+        validate_manifest_data(data, ROOT)
+
+
+def test_manifest_rejects_transposed_mask000_allocation(monkeypatch):
+    data, coverage = _transposed_manifest_fixture(monkeypatch)
+    record = coverage["convolution.transposed.backward.bias-present.mask-000"]
+    record["execution"]["live_allocations_delta"] = 1
+    with pytest.raises(ValueError, match="mask 000"):
+        validate_manifest_data(data, ROOT)
+
+
+def test_manifest_convolution_completeness_survives_joint_transposed_record_and_link_removal(monkeypatch):
+    data, coverage = _transposed_manifest_fixture(monkeypatch)
+    for name in list(coverage):
+        if name.startswith("convolution.transposed."):
+            del coverage[name]
+    for entry in data["entries"]:
+        if entry["schema"] not in {"aten::convolution.default", "aten::convolution_backward.default"}:
+            continue
+        entry["test_cases"] = [case for case in entry["test_cases"]
+                               if not case["name"].startswith("convolution.transposed.")]
+        entry["witnesses"]["cases"] = [name for name in entry["witnesses"]["cases"]
+                                        if not name.startswith("convolution.transposed.")]
+    with pytest.raises(ValueError, match="required executed convolution witness"):
+        validate_manifest_data(data, ROOT)
+
+
+def test_manifest_rejects_joint_transposed_direction_operation_slot_schema_rewrite(monkeypatch):
+    data, coverage = _transposed_manifest_fixture(monkeypatch)
+    record = coverage["convolution.transposed.backward.bias-present.mask-100"]
+    record["schema"] = "aten::convolution.default"
+    record["convolution_context"].update(
+        direction="forward", expected_numerical_operations=[1], expected_result_slots=[0]
+    )
+    with pytest.raises(ValueError, match="schema|direction|identity"):
+        validate_manifest_data(data, ROOT)
+
+
+@pytest.mark.parametrize("dtype_group,witness_field", [
+    ("inputs", "primary"), ("outputs", "output"),
+])
+def test_manifest_rejects_record_and_manifest_joint_dtype_claim_rewrite(
+    monkeypatch, dtype_group, witness_field
+):
+    data, coverage = _transposed_manifest_fixture(monkeypatch)
+    entry = next(item for item in data["entries"]
+                 if item["schema"] == "aten::convolution_backward.default")
+    record = coverage["convolution.transposed.backward.bias-present.mask-100"]
+    if witness_field == "primary":
+        record["convolution_operands"]["grad_output"]["dtype"] = "float64"
+        record["primary_input"]["dtype"] = "float64"
+        record["input_dtypes"] = ["float64"]
+        entry["dtypes"][dtype_group] = ["float64"]
+        entry["witnesses"]["dtypes"] = ["float64"]
+        entry["witnesses"]["pairs"] = [["float64", 4]]
+    else:
+        record["output_slots"][0]["dtype"] = "float64"
+        entry["dtypes"][dtype_group] = ["float64"]
+    with pytest.raises(ValueError, match="operand metadata|output slot|declares .* dtypes"):
+        validate_manifest_data(data, ROOT)
+
+
 def test_manifest_rejects_unknown_status_enum():
     data = {"version": 1, "entries": [_entry()]}
     data["entries"][0]["status"] = "experimental"

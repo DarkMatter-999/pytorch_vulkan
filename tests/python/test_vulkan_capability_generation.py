@@ -8,6 +8,8 @@ import torch
 from tools import generate_vulkan_capabilities as generator
 from tools import validate_vulkan_capabilities as capability_validator
 from tools.validate_vulkan_capabilities import (
+    TRANSPOSED_CONVOLUTION_REQUIRED_CASES,
+    TRANSPOSED_DEVICE,
     load_manifest,
     schema_exists,
     validate_tensor_list_evidence,
@@ -19,6 +21,87 @@ COVERAGE_COMMITTED = ROOT / "docs/vulkan_coverage.json"
 DERIVED_FIELDS = frozenset({"schema", "test_cases", "tests", "witnesses"})
 
 
+def _transposed_validator_fixture():
+    import itertools
+
+    def operand(shape):
+        strides = [1] * len(shape)
+        for i in range(len(shape) - 2, -1, -1):
+            strides[i] = strides[i + 1] * shape[i + 1]
+        return {"defined": True, "dtype": "float32", "rank": len(shape),
+                "shape": shape, "strides": strides, "storage_offset": 0,
+                "format": "contiguous"}
+
+    def warm(present, device):
+        return ({"defined": True, "dtype": "float32", "rank": 1, "shape": [6],
+                 "strides": [1], "storage_offset": 0, "device": device}
+                if present else {"defined": False, "dtype": None, "rank": None,
+                                 "shape": None, "strides": None,
+                                 "storage_offset": None, "device": device})
+
+    x, weight, grad, bias = [2, 4, 3, 4], [4, 3, 2, 3], [2, 6, 8, 6], [6]
+    output = {}
+    for state in ("present", "absent"):
+        present = state == "present"
+        names = [f"convolution.transposed.forward.bias-{state}"]
+        for bits in itertools.product("01", repeat=3):
+            names.append(f"convolution.transposed.backward.bias-{state}.mask-{''.join(bits)}")
+        for name in names:
+            forward = ".forward." in name
+            context = {"device": TRANSPOSED_DEVICE,
+                       "cpu_oracle": "torch.nn.functional.conv_transpose2d" if forward else "aten::convolution_backward.default",
+                       "forward_bias_present": present, "direction": "forward" if forward else "backward",
+                       "warm_forward_bias": {"cpu": warm(present, "cpu"), "vulkan": warm(present, TRANSPOSED_DEVICE)},
+                       "expected_numerical_operations": [1] if forward else [],
+                       "expected_result_slots": [0] if forward else [],
+                       "mapping_id": "transposed-convolution-stage-e-v1"}
+            if forward:
+                output[name] = {"schema": "aten::convolution.default", "parity": True,
+                    "convolution_context": context,
+                    "convolution_operands": {"input": operand(x), "weight": operand(weight),
+                        "bias": operand(bias) if present else {"defined": False}},
+                    "schema_args": {"stride": [2, 1], "padding": [1, 1], "dilation": [3, 2],
+                        "transposed": True, "output_padding": [2, 0], "groups": 2},
+                    "output_dtype": "float32", "output_rank": 4, "output_shape": grad,
+                    "primary_input": {"dtype": "float32", "rank": 4}, "input_dtypes": ["float32"],
+                    "input_ranks": [1, 4] if present else [4],
+                    "input_shapes": sorted(["2x4x3x4", "4x3x2x3"] + (["6"] if present else [])),
+                    "execution": {"compute_dispatches": 1, "vulkan_copies": 0,
+                        "explicit_transfers": 0, "fallbacks": 0,
+                        "buffer_creations_delta": 0, "live_allocations_delta": 1}}
+                continue
+            mask = [bit == "1" for bit in name.rsplit("mask-", 1)[1]]
+            operations = [op for op, bit in zip((0, 2, 3), mask) if bit]
+            slots = [i for i, bit in enumerate(mask) if bit]
+            context["expected_numerical_operations"] = operations
+            context["expected_result_slots"] = slots
+            context["output_mask"] = mask
+            slot_records = []
+            for i, requested in enumerate(mask):
+                slot = {"index": i, "defined": requested}
+                if requested:
+                    shape = (x, weight, bias)[i]
+                    slot.update(dtype="float32", rank=4 if i < 2 else 1, shape=shape)
+                slot_records.append(slot)
+            output[name] = {"schema": "aten::convolution_backward.default", "parity": True,
+                "convolution_context": context,
+                "convolution_operands": {"grad_output": operand(grad), "input": operand(x), "weight": operand(weight)},
+                "schema_args": {"bias_sizes": [6], "stride": [2, 1], "padding": [1, 1],
+                    "dilation": [3, 2], "transposed": True, "output_padding": [2, 0],
+                    "groups": 2, "output_mask": mask},
+                "output_slots": slot_records, "primary_input": {"dtype": "float32", "rank": 4},
+                "input_dtypes": ["float32"], "input_ranks": [4],
+                "input_shapes": ["2x4x3x4", "2x6x8x6", "4x3x2x3"],
+                "execution": {"compute_dispatches": sum(mask), "vulkan_copies": 0,
+                    "explicit_transfers": 0, "fallbacks": 0,
+                    "buffer_creations_delta": 0, "live_allocations_delta": 0}}
+    return output
+
+
+def _complete_convolution_fixture():
+    return {**generator.load_coverage_record(), **_transposed_validator_fixture()}
+
+
 def test_every_declared_schema_exists_in_pytorch_dispatcher():
     """Supported and deferred claims must name real dispatcher schemas."""
     manifest = load_manifest(Path("docs/vulkan_capabilities.json"))
@@ -28,6 +111,88 @@ def test_every_declared_schema_exists_in_pytorch_dispatcher():
         if entry["status"] != "rejected" and not schema_exists(entry["schema"])
     ]
     assert missing == [], f"manifest names schemas absent from torch.ops.aten: {missing}"
+
+
+def test_transposed_complete_synthetic_fixture_passes_before_tamper_cases():
+    manifest = generator.build_coverage_manifest(_complete_convolution_fixture())
+    convolution = {entry["schema"]: entry for entry in manifest["entries"]
+                   if entry["schema"] in {"aten::convolution.default", "aten::convolution_backward.default"}}
+    observed = {name for entry in convolution.values() for name in entry["witnesses"]["cases"]}
+    assert TRANSPOSED_CONVOLUTION_REQUIRED_CASES <= observed
+
+
+def test_transposed_required_set_cannot_be_removed_from_coverage():
+    coverage = _complete_convolution_fixture()
+    for name in TRANSPOSED_CONVOLUTION_REQUIRED_CASES:
+        coverage.pop(name)
+    with pytest.raises(ValueError, match="required executed convolution witness"):
+        generator.build_coverage_manifest(coverage)
+
+
+@pytest.mark.parametrize("field,value,match", [
+    ("direction", "forward", "direction"),
+    ("expected_numerical_operations", [1], "operation"),
+    ("expected_result_slots", [1], "slot"),
+    ("warm_bias_dtype", "float64", "warm bias"),
+    ("warm_bias_rank", 2, "warm bias"),
+    ("warm_bias_device", "cpu", "warm bias"),
+    ("warm_bias_defined", False, "warm bias"),
+    ("warm_bias_missing", None, "warm bias"),
+    ("forward_bias_state", False, "forward_bias_present"),
+    ("weight_dtype", "float64", "operand metadata"),
+    ("output_dtype", "float64", "output slot"),
+    ("mask_identity", [False, False, False], "output_mask"),
+    ("dispatch_count", 0, "dispatch"),
+    ("mask000_allocation", 1, "mask 000"),
+])
+def test_transposed_end_to_end_coverage_tampering_is_rejected(field, value, match):
+    coverage = _complete_convolution_fixture()
+    name = ("convolution.transposed.backward.bias-present.mask-000"
+            if field == "mask000_allocation"
+            else "convolution.transposed.backward.bias-present.mask-100")
+    record = coverage[name]
+    context = record["convolution_context"]
+    if field == "direction":
+        context["direction"] = value
+    elif field in {"expected_numerical_operations", "expected_result_slots"}:
+        context[field] = value
+    elif field == "warm_bias_dtype":
+        context["warm_forward_bias"]["vulkan"]["dtype"] = value
+    elif field == "warm_bias_device":
+        context["warm_forward_bias"]["vulkan"]["device"] = value
+    elif field == "warm_bias_rank":
+        context["warm_forward_bias"]["vulkan"]["rank"] = value
+    elif field == "warm_bias_defined":
+        context["warm_forward_bias"]["vulkan"]["defined"] = value
+    elif field == "warm_bias_missing":
+        context.pop("warm_forward_bias")
+    elif field == "forward_bias_state":
+        context["forward_bias_present"] = value
+    elif field == "weight_dtype":
+        record["convolution_operands"]["weight"]["dtype"] = value
+        record["input_dtypes"] = ["float32", "float64"]
+    elif field == "output_dtype":
+        record["output_slots"][0]["dtype"] = value
+    elif field == "mask_identity":
+        context["output_mask"] = value
+        record["schema_args"]["output_mask"] = value
+    elif field == "dispatch_count":
+        record["execution"]["compute_dispatches"] = value
+    elif field == "mask000_allocation":
+        record["execution"]["buffer_creations_delta"] = value
+    with pytest.raises(ValueError, match=match):
+        generator.build_coverage_manifest(coverage)
+
+
+def test_transposed_case_direction_cannot_be_rewritten_jointly():
+    coverage = _complete_convolution_fixture()
+    record = coverage["convolution.transposed.backward.bias-present.mask-100"]
+    record["convolution_context"].update(
+        direction="forward", expected_numerical_operations=[1], expected_result_slots=[0]
+    )
+    record["schema"] = "aten::convolution.default"
+    with pytest.raises(ValueError, match="identity|direction|schema"):
+        generator.build_coverage_manifest(coverage)
 
 
 def test_schema_exists_helper_rejects_phantoms():
@@ -577,7 +742,11 @@ def _run_all_supported_cases():
 
     with vc.coverage_recording():
         for case in vc.SUPPORTED_CASES:
-            result, expected, inputs = vc.run_and_compare(case, return_inputs=True)
+            convolution_context = {} if case.convolution_direction is not None else None
+            result, expected, inputs = vc.run_and_compare(
+                case, return_inputs=True,
+                convolution_context_out=convolution_context,
+            )
             vc.assert_result_parity(result, expected, case)
             reverse_names = {
                 "arithmetic.autograd.add-tensor", "arithmetic.autograd.add-scalar",
@@ -596,6 +765,7 @@ def _run_all_supported_cases():
                 gradients=case.check_gradients,
                 parity=True,
                 reverse_autograd=reverse_autograd,
+                convolution_context=convolution_context,
             )
         return vc.coverage_snapshot()
 

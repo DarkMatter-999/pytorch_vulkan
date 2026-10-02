@@ -6,6 +6,7 @@
 #include "vulkan_layout.h"
 #include "vulkan_platform.h"
 #include <c10/util/Exception.h>
+#include <array>
 #include <limits>
 #include <stdexcept>
 #include <torch/library.h>
@@ -40,8 +41,31 @@ int64_t checked_output_extent(int64_t extent, int64_t kernel, int64_t stride,
     return static_cast<int64_t>((padded - span) / static_cast<uint64_t>(stride) + 1);
 }
 
+int64_t checked_transposed_output_extent(int64_t extent, int64_t kernel,
+                                         int64_t stride, int64_t padding,
+                                         int64_t dilation,
+                                         int64_t output_padding) {
+    TORCH_CHECK(extent > 0 && kernel > 0 && stride > 0 && dilation > 0 &&
+                    padding >= 0 && output_padding >= 0,
+                "Vulkan transposed convolution geometry is invalid");
+    TORCH_CHECK(output_padding < stride || output_padding < dilation,
+                "Vulkan transposed convolution output_padding must be smaller than stride or dilation");
+    const __int128 result = static_cast<__int128>(extent - 1) * stride -
+        static_cast<__int128>(2) * padding +
+        static_cast<__int128>(dilation) * (kernel - 1) + output_padding + 1;
+    TORCH_CHECK(result > 0 &&
+                    result <= std::numeric_limits<int32_t>::max(),
+                "Vulkan transposed convolution output extent exceeds shader range");
+    return static_cast<int64_t>(result);
+}
+
+enum class ConvolutionSourceRole : uint8_t { Input, Weight, GradOutput, Bias };
+
 struct ConvolutionOutputSpec {
     uint32_t operation;
+    uint32_t result_slot;
+    std::array<ConvolutionSourceRole, 3> source_roles;
+    uint32_t source_count;
     std::array<int64_t, 4> shape;
     uint32_t rank;
     uint32_t numel;
@@ -53,6 +77,8 @@ struct ConvolutionPreflight {
     VulkanTensorLayout input_layout, weight_layout, bias_layout, grad_layout;
     std::array<ConvolutionOutputSpec, 3> outputs{};
     size_t output_count = 0;
+    bool transposed = false;
+    bool forward = false;
 };
 
 void validate_tensor(const at::Tensor &tensor, const char *name, int64_t expected_rank) {
@@ -119,9 +145,23 @@ void validate_source_allocation(const at::Tensor &tensor,
                 " view storage-offset/stride range exceeds its allocation");
 }
 
+void validate_shader_read_domain(const VulkanTensorLayout &layout,
+                                 const char *name) {
+    TORCH_CHECK(layout.numel > 0 &&
+                    static_cast<uint64_t>(layout.numel) <=
+                        std::numeric_limits<uint32_t>::max(),
+                "Vulkan convolution ", name,
+                " logical numel exceeds UINT32 shader range");
+    for (const auto extent : layout.sizes)
+        TORCH_CHECK(extent > 0 && extent <= std::numeric_limits<int32_t>::max(),
+                    "Vulkan convolution ", name,
+                    " extent exceeds signed shader range");
+}
+
 ConvolutionPreflight preflight_convolution(
     const at::Tensor &input, const at::Tensor &weight, const at::Tensor *bias,
     const at::Tensor *grad_output, const ConvolutionGeometry &geometry,
+    bool transposed, std::array<int64_t, 2> output_padding,
     std::array<bool, 3> requested_outputs, bool forward) {
     validate_tensor(input, "input", 4);
     validate_tensor(weight, "weight", 4);
@@ -129,30 +169,49 @@ ConvolutionPreflight preflight_convolution(
                 "Vulkan convolution tensors require one device");
     TORCH_CHECK(geometry.groups >= 1,
                 "Vulkan convolution requires groups >= 1, got ", geometry.groups);
-    TORCH_CHECK(input.size(1) % geometry.groups == 0 &&
-                    weight.size(0) % geometry.groups == 0,
-                "Vulkan convolution requires groups to divide input and output channels");
-    TORCH_CHECK(weight.size(1) == input.size(1) / geometry.groups,
-                "Vulkan convolution grouped input channels do not match weight size");
-    TORCH_CHECK(weight.size(0) > 0 && weight.size(1) > 0 &&
-                    input.size(1) > 0,
+    TORCH_CHECK(input.size(1) > 0 && weight.size(0) > 0 && weight.size(1) > 0,
                 "Vulkan convolution rejects empty channel dimensions");
+    int64_t output_channels;
+    if (transposed) {
+        TORCH_CHECK(input.size(1) == weight.size(0),
+                    "Vulkan transposed convolution input channels do not match weight.size(0)");
+        TORCH_CHECK(input.size(1) % geometry.groups == 0,
+                    "Vulkan transposed convolution groups must divide input channels");
+        const __int128 channels = static_cast<__int128>(weight.size(1)) * geometry.groups;
+        TORCH_CHECK(channels > 0 &&
+                        channels <= std::numeric_limits<int32_t>::max(),
+                    "Vulkan transposed convolution output channels exceed shader range");
+        output_channels = static_cast<int64_t>(channels);
+    } else {
+        TORCH_CHECK(input.size(1) % geometry.groups == 0 &&
+                        weight.size(0) % geometry.groups == 0,
+                    "Vulkan convolution requires groups to divide input and output channels");
+        TORCH_CHECK(weight.size(1) == input.size(1) / geometry.groups,
+                    "Vulkan convolution grouped input channels do not match weight size");
+        output_channels = weight.size(0);
+    }
     const auto input_layout = inspect_vulkan_tensor_layout(input, "convolution input");
     const auto weight_layout = inspect_vulkan_tensor_layout(weight, "convolution weight");
+    validate_shader_read_domain(input_layout, "input");
+    validate_shader_read_domain(weight_layout, "weight");
     validate_read_layout(input, input_layout, "input");
     validate_read_layout(weight, weight_layout, "weight");
+    validate_source_allocation(input, input_layout, "convolution input");
+    validate_source_allocation(weight, weight_layout, "convolution weight");
 
     VulkanTensorLayout bias_layout = input_layout;
     const bool has_bias = bias != nullptr && bias->defined();
     if (forward && has_bias) {
         validate_tensor(*bias, "bias", 1);
-        TORCH_CHECK(bias->dim() == 1 && bias->size(0) == weight.size(0),
-                    "Vulkan convolution bias must have weight.size(0) elements");
+        TORCH_CHECK(bias->dim() == 1 && bias->size(0) == output_channels,
+                    "Vulkan convolution bias must have output channel elements");
         TORCH_CHECK(bias->device() == input.device(),
                     "Vulkan convolution tensors require one device");
         bias_layout = inspect_vulkan_tensor_layout(*bias, "convolution bias");
+        validate_shader_read_domain(bias_layout, "bias");
         TORCH_CHECK(bias_layout.internal_overlap == VulkanOverlap::No,
                     "Vulkan convolution rejects overlapping bias layouts");
+        validate_source_allocation(*bias, bias_layout, "convolution bias");
     }
     VulkanTensorLayout grad_layout = input_layout;
     if (!forward) {
@@ -162,18 +221,29 @@ ConvolutionPreflight preflight_convolution(
                     "Vulkan convolution tensors require one device");
         grad_layout = inspect_vulkan_tensor_layout(*grad_output,
                                                    "convolution grad_output");
+        validate_shader_read_domain(grad_layout, "grad_output");
         validate_read_layout(*grad_output, grad_layout, "grad_output", true, true);
-        bias_layout = grad_layout;
+        validate_source_allocation(input, input_layout, "convolution input");
         validate_source_allocation(*grad_output, grad_layout,
                                    "convolution grad_output");
     }
 
-    const int64_t out_h = checked_output_extent(
-        input.size(2), weight.size(2), geometry.stride_height,
-        geometry.padding_height, geometry.dilation_height);
-    const int64_t out_w = checked_output_extent(
-        input.size(3), weight.size(3), geometry.stride_width,
-        geometry.padding_width, geometry.dilation_width);
+    int64_t out_h, out_w;
+    if (transposed) {
+        out_h = checked_transposed_output_extent(
+            input.size(2), weight.size(2), geometry.stride_height,
+            geometry.padding_height, geometry.dilation_height, output_padding[0]);
+        out_w = checked_transposed_output_extent(
+            input.size(3), weight.size(3), geometry.stride_width,
+            geometry.padding_width, geometry.dilation_width, output_padding[1]);
+    } else {
+        out_h = checked_output_extent(
+            input.size(2), weight.size(2), geometry.stride_height,
+            geometry.padding_height, geometry.dilation_height);
+        out_w = checked_output_extent(
+            input.size(3), weight.size(3), geometry.stride_width,
+            geometry.padding_width, geometry.dilation_width);
+    }
     TORCH_CHECK(geometry.groups <= std::numeric_limits<int32_t>::max(),
                 "Vulkan convolution groups exceed shader range");
     VulkanConvolutionGeometry shader_geometry{
@@ -186,60 +256,174 @@ ConvolutionPreflight preflight_convolution(
         narrow_shader(geometry.groups, "groups")};
 
     ConvolutionPreflight plan{input_layout, weight_layout, bias_layout, grad_layout};
-    auto append_output = [&](uint32_t operation, std::array<int64_t, 4> shape,
-                             uint32_t rank, int64_t kh, int64_t kw) {
+    plan.transposed = transposed;
+    plan.forward = forward;
+    auto append_output = [&](uint32_t operation, uint32_t result_slot,
+                             std::array<int64_t, 4> shape, uint32_t rank,
+                             int64_t kh, int64_t kw) {
         const uint32_t count = output_numel(shape, rank);
         const uint64_t byte_count = checked_mul(count, sizeof(float));
         TORCH_CHECK(byte_count <= std::numeric_limits<VkDeviceSize>::max(),
                     "Vulkan convolution output bytes exceed VkDeviceSize");
-        ConvolutionOutputSpec spec{operation, shape, rank, count,
+        std::array<ConvolutionSourceRole, 3> roles;
+        uint32_t source_count;
+        if (forward) {
+            roles = has_bias
+                ? std::array<ConvolutionSourceRole, 3>{
+                      ConvolutionSourceRole::Input, ConvolutionSourceRole::Weight,
+                      ConvolutionSourceRole::Bias}
+                : std::array<ConvolutionSourceRole, 3>{
+                      ConvolutionSourceRole::Input, ConvolutionSourceRole::Weight,
+                      ConvolutionSourceRole::Input};
+            source_count = has_bias ? 3 : 2;
+        } else if (transposed && operation == 0) {
+            roles = {ConvolutionSourceRole::GradOutput, ConvolutionSourceRole::Weight,
+                     ConvolutionSourceRole::GradOutput};
+            source_count = 2;
+        } else if (operation == 2) {
+            roles = transposed
+                ? std::array<ConvolutionSourceRole, 3>{
+                      ConvolutionSourceRole::Input, ConvolutionSourceRole::GradOutput,
+                      ConvolutionSourceRole::GradOutput}
+                : std::array<ConvolutionSourceRole, 3>{
+                      ConvolutionSourceRole::GradOutput, ConvolutionSourceRole::Input,
+                      ConvolutionSourceRole::GradOutput};
+            source_count = 2;
+        } else if (operation == 3) {
+            roles = {ConvolutionSourceRole::GradOutput, ConvolutionSourceRole::GradOutput,
+                     ConvolutionSourceRole::GradOutput};
+            source_count = 1;
+        } else {
+            roles = {ConvolutionSourceRole::GradOutput, ConvolutionSourceRole::Weight,
+                     ConvolutionSourceRole::GradOutput};
+            source_count = 2;
+        }
+        ConvolutionOutputSpec spec{operation, result_slot, roles, source_count, shape, rank, count,
                                    static_cast<VkDeviceSize>(byte_count),
                                    narrow_shader(kh, "kernel height"),
                                    narrow_shader(kw, "kernel width"), shader_geometry};
-        const VulkanTensorLayout *read_input = &input_layout;
-        const VulkanTensorLayout *read_weight = &weight_layout;
-        const VulkanTensorLayout *read_bias = &bias_layout;
-        const at::Tensor *read_input_tensor = &input;
-        const at::Tensor *read_weight_tensor = &weight;
-        const at::Tensor *read_bias_tensor =
-            forward ? (bias != nullptr && bias->defined() ? bias : &input)
-                    : grad_output;
-        if (!forward) {
-            if (operation == 1) {
-                read_input = &grad_layout;
-                read_weight = &weight_layout;
-                read_bias = &grad_layout;
-                read_input_tensor = grad_output;
-                read_weight_tensor = &weight;
-                read_bias_tensor = grad_output;
-            } else if (operation == 2) {
-                read_input = &grad_layout;
-                read_weight = &input_layout;
-                read_bias = &grad_layout;
-                read_input_tensor = grad_output;
-                read_weight_tensor = &input;
-                read_bias_tensor = grad_output;
-            } else {
-                read_input = read_weight = read_bias = &grad_layout;
-                read_input_tensor = read_weight_tensor = read_bias_tensor = grad_output;
-            }
+        uint32_t active_sources = 0;
+        for (size_t role_index = 0; role_index < spec.source_roles.size(); ++role_index) {
+            bool first_occurrence = true;
+            for (size_t previous = 0; previous < role_index; ++previous)
+                first_occurrence &= spec.source_roles[previous] !=
+                                    spec.source_roles[role_index];
+            active_sources += static_cast<uint32_t>(first_occurrence);
         }
-        const auto &platform = allocation_platform(read_input_tensor->storage().data_ptr());
-        TORCH_CHECK(&platform == &allocation_platform(read_weight_tensor->storage().data_ptr()) &&
-                        &platform == &allocation_platform(read_bias_tensor->storage().data_ptr()),
+        TORCH_CHECK(active_sources == spec.source_count,
+                    "Vulkan convolution active source roles do not match source_count");
+        auto role_tensor = [&](ConvolutionSourceRole role) -> const at::Tensor & {
+            switch (role) {
+            case ConvolutionSourceRole::Input: return input;
+            case ConvolutionSourceRole::Weight: return weight;
+            case ConvolutionSourceRole::GradOutput: return *grad_output;
+            case ConvolutionSourceRole::Bias: return has_bias ? *bias : input;
+            }
+            TORCH_CHECK(false, "Vulkan convolution has an invalid source role");
+        };
+        auto role_layout = [&](ConvolutionSourceRole role) -> const VulkanTensorLayout & {
+            switch (role) {
+            case ConvolutionSourceRole::Input: return input_layout;
+            case ConvolutionSourceRole::Weight: return weight_layout;
+            case ConvolutionSourceRole::GradOutput: return grad_layout;
+            case ConvolutionSourceRole::Bias: return has_bias ? bias_layout : input_layout;
+            }
+            TORCH_CHECK(false, "Vulkan convolution has an invalid source role");
+        };
+        const auto &read_input_tensor = role_tensor(roles[0]);
+        const auto &read_weight_tensor = role_tensor(roles[1]);
+        const auto &read_bias_tensor = role_tensor(roles[2]);
+        const auto &read_input = role_layout(roles[0]);
+        const auto &read_weight = role_layout(roles[1]);
+        const auto &read_bias = role_layout(roles[2]);
+        const auto &platform = allocation_platform(read_input_tensor.storage().data_ptr());
+        TORCH_CHECK(&platform == &allocation_platform(read_weight_tensor.storage().data_ptr()) &&
+                        &platform == &allocation_platform(read_bias_tensor.storage().data_ptr()),
                     "Vulkan convolution requires Vulkan allocations on one platform");
-        validate_source_allocation(*read_input_tensor, *read_input, "convolution input");
-        validate_source_allocation(*read_weight_tensor, *read_weight, "convolution weight");
-        validate_source_allocation(*read_bias_tensor, *read_bias, "convolution bias");
+        validate_source_allocation(read_input_tensor, read_input, "convolution input");
+        validate_source_allocation(read_weight_tensor, read_weight, "convolution weight");
+        validate_source_allocation(read_bias_tensor, read_bias, "convolution bias");
         platform.compute().validate_convolution_dispatch(
-            read_input->allocation_bytes, read_weight->allocation_bytes,
-            read_bias->allocation_bytes, spec.bytes, spec.numel,
+            read_input.allocation_bytes, read_weight.allocation_bytes,
+            read_bias.allocation_bytes, spec.bytes, spec.numel,
             operation == 2 || operation == 3);
+
+        auto checked_axis = [](int64_t coordinate_max, int64_t kernel_max,
+                               int64_t stride, int64_t padding, int64_t dilation,
+                               uint32_t op) {
+            const __int128 stride_term = static_cast<__int128>(coordinate_max) * stride;
+            const __int128 kernel_term = static_cast<__int128>(kernel_max) * dilation;
+            const __int128 minimum = std::numeric_limits<int32_t>::min();
+            const __int128 maximum = std::numeric_limits<int32_t>::max();
+            TORCH_CHECK((op == 1 || stride_term <= maximum) &&
+                            kernel_term <= maximum &&
+                            stride <= maximum && dilation <= maximum &&
+                            padding >= 0 && padding <= maximum,
+                        "Vulkan convolution coordinate product exceeds signed shader range");
+            if (op == 0) {
+                // GLSL evaluates (oh * stride + kh * dilation) before
+                // subtracting padding, so the sum itself must be representable.
+                const __int128 sum = stride_term + kernel_term;
+                const __int128 result = sum - padding;
+                TORCH_CHECK(sum >= minimum && sum <= maximum &&
+                                result >= minimum && result <= maximum,
+                            "Vulkan convolution coordinate expression exceeds signed shader range");
+            } else if (op == 1) {
+                // GLSL evaluates target + padding before subtracting kh*dilation.
+                const __int128 sum = static_cast<__int128>(coordinate_max) + padding;
+                const __int128 low = static_cast<__int128>(padding) - kernel_term;
+                TORCH_CHECK(sum <= maximum && low >= minimum &&
+                                low <= maximum,
+                            "Vulkan convolution coordinate expression exceeds signed shader range");
+            } else {
+                // op2 evaluates (oh * stride - padding) + kh*dilation.
+                const __int128 before_kernel = stride_term - padding;
+                const __int128 result = before_kernel + kernel_term;
+                TORCH_CHECK(before_kernel >= minimum && before_kernel <= maximum &&
+                                result >= minimum && result <= maximum,
+                            "Vulkan convolution coordinate expression exceeds signed shader range");
+            }
+        };
+        if (operation == 0) {
+            checked_axis(shape[2] - 1, kh - 1, geometry.stride_height,
+                         geometry.padding_height, geometry.dilation_height, 0);
+            checked_axis(shape[3] - 1, kw - 1, geometry.stride_width,
+                         geometry.padding_width, geometry.dilation_width, 0);
+        } else if (operation == 1) {
+            checked_axis(shape[2] - 1, kh - 1, geometry.stride_height,
+                         geometry.padding_height, geometry.dilation_height, 1);
+            checked_axis(shape[3] - 1, kw - 1, geometry.stride_width,
+                         geometry.padding_width, geometry.dilation_width, 1);
+        } else if (operation == 2) {
+            checked_axis(read_input.sizes[2] - 1, kh - 1, geometry.stride_height,
+                         geometry.padding_height, geometry.dilation_height, 2);
+            checked_axis(read_input.sizes[3] - 1, kw - 1, geometry.stride_width,
+                         geometry.padding_width, geometry.dilation_width, 2);
+            constexpr uint64_t max_reduction_count =
+                static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 255;
+            const uint64_t reduction = checked_mul(
+                static_cast<uint64_t>(read_input.sizes[0]),
+                checked_mul(static_cast<uint64_t>(read_input.sizes[2]),
+                            static_cast<uint64_t>(read_input.sizes[3])));
+            TORCH_CHECK(reduction <= max_reduction_count,
+                        "Vulkan convolution op2 reader reduction exceeds shader index range");
+        } else {
+            constexpr uint64_t max_reduction_count =
+                static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 255;
+            const uint64_t reduction = checked_mul(
+                static_cast<uint64_t>(grad_output->size(0)),
+                checked_mul(static_cast<uint64_t>(grad_output->size(2)),
+                            static_cast<uint64_t>(grad_output->size(3))));
+            TORCH_CHECK(grad_layout.numel <= std::numeric_limits<uint32_t>::max() &&
+                            reduction <= max_reduction_count,
+                        "Vulkan convolution grad_output logical numel/reduction exceeds shader index range");
+        }
         plan.outputs[plan.output_count++] = spec;
     };
 
     if (forward) {
-        append_output(0, {input.size(0), weight.size(0), out_h, out_w}, 4,
+        append_output(transposed ? 1u : 0u, 0,
+                      {input.size(0), output_channels, out_h, out_w}, 4,
                       weight.size(2), weight.size(3));
     } else {
         const bool request_input = requested_outputs[0];
@@ -247,49 +431,30 @@ ConvolutionPreflight preflight_convolution(
         const bool request_bias = requested_outputs[2];
         if (request_input || request_weight) {
             TORCH_CHECK(grad_output->size(0) == input.size(0) &&
-                            grad_output->size(1) == weight.size(0) &&
+                            grad_output->size(1) == output_channels &&
                             grad_output->size(2) == out_h &&
                             grad_output->size(3) == out_w,
                         "Vulkan convolution backward grad_output shape expected (",
-                        input.size(0), ", ", weight.size(0), ", ", out_h,
+                        input.size(0), ", ", output_channels, ", ", out_h,
                         ", ", out_w, "), actual (", grad_output->size(0),
                         ", ", grad_output->size(1), ", ", grad_output->size(2),
                         ", ", grad_output->size(3), ")");
         } else if (request_bias) {
             TORCH_CHECK(grad_output->size(0) == input.size(0) &&
-                            grad_output->size(1) == weight.size(0),
+                            grad_output->size(1) == output_channels,
                         "Vulkan convolution backward dBias grad_output requires matching batch and output channels");
         }
 
-        // The reduction loops increment a uint index by the 256-lane workgroup
-        // width. Bound the readable logical domain before dispatch (not merely
-        // the small result vector), so neither the shader index nor its loop
-        // increment can wrap. This also rejects enormous expanded views without
-        // materializing their logical contents.
-        if (request_weight || request_bias) {
-            constexpr uint64_t max_reduction_count =
-                static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 255;
-            const uint64_t reduction_count = checked_mul(
-                static_cast<uint64_t>(grad_output->size(0)),
-                checked_mul(static_cast<uint64_t>(grad_output->size(2)),
-                            static_cast<uint64_t>(grad_output->size(3))));
-            TORCH_CHECK(static_cast<uint64_t>(grad_layout.numel) <=
-                            std::numeric_limits<uint32_t>::max() &&
-                            reduction_count <= max_reduction_count,
-                        "Vulkan convolution grad_output logical numel/reduction exceeds shader index range");
-        }
-
         if (request_input)
-            append_output(1,
+            append_output(transposed ? 0u : 1u, 0,
                           {input.size(0), input.size(1), input.size(2), input.size(3)},
                           4, weight.size(2), weight.size(3));
         if (request_weight)
-            append_output(2,
+            append_output(2, 1,
                           {weight.size(0), weight.size(1), weight.size(2),
-                           weight.size(3)},
-                          4, weight.size(2), weight.size(3));
+                           weight.size(3)}, 4, weight.size(2), weight.size(3));
         if (request_bias)
-            append_output(3, {weight.size(0), 0, 0, 0}, 1, 1, 1);
+            append_output(3, 2, {output_channels, 0, 0, 0}, 1, 1, 1);
     }
     return plan;
 }
@@ -306,39 +471,40 @@ void dispatch_convolution_output(const ConvolutionOutputSpec &spec,
                                  const at::Tensor *grad_output,
                                  const at::Tensor &output,
                                  const ConvolutionPreflight &plan) {
-    const VulkanTensorLayout *input_layout = &plan.input_layout;
-    const VulkanTensorLayout *weight_layout = &plan.weight_layout;
-    const VulkanTensorLayout *bias_layout = &plan.bias_layout;
-    const at::Tensor *input_tensor = &input;
-    const at::Tensor *weight_tensor = &weight;
-    const bool has_bias = bias != nullptr && bias->defined();
-    const at::Tensor *bias_tensor = has_bias ? bias : &input;
-    if (spec.operation != 0) {
-        if (spec.operation == 1) {
-            input_layout = &plan.grad_layout;
-            bias_layout = &plan.grad_layout;
-            input_tensor = grad_output;
-            bias_tensor = grad_output;
-        } else if (spec.operation == 2) {
-            input_layout = &plan.grad_layout;
-            weight_layout = &plan.input_layout;
-            bias_layout = &plan.grad_layout;
-            input_tensor = grad_output;
-            weight_tensor = &input;
-            bias_tensor = grad_output;
-        } else {
-            input_layout = weight_layout = bias_layout = &plan.grad_layout;
-            input_tensor = weight_tensor = bias_tensor = grad_output;
+    auto role_tensor = [&](ConvolutionSourceRole role) -> const at::Tensor & {
+        switch (role) {
+        case ConvolutionSourceRole::Input: return input;
+        case ConvolutionSourceRole::Weight: return weight;
+        case ConvolutionSourceRole::GradOutput: return *grad_output;
+        case ConvolutionSourceRole::Bias:
+            return bias != nullptr && bias->defined() ? *bias : input;
         }
-    }
-    TORCH_CHECK(input_tensor && weight_tensor && bias_tensor,
-                "Vulkan convolution dispatch has an incomplete source role");
+        TORCH_CHECK(false, "Vulkan convolution dispatch has an invalid source role");
+    };
+    auto role_layout = [&](ConvolutionSourceRole role) -> const VulkanTensorLayout & {
+        switch (role) {
+        case ConvolutionSourceRole::Input: return plan.input_layout;
+        case ConvolutionSourceRole::Weight: return plan.weight_layout;
+        case ConvolutionSourceRole::GradOutput: return plan.grad_layout;
+        case ConvolutionSourceRole::Bias:
+            return bias != nullptr && bias->defined() ? plan.bias_layout
+                                                       : plan.input_layout;
+        }
+        TORCH_CHECK(false, "Vulkan convolution dispatch has an invalid source role");
+    };
+    const auto &input_tensor = role_tensor(spec.source_roles[0]);
+    const auto &weight_tensor = role_tensor(spec.source_roles[1]);
+    const auto &bias_tensor = role_tensor(spec.source_roles[2]);
+    const auto &input_layout = role_layout(spec.source_roles[0]);
+    const auto &weight_layout = role_layout(spec.source_roles[1]);
+    const auto &bias_layout = role_layout(spec.source_roles[2]);
+    const bool has_bias = plan.forward && bias != nullptr && bias->defined();
     auto output_layout = inspect_vulkan_tensor_layout(output, "convolution output");
     TORCH_CHECK(output_layout.internal_overlap == VulkanOverlap::No,
                 "Vulkan convolution output must be writable and non-overlapping");
-    const auto &input_data = input_tensor->storage().data_ptr();
-    const auto &weight_data = weight_tensor->storage().data_ptr();
-    const auto &bias_data = bias_tensor->storage().data_ptr();
+    const auto &input_data = input_tensor.storage().data_ptr();
+    const auto &weight_data = weight_tensor.storage().data_ptr();
+    const auto &bias_data = bias_tensor.storage().data_ptr();
     const auto &output_data = output.storage().data_ptr();
     const auto &platform = allocation_platform(input_data);
     TORCH_CHECK(&platform == &allocation_platform(weight_data) &&
@@ -349,23 +515,22 @@ void dispatch_convolution_output(const ConvolutionOutputSpec &spec,
     platform.compute().convolution(
         allocation_buffer(input_data).buffer(), allocation_buffer(weight_data).buffer(),
         allocation_buffer(bias_data).buffer(), allocation_buffer(output_data).buffer(),
-        *input_layout, *weight_layout, *bias_layout, output_layout, spec.operation,
+        input_layout, weight_layout, bias_layout, output_layout, spec.operation,
         spec.kernel_height, spec.kernel_width, spec.shader_geometry,
-        spec.operation == 0 && has_bias);
+        has_bias);
 }
 
 at::Tensor run_single(const at::Tensor &input, const at::Tensor &weight,
                       const at::Tensor *bias, const at::Tensor *grad_output,
-                      uint32_t operation, const ConvolutionGeometry &geometry,
-                      int64_t input_height = 0, int64_t input_width = 0) {
+                      const ConvolutionGeometry &geometry, bool transposed,
+                      std::array<int64_t, 2> output_padding) {
     std::array<bool, 3> mask{true, true, true};
     auto plan = preflight_convolution(input, weight, bias, grad_output, geometry,
-                                     mask, operation == 0);
+                                     transposed, output_padding, mask,
+                                     true);
     const auto &spec = plan.outputs[0];
     at::Tensor output = allocate_convolution_output(spec, input.options());
     dispatch_convolution_output(spec, input, weight, bias, grad_output, output, plan);
-    (void)input_height;
-    (void)input_width;
     return output;
 }
 
@@ -444,7 +609,9 @@ at::Tensor run_legacy_backward_operation(
     }
     const uint32_t count = output_numel(shape, rank);
     ConvolutionOutputSpec spec{
-        operation, shape, rank, count,
+        operation, 0,
+        {ConvolutionSourceRole::GradOutput, ConvolutionSourceRole::Weight,
+         ConvolutionSourceRole::GradOutput}, 2, shape, rank, count,
         static_cast<VkDeviceSize>(checked_mul(count, sizeof(float))),
         narrow_shader(kh, "kernel height"), narrow_shader(kw, "kernel width"),
         {narrow_shader(geometry.stride_height, "stride"),
@@ -490,13 +657,16 @@ at::Tensor convolution(const at::Tensor &input, const at::Tensor &weight,
                        int64_t groups) {
     TORCH_CHECK(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
                 "Vulkan convolution requires 2-D stride, padding and dilation");
-    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed,
-                "Vulkan convolution supports only non-transposed convolutions with zero output_padding");
+    TORCH_CHECK(output_padding.size() == 2,
+                "Vulkan convolution requires 2-D output_padding");
+    TORCH_CHECK(transposed || output_padding.equals({0, 0}),
+                "Vulkan convolution supports only zero output_padding for ordinary convolutions");
+    const bool has_bias = bias.has_value() && bias->defined();
     const ConvolutionGeometry geometry{stride[0], stride[1], padding[0], padding[1],
                                        dilation[0], dilation[1], groups};
-    const bool has_bias = bias.has_value() && bias->defined();
     const at::Tensor *defined_bias = has_bias ? &*bias : nullptr;
-    return run_single(input, weight, defined_bias, nullptr, 0, geometry);
+    return run_single(input, weight, defined_bias, nullptr, geometry, transposed,
+                      {output_padding[0], output_padding[1]});
 }
 
 at::Tensor convolution_backward_input(const at::Tensor &grad, const at::Tensor &weight,
@@ -524,22 +694,26 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     (void)bias_sizes;
     TORCH_CHECK(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
                 "Vulkan convolution backward requires 2-D stride, padding and dilation");
-    TORCH_CHECK(output_padding.equals({0, 0}) && !transposed,
-                "Vulkan convolution backward supports only non-transposed convolutions with zero output_padding");
+    TORCH_CHECK(output_padding.size() == 2,
+                "Vulkan convolution backward requires 2-D output_padding");
+    TORCH_CHECK(transposed || output_padding.equals({0, 0}),
+                "Vulkan convolution backward supports only zero output_padding for ordinary convolutions");
     const ConvolutionGeometry geometry{stride[0], stride[1], padding[0], padding[1],
                                        dilation[0], dilation[1], groups};
     auto plan = preflight_convolution(input, weight, nullptr, &grad_output,
-                                       geometry, output_mask, false);
+                                       geometry, transposed,
+                                       {output_padding[0], output_padding[1]},
+                                       output_mask, false);
     std::array<at::Tensor, 3> outputs;
     for (size_t i = 0; i < plan.output_count; ++i) {
         const auto &spec = plan.outputs[i];
-        outputs[spec.operation - 1] = allocate_convolution_output(spec, input.options());
+        outputs[spec.result_slot] = allocate_convolution_output(spec, input.options());
     }
     for (size_t i = 0; i < plan.output_count; ++i)
     {
         const auto &spec = plan.outputs[i];
         dispatch_convolution_output(spec, input, weight, nullptr,
-                                    &grad_output, outputs[spec.operation - 1], plan);
+                                    &grad_output, outputs[spec.result_slot], plan);
     }
     return {outputs[0], outputs[1], outputs[2]};
 }

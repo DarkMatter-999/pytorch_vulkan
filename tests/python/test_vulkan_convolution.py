@@ -536,6 +536,613 @@ def test_convolution_backward_empty_mask_keeps_common_input_weight_checks(vulkan
     assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
 
 
+def _transposed_witness_cpu():
+    generator = torch.Generator(device="cpu").manual_seed(4821)
+    x = torch.randn((2, 4, 3, 4), generator=generator)
+    weight = torch.randn((4, 3, 2, 3), generator=generator)
+    output = torch.nn.functional.conv_transpose2d(
+        x, weight, None, stride=(2, 1), padding=(1, 1),
+        output_padding=(2, 0), groups=2, dilation=(3, 2),
+    )
+    grad_output = torch.randn(output.shape, generator=generator)
+    return x, weight, grad_output
+
+
+def test_convolution_transposed_bias_free_forward_matches_cpu(vulkan_backend):
+    x, weight, _ = _transposed_witness_cpu()
+    vk_x, vk_weight = x.to(vulkan_backend), weight.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    actual = torch.ops.aten.convolution.default(
+        vk_x, vk_weight, None,
+        [2, 1], [1, 1], [3, 2], True, [2, 0], 2,
+    )
+    expected = torch.nn.functional.conv_transpose2d(
+        x, weight, None, stride=(2, 1), padding=(1, 1),
+        output_padding=(2, 0), groups=2, dilation=(3, 2),
+    )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (1, 0, 0, 0)
+    assert tuple(actual.shape) == (2, 6, 8, 6)
+    torch.testing.assert_close(actual.cpu(), expected)
+
+
+def test_transposed_op1_bias_is_guarded_and_indexes_target_ic():
+    import re
+
+    source = (Path(__file__).resolve().parents[2] /
+              "src/vulkan/shaders/glsl/convolution.comp").read_text()
+    op1 = source.split("} else if (params.operation == 1u) {", 1)[1].split(
+        "} else if (params.operation == 2u) {", 1
+    )[0]
+    assert "if (params.has_bias != 0u)" in op1
+    assert "bias_values[bm.storage_offset + ic * bm.strides[0]]" in op1
+    reads = re.findall(r"\bbias_values\s*\[(?!\])", source)
+    assert len(reads) == 2
+
+
+def test_convolution_transposed_bias_present_forward_matches_cpu(vulkan_backend):
+    x, weight, _ = _transposed_witness_cpu()
+    generator = torch.Generator(device="cpu").manual_seed(4830)
+    bias_base = torch.randn((12,), generator=generator)
+    bias = bias_base[1::2]
+    vk_x, vk_weight, vk_bias_base = (
+        value.to(vulkan_backend) for value in (x, weight, bias_base)
+    )
+    vk_bias = vk_bias_base[1::2]
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    actual = torch.ops.aten.convolution.default(
+        vk_x, vk_weight, vk_bias,
+        [2, 1], [1, 1], [3, 2], True, [2, 0], 2,
+    )
+    expected = torch.nn.functional.conv_transpose2d(
+        x, weight, bias, stride=(2, 1), padding=(1, 1),
+        output_padding=(2, 0), groups=2, dilation=(3, 2),
+    )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (1, 0, 0, 0)
+    assert tuple(actual.shape) == (2, 6, 8, 6)
+    torch.testing.assert_close(actual.cpu(), expected)
+
+
+def test_convolution_transposed_forward_does_not_bound_unused_op1_stride_product(
+    vulkan_backend,
+):
+    int_max = 2**31 - 1
+    cpu_x = torch.ones((1, 1, 2, 1), dtype=torch.float32)
+    cpu_weight = torch.ones((1, 1, 2, 1), dtype=torch.float32)
+    vk_x, vk_weight = cpu_x.to(vulkan_backend), cpu_weight.to(vulkan_backend)
+    expected = torch.nn.functional.conv_transpose2d(
+        cpu_x, cpu_weight, None, stride=(int_max, 1),
+        padding=(1073741823, 0), dilation=(1, 1), output_padding=(0, 0),
+    )
+    actual = torch.ops.aten.convolution.default(
+        vk_x, vk_weight, None, [int_max, 1], [1073741823, 0], [1, 1],
+        True, [0, 0], 1,
+    )
+    pytorch_vulkan._C.synchronize()
+    assert tuple(actual.shape) == (1, 1, 3, 1)
+    torch.testing.assert_close(actual.cpu(), expected)
+
+
+def test_convolution_transposed_backward_result_slots_match_cpu(vulkan_backend):
+    x, weight, grad_output = _transposed_witness_cpu()
+    vk_x, vk_weight = x.to(vulkan_backend), weight.to(vulkan_backend)
+    vk_grad = grad_output.to(vulkan_backend)
+    with torch.backends.mkldnn.flags(enabled=False):
+        expected_results = torch.ops.aten.convolution_backward.default(
+            grad_output, x, weight, None, [2, 1], [1, 1], [3, 2], True,
+            [2, 0], 2, [True, True, True],
+        )
+    for mask_bits in range(8):
+        mask = [bool(mask_bits & (1 << (2 - slot))) for slot in range(3)]
+        with torch.backends.mkldnn.flags(enabled=False):
+            expected = torch.ops.aten.convolution_backward.default(
+                grad_output, x, weight, None, [2, 1], [1, 1], [3, 2], True,
+                [2, 0], 2, mask,
+            )
+        pytorch_vulkan._C.synchronize()
+        actual = torch.ops.aten.convolution_backward.default(
+            vk_grad, vk_x, vk_weight, None, [2, 1], [1, 1], [3, 2], True,
+            [2, 0], 2, mask,
+        )
+        pytorch_vulkan._C.synchronize()
+        for slot, (value, reference) in enumerate(zip(actual, expected)):
+            assert (value is not None) is (reference is not None), (mask, slot)
+            if value is not None:
+                assert tuple(value.shape) == tuple(reference.shape)
+                torch.testing.assert_close(value.cpu(), reference)
+        if mask_bits in (4, 5, 6, 7):
+            assert tuple(actual[0].shape) == tuple(x.shape)
+            torch.testing.assert_close(actual[0].cpu(), expected_results[0])
+    ordinary_input_gradient = torch.nn.functional.conv2d(
+        grad_output, weight, None, (2, 1), (1, 1), (3, 2), 2,
+    )[..., :3, :4]
+    torch.testing.assert_close(expected_results[0], ordinary_input_gradient)
+
+
+def test_convolution_transposed_backward_preflight_obeys_selected_shapes(vulkan_backend):
+    x, weight, _ = _transposed_witness_cpu()
+    mismatched_grad = torch.randn((2, 6, 7, 6), generator=torch.Generator().manual_seed(81))
+    vk_x, vk_weight = x.to(vulkan_backend), weight.to(vulkan_backend)
+    vk_grad = mismatched_grad.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    d_bias = torch.ops.aten.convolution_backward.default(
+        vk_grad, vk_x, vk_weight, None, [2, 1], [1, 1], [3, 2], True,
+        [2, 0], 2, [False, False, True],
+    )
+    pytorch_vulkan._C.synchronize()
+    assert d_bias[0] is None and d_bias[1] is None
+    assert tuple(d_bias[2].shape) == (6,)
+    torch.testing.assert_close(d_bias[2].cpu(), mismatched_grad.sum((0, 2, 3)))
+
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+    with pytest.raises(RuntimeError, match="grad_output shape expected"):
+        torch.ops.aten.convolution_backward.default(
+            vk_grad, vk_x, vk_weight, None, [2, 1], [1, 1], [3, 2], True,
+            [2, 0], 2, [True, False, False],
+        )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
+
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+    no_results = torch.ops.aten.convolution_backward.default(
+        vk_grad, vk_x, vk_weight, None, [2, 1], [1, 1], [3, 2], True,
+        [2, 0], 2, [False, False, False],
+    )
+    pytorch_vulkan._C.synchronize()
+    assert no_results == (None, None, None)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
+
+
+@pytest.mark.parametrize("bias_present", [False, True], ids=["no-bias", "bias"])
+def test_conv_transpose2d_function_and_module_forward_match_cpu(
+    vulkan_backend, bias_present
+):
+    generator = torch.Generator(device="cpu").manual_seed(7319)
+    x_cpu = torch.randn((2, 4, 3, 4), generator=generator)
+    weight_cpu = torch.randn((4, 3, 2, 3), generator=generator)
+    bias_cpu = torch.randn((6,), generator=generator) if bias_present else None
+    x_vk, weight_vk = x_cpu.to(vulkan_backend), weight_cpu.to(vulkan_backend)
+    bias_vk = bias_cpu.to(vulkan_backend) if bias_cpu is not None else None
+    args = dict(stride=(2, 1), padding=(1, 1), output_padding=(2, 0),
+                groups=2, dilation=(3, 2))
+
+    expected = torch.nn.functional.conv_transpose2d(
+        x_cpu, weight_cpu, bias_cpu, **args
+    )
+    actual = torch.nn.functional.conv_transpose2d(
+        x_vk, weight_vk, bias_vk, **args
+    )
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected, rtol=2e-4, atol=2e-4)
+
+    cpu_module = torch.nn.ConvTranspose2d(
+        4, 6, (2, 3), stride=(2, 1), padding=(1, 1),
+        output_padding=(2, 0), groups=2, dilation=(3, 2),
+        bias=bias_present,
+    )
+    with torch.no_grad():
+        cpu_module.weight.copy_(weight_cpu)
+        if bias_present:
+            cpu_module.bias.copy_(bias_cpu)
+    vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+    module_actual = vk_module(x_vk)
+    module_expected = cpu_module(x_cpu)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(module_actual.cpu(), module_expected,
+                               rtol=2e-4, atol=2e-4)
+
+
+def test_conv_transpose2d_module_output_size_uses_stock_stride_policy(vulkan_backend):
+    module = torch.nn.ConvTranspose2d(
+        4, 6, (2, 3), stride=(2, 1), padding=(1, 1), groups=2,
+        dilation=(3, 2),
+    )
+    cpu_input = torch.randn((2, 4, 3, 4), generator=torch.Generator().manual_seed(812))
+    vk_module = copy.deepcopy(module).to(vulkan_backend)
+    vk_input = cpu_input.to(vulkan_backend)
+    with torch.backends.mkldnn.flags(enabled=False):
+        expected = torch.nn.functional.conv_transpose2d(
+            cpu_input, module.weight, module.bias, stride=(2, 1),
+            padding=(1, 1), output_padding=(1, 0), groups=2, dilation=(3, 2),
+        )
+        module_expected = module(cpu_input, output_size=(2, 6, 7, 6))
+    actual = vk_module(vk_input, output_size=(2, 6, 7, 6))
+    pytorch_vulkan._C.synchronize()
+    assert tuple(actual.shape) == (2, 6, 7, 6)
+    torch.testing.assert_close(actual.cpu(), expected, rtol=2e-4, atol=2e-4)
+    torch.testing.assert_close(actual.cpu(), module_expected, rtol=2e-4, atol=2e-4)
+    with pytest.raises(ValueError, match="output size.*valid range|requested an output size"):
+        vk_module(vk_input, output_size=(2, 6, 8, 6))
+
+
+@pytest.mark.parametrize("trainable", [
+    (True, False, False), (False, True, False), (False, False, True),
+    (True, True, False), (True, False, True), (True, True, True),
+    (False, False, False),
+], ids=["input", "weight", "bias", "input-weight", "input-bias", "all", "frozen"])
+def test_conv_transpose2d_module_first_backward_matches_cpu_with_mixed_trainability(
+    vulkan_backend, trainable
+):
+    generator = torch.Generator(device="cpu").manual_seed(941)
+    cpu_module = torch.nn.ConvTranspose2d(
+        4, 6, (2, 3), stride=(2, 1), padding=(1, 1),
+        output_padding=(2, 0), groups=2, dilation=(3, 2), bias=True,
+    )
+    cpu_module.weight.requires_grad_(trainable[1])
+    cpu_module.bias.requires_grad_(trainable[2])
+    vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+    x_cpu = torch.randn((2, 4, 3, 4), generator=generator)
+    x_cpu.requires_grad_(trainable[0])
+    # Upload first, then make the Vulkan input a new leaf.
+    x_vk = x_cpu.detach().to(vulkan_backend).requires_grad_(trainable[0])
+    cpu_output, vk_output = cpu_module(x_cpu), vk_module(x_vk)
+    seed = torch.randn(cpu_output.shape, generator=generator)
+    vk_seed = seed.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    if any(trainable):
+        with torch.backends.mkldnn.flags(enabled=False):
+            cpu_output.backward(seed)
+        vk_output.backward(vk_seed)
+    else:
+        assert not cpu_output.requires_grad and not vk_output.requires_grad
+        assert cpu_output.grad_fn is None and vk_output.grad_fn is None
+    pytorch_vulkan._C.synchronize()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert counters == (sum(trainable), 0, 0, 0)
+    for actual, expected, selected in (
+        (x_vk.grad, x_cpu.grad, trainable[0]),
+        (vk_module.weight.grad, cpu_module.weight.grad, trainable[1]),
+        (vk_module.bias.grad, cpu_module.bias.grad, trainable[2]),
+    ):
+        assert (actual is not None) is selected
+        assert (expected is not None) is selected
+        if selected:
+            torch.testing.assert_close(actual.cpu(), expected,
+                                       rtol=3e-4, atol=3e-4)
+
+
+@pytest.mark.parametrize("device", ["cpu", "vk:0"], ids=["cpu", "vulkan"])
+@pytest.mark.parametrize("saved_role", ["input", "weight"])
+def test_conv_transpose2d_module_saved_variable_mutation_checks_version(
+    device, saved_role, vulkan_backend
+):
+    module = torch.nn.ConvTranspose2d(4, 6, (2, 3), groups=2).to(device)
+    input = torch.randn((1, 4, 3, 4), generator=torch.Generator().manual_seed(451))
+    input = input.to(device).requires_grad_(True)
+    output = module(input)
+    saved = input if saved_role == "input" else module.weight
+    with torch.no_grad():
+        saved.add_(1)
+    with pytest.raises(RuntimeError, match="modified by an inplace operation|version"):
+        output.sum().backward()
+
+
+@pytest.mark.parametrize("operand", ["offset-input", "transpose-input", "transpose-weight"])
+def test_conv_transpose2d_reads_vulkan_views_against_cpu(operand, vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(1207)
+    x_base = torch.randn((2, 4, 4, 5), generator=generator)
+    weight_base = torch.randn((4, 3, 2, 3), generator=generator)
+    vk_x_base, vk_weight_base = x_base.to(vulkan_backend), weight_base.to(vulkan_backend)
+    if operand == "offset-input":
+        cpu_x, vk_x = x_base[:, :, 1:, 1:], vk_x_base[:, :, 1:, 1:]
+        cpu_weight, vk_weight = weight_base, vk_weight_base
+    elif operand == "transpose-input":
+        cpu_x, vk_x = x_base.transpose(2, 3), vk_x_base.transpose(2, 3)
+        cpu_weight, vk_weight = weight_base, vk_weight_base
+    else:
+        cpu_x, vk_x = x_base[:, :, :3, :4], vk_x_base[:, :, :3, :4]
+        cpu_weight, vk_weight = weight_base.transpose(2, 3), vk_weight_base.transpose(2, 3)
+    args = dict(stride=(2, 1), padding=(1, 1), output_padding=(1, 0),
+                groups=2, dilation=(2, 1))
+    expected = torch.nn.functional.conv_transpose2d(cpu_x, cpu_weight, None, **args)
+    actual = torch.nn.functional.conv_transpose2d(vk_x, vk_weight, None, **args)
+    assert tuple(vk_x.stride()) == tuple(cpu_x.stride())
+    assert tuple(vk_weight.stride()) == tuple(cpu_weight.stride())
+    assert vk_x.storage_offset() == cpu_x.storage_offset()
+    assert vk_weight.storage_offset() == cpu_weight.storage_offset()
+    if operand == "offset-input":
+        assert vk_x.storage_offset() > 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
+
+
+def test_conv_transpose2d_module_accepts_expanded_upstream_seed(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(1207)
+    cpu_module = torch.nn.ConvTranspose2d(4, 6, (2, 3), groups=2)
+    cpu_input = torch.randn((2, 4, 3, 4), generator=generator, requires_grad=True)
+    vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_(True)
+    cpu_output, vk_output = cpu_module(cpu_input), vk_module(vk_input)
+    cpu_seed_base = torch.randn((1, 6, 1, 1), generator=generator)
+    vk_seed_base = cpu_seed_base.to(vulkan_backend)
+    cpu_seed, vk_seed = cpu_seed_base.expand_as(cpu_output), vk_seed_base.expand(vk_output.shape)
+    assert tuple(cpu_seed.stride()) == tuple(vk_seed.stride())
+    assert tuple(vk_seed.stride()[-2:]) == (0, 0)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with torch.backends.mkldnn.flags(enabled=False):
+        cpu_output.backward(cpu_seed)
+    vk_output.backward(vk_seed)
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (3, 0, 0, 0)
+    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=3e-4, atol=3e-4)
+    torch.testing.assert_close(vk_module.weight.grad.cpu(), cpu_module.weight.grad,
+                               rtol=3e-4, atol=3e-4)
+    torch.testing.assert_close(vk_module.bias.grad.cpu(), cpu_module.bias.grad,
+                               rtol=3e-4, atol=3e-4)
+
+
+@pytest.mark.parametrize(
+    ("bias_present", "trainable"),
+    [
+        (False, (1, 0, 0)),
+        (False, (0, 1, 0)),
+        (False, (0, 0, 0)),
+        (True, (1, 0, 1)),
+        (True, (0, 1, 1)),
+        (True, (0, 0, 1)),
+        (True, (1, 1, 1)),
+    ],
+    ids=["input-only", "weight-only", "frozen", "input-bias", "weight-bias",
+         "bias-only", "all-trainable"],
+)
+def test_conv_transpose2d_module_depthwise_multiplier_first_backward_matches_cpu(
+    vulkan_backend,
+    bias_present,
+    trainable,
+):
+    generator = torch.Generator(device="cpu").manual_seed(1209)
+    cpu_module = torch.nn.ConvTranspose2d(
+        4, 8, (2, 3), stride=(2, 1), padding=(1, 1), groups=4,
+        dilation=(2, 1), output_padding=(1, 0), bias=bias_present,
+    )
+    cpu_module.weight.requires_grad_(bool(trainable[1]))
+    if bias_present:
+        cpu_module.bias.requires_grad_(bool(trainable[2]))
+    cpu_input = torch.randn((2, 4, 3, 4), generator=generator)
+    cpu_input.requires_grad_(bool(trainable[0]))
+    vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_(bool(trainable[0]))
+    assert cpu_module.groups == cpu_module.in_channels == cpu_module.weight.size(0) == 4
+    assert cpu_module.weight.size(1) == 2
+    assert cpu_module.out_channels == cpu_module.weight.size(1) * cpu_module.groups == 8
+    cpu_output, vk_output = cpu_module(cpu_input), vk_module(vk_input)
+    seed = torch.randn(cpu_output.shape, generator=generator)
+    vk_seed = seed.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_output.cpu(), cpu_output, rtol=3e-4, atol=3e-4)
+    pytorch_vulkan._C.reset_execution_counters()
+    if any(trainable):
+        with torch.backends.mkldnn.flags(enabled=False):
+            cpu_output.backward(seed)
+        vk_output.backward(vk_seed)
+    else:
+        assert not cpu_output.requires_grad and not vk_output.requires_grad
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (sum(trainable), 0, 0, 0)
+    for actual, expected, selected in (
+        (vk_input.grad, cpu_input.grad, trainable[0]),
+        (vk_module.weight.grad, cpu_module.weight.grad, trainable[1]),
+        (vk_module.bias.grad if bias_present else None,
+         cpu_module.bias.grad if bias_present else None,
+         bias_present and trainable[2]),
+    ):
+        selected = bool(selected)
+        assert (actual is not None) is selected
+        assert (expected is not None) is selected
+        if selected:
+            torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
+
+
+@pytest.mark.parametrize("bias_present", [False, True], ids=["no-bias", "bias"])
+def test_conv_transpose2d_function_depthwise_multiplier_matches_cpu(
+    vulkan_backend, bias_present
+):
+    generator = torch.Generator(device="cpu").manual_seed(1211)
+    cpu_input = torch.randn((1, 4, 2, 3), generator=generator)
+    cpu_weight = torch.randn((4, 2, 2, 3), generator=generator)
+    cpu_bias = torch.randn((8,), generator=generator) if bias_present else None
+    vk_input, vk_weight = cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend)
+    vk_bias = cpu_bias.to(vulkan_backend) if cpu_bias is not None else None
+    kwargs = dict(stride=(2, 1), padding=(1, 1), output_padding=(1, 0),
+                  groups=4, dilation=(2, 1))
+    assert kwargs["groups"] == cpu_input.size(1) == cpu_weight.size(0) == 4
+    assert cpu_weight.size(1) == 2
+    assert cpu_weight.size(1) * kwargs["groups"] == 8
+    expected = torch.nn.functional.conv_transpose2d(
+        cpu_input, cpu_weight, cpu_bias, **kwargs
+    )
+    actual = torch.nn.functional.conv_transpose2d(vk_input, vk_weight, vk_bias, **kwargs)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
+
+
+@pytest.mark.parametrize("bias_sizes", [None, [], [999]], ids=["absent", "empty", "wrong-hint"])
+def test_transposed_backward_bias_sizes_are_advisory(vulkan_backend, bias_sizes):
+    generator = torch.Generator(device="cpu").manual_seed(1213)
+    x = torch.randn((1, 4, 2, 3), generator=generator)
+    weight = torch.randn((4, 2, 2, 3), generator=generator)
+    output = torch.nn.functional.conv_transpose2d(
+        x, weight, None, stride=(2, 1), padding=(1, 1),
+        output_padding=(1, 0), groups=4, dilation=(2, 1),
+    )
+    grad = torch.randn(output.shape, generator=generator)
+    vk_x, vk_weight, vk_grad = (value.to(vulkan_backend) for value in (x, weight, grad))
+    actual = torch.ops.aten.convolution_backward.default(
+        vk_grad, vk_x, vk_weight, bias_sizes, [2, 1], [1, 1], [2, 1],
+        True, [1, 0], 4, [False, False, True],
+    )
+    pytorch_vulkan._C.synchronize()
+    assert actual[0] is None and actual[1] is None
+    assert tuple(actual[2].shape) == (8,)
+    torch.testing.assert_close(actual[2].cpu(), grad.sum((0, 2, 3)))
+
+
+def test_conv_transpose2d_accepts_canonical_dual_contiguous_singletons(vulkan_backend):
+    cpu_input = torch.randn((1, 1, 1, 1), generator=torch.Generator().manual_seed(311))
+    cpu_weight = torch.randn((1, 1, 1, 1), generator=torch.Generator().manual_seed(312))
+    vk_input, vk_weight = cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend)
+    assert cpu_input.is_contiguous()
+    assert cpu_input.is_contiguous(memory_format=torch.channels_last)
+    assert vk_input.is_contiguous()
+    assert vk_input.is_contiguous(memory_format=torch.channels_last)
+    expected = torch.nn.functional.conv_transpose2d(cpu_input, cpu_weight)
+    actual = torch.nn.functional.conv_transpose2d(vk_input, vk_weight)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected)
+
+
+@pytest.mark.parametrize("route", ["functional", "module"])
+def test_transposed_create_graph_is_rejected_before_vulkan_work(vulkan_backend, route):
+    generator = torch.Generator(device="cpu").manual_seed(8053)
+    cpu_input = torch.randn((1, 2, 2, 2), generator=generator, requires_grad=True)
+    cpu_weight = torch.randn((2, 3, 2, 2), generator=generator, requires_grad=True)
+    if route == "functional":
+        cpu_output = torch.nn.functional.conv_transpose2d(cpu_input, cpu_weight)
+        vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+        vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+        vk_output = torch.nn.functional.conv_transpose2d(vk_input, vk_weight)
+    else:
+        cpu_module = torch.nn.ConvTranspose2d(2, 3, 2, bias=False)
+        with torch.no_grad():
+            cpu_module.weight.copy_(cpu_weight)
+        vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+        vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+        cpu_output = cpu_module(cpu_input)
+        vk_output = vk_module(vk_input)
+        cpu_weight = cpu_module.weight
+
+    grad_output_cpu = torch.randn(cpu_output.shape, generator=generator)
+    grad_output_vk = grad_output_cpu.to(vulkan_backend)
+    cpu_grad, = torch.autograd.grad(
+        cpu_output, (cpu_input, cpu_weight), grad_outputs=grad_output_cpu,
+        create_graph=True, retain_graph=True,
+    )[0:1]
+    assert cpu_grad.requires_grad
+    if route == "module":
+        vk_targets = (vk_input, vk_module.weight)
+    else:
+        vk_targets = (vk_input, vk_weight)
+
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_timing = pytorch_vulkan._C.timing_breakdown()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    with pytest.raises(RuntimeError, match="transposed convolution.*create_graph or higher-order"):
+        torch.autograd.grad(
+            vk_output, vk_targets, grad_outputs=grad_output_vk,
+            create_graph=True,
+        )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_timing["buffer_creations"]
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+
+
+@pytest.mark.parametrize("route", ["functional", "module"])
+def test_transposed_first_backward_matches_cpu_when_create_graph_is_false(
+    vulkan_backend, route
+):
+    generator = torch.Generator(device="cpu").manual_seed(8054)
+    cpu_input = torch.randn((1, 2, 2, 2), generator=generator, requires_grad=True)
+    cpu_weight = torch.randn((2, 3, 2, 2), generator=generator, requires_grad=True)
+    if route == "functional":
+        cpu_output = torch.nn.functional.conv_transpose2d(cpu_input, cpu_weight)
+        vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+        vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+        vk_output = torch.nn.functional.conv_transpose2d(vk_input, vk_weight)
+        vk_targets = (vk_input, vk_weight)
+    else:
+        cpu_module = torch.nn.ConvTranspose2d(2, 3, 2, bias=False)
+        with torch.no_grad():
+            cpu_module.weight.copy_(cpu_weight)
+        vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+        vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+        cpu_output = cpu_module(cpu_input)
+        vk_output = vk_module(vk_input)
+        cpu_weight = cpu_module.weight
+        vk_targets = (vk_input, vk_module.weight)
+
+    grad_output_cpu = torch.randn(cpu_output.shape, generator=generator)
+    cpu_grads = torch.autograd.grad(
+        cpu_output, (cpu_input, cpu_weight), grad_outputs=grad_output_cpu,
+        create_graph=False,
+    )
+    vk_grads = torch.autograd.grad(
+        vk_output, vk_targets, grad_outputs=grad_output_cpu.to(vulkan_backend),
+        create_graph=False,
+    )
+    for actual, expected in zip(vk_grads, cpu_grads):
+        torch.testing.assert_close(actual.cpu(), expected)
+
+
+def test_convolution_backward_op2_bounds_actual_reader_reduction_before_allocation(
+    vulkan_backend,
+):
+    cpu_x = torch.ones((1, 1, 1, 1), dtype=torch.float32)
+    cpu_weight = torch.ones((1, 1, 1, 1), dtype=torch.float32)
+    cpu_grad_base = torch.ones((1, 1, 1, 1), dtype=torch.float32)
+    vk_x, vk_weight, vk_grad_base = (
+        value.to(vulkan_backend) for value in (cpu_x, cpu_weight, cpu_grad_base)
+    )
+    vk_grad = vk_grad_base.expand((1, 1, 65535, 65537))
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+
+    with pytest.raises(RuntimeError, match="op2 reader reduction exceeds shader index range"):
+        torch.ops.aten.convolution_backward.default(
+            vk_grad, vk_x, vk_weight, None, [1, 1], [32767, 32768], [1, 1],
+            False, [0, 0], 1, [False, True, False],
+        )
+
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
+
+
+def test_convolution_transposed_dinput_bounds_op0_sum_intermediate_before_allocation(
+    vulkan_backend,
+):
+    int_max = 2**31 - 1
+    cpu_x = torch.ones((1, 1, 2, 1), dtype=torch.float32)
+    cpu_weight = torch.ones((1, 1, 2, 1), dtype=torch.float32)
+    cpu_grad = torch.ones((1, 1, 1, 1), dtype=torch.float32)
+    vk_x, vk_weight, vk_grad = (
+        value.to(vulkan_backend) for value in (cpu_x, cpu_weight, cpu_grad)
+    )
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+
+    with pytest.raises(RuntimeError, match="coordinate expression exceeds signed shader range"):
+        torch.ops.aten.convolution_backward.default(
+            vk_grad, vk_x, vk_weight, None, [int_max, 1], [int_max, 0],
+            [int_max, 1], True, [0, 0], 1, [True, False, False],
+        )
+
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
+
+
 def test_convolution_backward_bias_only_bounds_expanded_grad_reduction_loop(vulkan_backend):
     input = torch.randn((1, 1, 1, 1)).to(vulkan_backend)
     weight = torch.randn((1, 1, 1, 1)).to(vulkan_backend)
@@ -556,6 +1163,67 @@ def test_convolution_backward_bias_only_bounds_expanded_grad_reduction_loop(vulk
     assert counters == (0, 0, 0, 0)
     assert after_live == before_live
     assert after_creations == before_creations
+
+
+def test_transposed_extent_outside_signed_shader_range_rejects_before_allocation(
+    vulkan_backend,
+):
+    int_max = 2**31 - 1
+    x = torch.ones((1, 1, 2, 1), dtype=torch.float32).to(vulkan_backend)
+    weight = torch.ones((1, 1, 1, 1), dtype=torch.float32).to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+    with pytest.raises(RuntimeError, match="transposed convolution output extent exceeds shader range"):
+        torch.ops.aten.convolution.default(
+            x, weight, None, [int_max, 1], [0, 0], [1, 1], True, [0, 0], 1,
+        )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
+
+
+def test_transposed_output_descriptor_size_rejects_before_allocation(vulkan_backend):
+    x = torch.ones((1, 1, 1, 2), dtype=torch.float32).to(vulkan_backend)
+    weight = torch.ones((1, 1, 1, 1), dtype=torch.float32).to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+    with pytest.raises(ValueError, match="convolution has an invalid descriptor range"):
+        torch.ops.aten.convolution.default(
+            x, weight, None, [1, 1073741823], [0, 0], [1, 1], True, [0, 0], 1,
+        )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
+
+
+def test_transposed_dbias_bounds_maximal_expanded_grad_reduction_before_allocation(
+    vulkan_backend,
+):
+    cpu_base = torch.ones((1, 1, 1, 1), dtype=torch.float32)
+    x = torch.ones((1, 1, 1, 1), dtype=torch.float32).to(vulkan_backend)
+    weight = torch.ones((1, 1, 1, 1), dtype=torch.float32).to(vulkan_backend)
+    vk_base = cpu_base.to(vulkan_backend)
+    grad = vk_base.expand((1, 1, 65537, 65535))
+    assert grad.numel() == 2**32 - 1
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    before_creations = pytorch_vulkan._C.timing_breakdown()["buffer_creations"]
+    with pytest.raises(RuntimeError, match="grad_output logical numel/reduction exceeds shader index range"):
+        torch.ops.aten.convolution_backward.default(
+            grad, x, weight, None, [1, 1], [0, 0], [1, 1], True, [0, 0], 1,
+            [False, False, True],
+        )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_creations
 
 
 @pytest.mark.parametrize(
@@ -758,7 +1426,7 @@ def test_conv2d_rejects_every_other_bias_rank_or_shape(vulkan_backend, bad_bias)
 
 def test_conv2d_rejects_non_fixed_weight_and_bias_shapes(vulkan_backend):
     input, _, _ = _conv_inputs(vulkan_backend)
-    with pytest.raises(RuntimeError, match="shape|size|fixed|support|negative dimension|kernel span|geometry exceeds shader range"):
+    with pytest.raises(RuntimeError, match="bias|shape|size|fixed|support|negative dimension|kernel span|geometry exceeds shader range"):
         torch.nn.functional.conv2d(
             input,
             torch.empty((3, 1, 3, 3), device=vulkan_backend),
@@ -1040,21 +1708,33 @@ def test_grouped_convolution_divisibility_rejections_match_cpu(vulkan_backend, g
         torch.nn.functional.conv2d(*(t.to(vulkan_backend) for t in tensors), padding=1, groups=groups)
 
 
-@pytest.mark.parametrize("transposed,output_padding", [(True, [0, 0]), (False, [1, 0])])
-def test_convolution_retains_parameter_guards(vulkan_backend, transposed, output_padding):
+def test_convolution_retains_ordinary_nonzero_output_padding_rejection(vulkan_backend):
     tensors = tuple(torch.ones(shape) for shape in ((2, 4, 8, 8), (4, 4, 3, 3), (4,)))
-    args = ([2, 2], [1, 1], [1, 1], transposed, output_padding, 1)
+    args = ([2, 2], [1, 1], [1, 1], False, [0, 0], 1)
     torch.ops.aten.convolution.default(*tensors, *args)
-    with pytest.raises(RuntimeError, match="non-transposed.*zero.*output_padding"):
-        torch.ops.aten.convolution.default(*(t.to(vulkan_backend) for t in tensors), *args)
+    with pytest.raises(RuntimeError, match="zero output_padding for ordinary"):
+        torch.ops.aten.convolution.default(
+            *(t.to(vulkan_backend) for t in tensors),
+            [2, 2], [1, 1], [1, 1], False, [1, 0], 1,
+        )
 
 
 @pytest.mark.parametrize("output_padding", [(0, 0), (1, 0)])
-def test_conv_transpose2d_rejects_at_vulkan_parameter_boundary(
+def test_conv_transpose2d_defined_bias_forward_matches_cpu(
     vulkan_backend, output_padding
 ):
-    input, weight, bias = _conv_transpose_inputs(vulkan_backend)
-    with pytest.raises(RuntimeError, match="transposed|fixed|support|Vulkan"):
-        torch.nn.functional.conv_transpose2d(
-            input, weight, bias, stride=2, padding=1, output_padding=output_padding
-        )
+    generator = torch.Generator(device="cpu").manual_seed(6722 + output_padding[0])
+    cpu_input = torch.randn((2, 4, 8, 8), generator=generator)
+    cpu_weight = torch.randn((4, 1, 3, 3), generator=generator)
+    cpu_bias = torch.randn((1,), generator=generator)
+    expected = torch.nn.functional.conv_transpose2d(
+        cpu_input, cpu_weight, cpu_bias, stride=2, padding=1,
+        output_padding=output_padding,
+    )
+    actual = torch.nn.functional.conv_transpose2d(
+        cpu_input.to(vulkan_backend), cpu_weight.to(vulkan_backend),
+        cpu_bias.to(vulkan_backend), stride=2, padding=1,
+        output_padding=output_padding,
+    )
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected)

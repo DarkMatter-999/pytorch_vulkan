@@ -9,7 +9,9 @@
 #include "unary.h"
 
 #include <torch/library.h>
+#include <c10/core/GradMode.h>
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -58,6 +60,8 @@ class ConvolutionAutogradFunction final
         ctx->saved_data["padding"] = padding.vec();
         ctx->saved_data["dilation"] = dilation.vec();
         ctx->saved_data["groups"] = groups;
+        ctx->saved_data["transposed"] = transposed;
+        ctx->saved_data["output_padding"] = output_padding.vec();
         return pytorch_vulkan::convolution(input, weight, bias, stride, padding,
                                            dilation, transposed, output_padding,
                                            groups);
@@ -65,24 +69,32 @@ class ConvolutionAutogradFunction final
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
              torch::autograd::variable_list grads) {
-        at::AutoDispatchBelowAutograd guard;
         if (!grads[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor(), at::Tensor(), at::Tensor(),
                     at::Tensor(), at::Tensor(), at::Tensor()};
+        const bool transposed = ctx->saved_data["transposed"].toBool();
+        TORCH_CHECK(!transposed || !c10::GradMode::is_enabled(),
+                    "Vulkan transposed convolution backward does not support "
+                    "create_graph or higher-order gradients");
+        at::AutoDispatchBelowAutograd guard;
         auto saved = ctx->get_saved_variables();
         const auto geometry = saved_geometry(ctx);
         const auto stride = ctx->saved_data["stride"].toIntVector();
         const auto padding = ctx->saved_data["padding"].toIntVector();
         const auto dilation = ctx->saved_data["dilation"].toIntVector();
         const bool has_bias = ctx->saved_data["has_bias"].toBool();
+        const auto output_padding_values =
+            ctx->saved_data["output_padding"].toIntVector();
+        TORCH_INTERNAL_ASSERT(output_padding_values.size() == 2);
+        const std::array<int64_t, 2> output_padding{
+            output_padding_values[0], output_padding_values[1]};
         const std::array<bool, 3> mask{
             ctx->needs_input_grad(0), ctx->needs_input_grad(1),
             has_bias && ctx->needs_input_grad(2)};
-        const std::array<int64_t, 2> output_padding{0, 0};
         auto backward_grads = pytorch_vulkan::convolution_backward(
             grads[0], saved[0], saved[1], c10::nullopt, stride, padding, dilation,
-            false, output_padding, geometry.groups, mask);
+            transposed, output_padding, geometry.groups, mask);
         return {std::get<0>(backward_grads), std::get<1>(backward_grads),
                 std::get<2>(backward_grads), at::Tensor(), at::Tensor(), at::Tensor(),
                 at::Tensor(), at::Tensor(), at::Tensor()};

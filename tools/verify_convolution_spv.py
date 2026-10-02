@@ -27,18 +27,55 @@ if source_members != parameter_names:
     raise SystemExit(
         f"convolution GLSL members/order mismatch: expected {parameter_names}, got {source_members}"
     )
-optional_bias_branch = re.search(
-    r"if\s*\(\s*params\.has_bias\s*!=\s*0u\s*\)\s*\{([^{}]*)\}",
-    source_text,
-    re.S,
+def braced_body(text, opening_brace):
+    depth = 0
+    for index in range(opening_brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[opening_brace + 1 : index]
+    raise SystemExit("unbalanced braces while extracting convolution branch")
+
+
+def operation_body(operation, marker):
+    match = re.search(marker, source_text)
+    if match is None:
+        raise SystemExit(f"missing convolution operation branch {operation}")
+    opening_brace = source_text.find("{", match.start(), match.end())
+    if opening_brace < 0:
+        raise SystemExit(f"missing opening brace for convolution operation {operation}")
+    return braced_body(source_text, opening_brace)
+
+
+op0 = operation_body(0, r"if\s*\(\s*params\.operation\s*==\s*0u\s*\)\s*\{")
+op1 = operation_body(
+    1, r"else\s+if\s*\(\s*params\.operation\s*==\s*1u\s*\)\s*\{"
 )
-if optional_bias_branch is None:
-    raise SystemExit("missing branch guarding optional convolution bias")
-bias_load = "bias_values[bm.storage_offset + oc * bm.strides[0]]"
-if bias_load not in optional_bias_branch.group(1):
-    raise SystemExit("optional convolution bias load is not inside has_bias branch")
-if len(re.findall(r"\bbias_values\s*\[(?!\])", source_text)) != 1:
-    raise SystemExit("unexpected convolution bias read outside the guarded forward load")
+guard_pattern = r"if\s*\(\s*params\.has_bias\s*!=\s*0u\s*\)\s*\{"
+
+
+def require_guarded_bias_read(body, expression, operation):
+    guard = re.search(guard_pattern, body)
+    if guard is None:
+        raise SystemExit(f"operation {operation} has no has_bias guard")
+    opening_brace = body.find("{", guard.start(), guard.end())
+    guarded_body = braced_body(body, opening_brace)
+    if expression not in guarded_body:
+        raise SystemExit(
+            f"operation {operation} bias read is not guarded by has_bias: {expression}"
+        )
+
+
+require_guarded_bias_read(
+    op0, "bias_values[bm.storage_offset + oc * bm.strides[0]]", 0
+)
+require_guarded_bias_read(
+    op1, "bias_values[bm.storage_offset + ic * bm.strides[0]]", 1
+)
+if len(re.findall(r"\bbias_values\s*\[(?!\])", source_text)) != 2:
+    raise SystemExit("expected exactly two guarded convolution bias reads")
 for operation in ("params.operation == 1u", "params.operation == 2u"):
     if operation not in source_text:
         raise SystemExit(f"missing convolution backward operation: {operation}")

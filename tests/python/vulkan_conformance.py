@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import pytorch_vulkan
 import torch
@@ -52,6 +52,10 @@ class ConformanceCase:
     declared_shapes: tuple[str, ...] = ()
     expected_shapes: tuple[tuple[int, ...] | None, ...] | None = None
     convolution_operand_roles: tuple[str, ...] = ()
+    convolution_direction: Literal["forward", "backward"] | None = None
+    convolution_numerical_operations: tuple[int, ...] = ()
+    convolution_result_slots: tuple[int, ...] = ()
+    convolution_context_setup: Callable[[tuple[Any, ...], str], tuple[tuple[Any, ...], dict[str, Any]]] | None = None
 
     def inputs(self) -> tuple[Any, ...]:
         return self.input_factory(
@@ -89,6 +93,7 @@ def record_coverage(
     gradients: bool,
     parity: bool,
     reverse_autograd: dict | None = None,
+    convolution_context: dict[str, Any] | None = None,
 ) -> None:
     """Record what a case actually exercised using its runtime tensors."""
     if not COVERAGE_RECORDING:
@@ -185,11 +190,15 @@ def record_coverage(
         if execution is None:
             raise ValueError(f"{case.name}: actual forward execution evidence was not captured")
         record["execution"] = dict(execution)
-    if case.name.startswith("convolution.forward.bias-") or case.name.startswith("convolution.backward.bias-"):
+    if (case.name.startswith("convolution.forward.bias-")
+            or case.name.startswith("convolution.backward.bias-")
+            or case.convolution_direction is not None):
         execution = _CASE_EXECUTION.get(case.name)
         if execution is None:
             raise ValueError(f"{case.name}: actual execution evidence was not captured")
-        record.update(_convolution_coverage(case, inputs, result, execution))
+        record.update(_convolution_coverage(
+            case, inputs, result, execution, convolution_context
+        ))
     _COVERAGE[case.name] = record
 
 
@@ -765,7 +774,30 @@ def _tensor_format(value: torch.Tensor) -> str:
     return "other"
 
 
-def _convolution_coverage(case, inputs, result, execution):
+def _convolution_tensor_metadata(value: torch.Tensor | None, context_device: str) -> dict[str, Any]:
+    if value is None:
+        return {
+            "defined": False, "dtype": None, "rank": None, "shape": None,
+            "strides": None, "storage_offset": None, "device": context_device,
+        }
+    return {
+        "defined": True,
+        "dtype": str(value.dtype).removeprefix("torch."),
+        "rank": value.dim(),
+        "shape": list(value.shape),
+        "strides": list(value.stride()),
+        "storage_offset": value.storage_offset(),
+        "device": str(value.device),
+    }
+
+
+def _assert_unchanged_schema_inputs(actual, expected, case_name):
+    if (not isinstance(actual, tuple) or len(actual) != len(expected)
+            or any(value is not original for value, original in zip(actual, expected))):
+        raise ValueError(f"{case_name}: context setup must return unchanged schema inputs")
+
+
+def _convolution_coverage(case, inputs, result, execution, convolution_context=None):
     roles = {}
     for role, value in zip(case.convolution_operand_roles, inputs):
         if value is None:
@@ -782,15 +814,37 @@ def _convolution_coverage(case, inputs, result, execution):
             }
         else:
             raise ValueError(f"{case.name}: role {role} is not an actual Tensor/None")
-    forward = case.name.startswith("convolution.forward.")
-    bias = roles["bias"]["defined"]
+    transposed = case.convolution_direction is not None
+    forward = case.convolution_direction == "forward" if transposed else case.name.startswith("convolution.forward.")
+    bias = roles["bias"]["defined"] if not transposed else bool(
+        convolution_context and convolution_context.get("vulkan", {}).get("defined")
+    )
     context = {
-        "device": "vk:0",
-        "cpu_oracle": "torch.nn.functional.conv2d" if forward else "aten::convolution_backward.default",
+        "device": (
+            str(result.device) if transposed and isinstance(result, torch.Tensor)
+            else str(inputs[0].device) if transposed else "vk:0"
+        ),
+        "cpu_oracle": (
+            "torch.nn.functional.conv_transpose2d" if transposed and forward
+            else "torch.nn.functional.conv2d" if forward
+            else "aten::convolution_backward.default"
+        ),
         "forward_bias_present": bias,
     }
+    if transposed:
+        if not isinstance(convolution_context, dict) or set(convolution_context) != {"cpu", "vulkan"}:
+            raise ValueError(f"{case.name}: actual warm forward bias context is required")
+        context.update({
+            "direction": case.convolution_direction,
+            "warm_forward_bias": convolution_context,
+            "expected_numerical_operations": list(case.convolution_numerical_operations),
+            "expected_result_slots": list(case.convolution_result_slots),
+            "mapping_id": "transposed-convolution-stage-e-v1",
+        })
     if forward:
-        schema_args = dict(zip(("stride", "padding", "dilation", "groups"), case.args))
+        arg_names = (("stride", "padding", "dilation", "transposed", "output_padding", "groups")
+                     if transposed else ("stride", "padding", "dilation", "groups"))
+        schema_args = dict(zip(arg_names, case.args))
         schema_args = {key: list(value) if isinstance(value, tuple) else value for key, value in schema_args.items()}
     else:
         # The direct schema has bias_sizes, stride, padding, dilation, transposed,
@@ -801,6 +855,12 @@ def _convolution_coverage(case, inputs, result, execution):
         ))
         schema_args = {key: list(value) if isinstance(value, (tuple, list)) else value for key, value in schema_args.items()}
         context["output_mask"] = list(case.args[-1])
+    if transposed and isinstance(result, torch.Tensor):
+        record = {"convolution_context": context, "convolution_operands": roles,
+                  "schema_args": schema_args, "execution": dict(execution),
+                  "output_dtype": str(result.dtype).removeprefix("torch."),
+                  "output_rank": result.dim(), "output_shape": list(result.shape)}
+        return record
     record = {"convolution_context": context, "convolution_operands": roles,
               "schema_args": schema_args, "execution": dict(execution)}
     if not isinstance(result, torch.Tensor):
@@ -823,9 +883,17 @@ def run_case(case: ConformanceCase, device: str = "vk:0") -> Any:
 
 
 def run_and_compare(
-    case: ConformanceCase, device: str = "vk:0", *, return_inputs: bool = False
+    case: ConformanceCase, device: str = "vk:0", *, return_inputs: bool = False,
+    convolution_context_out: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     """Compute the CPU reference and Vulkan result with counters scoped to execution."""
+    if convolution_context_out is not None:
+        convolution_context_out.clear()
+    transposed = case.convolution_direction is not None
+    if transposed:
+        _CASE_EXECUTION.pop(case.name, None)
+    if transposed and (convolution_context_out is None or case.convolution_context_setup is None):
+        raise ValueError(f"{case.name}: transposed convolution requires fresh context capture")
     cpu_inputs = case.inputs()
     reference_inputs = tuple(
         value.clone() if isinstance(value, torch.Tensor) else value
@@ -833,7 +901,12 @@ def run_and_compare(
     )
     if case.setup_inputs is not None:
         reference_inputs = case.setup_inputs(reference_inputs, "cpu")
-    if case.name.startswith("convolution.backward.bias-"):
+    cpu_context = None
+    if transposed:
+        original_reference_inputs = reference_inputs
+        reference_inputs, cpu_context = case.convolution_context_setup(reference_inputs, "cpu")
+        _assert_unchanged_schema_inputs(reference_inputs, original_reference_inputs, case.name)
+    if (transposed and case.convolution_direction == "backward") or case.name.startswith("convolution.backward.bias-"):
         with torch.backends.mkldnn.flags(enabled=False):
             cpu_result = case.cpu_reference(
                 *reference_inputs, *case.args, **(case.kwargs or {})
@@ -845,7 +918,21 @@ def run_and_compare(
     inputs = to_vulkan_inputs(cpu_inputs, device)
     if case.setup_inputs is not None:
         inputs = case.setup_inputs(inputs, device)
-    if case.name.startswith("convolution."):
+    vulkan_context = None
+    if transposed:
+        original_inputs = inputs
+        inputs, vulkan_context = case.convolution_context_setup(inputs, device)
+        _assert_unchanged_schema_inputs(inputs, original_inputs, case.name)
+        if (not isinstance(cpu_context, dict) or set(cpu_context) != {"warm_forward_bias"}
+                or not isinstance(vulkan_context, dict) or set(vulkan_context) != {"warm_forward_bias"}):
+            raise ValueError(f"{case.name}: context setup did not capture actual warm bias")
+        cpu_bias = cpu_context["warm_forward_bias"]
+        vulkan_bias = vulkan_context["warm_forward_bias"]
+        if (not isinstance(cpu_bias, dict) or not isinstance(vulkan_bias, dict)
+                or {k: v for k, v in cpu_bias.items() if k != "device"}
+                != {k: v for k, v in vulkan_bias.items() if k != "device"}):
+            raise ValueError(f"{case.name}: CPU/Vulkan warm bias metadata differs")
+    if case.name.startswith("convolution.") or transposed:
         pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
     before_timing = pytorch_vulkan._C.timing_breakdown()
@@ -864,7 +951,8 @@ def run_and_compare(
         "explicit_transfers": explicit_transfers,
         "fallbacks": fallbacks,
     }
-    if case.name.startswith("convolution.forward.bias-") or case.name.startswith("convolution.backward.bias-"):
+    if (case.name.startswith("convolution.forward.bias-")
+            or case.name.startswith("convolution.backward.bias-") or transposed):
         execution = {
             "compute_dispatches": dispatches,
             "vulkan_copies": vulkan_copies,
@@ -873,14 +961,20 @@ def run_and_compare(
             "buffer_creations_delta": after_timing["buffer_creations"] - before_timing["buffer_creations"],
             "live_allocations_delta": after_live - before_live,
         }
-        _CASE_EXECUTION[case.name] = execution
+        if not transposed:
+            _CASE_EXECUTION[case.name] = execution
     if case.name in _STOCK_ROUTE_CASES:
         if case.execution_mode != "copy" or dispatches != 0 or vulkan_copies <= 0:
             raise AssertionError(f"{case.name}: stock reshape copy route did not execute Vulkan copy work")
         _CASE_EXECUTION[case.name] = execution
     if case.execution_mode == "compute":
-        if case.name.startswith("convolution.backward.bias-"):
+        if case.convolution_direction == "backward" or case.name.startswith("convolution.backward.bias-"):
             assert dispatches == sum(case.args[-1])
+            if transposed and not any(case.args[-1]):
+                assert execution["buffer_creations_delta"] == 0
+                assert execution["live_allocations_delta"] == 0
+        elif transposed:
+            assert dispatches == 1
         else:
             assert dispatches > 0
     elif case.execution_mode == "copy":
@@ -889,6 +983,15 @@ def run_and_compare(
         assert dispatches == 0 and vulkan_copies == 0
     assert explicit_transfers == 0
     assert fallbacks == 0
+    if transposed:
+        assert vulkan_copies == 0, (
+            f"{case.name}: expected vulkan_copies 0, got {vulkan_copies}"
+        )
+        convolution_context_out.update({
+            "cpu": cpu_context["warm_forward_bias"],
+            "vulkan": vulkan_context["warm_forward_bias"],
+        })
+        _CASE_EXECUTION[case.name] = execution
     return (result, cpu_result, inputs) if return_inputs else (result, cpu_result)
 
 
@@ -898,13 +1001,18 @@ def run_convolution_evidence_cases(cases=None) -> dict[str, dict[str, object]]:
         case for case in ALL_CASES
         if case.name.startswith("convolution.forward.bias-")
         or case.name.startswith("convolution.backward.bias-")
+        or case.convolution_direction is not None
     )
     with coverage_recording():
         for case in selected:
-            result, expected, inputs = run_and_compare(case, return_inputs=True)
+            context = {} if case.convolution_direction is not None else None
+            result, expected, inputs = run_and_compare(
+                case, return_inputs=True, convolution_context_out=context
+            )
             assert_result_parity(result, expected, case)
             mark_executed(case.name)
-            record_coverage(case, inputs, result, gradients=False, parity=True)
+            record_coverage(case, inputs, result, gradients=False, parity=True,
+                            convolution_context=context)
         return coverage_snapshot()
 
 
@@ -2051,6 +2159,18 @@ _MANIFEST_CASES.update({
         for state in ("present", "absent") for mask in range(8)
     },
 })
+# The former rejected-transposed parameter case is obsolete now that the
+# transposed operation has positive executable witnesses below.
+_MANIFEST_CASES.pop("convolution.parameters.transposed.rejected", None)
+_MANIFEST_CASES.update({
+    "convolution.transposed.forward.bias-present": ("aten::convolution.default", True),
+    "convolution.transposed.forward.bias-absent": ("aten::convolution.default", True),
+    **{
+        f"convolution.transposed.backward.bias-{state}.mask-{mask:03b}":
+        ("aten::convolution_backward.default", True)
+        for state in ("present", "absent") for mask in range(8)
+    },
+})
 MANIFEST_CASE_NAMES = frozenset(_MANIFEST_CASES)
 
 
@@ -2305,6 +2425,87 @@ def _convolution_evidence_cases():
                 (),
                 tuple(shape if bit else None for shape, bit in zip(shapes, mask)),
                 ("grad_output", "input", "weight", "bias"),
+            ))
+    return tuple(cases)
+
+
+def _transposed_convolution_inputs(bias_present: bool, *, backward: bool):
+    generator = torch.Generator(device="cpu").manual_seed(
+        9917 + int(bias_present) + 3 * int(backward)
+    )
+    value = torch.randn((2, 4, 3, 4), generator=generator, dtype=torch.float32)
+    weight = torch.randn((4, 3, 2, 3), generator=generator, dtype=torch.float32)
+    bias = torch.randn((6,), generator=generator, dtype=torch.float32) if bias_present else None
+    if backward:
+        grad_output = torch.randn((2, 6, 8, 6), generator=generator, dtype=torch.float32)
+        return grad_output, value, weight
+    return value, weight, bias
+
+
+def _transposed_forward_cpu_oracle(x, weight, bias, stride, padding, dilation,
+                                   transposed, output_padding, groups):
+    assert transposed is True
+    return torch.nn.functional.conv_transpose2d(
+        x, weight, bias, stride, padding, output_padding, groups, dilation
+    )
+
+
+def _transposed_context_setup(bias_present: bool, *, backward: bool):
+    def setup(inputs, device):
+        if backward:
+            _, x, weight = inputs
+            bias = (
+                torch.randn((6,), generator=torch.Generator(device="cpu").manual_seed(9917)).to(device)
+                if bias_present else None
+            )
+        else:
+            x, weight, bias = inputs
+        output = torch.nn.functional.conv_transpose2d(
+            x, weight, bias, stride=(2, 1), padding=(1, 1),
+            output_padding=(2, 0), groups=2, dilation=(3, 2),
+        )
+        metadata = _convolution_tensor_metadata(bias, str(x.device))
+        del output
+        return inputs, {"warm_forward_bias": metadata}
+    return setup
+
+
+def _transposed_convolution_evidence_cases():
+    cases = []
+    for present in (True, False):
+        state = "present" if present else "absent"
+        forward_args = ([2, 1], [1, 1], [3, 2], True, [2, 0], 2)
+        cases.append(ConformanceCase(
+            f"convolution.transposed.forward.bias-{state}", "convolution",
+            "aten::convolution.default", torch.ops.aten.convolution.default,
+            lambda requires_grad=False, present=present: _transposed_convolution_inputs(present, backward=False),
+            _transposed_forward_cpu_oracle, forward_args, None, True, r"Vulkan",
+            torch.float32, (2, 6, 8, 6), False, True, None, None, False,
+            3e-4, 3e-4, "compute", True, None,
+            ("2x4x3x4", "4x3x2x3") + (("6",) if present else ()), None,
+            ("input", "weight", "bias"), "forward", (1,), (0,),
+            _transposed_context_setup(present, backward=False),
+        ))
+        for mask_bits in range(8):
+            mask = tuple(bool(mask_bits & (1 << shift)) for shift in range(3))
+            mask_name = "".join("1" if bit else "0" for bit in mask)
+            bias_sizes = (None, [], [999])[mask_bits % 3]
+            args = (bias_sizes, [2, 1], [1, 1], [3, 2], True, [2, 0], 2, list(mask))
+            shapes = ((2, 4, 3, 4), (4, 3, 2, 3), (6,))
+            operations = tuple(op for op, requested in zip((0, 2, 3), mask) if requested)
+            slots = tuple(index for index, requested in enumerate(mask) if requested)
+            cases.append(ConformanceCase(
+                f"convolution.transposed.backward.bias-{state}.mask-{mask_name}",
+                "convolution", "aten::convolution_backward.default",
+                torch.ops.aten.convolution_backward.default,
+                lambda requires_grad=False, present=present: _transposed_convolution_inputs(present, backward=True),
+                torch.ops.aten.convolution_backward.default, args, None, True, r"Vulkan",
+                torch.float32, None, False, True, None, None, False,
+                4e-4, 4e-4, "compute", True, None,
+                ("2x6x8x6", "2x4x3x4", "4x3x2x3"),
+                tuple(shape if bit else None for shape, bit in zip(shapes, mask)),
+                ("grad_output", "input", "weight"), "backward", operations, slots,
+                _transposed_context_setup(present, backward=True),
             ))
     return tuple(cases)
 
@@ -3143,12 +3344,9 @@ ALL_CASES = tuple(
             kwargs=kwargs,
             supported=False,
             cpu_reference=_convolution_parameter_guard,
-            error_pattern=r"non-transposed.*zero.*output_padding",
+            error_pattern=r"zero.*output_padding.*ordinary",
         )
-        for label, kwargs in (
-            ("transposed", {"transposed": True}),
-            ("output-padding", {"output_padding": (1, 0)}),
-        )
+        for label, kwargs in (("output-padding", {"output_padding": (1, 0)}),)
     ),
     _case(
         "convolution.parameters.padding-0",
@@ -3815,7 +4013,7 @@ ALL_CASES = tuple(
           _inplace_inputs, args=(0.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.fill_, value, scalar), supported=True, expected_shape=(3, 4)),
     )
     if case is not None
-) + _convolution_evidence_cases()
+) + _convolution_evidence_cases() + _transposed_convolution_evidence_cases()
 
 
 SUPPORTED_CASES = tuple(case for case in ALL_CASES if case.supported)

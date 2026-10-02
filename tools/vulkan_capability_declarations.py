@@ -2104,6 +2104,9 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     # Scalar restrictions are enforced in src/vulkan/operators/convolution.cpp:172-174
     # and :209-211; the manifest schema cannot express them (scalar_constraints
     # is limited to none/scalar_supported, and shape_constraints is shape-only).
+    # Stage-E transposed witness IDs, result-slot mapping, and their fixed
+    # completeness contract are source-owned in validate_vulkan_capabilities.py;
+    # generated test_cases/shapes below are derived from the executable registry.
     'aten::convolution.default':     {
         "aliasing": "no_overlap",
         "autograd": "first_order_or_none",

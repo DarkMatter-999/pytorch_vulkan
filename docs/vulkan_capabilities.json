@@ -1907,8 +1907,11 @@
         "2x3x10x10",
         "2x3x12x12",
         "2x4x10x10",
+        "2x4x3x4",
         "2x4x8x8",
-        "4x5x9x9"
+        "4x3x2x3",
+        "4x5x9x9",
+        "6"
       ],
       "status": "supported",
       "test_cases": [
@@ -1953,10 +1956,6 @@
           "supported": false
         },
         {
-          "name": "convolution.parameters.transposed.rejected",
-          "supported": false
-        },
-        {
           "name": "convolution.parameters.output-padding.rejected",
           "supported": false
         },
@@ -1995,6 +1994,14 @@
         {
           "name": "convolution.forward.bias-absent",
           "supported": true
+        },
+        {
+          "name": "convolution.transposed.forward.bias-present",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.forward.bias-absent",
+          "supported": true
         }
       ],
       "tests": [
@@ -2017,7 +2024,9 @@
           "convolution.parameters.combined",
           "convolution.parameters.dilation-2",
           "convolution.parameters.padding-0",
-          "convolution.parameters.stride-2"
+          "convolution.parameters.stride-2",
+          "convolution.transposed.forward.bias-absent",
+          "convolution.transposed.forward.bias-present"
         ],
         "dtypes": [
           "float32"
@@ -2069,9 +2078,12 @@
       "shape_constraints": [
         "2x3x12x12",
         "2x4x10x10",
+        "2x4x3x4",
         "2x4x8x8",
+        "2x6x8x6",
         "2x6x8x8",
-        "2x8x8x8"
+        "2x8x8x8",
+        "4x3x2x3"
       ],
       "status": "supported",
       "test_cases": [
@@ -2206,6 +2218,70 @@
         {
           "name": "convolution.backward.bias-absent.mask-111",
           "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-000",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-100",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-010",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-110",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-001",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-101",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-011",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-present.mask-111",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-000",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-100",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-010",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-110",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-001",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-101",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-011",
+          "supported": true
+        },
+        {
+          "name": "convolution.transposed.backward.bias-absent.mask-111",
+          "supported": true
         }
       ],
       "tests": [
@@ -2245,7 +2321,23 @@
           "convolution.groups.depthwise.grad-weight",
           "convolution.parameters.dilation-2.grad-bias",
           "convolution.parameters.stride-2.grad-input",
-          "convolution.parameters.stride-2.grad-weight"
+          "convolution.parameters.stride-2.grad-weight",
+          "convolution.transposed.backward.bias-absent.mask-000",
+          "convolution.transposed.backward.bias-absent.mask-001",
+          "convolution.transposed.backward.bias-absent.mask-010",
+          "convolution.transposed.backward.bias-absent.mask-011",
+          "convolution.transposed.backward.bias-absent.mask-100",
+          "convolution.transposed.backward.bias-absent.mask-101",
+          "convolution.transposed.backward.bias-absent.mask-110",
+          "convolution.transposed.backward.bias-absent.mask-111",
+          "convolution.transposed.backward.bias-present.mask-000",
+          "convolution.transposed.backward.bias-present.mask-001",
+          "convolution.transposed.backward.bias-present.mask-010",
+          "convolution.transposed.backward.bias-present.mask-011",
+          "convolution.transposed.backward.bias-present.mask-100",
+          "convolution.transposed.backward.bias-present.mask-101",
+          "convolution.transposed.backward.bias-present.mask-110",
+          "convolution.transposed.backward.bias-present.mask-111"
         ],
         "dtypes": [
           "float32"
