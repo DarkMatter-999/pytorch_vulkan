@@ -39,6 +39,17 @@ The active capability sources are the authority for what passes this gate:
 
 - [operator capability matrix](docs/vulkan_operator_capability_matrix.md)
 - [machine-readable capability manifest](docs/vulkan_capabilities.json)
+- [application workload evidence](docs/vulkan_workload_coverage.json)
+
+The six application records qualify only the fixed three-update grouped/depthwise
+CrossEntropy classifier using stock momentum SGD with both `zero_grad(set_to_none=True)`
+and `zero_grad(set_to_none=False)`, plus a separate two-convolution output-energy
+parameter HVP. They apply to the exact PyTorch build, extension build, Renoir
+hardware/driver, and asynchronous/synchronized execution modes recorded in the
+workload artifact. They do not establish whole-classifier HVP, arbitrary-order
+reverse AD, forward AD/JVP or transforms, CUDA, or other unexecuted workloads or
+devices. The operator capability manifest remains separate evidence for operator
+contracts, not proof of these application results.
 
 The repository's active backend is Vulkan; its build and support contract are
 documented above.

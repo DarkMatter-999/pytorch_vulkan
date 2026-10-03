@@ -461,6 +461,14 @@ if(BUILD_PYTHON_EXTENSION)
                     COMMAND ${Python3_EXECUTABLE}
                             ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_capabilities.py)
            set_tests_properties(vulkan_manifest_validation PROPERTIES
+                                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                  ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
+           add_test(NAME vulkan_workload_coverage_validation
+                    COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tools/vulkan_workload_coverage.py
+                            validate
+                            ${CMAKE_CURRENT_SOURCE_DIR}/docs/vulkan_workload_coverage.json)
+           set_tests_properties(vulkan_workload_coverage_validation PROPERTIES
                                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
            add_test(NAME vulkan_supported_workload_validation

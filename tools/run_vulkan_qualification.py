@@ -166,7 +166,20 @@ def run_qualification(
 
     verifiers = sorted(ROOT.glob("tools/verify_*_spv.py"))
     gates: list[dict[str, Any]] = []
-    gates.append(_gate("manifest", [[python, "tools/validate_vulkan_capabilities.py"]]))
+    gates.append(
+        _gate(
+            "manifest",
+            [
+                [python, "tools/validate_vulkan_capabilities.py"],
+                [
+                    python,
+                    "tools/vulkan_workload_coverage.py",
+                    "validate",
+                    "docs/vulkan_workload_coverage.json",
+                ],
+            ],
+        )
+    )
     gates.append(
         _gate(
             "build",
@@ -181,10 +194,25 @@ def run_qualification(
         )
     )
     device_skip = None if available else device_reason
+    conformance_commands = [
+        [python, "-m", "pytest", "-q", "-rs", "tests/python/test_vulkan_conformance.py"]
+    ]
+    if device == "vk:0":
+        conformance_commands.append(
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "-rs",
+                "tests/python/test_vulkan_workload_conformance.py::test_stock_sgd_executes_three_steps_in_both_reset_modes",
+                "tests/python/test_vulkan_workload_conformance.py::test_parameter_hvp_executes_with_named_live_history",
+            ]
+        )
     gates.append(
         _gate(
             "conformance",
-            [[python, "-m", "pytest", "-q", "-rs", "tests/python/test_vulkan_conformance.py"]],
+            conformance_commands,
             device_dependent=True,
             environment=test_environment,
             skip_reason=device_skip,
@@ -260,7 +288,14 @@ def run_qualification(
             [python, "tools/validate_vulkan_capabilities.py"],
             [python, "-m", "pytest", "-q", "tests/python/test_vulkan_operator_capabilities.py"],
             *[[python, str(path.relative_to(ROOT))] for path in verifiers],
-            [python, "-m", "pytest", "-q", "-rs", "tests/python/test_vulkan_conformance.py"],
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "-rs",
+                "tests/python/test_vulkan_conformance.py",
+            ],
         ]
         additional_gate = _gate(
             "additional_implementation",

@@ -356,3 +356,95 @@ def test_report_contains_machine_readable_summary(monkeypatch, tmp_path):
     summary = qualification.run_qualification(report, run_build=False)
 
     assert json.loads(report.read_text()) == summary
+
+
+def test_workload_commands_are_executed_and_failures_propagate(monkeypatch, tmp_path):
+    calls = []
+
+    def run(command, cwd, env=None):
+        calls.append(command)
+        failed = any("vulkan_workload_coverage.py" in str(part) for part in command)
+        return {
+            "exit_code": int(failed),
+            "stdout": "",
+            "stderr": "invalid artifact" if failed else "",
+        }
+
+    monkeypatch.setattr(qualification, "run_command", run)
+    monkeypatch.setattr(
+        qualification,
+        "device_available",
+        lambda *args, **kwargs: {"status": "available", "reason": "mock device"},
+    )
+
+    report = qualification.run_qualification(tmp_path / "report.json", run_build=False)
+
+    manifest = next(gate for gate in report["gates"] if gate["name"] == "manifest")
+    assert manifest["status"] == "fail"
+    assert any(
+        any(
+            str(part).startswith(
+                "tests/python/test_vulkan_workload_conformance.py::"
+            )
+            for part in command
+        )
+        for command in calls
+    )
+    workload_commands = [
+        [
+            part
+            for part in command
+            if str(part).startswith(
+                "tests/python/test_vulkan_workload_conformance.py::"
+            )
+        ]
+        for command in calls
+    ]
+    workload_commands = [command for command in workload_commands if command]
+    assert workload_commands == [
+        [
+            "tests/python/test_vulkan_workload_conformance.py::test_stock_sgd_executes_three_steps_in_both_reset_modes",
+            "tests/python/test_vulkan_workload_conformance.py::test_parameter_hvp_executes_with_named_live_history",
+        ]
+    ]
+    conformance_commands = [
+        command
+        for command in calls
+        if "tests/python/test_vulkan_conformance.py" in command
+    ]
+    assert len(conformance_commands) == 1
+    assert not any(
+        str(part).startswith("tests/python/test_vulkan_workload_conformance.py::")
+        for part in conformance_commands[0]
+    )
+
+
+def test_workload_nodes_are_limited_to_primary_vk_zero(monkeypatch, tmp_path):
+    calls = []
+
+    def run(command, cwd, env=None):
+        calls.append(command)
+        return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr(qualification, "run_command", run)
+    monkeypatch.setattr(
+        qualification,
+        "device_available",
+        lambda build, device, python=None: {
+            "status": "available",
+            "reason": f"{device} is available",
+        },
+    )
+
+    qualification.run_qualification(
+        tmp_path / "report.json",
+        device="vk:1",
+        run_build=False,
+        additional_device="vk:1",
+    )
+
+    assert not any(
+        str(part).startswith("tests/python/test_vulkan_workload_conformance.py::")
+        for command in calls
+        for part in command
+    )
