@@ -2109,7 +2109,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     # generated test_cases/shapes below are derived from the executable registry.
     'aten::convolution.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_selected_third_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -2177,7 +2177,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::convolution_backward_overrideable.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_backward",
+        "autograd": "backward_kernel",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -2190,8 +2190,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
                 "float32"
             ]
         },
-        "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "empty": "empty_rejected",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
@@ -2200,18 +2200,18 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 4
         },
-        "reason": "deferred_contract",
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::convolution_overrideable.default':     {
         "aliasing": "no_overlap",
-        "autograd": "not_applicable",
+        "autograd": "reverse_first_order_graph_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -2224,8 +2224,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
                 "float32"
             ]
         },
-        "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "empty": "empty_rejected",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
@@ -2234,14 +2234,14 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 4
         },
-        "reason": "deferred_contract",
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::copy_.default':     {
         "aliasing": "same_storage_alias",

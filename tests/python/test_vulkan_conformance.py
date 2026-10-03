@@ -78,6 +78,21 @@ def test_registry_supported_and_deferred_schemas_match_manifest():
     assert not supported & ROADMAP_DEFERRED_SCHEMAS
 
 
+def test_ordinary_output_padding_case_is_registered_as_supported_convolution():
+    case = next(
+        case for case in ALL_CASES
+        if case.name == "convolution.parameters.output-padding.ignored"
+    )
+    assert case.supported
+    assert case.declaration_id == "aten::convolution.default"
+    assert case.operation is vc._ordinary_output_padding_forward
+    assert case.cpu_reference is vc._ordinary_output_padding_reference
+    assert all(
+        item.name != "convolution.parameters.output-padding.rejected"
+        for item in ALL_CASES
+    )
+
+
 def test_differentiable_value_cases_declare_gradient_checks():
     for name in ("masked-select.bool-mask",):
         case = next(case for case in ALL_CASES if case.name == name)
@@ -112,13 +127,25 @@ def test_declared_autograd_rejection_is_explicit(vulkan_backend, case):
 @pytest.mark.parametrize("case", SUPPORTED_CASES, ids=lambda case: case.name)
 def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     convolution_context = {} if case.convolution_direction is not None else None
+    graph_context = {} if case.graph_autograd_case is not None else None
     result, cpu_result, inputs = run_and_compare(
         case, vulkan_backend, return_inputs=True,
         convolution_context_out=convolution_context,
+        graph_autograd_context_out=graph_context,
     )
     assert_vulkan_result(result, case)
     assert case.execution_mode in {"compute", "copy", "metadata", "empty"}
-    if case.execution_mode == "compute":
+    if graph_context is not None:
+        # The graph executor captures phase counters before synchronized readbacks.
+        # Its final return values are then copied to CPU, so process-global totals
+        # include those deliberate readbacks and are not the runtime evidence.
+        phases = graph_context["graph_autograd"]["execution"]
+        assert sum(phase["compute_dispatches"] for phase in phases.values()) > 0
+        for phase in phases.values():
+            assert phase["vulkan_copies"] == 0
+            assert phase["explicit_transfers"] == 0
+            assert phase["fallbacks"] == 0
+    elif case.execution_mode == "compute":
         if case.convolution_direction == "backward" or case.name.startswith("convolution.backward.bias-"):
             assert pytorch_vulkan._C.compute_dispatch_count() == sum(case.args[-1])
             execution = vc._CASE_EXECUTION[case.name]
@@ -148,7 +175,8 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
     else:
         assert pytorch_vulkan._C.compute_dispatch_count() == 0
         assert pytorch_vulkan._C.vulkan_copy_count() == 0
-    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    if graph_context is None:
+        assert pytorch_vulkan._C.explicit_transfer_count() == 0
     vc.assert_result_parity(result, cpu_result, case)
     vc.mark_executed(case.name)
     reverse_autograd = (
@@ -164,6 +192,7 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
         parity=True,
         reverse_autograd=reverse_autograd,
         convolution_context=convolution_context,
+        graph_autograd=(graph_context or {}).get("graph_autograd"),
     )
 
 

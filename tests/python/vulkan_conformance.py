@@ -56,6 +56,7 @@ class ConformanceCase:
     convolution_numerical_operations: tuple[int, ...] = ()
     convolution_result_slots: tuple[int, ...] = ()
     convolution_context_setup: Callable[[tuple[Any, ...], str], tuple[tuple[Any, ...], dict[str, Any]]] | None = None
+    graph_autograd_case: str | None = None
 
     def inputs(self) -> tuple[Any, ...]:
         return self.input_factory(
@@ -94,6 +95,7 @@ def record_coverage(
     parity: bool,
     reverse_autograd: dict | None = None,
     convolution_context: dict[str, Any] | None = None,
+    graph_autograd: dict[str, object] | None = None,
 ) -> None:
     """Record what a case actually exercised using its runtime tensors."""
     if not COVERAGE_RECORDING:
@@ -199,6 +201,8 @@ def record_coverage(
         record.update(_convolution_coverage(
             case, inputs, result, execution, convolution_context
         ))
+    if graph_autograd is not None:
+        record["graph_autograd"] = graph_autograd
     _COVERAGE[case.name] = record
 
 
@@ -885,10 +889,18 @@ def run_case(case: ConformanceCase, device: str = "vk:0") -> Any:
 def run_and_compare(
     case: ConformanceCase, device: str = "vk:0", *, return_inputs: bool = False,
     convolution_context_out: dict[str, Any] | None = None,
+    graph_autograd_context_out: dict[str, object] | None = None,
 ) -> tuple[Any, ...]:
     """Compute the CPU reference and Vulkan result with counters scoped to execution."""
     if convolution_context_out is not None:
         convolution_context_out.clear()
+    if graph_autograd_context_out is not None:
+        graph_autograd_context_out.clear()
+    if case.graph_autograd_case is not None:
+        vulkan_output, cpu_output, actual_inputs, graph_payload = run_graph_autograd_case(case, device)
+        if graph_autograd_context_out is not None:
+            graph_autograd_context_out["graph_autograd"] = graph_payload
+        return (vulkan_output, cpu_output, actual_inputs) if return_inputs else (vulkan_output, cpu_output)
     transposed = case.convolution_direction is not None
     if transposed:
         _CASE_EXECUTION.pop(case.name, None)
@@ -1437,6 +1449,28 @@ def _grouped_convolution_inputs(groups, outputs, *, backward=False):
 
 def _grouped_nondivisible_inputs(*, requires_grad=False):
     return torch.ones((2, 4, 8, 8)), torch.ones((5, 2, 3, 3)), torch.ones(5)
+
+
+def _ordinary_output_padding_inputs(*, requires_grad=False):
+    generator = torch.Generator(device="cpu").manual_seed(4601)
+    return (torch.randn((1, 2, 4, 5), generator=generator),
+            torch.randn((3, 2, 2, 3), generator=generator), None)
+
+
+def _ordinary_output_padding_forward(value, weight, bias, stride, padding, dilation,
+                                     transposed, output_padding, groups):
+    return torch.ops.aten.convolution.default(
+        value, weight, bias, stride, padding, dilation, transposed,
+        list(output_padding), groups,
+    )
+
+
+def _ordinary_output_padding_reference(value, weight, bias, stride, padding, dilation,
+                                       transposed, output_padding, groups):
+    assert transposed is False
+    return torch.nn.functional.conv2d(
+        value, weight, bias, stride, padding, dilation, groups,
+    )
 
 
 def _convolution_parameter_guard(value, weight, bias, *, transposed=False, output_padding=(0, 0)):
@@ -2145,6 +2179,532 @@ def _argmax_out(value, out, dim, keepdim=False):
     return torch.ops.aten.argmax.out(value, dim, keepdim, out=out)
 
 
+GRAPH_AUTOGRAD_CASES = {
+    "convolution.graph.grouped.ggI-ggW-ggb": {
+        "schema": "aten::convolution.default", "forward_schema": "aten::convolution.default",
+        "generated_backward_schema": "aten::convolution_backward.default",
+        "native_double_backward_schema": "aten::_convolution_double_backward.default",
+        "directions": ["first_reverse", "second_reverse_ggI", "second_reverse_ggW", "second_reverse_ggb", "second_reverse_combined"],
+        "graph_levels": [1, 2], "geometry": {"stride": [2, 1], "padding": [1, 0], "dilation": [1, 2], "transposed": False, "output_padding": [0, 0], "groups": 2},
+    },
+    "convolution.graph.grouped.selected-third": {
+        "schema": "aten::convolution.default", "forward_schema": "aten::convolution.default",
+        "generated_backward_schema": "aten::convolution_backward.default",
+        "native_double_backward_schema": "aten::_convolution_double_backward.default",
+        "directions": ["first_reverse", "second_reverse_ggW", "selected_third_d_g_d_x_d_w"],
+        "graph_levels": [1, 2, 3], "geometry": {"stride": [2, 1], "padding": [1, 0], "dilation": [1, 2], "transposed": False, "output_padding": [0, 0], "groups": 2},
+    },
+    "convolution.graph.depthwise.selected-third": {
+        "schema": "aten::convolution.default", "forward_schema": "aten::convolution.default",
+        "generated_backward_schema": "aten::convolution_backward.default",
+        "native_double_backward_schema": "aten::_convolution_double_backward.default",
+        "directions": ["first_reverse", "second_reverse_ggW", "selected_third_d_g_d_x_d_w"],
+        "graph_levels": [1, 2, 3], "geometry": {"stride": [1, 2], "padding": [0, 1], "dilation": [1, 1], "transposed": False, "output_padding": [0, 0], "groups": 2},
+    },
+    "convolution.graph.transposed.second": {
+        "schema": "aten::convolution.default", "forward_schema": "aten::convolution.default",
+        "generated_backward_schema": "aten::convolution_backward.default",
+        "native_double_backward_schema": "aten::_convolution_double_backward.default",
+        "directions": ["first_reverse", "second_reverse_ggI", "second_reverse_ggW", "second_reverse_ggb", "second_reverse_combined"],
+        "graph_levels": [1, 2], "geometry": {"stride": [2, 2], "padding": [0, 0], "dilation": [1, 1], "transposed": True, "output_padding": [1, 0], "groups": 1},
+    },
+    "convolution.graph.overrideable.first": {
+        "schema": "aten::convolution_overrideable.default", "forward_schema": "aten::convolution_overrideable.default",
+        "generated_backward_schema": "aten::convolution_backward_overrideable.default",
+        "native_double_backward_schema": None, "directions": ["first_reverse"],
+        "graph_levels": [1], "geometry": {"stride": [1, 1], "padding": [0, 0], "dilation": [1, 1], "transposed": False, "output_padding": [0, 0], "groups": 1},
+    },
+}
+GRAPH_AUTOGRAD_REQUIRED_CASES = frozenset(GRAPH_AUTOGRAD_CASES)
+
+
+def record_graph_autograd_coverage(case_name, route, geometry, operands, directions,
+                                   graph_levels, derivative_results,
+                                   route_observations, execution):
+    """Build the bounded, source-owned graph witness envelope."""
+    contract = GRAPH_AUTOGRAD_CASES[case_name]
+    if route != {key: contract[key] for key in (
+            "forward_schema", "generated_backward_schema", "native_double_backward_schema")}:
+        raise ValueError(f"{case_name}: graph route is not source-owned")
+    if geometry != contract["geometry"] or directions != contract["directions"] or graph_levels != contract["graph_levels"]:
+        raise ValueError(f"{case_name}: graph recipe is not source-owned")
+    return {"route": route, "geometry": geometry, "operands": operands,
+            "directions": directions, "graph_levels": graph_levels,
+            "derivative_results": derivative_results,
+            "route_observations": route_observations, "execution": execution}
+
+
+def _graph_tensor_meta(value):
+    if value is None:
+        return {"defined": False, "dtype": None, "rank": None, "shape": None,
+                "strides": None, "storage_offset": None, "device": None,
+                "requires_grad": False}
+    return {"defined": True, "dtype": str(value.dtype).removeprefix("torch."),
+            "rank": value.dim(), "shape": list(value.shape),
+            "strides": list(value.stride()), "storage_offset": value.storage_offset(),
+            "device": str(value.device), "requires_grad": bool(value.requires_grad)}
+
+
+def _graph_grad_fn(value):
+    if value is None or value.grad_fn is None:
+        return None
+    return type(value.grad_fn).__name__
+
+
+def _graph_nonzero(value):
+    return bool(torch.count_nonzero(value.detach()).item()) if value is not None else False
+
+
+def _graph_snap():
+    pytorch_vulkan._C.synchronize()
+    timing = pytorch_vulkan._C.timing_breakdown()
+    live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    return timing["buffer_creations"], live, counters
+
+
+def _graph_cpu_readback(value):
+    """Synchronize each measured Vulkan result before its single CPU readback."""
+    pytorch_vulkan._C.synchronize()
+    return value.detach().cpu()
+
+
+def _graph_delta(before, after):
+    return {"compute_dispatches": after[2][0] - before[2][0],
+            "vulkan_copies": after[2][1] - before[2][1],
+            "explicit_transfers": after[2][2] - before[2][2],
+            "fallbacks": after[2][3] - before[2][3],
+            "buffer_creations_delta": after[0] - before[0],
+            "live_allocations_delta": after[1] - before[1]}
+
+
+class _GraphTrace(torch.utils._python_dispatch.TorchDispatchMode):
+    def __init__(self, phase):
+        super().__init__()
+        self.phase, self.events = phase, []
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        output = func(*args, **kwargs)
+        def metadata(value):
+            if isinstance(value, torch.Tensor):
+                return {key: _graph_tensor_meta(value)[key] for key in ("shape", "strides", "storage_offset", "device")}
+            if isinstance(value, (tuple, list)):
+                return [item for child in value if (item := metadata(child)) is not None]
+            return None
+        def collect(value):
+            if isinstance(value, torch.Tensor): return [metadata(value)]
+            if isinstance(value, (tuple, list)): return [item for child in value for item in collect(child)]
+            return []
+        self.events.append({"phase": self.phase, "operator": str(func),
+                            "arguments": collect(args), "output": collect(output)})
+        return output
+
+
+def run_graph_autograd_case(case: ConformanceCase, device: str = "vk:0"):
+    """Execute one of the five finite public-API graph recipes and record actual work."""
+    name = case.graph_autograd_case
+    contract = GRAPH_AUTOGRAD_CASES[name]
+    seed = {"convolution.graph.grouped.ggI-ggW-ggb": 4701,
+            "convolution.graph.grouped.selected-third": 4701,
+            "convolution.graph.depthwise.selected-third": 4702,
+            "convolution.graph.transposed.second": 4703,
+            "convolution.graph.overrideable.first": 4704}[name]
+    gen = torch.Generator(device="cpu").manual_seed(seed)
+    shapes = {
+        "convolution.graph.grouped.ggI-ggW-ggb": ((1, 4, 6, 7), (6, 2, 3, 2), (6,), (1, 6, 3, 5)),
+        "convolution.graph.grouped.selected-third": ((1, 4, 6, 7), (6, 2, 3, 2), (6,), (1, 6, 3, 5)),
+        "convolution.graph.depthwise.selected-third": ((1, 2, 5, 6), (4, 1, 2, 3), None, (1, 4, 4, 3)),
+        "convolution.graph.transposed.second": ((1, 2, 3, 3), (2, 3, 2, 2), (3,), (1, 3, 7, 6)),
+        "convolution.graph.overrideable.first": ((1, 2, 4, 5), (3, 2, 2, 3), (3,), (1, 3, 3, 3)),
+    }[name]
+    base_shapes = tuple(shape for shape in shapes[:3] if shape is not None)
+    cpu_inputs = tuple(torch.randn(shape, generator=gen, dtype=torch.float32,
+                                   requires_grad=True) for shape in base_shapes)
+    cpu_inputs = (*cpu_inputs, torch.randn(shapes[3], generator=gen,
+                                            dtype=torch.float32, requires_grad=True))
+    x, w, b, g = cpu_inputs if len(cpu_inputs) == 4 else (*cpu_inputs[:2], None, cpu_inputs[-1])
+    cpu_leaves = (x, w) if b is None else (x, w, b)
+    seeds = tuple(torch.randn(value.shape, generator=gen) for value in cpu_leaves)
+    sx = torch.randn(x.shape, generator=gen) if "selected_third_d_g_d_x_d_w" in contract["directions"] else None
+    vk_inputs = tuple(value.detach().to(device).requires_grad_() for value in cpu_inputs)
+    xv, wv = vk_inputs[:2]
+    bv = vk_inputs[2] if len(vk_inputs) == 4 else None
+    gv = vk_inputs[-1]
+    vk_seeds = tuple(value.to(device) for value in seeds)
+    sxv = sx.to(device) if sx is not None else None
+    geom = contract["geometry"]
+    params = dict(stride=tuple(geom["stride"]), padding=tuple(geom["padding"]),
+                  dilation=tuple(geom["dilation"]), groups=geom["groups"])
+    if name.endswith("overrideable.first"):
+        cpu_forward = lambda: case.cpu_reference(x, w, b, **params)
+    else:
+        cpu_forward = lambda: case.operation(x, w, b)
+    vk_forward = lambda: case.operation(xv, wv, bv)
+    cpu_y = cpu_forward()
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_y = vk_forward()
+    pytorch_vulkan._C.synchronize()
+    first_before = _graph_snap()
+    cpu_first_trace, vk_first_trace = _GraphTrace("first_reverse"), _GraphTrace("first_reverse")
+    vk_leaves = (xv, wv) if bv is None else (xv, wv, bv)
+    with cpu_first_trace:
+        cpu_first = torch.autograd.grad(cpu_y, cpu_leaves, g, create_graph=True, retain_graph=True)
+    with vk_first_trace:
+        vk_first = torch.autograd.grad(vk_y, vk_leaves, gv, create_graph=True, retain_graph=True)
+    first_after = _graph_snap()
+    results = []
+    pending_values = []
+    first_vk_cpu = []
+    role_names = ("input", "weight") if b is None else ("input", "weight", "bias")
+    def add_results(direction, targets, actuals, expecteds, oracle="cpu"):
+        for slot, (target, actual, expected) in enumerate(zip(targets, actuals, expecteds)):
+            entry = {"direction": direction, "target": target, "slot": slot,
+                            "cpu_defined": expected is not None, "vulkan_defined": actual is not None,
+                            "cpu_shape": list(expected.shape) if expected is not None else None,
+                            "vulkan_shape": list(actual.shape) if actual is not None else None,
+                            "cpu_requires_grad": bool(expected.requires_grad) if expected is not None else False,
+                            "vulkan_requires_grad": bool(actual.requires_grad) if actual is not None else False,
+                            "cpu_grad_fn": _graph_grad_fn(expected), "vulkan_grad_fn": _graph_grad_fn(actual),
+                            "cpu_nonzero": False, "vulkan_nonzero": False, "oracle": oracle}
+            results.append(entry)
+            pending_values.append((entry, actual, expected))
+    for index, (actual, expected) in enumerate(zip(vk_first, cpu_first)):
+        actual_cpu = _graph_cpu_readback(actual)
+        first_vk_cpu.append(actual_cpu)
+        results.append({"direction": "first_reverse", "target": role_names[index], "slot": index,
+                        "cpu_defined": True, "vulkan_defined": True,
+                        "cpu_shape": list(expected.shape), "vulkan_shape": list(actual.shape),
+                        "cpu_requires_grad": expected.requires_grad, "vulkan_requires_grad": actual.requires_grad,
+                        "cpu_grad_fn": _graph_grad_fn(expected), "vulkan_grad_fn": _graph_grad_fn(actual),
+                        "cpu_nonzero": _graph_nonzero(expected.detach()),
+                        "vulkan_nonzero": _graph_nonzero(actual_cpu), "oracle": "cpu"})
+    # First-result readbacks occur only after the first-phase snapshot. Exclude
+    # those reads from the independently measured higher-order region.
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    higher_before = _graph_snap()
+    if len(contract["graph_levels"]) > 1:
+        targets_all = (x, w, b, g) if b is not None else (x, w, g)
+        vk_targets_all = (xv, wv, bv, gv) if bv is not None else (xv, wv, gv)
+        for dir_name, idx, cpu_targets, vk_targets in (
+            ("second_reverse_ggI", 0, (w, g), (wv, gv)),
+            ("second_reverse_ggW", 1, (x, g), (xv, gv)),
+        ):
+            if dir_name not in contract["directions"]: continue
+            ct, vt = _GraphTrace(dir_name), _GraphTrace(dir_name)
+            with ct: cval = torch.autograd.grad((cpu_first[idx] * seeds[idx]).sum(), cpu_targets, allow_unused=True, retain_graph=True)
+            with vt: vval = torch.autograd.grad((vk_first[idx] * vk_seeds[idx]).sum(), vk_targets, allow_unused=True, retain_graph=True)
+            cpu_first_trace.events.extend(ct.events); vk_first_trace.events.extend(vt.events)
+            targets = ("weight", "grad_output") if idx == 0 else ("input", "grad_output")
+            add_results(dir_name, targets, vval, cval)
+        if "second_reverse_ggb" in contract["directions"]:
+            ct, vt = _GraphTrace("second_reverse_ggb"), _GraphTrace("second_reverse_ggb")
+            cpu_targets, vk_targets = (x, w, g), (xv, wv, gv)
+            with ct: cval = torch.autograd.grad((cpu_first[2] * seeds[2]).sum(), cpu_targets, allow_unused=True, retain_graph=True)
+            with vt: vval = torch.autograd.grad((vk_first[2] * vk_seeds[2]).sum(), vk_targets, allow_unused=True, retain_graph=True)
+            cpu_first_trace.events.extend(ct.events); vk_first_trace.events.extend(vt.events)
+            add_results("second_reverse_ggb", ("input", "weight", "grad_output"), vval, cval)
+        if "second_reverse_combined" in contract["directions"]:
+            ct, vt = _GraphTrace("second_reverse_combined"), _GraphTrace("second_reverse_combined")
+            with ct: cval = torch.autograd.grad(cpu_first, targets_all, grad_outputs=seeds if b is not None else (*seeds, torch.zeros_like(g)), allow_unused=True, retain_graph=True)
+            with vt: vval = torch.autograd.grad(vk_first, vk_targets_all, grad_outputs=vk_seeds if bv is not None else (*vk_seeds, torch.zeros_like(gv)), allow_unused=True, retain_graph=True)
+            cpu_first_trace.events.extend(ct.events); vk_first_trace.events.extend(vt.events)
+            tgt = ("input", "weight", "bias", "grad_output") if b is not None else ("input", "weight", "grad_output")
+            add_results("second_reverse_combined", tgt, vval, cval)
+        if "selected_third_d_g_d_x_d_w" in contract["directions"]:
+            idx = 1
+            sw = seeds[idx]
+            ct, vt = _GraphTrace("selected_third_d_g_d_x_d_w"), _GraphTrace("selected_third_d_g_d_x_d_w")
+            with ct:
+                cm = torch.autograd.grad((cpu_first[idx] * sw).sum(), x, create_graph=True, retain_graph=True)[0]
+                cthird = torch.autograd.grad((cm * sx).sum(), g)[0]
+            with vt:
+                vm = torch.autograd.grad((vk_first[idx] * vk_seeds[idx]).sum(), xv, create_graph=True, retain_graph=True)[0]
+                vthird = torch.autograd.grad((vm * sxv).sum(), gv)[0]
+            cpu_first_trace.events.extend(ct.events); vk_first_trace.events.extend(vt.events)
+            oracle = torch.nn.functional.conv2d(sx, sw, None, **params)
+            torch.testing.assert_close(cthird, oracle, rtol=0, atol=0)
+            add_results("selected_third_d_g_d_x_d_w", ("grad_output",), (vthird,), (cthird,), "cpu_and_analytical_conv")
+        higher_after = _graph_snap()
+    else:
+        higher_after = _graph_snap()
+    # Snapshots precede every readback used for parity/nonzero checks.
+    for entry, actual, expected in pending_values:
+        if actual is not None and expected is not None:
+            actual_cpu = _graph_cpu_readback(actual)
+            expected_cpu = expected.detach()
+            torch.testing.assert_close(actual_cpu, expected_cpu, rtol=8e-4, atol=8e-4)
+            entry["cpu_nonzero"] = _graph_nonzero(expected_cpu)
+            entry["vulkan_nonzero"] = _graph_nonzero(actual_cpu)
+    vk_y_cpu = _graph_cpu_readback(vk_y)
+    if not torch.allclose(vk_y_cpu, cpu_y.detach(), rtol=case.rtol, atol=case.atol):
+        raise AssertionError(f"{name}: forward CPU/Vulkan parity failed")
+    for actual_cpu, expected in zip(first_vk_cpu, cpu_first):
+        torch.testing.assert_close(actual_cpu, expected.detach(), rtol=8e-4, atol=8e-4)
+    operands = {role: {"cpu": _graph_tensor_meta(tensor), "vulkan": _graph_tensor_meta(vkt)}
+                for role, tensor, vkt in (("input", x, xv), ("weight", w, wv))}
+    operands["bias"] = {"cpu": _graph_tensor_meta(b), "vulkan": _graph_tensor_meta(bv)}
+    operands["grad_output"] = {"cpu": _graph_tensor_meta(g), "vulkan": _graph_tensor_meta(gv)}
+    route = {key: contract[key] for key in ("forward_schema", "generated_backward_schema", "native_double_backward_schema")}
+    execution = {"first_backward": _graph_delta(first_before, first_after),
+                 "higher_order": _graph_delta(higher_before, higher_after)}
+    payload = record_graph_autograd_coverage(name, route, geom, operands,
+        contract["directions"], contract["graph_levels"], results,
+        {"cpu": cpu_first_trace.events, "vulkan": vk_first_trace.events}, execution)
+    return vk_y, cpu_y, vk_inputs, payload
+
+
+def validate_graph_autograd_record(case_name, record):
+    """Fail closed on graph payloads that do not match the source-owned witness."""
+    if case_name not in GRAPH_AUTOGRAD_CASES:
+        raise ValueError(f"{case_name}: unknown graph autograd witness")
+    if not isinstance(record, dict):
+        raise ValueError(f"{case_name}: coverage record must be an object")
+    contract = GRAPH_AUTOGRAD_CASES[case_name]
+    payload = record.get("graph_autograd")
+    if not isinstance(payload, dict):
+        raise ValueError(f"{case_name}: missing graph_autograd payload")
+    if type(record.get("parity")) is not bool or record["parity"] is not True:
+        raise ValueError(f"{case_name}: outer graph witness parity must be true")
+    if record.get("output_dtype") != "float32" or type(record.get("output_rank")) is not int or record["output_rank"] != 4:
+        raise ValueError(f"{case_name}: outer graph output must be float32 rank 4")
+    if set(payload) != {"route", "geometry", "operands", "directions", "graph_levels", "derivative_results", "route_observations", "execution"}:
+        raise ValueError(f"{case_name}: graph payload fields differ from schema")
+    route = {key: contract[key] for key in ("forward_schema", "generated_backward_schema", "native_double_backward_schema")}
+    for key, expected in (("schema", contract["schema"]), ("graph_autograd.route", route),
+                          ("graph_autograd.geometry", contract["geometry"]),
+                          ("graph_autograd.directions", contract["directions"]),
+                          ("graph_autograd.graph_levels", contract["graph_levels"])):
+        actual = record.get(key) if key == "schema" else payload.get(key.removeprefix("graph_autograd."))
+        if actual != expected:
+            raise ValueError(f"{case_name}: {key} does not match source-owned graph contract")
+    roles = payload.get("operands")
+    if not isinstance(roles, dict) or set(roles) != {"input", "weight", "bias", "grad_output"}:
+        raise ValueError(f"{case_name}: graph roles must include input, weight, bias, grad_output")
+    expected_shapes = {
+        "convolution.graph.grouped.ggI-ggW-ggb": {"input": ([1,4,6,7],[168,42,7,1]), "weight": ([6,2,3,2],[12,6,2,1]), "bias": ([6],[1]), "grad_output": ([1,6,3,5],[90,15,5,1])},
+        "convolution.graph.grouped.selected-third": {"input": ([1,4,6,7],[168,42,7,1]), "weight": ([6,2,3,2],[12,6,2,1]), "bias": ([6],[1]), "grad_output": ([1,6,3,5],[90,15,5,1])},
+        "convolution.graph.depthwise.selected-third": {"input": ([1,2,5,6],[60,30,6,1]), "weight": ([4,1,2,3],[6,6,3,1]), "bias": None, "grad_output": ([1,4,4,3],[48,12,3,1])},
+        "convolution.graph.transposed.second": {"input": ([1,2,3,3],[18,9,3,1]), "weight": ([2,3,2,2],[12,4,2,1]), "bias": ([3],[1]), "grad_output": ([1,3,7,6],[126,42,6,1])},
+        "convolution.graph.overrideable.first": {"input": ([1,2,4,5],[40,20,5,1]), "weight": ([3,2,2,3],[12,6,3,1]), "bias": ([3],[1]), "grad_output": ([1,3,3,3],[27,9,3,1])},
+    }[case_name]
+    primary_input = record.get("primary_input")
+    if not isinstance(primary_input, dict) or set(primary_input) != {"dtype", "rank"}:
+        raise ValueError(f"{case_name}: malformed outer primary-input coverage")
+    dtypes = set()
+    for role, spec in expected_shapes.items():
+        shape, strides = spec if spec is not None else (None, None)
+        pair = roles.get(role)
+        if not isinstance(pair, dict) or set(pair) != {"cpu", "vulkan"}:
+            raise ValueError(f"{case_name}: malformed {role} device metadata")
+        for side, meta in pair.items():
+            if not isinstance(meta, dict) or set(meta) != {"defined", "dtype", "rank", "shape", "strides", "storage_offset", "device", "requires_grad"}:
+                raise ValueError(f"{case_name}: malformed {side} {role} metadata fields")
+            if type(meta["defined"]) is not bool or type(meta["requires_grad"]) is not bool:
+                raise ValueError(f"{case_name}: malformed {side} {role} boolean metadata")
+            if shape is None:
+                if meta.get("defined") is not False or any(meta.get(field) is not None for field in ("dtype", "rank", "shape", "strides", "storage_offset", "device")):
+                    raise ValueError(f"{case_name}: absent bias metadata must remain None")
+                if meta["requires_grad"] is not False:
+                    raise ValueError(f"{case_name}: undefined bias must have requires_grad=False")
+                continue
+            if (meta.get("defined") is not True or not isinstance(meta.get("dtype"), str) or
+                    meta.get("rank") != len(shape) or meta.get("shape") != shape or
+                    meta.get("strides") != strides or meta.get("storage_offset") != 0 or
+                    meta.get("requires_grad") is not True):
+                raise ValueError(f"{case_name}: invalid {side} {role} metadata")
+            if side == "cpu" and meta.get("device") != "cpu":
+                raise ValueError(f"{case_name}: CPU {role} device is not cpu")
+            if side == "vulkan" and meta.get("device") != "vk:0":
+                raise ValueError(f"{case_name}: Vulkan {role} device is not vk:0")
+            dtypes.add(meta["dtype"])
+    expected_ranks = sorted({len(spec[0]) for spec in expected_shapes.values() if spec is not None})
+    expected_input_shapes = sorted({"x".join(map(str, spec[0])) for spec in expected_shapes.values() if spec is not None})
+    if (dtypes != {"float32"} or record.get("input_dtypes") != ["float32"] or
+            record.get("primary_input") != {"dtype": "float32", "rank": 4} or
+            record.get("input_ranks") != expected_ranks or
+            record.get("input_shapes") != expected_input_shapes):
+        raise ValueError(f"{case_name}: graph witness must be float32 at every role")
+    derivative_results = payload.get("derivative_results")
+    if not isinstance(derivative_results, list):
+        raise ValueError(f"{case_name}: missing derivative results")
+    result_contracts = {
+        "convolution.graph.grouped.ggI-ggW-ggb": {"first_reverse": {"input": True,"weight": True,"bias": True}, "second_reverse_ggI": {"weight": True,"grad_output": True}, "second_reverse_ggW": {"input": True,"grad_output": True}, "second_reverse_ggb": {"input": False,"weight": False,"grad_output": True}, "second_reverse_combined": {"input": True,"weight": True,"bias": False,"grad_output": True}},
+        "convolution.graph.grouped.selected-third": {"first_reverse": {"input": True,"weight": True,"bias": True}, "second_reverse_ggW": {"input": True,"grad_output": True}, "selected_third_d_g_d_x_d_w": {"grad_output": True}},
+        "convolution.graph.depthwise.selected-third": {"first_reverse": {"input": True,"weight": True}, "second_reverse_ggW": {"input": True,"grad_output": True}, "selected_third_d_g_d_x_d_w": {"grad_output": True}},
+        "convolution.graph.transposed.second": {"first_reverse": {"input": True,"weight": True,"bias": True}, "second_reverse_ggI": {"weight": True,"grad_output": True}, "second_reverse_ggW": {"input": True,"grad_output": True}, "second_reverse_ggb": {"input": False,"weight": False,"grad_output": True}, "second_reverse_combined": {"input": True,"weight": True,"bias": False,"grad_output": True}},
+        "convolution.graph.overrideable.first": {"first_reverse": {"input": True,"weight": True,"bias": True}},
+    }[case_name]
+    expected_pairs = {
+        (direction, target, slot)
+        for direction, targets in result_contracts.items()
+        for slot, target in enumerate(targets)
+    }
+    result_fields = {"direction", "target", "slot", "cpu_defined", "vulkan_defined",
+                     "cpu_shape", "vulkan_shape", "cpu_requires_grad", "vulkan_requires_grad",
+                     "cpu_grad_fn", "vulkan_grad_fn", "cpu_nonzero", "vulkan_nonzero", "oracle"}
+    actual_pairs = []
+    for result in derivative_results:
+        if not isinstance(result, dict) or set(result) != result_fields:
+            raise ValueError(f"{case_name}: malformed derivative result")
+        for key in ("cpu_defined", "vulkan_defined", "cpu_requires_grad", "vulkan_requires_grad", "cpu_nonzero", "vulkan_nonzero"):
+            if type(result[key]) is not bool:
+                raise ValueError(f"{case_name}: derivative result {key} must be bool")
+        if (not isinstance(result["direction"], str) or not isinstance(result["target"], str)
+                or type(result["slot"]) is not int
+                or result["cpu_grad_fn"] is not None and not isinstance(result["cpu_grad_fn"], str)
+                or result["vulkan_grad_fn"] is not None and not isinstance(result["vulkan_grad_fn"], str)):
+            raise ValueError(f"{case_name}: malformed derivative result scalar")
+        if not isinstance(result["oracle"], str) or result["oracle"] not in {"cpu", "cpu_and_analytical_conv"}:
+            raise ValueError(f"{case_name}: unrecognized oracle")
+        actual_pairs.append((result["direction"], result["target"], result["slot"]))
+    if len(actual_pairs) != len(set(actual_pairs)):
+        raise ValueError(f"{case_name}: duplicate derivative result direction/target/slot")
+    if set(actual_pairs) != expected_pairs or len(actual_pairs) != len(expected_pairs):
+        raise ValueError(f"{case_name}: unrecognized derivative direction or result target/slot set")
+    result_by_pair = dict(zip(actual_pairs, derivative_results))
+    for direction, targets in result_contracts.items():
+        for slot, (target, defined) in enumerate(targets.items()):
+            result = result_by_pair[(direction, target, slot)]
+            if result["cpu_defined"] is not defined or result["vulkan_defined"] is not defined:
+                raise ValueError(f"{case_name}: {direction}/{target} defined slot differs from CPU reference")
+            target_spec = expected_shapes.get(target)
+            target_shape = target_spec[0] if target_spec is not None else None
+            if defined and (result["cpu_shape"] != target_shape or result["vulkan_shape"] != target_shape):
+                raise ValueError(f"{case_name}: {direction}/{target} result shape differs from source contract")
+            if not defined and (any(result[key] is not None for key in ("cpu_shape", "vulkan_shape", "cpu_grad_fn", "vulkan_grad_fn"))
+                                or result["cpu_requires_grad"] is not False or result["vulkan_requires_grad"] is not False
+                                or result["cpu_nonzero"] is not False or result["vulkan_nonzero"] is not False):
+                raise ValueError(f"{case_name}: undefined derivative slot has fabricated history/value")
+            if defined and (result["cpu_nonzero"] is not True or result["vulkan_nonzero"] is not True):
+                raise ValueError(f"{case_name}: required derivative witness must be nonzero on CPU and Vulkan")
+            if direction == "first_reverse":
+                cpu_node = "ConvolutionBackwardBackward0"
+                vk_node = ("ConvolutionBackwardOverrideableBackward0"
+                          if case_name == "convolution.graph.overrideable.first"
+                          else "ConvolutionBackwardBackward0")
+                if (result["cpu_requires_grad"] is not True or result["vulkan_requires_grad"] is not True
+                        or result["cpu_grad_fn"] != cpu_node or result["vulkan_grad_fn"] != vk_node):
+                    raise ValueError(f"{case_name}: first_reverse requires_grad/native grad_fn differs from source contract")
+            elif (result["cpu_requires_grad"] is not False or result["vulkan_requires_grad"] is not False
+                    or result["cpu_grad_fn"] is not None or result["vulkan_grad_fn"] is not None):
+                raise ValueError(f"{case_name}: returned second/third derivative history must be graphless")
+            expected_oracle = "cpu_and_analytical_conv" if direction == "selected_third_d_g_d_x_d_w" else "cpu"
+            if result["oracle"] != expected_oracle:
+                raise ValueError(f"{case_name}: unrecognized oracle for {direction}")
+            if result["cpu_requires_grad"] != result["vulkan_requires_grad"]:
+                raise ValueError(f"{case_name}: CPU/Vulkan derivative history parity mismatch")
+            if result["cpu_shape"] != result["vulkan_shape"] or result["cpu_defined"] != result["vulkan_defined"]:
+                raise ValueError(f"{case_name}: CPU/Vulkan derivative defined/shape parity mismatch")
+    for result in derivative_results:
+        if result["cpu_defined"] != result["vulkan_defined"] or result["cpu_shape"] != result["vulkan_shape"]:
+            raise ValueError(f"{case_name}: CPU/Vulkan derivative defined/shape parity mismatch")
+    traces = payload.get("route_observations")
+    if not isinstance(traces, dict) or set(traces) != {"cpu", "vulkan"}:
+        raise ValueError(f"{case_name}: missing CPU/Vulkan route traces")
+    allowed_operators = {
+        "aten.convolution.default", "aten.convolution_backward.default",
+        "aten.convolution_backward_overrideable.default", "aten.view.default",
+        "aten.cat.default", "aten.expand.default", "aten.add.Tensor",
+        "aten.slice.Tensor", "aten.transpose.int", "aten.mul.Tensor",
+        "aten.ones_like.default", "aten.sum.default",
+    }
+    for side, events in traces.items():
+        if not isinstance(events, list) or any(not isinstance(event, dict) or set(event) != {"phase", "operator", "arguments", "output"} for event in events):
+            raise ValueError(f"{case_name}: malformed {side} trace")
+        expected_device = "cpu" if side == "cpu" else "vk:0"
+        for event in events:
+            if event["phase"] not in contract["directions"]:
+                raise ValueError(f"{case_name}: unrecognized route-observation phase")
+            if not isinstance(event["operator"], str) or event["operator"] not in allowed_operators:
+                raise ValueError(f"{case_name}: unrecognized canonical route-observation operator")
+            for collection in (event["arguments"], event["output"]):
+                if not isinstance(collection, list):
+                    raise ValueError(f"{case_name}: route-observation metadata must be a list")
+                for metadata in collection:
+                    if (not isinstance(metadata, dict)
+                            or set(metadata) != {"shape", "strides", "storage_offset", "device"}
+                            or metadata["device"] != expected_device
+                            or not isinstance(metadata["shape"], list)
+                            or not isinstance(metadata["strides"], list)
+                            or len(metadata["shape"]) != len(metadata["strides"])
+                            or type(metadata["storage_offset"]) is not int
+                            or any(type(value) is not int or value <= 0 for value in metadata["shape"])
+                            or any(type(value) is not int or value < 0 for value in metadata["strides"])):
+                        raise ValueError(f"{case_name}: malformed route-observation tensor metadata")
+        first_operator = ("aten.convolution_backward.default"
+                          if case_name != "convolution.graph.overrideable.first" or side == "cpu"
+                          else "aten.convolution_backward_overrideable.default")
+        if not any(event["phase"] == "first_reverse" and event["operator"] == first_operator
+                   for event in events):
+            raise ValueError(f"{case_name}: missing exact first_reverse dispatcher operation {first_operator}")
+        if max(contract["graph_levels"]) > 1 and not any(
+                event["phase"] != "first_reverse" and event["operator"] == "aten.convolution.default"
+                for event in events):
+            raise ValueError(f"{case_name}: missing exact higher-order convolution dispatcher operation")
+        if case_name == "convolution.graph.grouped.ggI-ggW-ggb":
+            ggi = [event for event in events if event["phase"] == "second_reverse_ggI"]
+            ggw = [event for event in events if event["phase"] == "second_reverse_ggW"]
+            comb = [event for event in events if event["phase"] == "second_reverse_combined"]
+            ggi_pairs = {
+                ((tuple(args[0]["shape"]), tuple(args[0]["strides"]), args[0]["storage_offset"]),
+                 (tuple(args[1]["shape"]), tuple(args[1]["strides"]), args[1]["storage_offset"]))
+                for event in ggi if event["operator"] == "aten.convolution.default"
+                for args in (event["arguments"],) if len(args) >= 2
+            }
+            required_pairs = {
+                (((2,1,6,7),(42,168,7,1),0), ((3,1,3,5),(15,90,5,1),0)),
+                (((2,1,6,7),(42,168,7,1),84), ((3,1,3,5),(15,90,5,1),45)),
+            }
+            if not required_pairs <= ggi_pairs or not any(event["operator"] == "aten.cat.default" and any(meta.get("shape") == [2,6,4,2] for meta in event["output"]) for event in ggi):
+                raise ValueError(f"{case_name}: missing grouped ggI per-group view/cat layout trace")
+            if not any(event["operator"] == "aten.convolution.default" for event in ggw):
+                raise ValueError(f"{case_name}: missing grouped ggW convolution event")
+            ggb_ops = {event["operator"] for event in events if event["phase"] == "second_reverse_ggb"}
+            if "aten.view.default" not in ggb_ops or "aten.expand.default" not in ggb_ops:
+                raise ValueError(f"{case_name}: missing grouped ggb view/expand trace")
+            comb_ops = {event["operator"] for event in comb}
+            if not {"aten.add.Tensor", "aten.cat.default", "aten.convolution.default"} <= comb_ops:
+                raise ValueError(f"{case_name}: missing combined accumulated bias add trace")
+    execution = payload.get("execution")
+    if (not isinstance(execution, dict) or set(execution) != {"first_backward", "higher_order"}
+            or any(not isinstance(execution.get(phase), dict)
+                   for phase in ("first_backward", "higher_order"))):
+        raise ValueError(f"{case_name}: missing phase execution counters")
+    expected_first_dispatches = len(result_contracts["first_reverse"])
+    for phase, counters in execution.items():
+        counter_fields = {"compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks", "buffer_creations_delta", "live_allocations_delta"}
+        if not isinstance(counters, dict) or set(counters) != counter_fields:
+            raise ValueError(f"{case_name}: malformed {phase} counters")
+        if any(type(counters[key]) is not int for key in counters):
+            raise ValueError(f"{case_name}: non-runtime execution counter value")
+        if any(counters[key] < 0 for key in counters):
+            raise ValueError(f"{case_name}: negative execution counter delta")
+        if counters["explicit_transfers"] != 0 or counters["fallbacks"] != 0:
+            raise ValueError(f"{case_name}: transfers/fallbacks were observed")
+    if execution["first_backward"]["compute_dispatches"] != expected_first_dispatches:
+        raise ValueError(f"{case_name}: first-backward dispatch count differs from output mask")
+    if execution["first_backward"]["vulkan_copies"] != 0:
+        raise ValueError(f"{case_name}: first-backward region recorded Vulkan copies")
+    if max(contract["graph_levels"]) > 1 and execution["higher_order"]["compute_dispatches"] <= 0:
+        raise ValueError(f"{case_name}: higher-order region has no measured dispatch")
+    if max(contract["graph_levels"]) == 1 and any(execution["higher_order"].values()):
+        raise ValueError(f"{case_name}: first-order-only witness has unexpected higher-order execution")
+    return True
+
+
+def validate_graph_autograd_evidence(coverage, manifest_entries):
+    for name in GRAPH_AUTOGRAD_REQUIRED_CASES:
+        if name not in coverage:
+            raise ValueError(f"required graph autograd witness {name!r} is missing")
+        validate_graph_autograd_record(name, coverage[name])
+        schema = GRAPH_AUTOGRAD_CASES[name]["schema"]
+        entry = next((value for value in manifest_entries if value.get("schema") == schema), None)
+        if entry is None or not any(case.get("name") == name and case.get("supported") is True for case in entry.get("test_cases", [])):
+            raise ValueError(f"{name}: supported manifest link is missing")
+
+
 _MANIFEST_CASES = {
     case["name"]: (entry["schema"], case["supported"])
     for entry in _MANIFEST["entries"]
@@ -2159,6 +2719,13 @@ _MANIFEST_CASES.update({
         for state in ("present", "absent") for mask in range(8)
     },
 })
+_MANIFEST_CASES.pop("convolution.parameters.output-padding.rejected", None)
+_MANIFEST_CASES["convolution.parameters.output-padding.ignored"] = (
+    "aten::convolution.default", True,
+)
+_MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
+    "aten::convolution_backward_overrideable.default", True,
+)
 # The former rejected-transposed parameter case is obsolete now that the
 # transposed operation has positive executable witnesses below.
 _MANIFEST_CASES.pop("convolution.parameters.transposed.rejected", None)
@@ -2171,6 +2738,23 @@ _MANIFEST_CASES.update({
         for state in ("present", "absent") for mask in range(8)
     },
 })
+_GRAPH_SCHEMAS = {
+    "convolution.graph.grouped.ggI-ggW-ggb": "aten::convolution.default",
+    "convolution.graph.grouped.selected-third": "aten::convolution.default",
+    "convolution.graph.depthwise.selected-third": "aten::convolution.default",
+    "convolution.graph.transposed.second": "aten::convolution.default",
+    "convolution.graph.overrideable.first": "aten::convolution_overrideable.default",
+}
+_MANIFEST_CASES.update({name: (schema, True) for name, schema in _GRAPH_SCHEMAS.items()})
+DECLARED_OPERATION_MANIFEST = frozenset(
+    set(DECLARED_OPERATION_MANIFEST)
+    | set(_GRAPH_SCHEMAS.values())
+    | {"aten::convolution_backward_overrideable.default"}
+)
+ROADMAP_DEFERRED_SCHEMAS = frozenset(
+    schema for schema in ROADMAP_DEFERRED_SCHEMAS
+    if schema not in set(_GRAPH_SCHEMAS.values()) | {"aten::convolution_backward_overrideable.default"}
+)
 MANIFEST_CASE_NAMES = frozenset(_MANIFEST_CASES)
 
 
@@ -2200,6 +2784,7 @@ def _case(
     declared_shapes=(),
     expected_shapes=None,
     convolution_operand_roles=(),
+    graph_autograd_case=None,
 ):
     manifest_case = _MANIFEST_CASES.get(name)
     if manifest_case is None:
@@ -2233,6 +2818,11 @@ def _case(
         declared_shapes,
         expected_shapes,
         convolution_operand_roles,
+        None,
+        (),
+        (),
+        None,
+        graph_autograd_case,
     )
     return case
 
@@ -2508,6 +3098,26 @@ def _transposed_convolution_evidence_cases():
                 _transposed_context_setup(present, backward=True),
             ))
     return tuple(cases)
+
+
+def _graph_overrideable_forward(value, weight, bias):
+    return torch.ops.aten.convolution_overrideable.default(
+        value, weight, bias, [1, 1], [0, 0], [1, 1], False, [0, 0], 1
+    )
+
+
+_GRAPH_FORWARD_OPERATIONS = {
+    "convolution.graph.grouped.ggI-ggW-ggb": lambda x,w,b: torch.nn.functional.conv2d(x,w,b,stride=(2,1),padding=(1,0),dilation=(1,2),groups=2),
+    "convolution.graph.grouped.selected-third": lambda x,w,b: torch.nn.functional.conv2d(x,w,b,stride=(2,1),padding=(1,0),dilation=(1,2),groups=2),
+    "convolution.graph.depthwise.selected-third": lambda x,w,b: torch.nn.functional.conv2d(x,w,b,stride=(1,2),padding=(0,1),dilation=(1,1),groups=2),
+    "convolution.graph.transposed.second": lambda x,w,b: torch.nn.functional.conv_transpose2d(x,w,b,stride=(2,2),output_padding=(1,0)),
+    "convolution.graph.overrideable.first": _graph_overrideable_forward,
+}
+_GRAPH_CPU_REFERENCES = {
+    **{name: torch.nn.functional.conv2d for name in GRAPH_AUTOGRAD_CASES
+       if name != "convolution.graph.transposed.second"},
+    "convolution.graph.transposed.second": torch.nn.functional.conv_transpose2d,
+}
 
 
 ALL_CASES = tuple(
@@ -3335,18 +3945,12 @@ ALL_CASES = tuple(
         cpu_reference=_cpu_convolution,
         error_pattern=r"groups.*divide",
     ),
-    *(
-        _case(
-            f"convolution.parameters.{label}.rejected",
-            "convolution",
-            _convolution_parameter_guard,
-            _grouped_convolution_inputs(1, 4),
-            kwargs=kwargs,
-            supported=False,
-            cpu_reference=_convolution_parameter_guard,
-            error_pattern=r"zero.*output_padding.*ordinary",
-        )
-        for label, kwargs in (("output-padding", {"output_padding": (1, 0)}),)
+    _case(
+        "convolution.parameters.output-padding.ignored", "convolution",
+        _ordinary_output_padding_forward, _ordinary_output_padding_inputs,
+        args=([1, 1], [0, 0], [1, 1], False, [1, 0], 1),
+        cpu_reference=_ordinary_output_padding_reference,
+        expected_shape=(1, 3, 3, 3), rtol=3e-4, atol=3e-4,
     ),
     _case(
         "convolution.parameters.padding-0",
@@ -4013,7 +4617,51 @@ ALL_CASES = tuple(
           _inplace_inputs, args=(0.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.fill_, value, scalar), supported=True, expected_shape=(3, 4)),
     )
     if case is not None
-) + _convolution_evidence_cases() + _transposed_convolution_evidence_cases()
+) + _convolution_evidence_cases() + _transposed_convolution_evidence_cases() + tuple(
+    _case(name, "convolution", _GRAPH_FORWARD_OPERATIONS[name],
+          (lambda shapes=shapes: lambda **kw: tuple(torch.randn(s, generator=torch.Generator().manual_seed(71 + i), requires_grad=False) for i, s in enumerate(shapes)))(),
+          cpu_reference=_GRAPH_CPU_REFERENCES[name], requires_grad_inputs=True,
+          expected_shape=output, graph_autograd_case=name)
+    for name, shapes, output in (
+        ("convolution.graph.grouped.ggI-ggW-ggb", ((1,4,6,7),(6,2,3,2),(6,)), (1,6,3,5)),
+        ("convolution.graph.grouped.selected-third", ((1,4,6,7),(6,2,3,2),(6,)), (1,6,3,5)),
+        ("convolution.graph.depthwise.selected-third", ((1,2,5,6),(4,1,2,3)), (1,4,4,3)),
+        ("convolution.graph.transposed.second", ((1,2,3,3),(2,3,2,2),(3,)), (1,3,7,6)),
+        ("convolution.graph.overrideable.first", ((1,2,4,5),(3,2,2,3),(3,)), (1,3,3,3)),
+    )
+)
+
+
+def _overrideable_backward_inputs(**kwargs):
+    generator = torch.Generator(device="cpu").manual_seed(4711)
+    return (torch.randn((1, 3, 3, 3), generator=generator),
+            torch.randn((1, 2, 4, 5), generator=generator),
+            torch.randn((3, 2, 2, 3), generator=generator))
+
+
+def _overrideable_backward(grad, value, weight, stride, padding, dilation,
+                           transposed, output_padding, groups, output_mask):
+    return torch.ops.aten.convolution_backward_overrideable.default(
+        grad, value, weight, stride, padding, dilation, transposed,
+        output_padding, groups, output_mask)
+
+
+def _overrideable_backward_cpu(grad, value, weight, stride, padding, dilation,
+                               transposed, output_padding, groups, output_mask):
+    with torch.backends.mkldnn.flags(enabled=False):
+        return torch.ops.aten.convolution_backward.default(
+            grad, value, weight, None, stride, padding, dilation, transposed,
+            output_padding, groups, output_mask)
+
+
+ALL_CASES += (_case(
+    "convolution.backward-overrideable.bias-present.mask-111", "convolution",
+    _overrideable_backward, _overrideable_backward_inputs,
+    args=([1, 1], [0, 0], [1, 1], False, [0, 0], 1, [True, True, True]),
+    cpu_reference=_overrideable_backward_cpu,
+    expected_shapes=((1, 2, 4, 5), (3, 2, 2, 3), (3,)),
+    rtol=8e-4, atol=8e-4,
+),)
 
 
 SUPPORTED_CASES = tuple(case for case in ALL_CASES if case.supported)

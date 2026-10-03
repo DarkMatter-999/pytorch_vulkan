@@ -239,6 +239,38 @@ def test_softmax_wide_contiguous_rows_match_cpu_with_nonuniform_gradients(
 
 
 @pytest.mark.parametrize("operation", [torch.softmax, torch.log_softmax])
+def test_softmax_shared_reduction_reuse_matches_cpu_in_one_scope(
+    vulkan_backend, operation
+):
+    generator = torch.Generator().manual_seed(1730)
+    cpu_input = torch.full((512, 128), -10000.0)
+    cpu_input[:, 0] = torch.randn(512, generator=generator) * 0.1 + 1.0
+    cpu_input[:, 64] = torch.randn(512, generator=generator) * 0.1 + 2.0
+    expected = operation(cpu_input, dim=-1)
+    vk_input = cpu_input.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+
+    pytorch_vulkan._C.reset_execution_counters()
+    outputs = []
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        for _ in range(8):
+            outputs.append(operation(vk_input, dim=-1))
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+    pytorch_vulkan._C.synchronize()
+
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    assert counters[0] == 8
+    assert pytorch_vulkan._C.fallback_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    for output in outputs:
+        torch.testing.assert_close(output.cpu(), expected, rtol=3e-3, atol=3e-3)
+
+
+@pytest.mark.parametrize("operation", [torch.softmax, torch.log_softmax])
 def test_softmax_rejects_invalid_dim_and_unsupported_dtype(vulkan_backend, operation):
     input = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)
     with pytest.raises(

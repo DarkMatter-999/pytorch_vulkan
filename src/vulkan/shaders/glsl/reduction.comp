@@ -38,6 +38,7 @@ void main() {
       barrier();
     }
     maximum = softmax_partial[0];
+    barrier();
 
     float total = 0.0;
     for (uint index = lane; index < params.reduce_numel; index += 256u)

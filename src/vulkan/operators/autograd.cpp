@@ -33,73 +33,6 @@ bool supports_multi_output_backward(const at::Tensor &tensor) {
            tensor.is_contiguous();
 }
 
-ConvolutionGeometry saved_geometry(torch::autograd::AutogradContext *ctx) {
-    const auto stride = ctx->saved_data["stride"].toIntVector();
-    const auto padding = ctx->saved_data["padding"].toIntVector();
-    const auto dilation = ctx->saved_data["dilation"].toIntVector();
-    const auto groups = ctx->saved_data["groups"].toInt();
-    TORCH_INTERNAL_ASSERT(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
-                          "Vulkan convolution autograd saved malformed geometry");
-    return {stride[0], stride[1], padding[0], padding[1], dilation[0], dilation[1],
-            groups};
-}
-
-class ConvolutionAutogradFunction final
-    : public torch::autograd::Function<ConvolutionAutogradFunction> {
-  public:
-    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
-                              const at::Tensor &input, const at::Tensor &weight,
-                              const c10::optional<at::Tensor> &bias,
-                              at::IntArrayRef stride, at::IntArrayRef padding,
-                              at::IntArrayRef dilation, bool transposed,
-                              at::IntArrayRef output_padding, int64_t groups) {
-        at::AutoDispatchBelowAutograd guard;
-        ctx->save_for_backward({input, weight});
-        ctx->saved_data["has_bias"] = bias.has_value() && bias->defined();
-        ctx->saved_data["stride"] = stride.vec();
-        ctx->saved_data["padding"] = padding.vec();
-        ctx->saved_data["dilation"] = dilation.vec();
-        ctx->saved_data["groups"] = groups;
-        ctx->saved_data["transposed"] = transposed;
-        ctx->saved_data["output_padding"] = output_padding.vec();
-        return pytorch_vulkan::convolution(input, weight, bias, stride, padding,
-                                           dilation, transposed, output_padding,
-                                           groups);
-    }
-    static torch::autograd::variable_list
-    backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
-        if (!grads[0].defined())
-            return {at::Tensor(), at::Tensor(), at::Tensor(),
-                    at::Tensor(), at::Tensor(), at::Tensor(),
-                    at::Tensor(), at::Tensor(), at::Tensor()};
-        const bool transposed = ctx->saved_data["transposed"].toBool();
-        TORCH_CHECK(!transposed || !c10::GradMode::is_enabled(),
-                    "Vulkan transposed convolution backward does not support "
-                    "create_graph or higher-order gradients");
-        at::AutoDispatchBelowAutograd guard;
-        auto saved = ctx->get_saved_variables();
-        const auto geometry = saved_geometry(ctx);
-        const auto stride = ctx->saved_data["stride"].toIntVector();
-        const auto padding = ctx->saved_data["padding"].toIntVector();
-        const auto dilation = ctx->saved_data["dilation"].toIntVector();
-        const bool has_bias = ctx->saved_data["has_bias"].toBool();
-        const auto output_padding_values =
-            ctx->saved_data["output_padding"].toIntVector();
-        TORCH_INTERNAL_ASSERT(output_padding_values.size() == 2);
-        const std::array<int64_t, 2> output_padding{
-            output_padding_values[0], output_padding_values[1]};
-        const std::array<bool, 3> mask{
-            ctx->needs_input_grad(0), ctx->needs_input_grad(1),
-            has_bias && ctx->needs_input_grad(2)};
-        auto backward_grads = pytorch_vulkan::convolution_backward(
-            grads[0], saved[0], saved[1], c10::nullopt, stride, padding, dilation,
-            transposed, output_padding, geometry.groups, mask);
-        return {std::get<0>(backward_grads), std::get<1>(backward_grads),
-                std::get<2>(backward_grads), at::Tensor(), at::Tensor(), at::Tensor(),
-                at::Tensor(), at::Tensor(), at::Tensor()};
-    }
-};
 class LinearAutogradFunction final
     : public torch::autograd::Function<LinearAutogradFunction> {
   public:
@@ -406,16 +339,6 @@ at::Tensor stack(at::TensorList tensors, int64_t dim) {
 at::Tensor autograd_linear_relu(const at::Tensor &input, const at::Tensor &weight,
                                 const at::Tensor &bias) {
     return LinearReluAutogradFunction::apply(input, weight, bias);
-}
-
-at::Tensor autograd_convolution(const at::Tensor &input, const at::Tensor &weight,
-                                const c10::optional<at::Tensor> &bias,
-                                at::IntArrayRef stride, at::IntArrayRef padding,
-                                at::IntArrayRef dilation, bool transposed,
-                                at::IntArrayRef output_padding, int64_t groups) {
-    return ConvolutionAutogradFunction::apply(input, weight, bias, stride, padding,
-                                              dilation, transposed, output_padding,
-                                              groups);
 }
 
 at::Tensor autograd_adaptive_avg_pool2d(const at::Tensor &input,

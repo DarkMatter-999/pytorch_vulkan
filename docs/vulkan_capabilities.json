@@ -1872,7 +1872,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_selected_third_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -1956,8 +1956,8 @@
           "supported": false
         },
         {
-          "name": "convolution.parameters.output-padding.rejected",
-          "supported": false
+          "name": "convolution.parameters.output-padding.ignored",
+          "supported": true
         },
         {
           "name": "convolution.parameters.padding-0",
@@ -2002,6 +2002,22 @@
         {
           "name": "convolution.transposed.forward.bias-absent",
           "supported": true
+        },
+        {
+          "name": "convolution.graph.grouped.ggI-ggW-ggb",
+          "supported": true
+        },
+        {
+          "name": "convolution.graph.grouped.selected-third",
+          "supported": true
+        },
+        {
+          "name": "convolution.graph.depthwise.selected-third",
+          "supported": true
+        },
+        {
+          "name": "convolution.graph.transposed.second",
+          "supported": true
         }
       ],
       "tests": [
@@ -2018,11 +2034,16 @@
           "convolution.general.forward",
           "convolution.general.kernel-1x1",
           "convolution.general.kernel-5x5",
+          "convolution.graph.depthwise.selected-third",
+          "convolution.graph.grouped.ggI-ggW-ggb",
+          "convolution.graph.grouped.selected-third",
+          "convolution.graph.transposed.second",
           "convolution.groups.2.forward",
           "convolution.groups.4.forward",
           "convolution.groups.depthwise.forward",
           "convolution.parameters.combined",
           "convolution.parameters.dilation-2",
+          "convolution.parameters.output-padding.ignored",
           "convolution.parameters.padding-0",
           "convolution.parameters.stride-2",
           "convolution.transposed.forward.bias-absent",
@@ -2039,6 +2060,22 @@
         ],
         "ranks": [
           4
+        ],
+        "reverse_first_order_graph_cases": [
+          "convolution.graph.depthwise.selected-third",
+          "convolution.graph.grouped.ggI-ggW-ggb",
+          "convolution.graph.grouped.selected-third",
+          "convolution.graph.transposed.second"
+        ],
+        "reverse_second_order_cases": [
+          "convolution.graph.depthwise.selected-third",
+          "convolution.graph.grouped.ggI-ggW-ggb",
+          "convolution.graph.grouped.selected-third",
+          "convolution.graph.transposed.second"
+        ],
+        "reverse_selected_third_order_cases": [
+          "convolution.graph.depthwise.selected-third",
+          "convolution.graph.grouped.selected-third"
         ]
       }
     },
@@ -6973,7 +7010,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_backward",
+      "autograd": "backward_kernel",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -6986,8 +7023,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_rejected",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -6996,9 +7033,9 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 4
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -7007,21 +7044,38 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "convolution.backward-overrideable.bias-present.mask-111",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "convolution.backward-overrideable.bias-present.mask-111"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
       }
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "reverse_first_order_graph_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -7034,8 +7088,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_rejected",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -7044,9 +7098,9 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 4
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
@@ -7055,16 +7109,36 @@
       "shape_constraints": [
         "unwitnessed"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "convolution.graph.overrideable.first",
+          "supported": true
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "convolution.graph.overrideable.first"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ],
+        "reverse_first_order_graph_cases": [
+          "convolution.graph.overrideable.first"
+        ]
       }
     },
     {

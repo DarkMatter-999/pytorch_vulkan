@@ -13,8 +13,343 @@ from tools.validate_vulkan_capabilities import (
     validate_stock_composite_routes,
 )
 from tools.vulkan_capability_declarations import STOCK_COMPOSITE_ROUTES
+from tools.vulkan_capability_declarations import DECLARATIONS
 
 ROOT = Path(__file__).parents[2]
+
+
+def test_convolution_autograd_manifest_claims_only_source_required_cases():
+    import vulkan_conformance as vc
+
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    entries = {entry["schema"]: entry for entry in manifest["entries"]}
+    graph_cases = vc.GRAPH_AUTOGRAD_CASES
+
+    expected_first = {name for name in graph_cases}
+    expected_second = {
+        name for name, contract in graph_cases.items()
+        if any(direction.startswith("second_reverse_")
+               for direction in contract["directions"])
+    }
+    expected_selected_third = {
+        name for name, contract in graph_cases.items()
+        if "selected_third_d_g_d_x_d_w" in contract["directions"]
+    }
+    assert len(expected_first) == 5
+    assert len(expected_second) == 4
+    assert len(expected_selected_third) == 2
+
+    standard = entries["aten::convolution.default"]["witnesses"]
+    overrideable = entries["aten::convolution_overrideable.default"]["witnesses"]
+    assert set(standard["reverse_first_order_graph_cases"]) == expected_first - {
+        "convolution.graph.overrideable.first"
+    }
+    assert set(overrideable["reverse_first_order_graph_cases"]) == {
+        "convolution.graph.overrideable.first"
+    }
+    assert set(standard["reverse_second_order_cases"]) == expected_second
+    assert set(standard["reverse_selected_third_order_cases"]) == expected_selected_third
+
+    convolution_schemas = (
+        "aten::convolution.default",
+        "aten::convolution_backward.default",
+        "aten::convolution_overrideable.default",
+        "aten::convolution_backward_overrideable.default",
+    )
+    unsupported_claims = {
+        "reverse_arbitrary_order_witnessed", "forward_ad_witnessed",
+        "jvp_witnessed", "transforms_witnessed", "cuda_witnessed",
+        "hvp_witnessed", "training_witnessed",
+    }
+    for schema in convolution_schemas:
+        declaration = DECLARATIONS[schema]
+        entry = entries[schema]
+        assert declaration["autograd"] not in unsupported_claims
+        assert entry["autograd"] == declaration["autograd"]
+        assert not (set(entry["witnesses"]) & unsupported_claims)
+
+
+def test_overrideable_backward_source_owned_case_cannot_be_jointly_deleted(monkeypatch):
+    from tools import generate_vulkan_capabilities as generator
+
+    coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+    name = "convolution.backward-overrideable.bias-present.mask-111"
+    del coverage[name]
+    manifest = copy.deepcopy(load_manifest(ROOT / "docs/vulkan_capabilities.json"))
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="overrideable backward requires"):
+        validate_manifest_data(manifest, ROOT)
+
+    entry = next(item for item in manifest["entries"]
+                 if item["schema"] == "aten::convolution_backward_overrideable.default")
+    entry["test_cases"] = []
+    entry["witnesses"] = {"dtypes": [], "ranks": [], "pairs": [], "cases": []}
+
+    with pytest.raises(ValueError, match="overrideable backward requires"):
+        generator.build_coverage_manifest(coverage)
+    with pytest.raises(ValueError, match="overrideable backward requires"):
+        capability_validator.validate_overrideable_backward_evidence(manifest["entries"], coverage)
+
+
+def _valid_grouped_combined_coverage_fixture():
+    """Validator-structure fixture only; this is never runtime evidence."""
+    name = "convolution.graph.grouped.ggI-ggW-ggb"
+    geometry = {"stride": [2, 1], "padding": [1, 0], "dilation": [1, 2],
+                "transposed": False, "output_padding": [0, 0], "groups": 2}
+    specs = {
+        "input": ([1, 4, 6, 7], [168, 42, 7, 1]),
+        "weight": ([6, 2, 3, 2], [12, 6, 2, 1]),
+        "bias": ([6], [1]),
+        "grad_output": ([1, 6, 3, 5], [90, 15, 5, 1]),
+    }
+    operands = {}
+    for role, (shape, strides) in specs.items():
+        operands[role] = {}
+        for side, device in (("cpu", "cpu"), ("vulkan", "vk:0")):
+            operands[role][side] = {"defined": True, "dtype": "float32", "rank": len(shape),
+                                    "shape": shape, "strides": strides, "storage_offset": 0,
+                                    "device": device, "requires_grad": True}
+    def result(direction, target, slot, shape, defined=True, history=None):
+        history = direction == "first_reverse" if history is None else history
+        return {"direction": direction, "target": target, "slot": slot,
+                "cpu_defined": defined, "vulkan_defined": defined,
+                "cpu_shape": shape if defined else None, "vulkan_shape": shape if defined else None,
+                "cpu_requires_grad": history if defined else False,
+                "vulkan_requires_grad": history if defined else False,
+                "cpu_grad_fn": "ConvolutionBackwardBackward0" if history and defined else None,
+                "vulkan_grad_fn": "ConvolutionBackwardBackward0" if history and defined else None,
+                "cpu_nonzero": defined, "vulkan_nonzero": defined, "oracle": "cpu"}
+    results = [result("first_reverse", role, slot, specs[role][0])
+               for slot, role in enumerate(("input", "weight", "bias"))]
+    results += [result("second_reverse_ggI", "weight", 0, specs["weight"][0]),
+                result("second_reverse_ggI", "grad_output", 1, specs["grad_output"][0]),
+                result("second_reverse_ggW", "input", 0, specs["input"][0]),
+                result("second_reverse_ggW", "grad_output", 1, specs["grad_output"][0]),
+                result("second_reverse_ggb", "input", 0, None, False),
+                result("second_reverse_ggb", "weight", 1, None, False),
+                result("second_reverse_ggb", "grad_output", 2, specs["grad_output"][0]),
+                result("second_reverse_combined", "input", 0, specs["input"][0]),
+                result("second_reverse_combined", "weight", 1, specs["weight"][0]),
+                result("second_reverse_combined", "bias", 2, None, False),
+                result("second_reverse_combined", "grad_output", 3, specs["grad_output"][0])]
+    def event(phase, op, arguments=(), output=()):
+        return {"phase": phase, "operator": op, "arguments": list(arguments), "output": list(output)}
+    view = {"shape": [2,1,6,7], "strides": [42,168,7,1], "storage_offset": 0, "device": "cpu"}
+    traces = {}
+    for side, device in (("cpu", "cpu"), ("vulkan", "vk:0")):
+        views = [dict(shape=[2,1,6,7],strides=[42,168,7,1],storage_offset=offset,device=device)
+                 for offset in (0,84)] + [dict(shape=[3,1,3,5],strides=[15,90,5,1],storage_offset=offset,device=device)
+                                          for offset in (0,45)]
+        traces[side] = [
+            event("first_reverse", "aten.convolution_backward.default", views[:2]),
+            event("second_reverse_ggI", "aten.view.default", [views[0]], [views[0]]),
+            event("second_reverse_ggI", "aten.convolution.default", [views[0], views[2]]),
+            event("second_reverse_ggI", "aten.convolution.default", [views[1], views[3]]),
+            event("second_reverse_ggI", "aten.cat.default", output=[{"shape":[2,6,4,2],"strides":[48,8,2,1],"storage_offset":0,"device":device}]),
+            event("second_reverse_ggW", "aten.convolution.default", [views[0], views[2]]),
+            event("second_reverse_ggb", "aten.view.default"),
+            event("second_reverse_ggb", "aten.expand.default"),
+            event("second_reverse_combined", "aten.add.Tensor"),
+            event("second_reverse_combined", "aten.cat.default"),
+            event("second_reverse_combined", "aten.convolution.default"),
+        ]
+    zero = {"compute_dispatches": 31, "vulkan_copies": 0, "explicit_transfers": 0,
+            "fallbacks": 0, "buffer_creations_delta": 0, "live_allocations_delta": 0}
+    return {"schema": "aten::convolution.default",
+            "operands": [{"role": "primary_input", "dtype": "float32", "rank": 4},
+                         {"role": "operand", "dtype": "float32", "rank": 4}],
+            "primary_input": {"dtype": "float32", "rank": 4},
+            "input_dtypes": ["float32"], "input_ranks": [1,4],
+            "input_shapes": ["1x4x6x7", "1x6x3x5", "6", "6x2x3x2"],
+            "gradients": True, "parity": True, "output_dtype": "float32", "output_rank": 4,
+            "graph_autograd": {"route": {"forward_schema":"aten::convolution.default",
+                "generated_backward_schema":"aten::convolution_backward.default",
+                "native_double_backward_schema":"aten::_convolution_double_backward.default"},
+                "geometry": geometry, "operands": operands,
+                "directions": ["first_reverse", "second_reverse_ggI", "second_reverse_ggW", "second_reverse_ggb", "second_reverse_combined"],
+                "graph_levels": [1,2], "derivative_results": results,
+                "route_observations": traces,
+            "execution": {"first_backward": dict(zero, compute_dispatches=3), "higher_order": dict(zero)}}}
+
+
+def test_graph_autograd_valid_grouped_combined_structure_fixture_passes():
+    import vulkan_conformance as vc
+    fixture = _valid_grouped_combined_coverage_fixture()
+    assert vc.validate_graph_autograd_record(
+        "convolution.graph.grouped.ggI-ggW-ggb", fixture
+    )
+
+
+@pytest.mark.parametrize("mutation", ["schema", "role_shape", "role_stride", "role_offset",
+    "all_float64", "history", "history_requires_grad", "direction", "level", "defined", "nonzero",
+    "trace_operator", "trace_layout", "transfer", "fallback"])
+def test_graph_autograd_grouped_fixture_rejects_owning_mutation(mutation):
+    import vulkan_conformance as vc
+    fixture = _valid_grouped_combined_coverage_fixture()
+    payload = fixture["graph_autograd"]
+    if mutation == "schema":
+        fixture["schema"] = "aten::convolution_backward.default"
+    elif mutation in {"role_shape", "role_stride", "role_offset"}:
+        meta = payload["operands"]["input"]["cpu"]
+        key = {"role_shape": "shape", "role_stride": "strides", "role_offset": "storage_offset"}[mutation]
+        meta[key] = [9, 9] if mutation != "role_offset" else 9
+    elif mutation == "all_float64":
+        fixture["input_dtypes"] = ["float64"]
+        for pair in payload["operands"].values():
+            for meta in pair.values():
+                if meta["defined"]: meta["dtype"] = "float64"
+    elif mutation == "history":
+        payload["derivative_results"][0]["vulkan_grad_fn"] = None
+    elif mutation == "history_requires_grad":
+        payload["derivative_results"][0]["vulkan_requires_grad"] = False
+    elif mutation == "direction":
+        payload["directions"].remove("second_reverse_ggb")
+    elif mutation == "level":
+        payload["graph_levels"] = [1]
+    elif mutation == "defined":
+        payload["derivative_results"][0]["vulkan_defined"] = False
+    elif mutation == "nonzero":
+        payload["derivative_results"][0]["vulkan_nonzero"] = False
+    elif mutation == "trace_operator":
+        payload["route_observations"]["vulkan"].append({"phase":"second_reverse_ggI", "operator":"aten::mul.Tensor", "arguments":[], "output":[]})
+        payload["route_observations"]["vulkan"] = [e for e in payload["route_observations"]["vulkan"] if e["operator"] != "aten::cat.default"]
+    elif mutation == "trace_layout":
+        payload["route_observations"]["cpu"][1]["arguments"][0]["strides"] = [1,1,1,1]
+    elif mutation == "transfer":
+        payload["execution"]["higher_order"]["explicit_transfers"] = 1
+    elif mutation == "fallback":
+        payload["execution"]["higher_order"]["fallbacks"] = 1
+    owning_errors = {
+        "schema": "schema does not match", "role_shape": "invalid cpu input metadata",
+        "role_stride": "invalid cpu input metadata", "role_offset": "invalid cpu input metadata",
+            "all_float64": "must be float32", "history": "native grad_fn",
+            "history_requires_grad": "first_reverse.*requires_grad", "direction": "directions does not match",
+        "level": "graph_levels does not match", "defined": "defined slot differs",
+            "nonzero": "nonzero on CPU and Vulkan", "trace_operator": "unrecognized canonical",
+            "trace_layout": "ggI per-group view/cat", "transfer": "transfers/fallbacks",
+        "fallback": "transfers/fallbacks",
+    }
+    with pytest.raises(ValueError, match=owning_errors[mutation]):
+        vc.validate_graph_autograd_record("convolution.graph.grouped.ggI-ggW-ggb", fixture)
+
+
+@pytest.mark.parametrize("mutation", ["first_detached", "invented_first_node",
+    "underreported_first_dispatches", "unknown_result_direction", "duplicate_result",
+    "undefined_bias_trainable", "undefined_result_history", "unrecognized_oracle",
+    "wrong_first_phase", "malformed_counter"])
+def test_graph_autograd_rejects_currently_accepted_source_contract_violations(mutation):
+    import vulkan_conformance as vc
+    fixture_name = "convolution.graph.grouped.ggI-ggW-ggb"
+    if mutation == "undefined_bias_trainable":
+        fixture_name = "convolution.graph.depthwise.selected-third"
+        fixture = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())[fixture_name]
+    else:
+        fixture = _valid_grouped_combined_coverage_fixture()
+    graph = fixture["graph_autograd"]
+    first = [row for row in graph["derivative_results"] if row["direction"] == "first_reverse"]
+    if mutation == "first_detached":
+        for row in first:
+            row["cpu_requires_grad"] = row["vulkan_requires_grad"] = False
+    elif mutation == "invented_first_node":
+        for row in first:
+            row["cpu_grad_fn"] = row["vulkan_grad_fn"] = "InventedNode"
+    elif mutation == "underreported_first_dispatches":
+        graph["execution"]["first_backward"]["compute_dispatches"] = 1
+    elif mutation == "unknown_result_direction":
+        row = copy.deepcopy(first[0])
+        row["direction"] = "unqualified_fourth_reverse"
+        graph["derivative_results"].append(row)
+    elif mutation == "duplicate_result":
+        graph["derivative_results"].append(copy.deepcopy(first[0]))
+    elif mutation == "undefined_bias_trainable":
+        graph["operands"]["bias"]["cpu"]["requires_grad"] = True
+        graph["operands"]["bias"]["vulkan"]["requires_grad"] = True
+    elif mutation == "undefined_result_history":
+        row = next(row for row in graph["derivative_results"] if not row["cpu_defined"])
+        row["cpu_requires_grad"] = row["vulkan_requires_grad"] = True
+    elif mutation == "unrecognized_oracle":
+        next(row for row in graph["derivative_results"]
+             if row["direction"] == "second_reverse_ggI")["oracle"] = "fabricated"
+    elif mutation == "wrong_first_phase":
+        next(event for event in graph["route_observations"]["vulkan"]
+             if event["phase"] == "first_reverse")["phase"] = "first_reverse_typo"
+    elif mutation == "malformed_counter":
+        graph["execution"]["higher_order"]["vulkan_copies"] = None
+    expected_errors = {
+        "first_detached": "first_reverse.*requires_grad",
+        "invented_first_node": "native grad_fn",
+        "underreported_first_dispatches": "first-backward dispatch count",
+        "unknown_result_direction": "unrecognized derivative direction",
+        "duplicate_result": "duplicate derivative result",
+        "undefined_bias_trainable": "undefined bias.*requires_grad",
+        "undefined_result_history": "undefined derivative.*history",
+        "unrecognized_oracle": "unrecognized oracle",
+        "wrong_first_phase": "unrecognized route-observation phase",
+        "malformed_counter": "non-runtime execution counter value",
+    }
+    with pytest.raises(ValueError, match=expected_errors[mutation]):
+        vc.validate_graph_autograd_record(fixture_name, fixture)
+
+
+def test_graph_autograd_source_forbids_cpu_rejected_t_selected_next_direction():
+    import vulkan_conformance as vc
+    assert not any("selected_third_d_g_d_x_d_t" in directions
+                   for directions in (spec["directions"] for spec in vc.GRAPH_AUTOGRAD_CASES.values()))
+    fixture = _valid_grouped_combined_coverage_fixture()
+    fixture["graph_autograd"]["directions"].append("selected_third_d_g_d_x_d_t")
+    with pytest.raises(ValueError, match="source-owned"):
+        vc.validate_graph_autograd_record("convolution.graph.grouped.ggI-ggW-ggb", fixture)
+
+
+def test_graph_autograd_manifest_validation_rejects_joint_record_and_link_deletion(monkeypatch):
+    import vulkan_conformance as vc
+    coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+    for name in vc.GRAPH_AUTOGRAD_REQUIRED_CASES:
+        coverage.pop(name)
+    manifest = copy.deepcopy(load_manifest(ROOT / "docs/vulkan_capabilities.json"))
+    for entry in manifest["entries"]:
+        entry["test_cases"] = [case for case in entry["test_cases"]
+                               if case["name"] not in vc.GRAPH_AUTOGRAD_REQUIRED_CASES]
+        entry["witnesses"]["cases"] = [name for name in entry["witnesses"]["cases"]
+                                        if name not in vc.GRAPH_AUTOGRAD_REQUIRED_CASES]
+        for field in ("reverse_first_order_graph_cases", "reverse_second_order_cases",
+                      "reverse_selected_third_order_cases"):
+            if field in entry["witnesses"]:
+                entry["witnesses"][field] = [name for name in entry["witnesses"][field]
+                                              if name not in vc.GRAPH_AUTOGRAD_REQUIRED_CASES]
+                if not entry["witnesses"][field]:
+                    del entry["witnesses"][field]
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="reverse_first_order_graph_cases"):
+        validate_manifest_data(manifest, ROOT)
+
+
+def test_generator_and_validator_require_graph_witnesses_from_source_inventory(monkeypatch):
+    import vulkan_conformance as vc
+    from tools import generate_vulkan_capabilities as generator
+
+    coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+    manifest = copy.deepcopy(load_manifest(ROOT / "docs/vulkan_capabilities.json"))
+    for name in vc.GRAPH_AUTOGRAD_REQUIRED_CASES:
+        coverage.pop(name)
+    for entry in manifest["entries"]:
+        entry["test_cases"] = [case for case in entry["test_cases"]
+                               if case["name"] not in vc.GRAPH_AUTOGRAD_REQUIRED_CASES]
+        entry["witnesses"]["cases"] = [name for name in entry["witnesses"]["cases"]
+                                         if name not in vc.GRAPH_AUTOGRAD_REQUIRED_CASES]
+        for field in ("reverse_first_order_graph_cases", "reverse_second_order_cases",
+                      "reverse_selected_third_order_cases"):
+            if field in entry["witnesses"]:
+                entry["witnesses"][field] = [name for name in entry["witnesses"][field]
+                                              if name not in vc.GRAPH_AUTOGRAD_REQUIRED_CASES]
+                if not entry["witnesses"][field]:
+                    del entry["witnesses"][field]
+
+    with pytest.raises(ValueError, match="required graph autograd witness"):
+        generator.build_coverage_manifest(coverage)
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="reverse_first_order_graph_cases"):
+        validate_manifest_data(manifest, ROOT)
 
 
 def _entry(schema="aten::abs.default", *, status="supported"):

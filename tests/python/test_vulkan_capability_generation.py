@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import pytorch_vulkan
 import torch
+import vulkan_conformance as vc
 
 from tools import generate_vulkan_capabilities as generator
 from tools import validate_vulkan_capabilities as capability_validator
@@ -19,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 COMMITTED = ROOT / "docs/vulkan_capabilities.json"
 COVERAGE_COMMITTED = ROOT / "docs/vulkan_coverage.json"
 DERIVED_FIELDS = frozenset({"schema", "test_cases", "tests", "witnesses"})
+STAGE_F_NEW_CASES = {"convolution.parameters.output-padding.ignored",
+                     "convolution.backward-overrideable.bias-present.mask-111",
+                     *vc.GRAPH_AUTOGRAD_REQUIRED_CASES}
 
 
 def _transposed_validator_fixture():
@@ -209,6 +213,23 @@ def _committed_entries() -> dict[str, dict]:
     return {entry["schema"]: entry for entry in data["entries"]}
 
 
+def test_generated_entries_do_not_alias_nested_declarations(monkeypatch):
+    import copy
+
+    schema = "aten::convolution.default"
+    original = copy.deepcopy(generator.DECLARATIONS[schema])
+    monkeypatch.setitem(generator.DECLARATIONS, schema, copy.deepcopy(original))
+
+    entry = next(
+        item for item in generator._build_manifest()["entries"]
+        if item["schema"] == schema
+    )
+    entry["dtypes"]["inputs"].append("mutation-probe")
+    entry["ranks"]["min"] = -1
+
+    assert generator.DECLARATIONS[schema] == original
+
+
 def test_generated_manifest_reproduces_every_derived_field():
     committed = _committed_entries()
     generated = {
@@ -291,9 +312,16 @@ def test_declaration_with_a_typoed_key_is_rejected(monkeypatch):
 
 def test_unregistered_declarations_are_roadmap_not_errors():
     roadmap = generator._roadmap_schemas()
-    assert len(roadmap) == 86
+    assert len(roadmap) == 85
     assert "aten::concat.default" in roadmap
     assert "aten::reshape.default" not in roadmap
+    adapter_schema = "aten::convolution_backward_overrideable.default"
+    adapter_case = "convolution.backward-overrideable.bias-present.mask-111"
+    assert adapter_schema not in roadmap
+    committed = _committed_entries()
+    assert committed[adapter_schema]["status"] == "supported"
+    assert committed[adapter_schema]["autograd"] == "backward_kernel"
+    assert committed[adapter_schema]["witnesses"]["cases"] == [adapter_case]
 
 
 def test_roadmap_declarations_have_no_implementation_witnesses():
@@ -388,6 +416,102 @@ def test_reverse_second_order_witness_requires_executed_metadata_not_gradient_fl
     assert "reverse_second_order_cases" not in generator._witnesses_by_schema({name: base})[schema]
     witnessed = dict(base, reverse_autograd={"order": 2, "graph_preserved": True})
     assert generator._witnesses_by_schema({name: witnessed})[schema]["reverse_second_order_cases"] == [name]
+
+
+def test_graph_autograd_witness_links_are_sorted_and_nested():
+    name = "convolution.graph.grouped.ggI-ggW-ggb"
+    record = {
+        "schema": "aten::convolution.default", "parity": True,
+        "primary_input": {"dtype": "float32", "rank": 4},
+        "input_dtypes": ["float32"], "input_ranks": [1, 4], "input_shapes": ["1x4x6x7"],
+        "graph_autograd": {"directions": ["first_reverse", "second_reverse_ggI"]},
+    }
+    witness = generator._witnesses_by_schema({name: record})["aten::convolution.default"]
+    assert witness["reverse_first_order_graph_cases"] == [name]
+    assert witness["reverse_second_order_cases"] == [name]
+    assert "reverse_selected_third_order_cases" not in witness
+
+
+@pytest.mark.parametrize("field,value", [("parity", False), ("output_dtype", "float64"), ("output_rank", 2)])
+def test_graph_autograd_outer_contract_rejects_source_metadata_mutations(field, value, monkeypatch):
+    import copy
+    import vulkan_conformance as vc
+
+    name = "convolution.graph.overrideable.first"
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    record = coverage[name]
+    record[field] = value
+
+    with pytest.raises(ValueError, match="outer|parity|output"):
+        vc.validate_graph_autograd_record(name, record)
+    with pytest.raises(ValueError, match="outer|parity|output"):
+        generator.build_coverage_manifest(coverage)
+
+    manifest = copy.deepcopy(load_manifest(COMMITTED))
+    entry = next(item for item in manifest["entries"]
+                 if item["schema"] == "aten::convolution_overrideable.default")
+    if field == "output_dtype":
+        entry["dtypes"]["outputs"] = [value]
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="outer|parity|output"):
+        capability_validator.validate_manifest_data(manifest, ROOT)
+
+
+@pytest.mark.parametrize("mutation", ["dtype", "rank", "shapes"])
+def test_overrideable_backward_witness_is_bound_to_its_fixed_source_contract(mutation, monkeypatch):
+    import copy
+
+    name = "convolution.backward-overrideable.bias-present.mask-111"
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    record = coverage[name]
+    if mutation == "dtype":
+        record["input_dtypes"] = ["float64"]
+        record["primary_input"]["dtype"] = "float64"
+        for operand in record["operands"]:
+            operand["dtype"] = "float64"
+    elif mutation == "rank":
+        record["input_ranks"] = [2]
+        record["primary_input"]["rank"] = 2
+        for operand in record["operands"]:
+            operand["rank"] = 2
+    else:
+        record["input_shapes"] = ["1x99x1x1", "99x99x1x1"]
+
+    with pytest.raises(ValueError, match="overrideable backward"):
+        generator.build_coverage_manifest(coverage)
+
+    manifest = copy.deepcopy(load_manifest(COMMITTED))
+    entry = next(item for item in manifest["entries"]
+                 if item["schema"] == "aten::convolution_backward_overrideable.default")
+    if mutation == "dtype":
+        entry["dtypes"]["inputs"] = ["float64"]
+        entry["dtypes"]["outputs"] = ["float64"]
+        entry["witnesses"]["dtypes"] = ["float64"]
+        entry["witnesses"]["pairs"] = [["float64", 4]]
+    elif mutation == "rank":
+        entry["ranks"] = {"min": 2, "max": 2}
+        entry["witnesses"]["ranks"] = [2]
+        entry["witnesses"]["pairs"] = [["float32", 2]]
+    monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+    with pytest.raises(ValueError, match="overrideable backward"):
+        capability_validator.validate_manifest_data(manifest, ROOT)
+
+
+def test_graph_autograd_required_completeness_is_source_owned_after_joint_deletion():
+    import vulkan_conformance as vc
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    for name in vc.GRAPH_AUTOGRAD_REQUIRED_CASES:
+        coverage.pop(name, None)
+    with pytest.raises(ValueError, match="required graph autograd witness"):
+        vc.validate_graph_autograd_evidence(coverage, [])
+
+
+def test_graph_autograd_generation_rejects_missing_source_required_records():
+    coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    for name in vc.GRAPH_AUTOGRAD_REQUIRED_CASES:
+        coverage.pop(name, None)
+    with pytest.raises(ValueError, match="required graph autograd witness"):
+        generator.build_coverage_manifest(coverage)
 
 
 def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage():
@@ -737,15 +861,17 @@ def _vulkan_device_available() -> bool:
         return False
 
 
-def _run_all_supported_cases():
+def _run_all_supported_cases(cases=None):
     import vulkan_conformance as vc
 
     with vc.coverage_recording():
-        for case in vc.SUPPORTED_CASES:
+        for case in vc.SUPPORTED_CASES if cases is None else tuple(cases):
             convolution_context = {} if case.convolution_direction is not None else None
+            graph_context = {} if case.graph_autograd_case is not None else None
             result, expected, inputs = vc.run_and_compare(
                 case, return_inputs=True,
                 convolution_context_out=convolution_context,
+                graph_autograd_context_out=graph_context,
             )
             vc.assert_result_parity(result, expected, case)
             reverse_names = {
@@ -766,6 +892,7 @@ def _run_all_supported_cases():
                 parity=True,
                 reverse_autograd=reverse_autograd,
                 convolution_context=convolution_context,
+                graph_autograd=(graph_context or {}).get("graph_autograd"),
             )
         return vc.coverage_snapshot()
 

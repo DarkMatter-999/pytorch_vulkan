@@ -52,7 +52,7 @@ SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*(?:x[1-9][0-9]*)*)")
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
-AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "not_applicable"})
+AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "reverse_first_order_graph_witnessed", "reverse_selected_third_order_witnessed", "not_applicable"})
 EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "rejected_before_vulkan", "deferred_before_vulkan"})
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
@@ -73,6 +73,11 @@ TRANSPOSED_MAPPING_ID = "transposed-convolution-stage-e-v1"
 # python/pytorch_vulkan/__init__.py renames PrivateUse1 to the public ``vk``
 # spelling before any evidence Tensor is allocated.
 TRANSPOSED_DEVICE = "vk:0"
+OVERRIDEABLE_BACKWARD_SCHEMA = "aten::convolution_backward_overrideable.default"
+OVERRIDEABLE_BACKWARD_CASE = "convolution.backward-overrideable.bias-present.mask-111"
+OVERRIDEABLE_BACKWARD_INPUT_SHAPES = [
+    "1x2x4x5", "1x3x3x3", "3x2x2x3",
+]
 TEST_VALUES = frozenset(
     {
         "tests/python/test_vulkan_capability_manifest.py",
@@ -398,6 +403,15 @@ def validate_convolution_manifest_bindings(
                 "pairs": [list(pair) for pair in pairs],
                 "cases": sorted(actual),
             }
+            graph_first = sorted(name for name, record in actual.items()
+                                 if record.get("graph_autograd") and "first_reverse" in record["graph_autograd"]["directions"])
+            graph_second = sorted(name for name, record in actual.items()
+                                  if record.get("graph_autograd") and any(direction.startswith("second_reverse") for direction in record["graph_autograd"]["directions"]))
+            graph_third = sorted(name for name, record in actual.items()
+                                 if record.get("graph_autograd") and "selected_third_d_g_d_x_d_w" in record["graph_autograd"]["directions"])
+            if graph_first: expected["reverse_first_order_graph_cases"] = graph_first
+            if graph_second: expected["reverse_second_order_cases"] = graph_second
+            if graph_third: expected["reverse_selected_third_order_cases"] = graph_third
         except (KeyError, TypeError) as error:
             raise ValueError(f"{schema}: malformed validated convolution coverage metadata") from error
         if entry.get("witnesses") != expected:
@@ -434,6 +448,49 @@ def validate_convolution_manifest_bindings(
             raise ValueError(
                 f"{schema}: required named transposed convolution cases are not supported test_cases"
             )
+
+
+def validate_overrideable_backward_evidence(
+    entries: list[dict[str, Any]], coverage: dict[str, Any]
+) -> None:
+    """Bind the promoted ten-argument adapter witness to its fixed numerical leaf."""
+    entry = next(
+        (item for item in entries if item.get("schema") == OVERRIDEABLE_BACKWARD_SCHEMA),
+        None,
+    )
+    record = coverage.get(OVERRIDEABLE_BACKWARD_CASE)
+    if entry is None or not isinstance(record, dict):
+        raise ValueError("overrideable backward requires its source-owned numerical witness and manifest entry")
+    if (record.get("schema") != OVERRIDEABLE_BACKWARD_SCHEMA
+            or type(record.get("parity")) is not bool or record["parity"] is not True):
+        raise ValueError("overrideable backward witness must be a parity-checked exact-schema execution")
+    expected_operands = [
+        {"role": "primary_input", "dtype": "float32", "rank": 4},
+        {"role": "operand", "dtype": "float32", "rank": 4},
+        {"role": "operand", "dtype": "float32", "rank": 4},
+    ]
+    if (record.get("operands") != expected_operands
+            or record.get("primary_input") != {"dtype": "float32", "rank": 4}
+            or record.get("input_dtypes") != ["float32"]
+            or record.get("input_ranks") != [4]
+            or record.get("input_shapes") != OVERRIDEABLE_BACKWARD_INPUT_SHAPES
+            or record.get("gradients") is not False):
+        raise ValueError("overrideable backward witness differs from its fixed float32 rank-four leaf inputs")
+
+    expected_witnesses = {
+        "dtypes": ["float32"], "ranks": [4],
+        "pairs": [["float32", 4]], "cases": [OVERRIDEABLE_BACKWARD_CASE],
+    }
+    supported_cases = {
+        case.get("name") for case in entry.get("test_cases", [])
+        if isinstance(case, dict) and case.get("supported") is True
+    }
+    if (entry.get("status") != "supported"
+            or entry.get("dtypes") != {"inputs": ["float32"], "outputs": ["float32"]}
+            or entry.get("ranks") != {"min": 4, "max": 4}
+            or entry.get("witnesses") != expected_witnesses
+            or supported_cases != {OVERRIDEABLE_BACKWARD_CASE}):
+        raise ValueError("overrideable backward manifest contract differs from its fixed source-bound witness")
 
 
 def validate_tensor_list_evidence(coverage: dict[str, Any], *, require_complete: bool = False) -> None:
@@ -691,6 +748,14 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
     if not isinstance(entries, list):
         raise ValueError("entries: expected array")
 
+    coverage_cache: dict[str, Any] | None = None
+
+    def coverage_evidence() -> dict[str, Any]:
+        nonlocal coverage_cache
+        if coverage_cache is None:
+            coverage_cache = load_coverage_evidence(root)
+        return coverage_cache
+
     schemas: set[str] = set()
     case_names: set[str] = set()
     for index, entry in enumerate(entries):
@@ -741,10 +806,9 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
                 f"{path}.schema: {entry['schema']!r} (status={entry['status']!r}) is not a PyTorch dispatcher overload"
             )
         witnesses = entry["witnesses"]
-        if not isinstance(witnesses, dict) or set(witnesses) not in (
-            {"dtypes", "ranks", "pairs", "cases"},
-            {"dtypes", "ranks", "pairs", "cases", "reverse_second_order_cases"},
-        ):
+        witness_base = {"dtypes", "ranks", "pairs", "cases"}
+        witness_optional = {"reverse_second_order_cases", "reverse_first_order_graph_cases", "reverse_selected_third_order_cases"}
+        if not isinstance(witnesses, dict) or not witness_base <= set(witnesses) or set(witnesses) - witness_base - witness_optional:
             raise ValueError(f"{path}.witnesses: expected primary-input dtypes/ranks/pairs/cases")
         for field in ("dtypes", "ranks", "cases"):
             values = witnesses[field]
@@ -765,8 +829,10 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         if not set(witnesses["cases"]) <= {case.get("name") for case in entry["test_cases"]}:
             raise ValueError(f"{path}.witnesses.cases: case is not present in test_cases")
         promoted = entry["autograd"] == "reverse_second_order_witnessed"
-        if promoted != ("reverse_second_order_cases" in witnesses):
-            raise ValueError(f"{path}.witnesses.reverse_second_order_cases: required only for reverse_second_order_witnessed")
+        if promoted and "reverse_second_order_cases" not in witnesses:
+            raise ValueError(
+                f"{path}.witnesses.reverse_second_order_cases: required for reverse_second_order_witnessed"
+            )
         if "reverse_second_order_cases" in witnesses:
             reverse_cases = witnesses["reverse_second_order_cases"]
             supported_cases = {case["name"] for case in entry["test_cases"] if isinstance(case, dict) and case.get("supported") is True}
@@ -780,7 +846,7 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             ):
                 raise ValueError(f"{path}.witnesses.reverse_second_order_cases: expected sorted supported witness case links")
         if promoted:
-            coverage = load_coverage_evidence(root)
+            coverage = coverage_evidence()
             for name in witnesses["reverse_second_order_cases"]:
                 record = coverage.get(name)
                 if (
@@ -792,6 +858,55 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
                     or type(record.get("reverse_autograd", {}).get("graph_preserved")) is not bool
                 ):
                     raise ValueError(f"{path}.witnesses.reverse_second_order_cases: {name!r} lacks matching executed reverse evidence")
+        autograd_contract = entry["autograd"] if isinstance(entry["autograd"], str) else None
+        allowed_link_keys = {
+            "reverse_second_order_witnessed": {"reverse_second_order_cases"},
+            "reverse_first_order_graph_witnessed": {"reverse_first_order_graph_cases"},
+            "reverse_selected_third_order_witnessed": {
+                "reverse_first_order_graph_cases", "reverse_second_order_cases",
+                "reverse_selected_third_order_cases",
+            },
+        }.get(autograd_contract, set())
+        graph_link_keys = {
+            "reverse_first_order_graph_cases", "reverse_second_order_cases",
+            "reverse_selected_third_order_cases",
+        }
+        invalid_link_keys = (set(witnesses) & graph_link_keys) - allowed_link_keys
+        if invalid_link_keys:
+            raise ValueError(
+                f"{path}.witnesses.{sorted(invalid_link_keys)[0]}: graph witness link does not match autograd contract"
+            )
+        coverage = None
+        if set(witnesses) & {
+            "reverse_first_order_graph_cases", "reverse_second_order_cases",
+            "reverse_selected_third_order_cases",
+        }:
+            coverage = coverage_evidence()
+        for link_key in ("reverse_first_order_graph_cases", "reverse_second_order_cases", "reverse_selected_third_order_cases"):
+            if link_key not in witnesses:
+                continue
+            links = witnesses[link_key]
+            supported_cases = {case["name"] for case in entry["test_cases"] if isinstance(case, dict) and case.get("supported") is True}
+            if not isinstance(links, list) or not links or links != sorted(set(links)) or not set(links) <= supported_cases:
+                raise ValueError(f"{path}.witnesses.{link_key}: expected sorted supported graph witness links")
+            import sys
+            tests_path = str(root / "tests/python")
+            if tests_path not in sys.path:
+                sys.path.insert(0, tests_path)
+            import vulkan_conformance as vc
+            for name in links:
+                record = coverage.get(name)
+                if not isinstance(record, dict) or record.get("schema") != schema or record.get("parity") is not True:
+                    raise ValueError(f"{path}.witnesses.{link_key}: {name!r} lacks matching parity evidence")
+                if record.get("graph_autograd") is None:
+                    if link_key != "reverse_second_order_cases" or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}:
+                        raise ValueError(f"{path}.witnesses.{link_key}: {name!r} lacks matching nested graph evidence")
+                    continue
+                vc.validate_graph_autograd_record(name, record)
+                directions = record["graph_autograd"]["directions"]
+                required_direction = {"reverse_first_order_graph_cases": "first_reverse", "reverse_second_order_cases": "second_reverse", "reverse_selected_third_order_cases": "selected_third_d_g_d_x_d_w"}[link_key]
+                if not any(direction == required_direction or (required_direction == "second_reverse" and direction.startswith("second_reverse")) for direction in directions):
+                    raise ValueError(f"{path}.witnesses.{link_key}: {name!r} has no nested {required_direction} evidence")
         if entry["status"] == "supported":
             if not pairs or not witnesses["cases"]:
                 raise ValueError(f"{path}.witnesses: supported entry has no witnesses")
@@ -801,6 +916,13 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
             for rank in range(ranks["min"], ranks["max"] + 1):
                 if rank not in witnesses["ranks"]:
                     raise ValueError(f"{schema}: declares ranks {ranks['min']}-{ranks['max']} but rank {rank} was never exercised")
+        graph_autograd = entry["autograd"]
+        if graph_autograd == "reverse_first_order_graph_witnessed" and not witnesses.get("reverse_first_order_graph_cases"):
+            raise ValueError(f"{path}.witnesses.reverse_first_order_graph_cases: required for first-order graph witness")
+        if graph_autograd == "reverse_selected_third_order_witnessed":
+            for link_key in ("reverse_first_order_graph_cases", "reverse_second_order_cases", "reverse_selected_third_order_cases"):
+                if not witnesses.get(link_key):
+                    raise ValueError(f"{path}.witnesses.{link_key}: required selected-third witness link is missing")
         closed_fields = {
             "empty": EMPTY_VALUES,
             "aliasing": ALIASING_VALUES,
@@ -872,7 +994,10 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
     }
 
     source, explicit_rejected = _source_registration_inventory(root / "src")
-    coverage = load_coverage_evidence(root) if STOCK_COMPOSITE_ROUTES else {}
+    has_convolution_source = bool(
+        {"aten::convolution.default", "aten::convolution_backward.default"} & source
+    )
+    coverage = coverage_evidence() if STOCK_COMPOSITE_ROUTES or has_convolution_source else {}
     validate_convolution_evidence(
         coverage,
         require_complete=any(
@@ -883,6 +1008,8 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         ),
     )
     validate_convolution_manifest_bindings(entries, coverage)
+    if OVERRIDEABLE_BACKWARD_SCHEMA in source:
+        validate_overrideable_backward_evidence(entries, coverage)
     validate_tensor_list_evidence(
         coverage,
         require_complete=any(entry.get("schema") == "aten::cat.default" for entry in entries),
@@ -890,6 +1017,13 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
     validate_stock_composite_routes(
         STOCK_COMPOSITE_ROUTES, entries, coverage, source, explicit_rejected
     )
+    if has_convolution_source:
+        import sys
+        tests_path = str(root / "tests/python")
+        if tests_path not in sys.path:
+            sys.path.insert(0, tests_path)
+        import vulkan_conformance as vc
+        vc.validate_graph_autograd_evidence(coverage, entries)
     for entry in entries:
         if entry.get("schema") != "aten::cat.default":
             continue

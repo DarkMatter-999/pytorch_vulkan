@@ -457,9 +457,12 @@ if(BUILD_PYTHON_EXTENSION)
         SYMBOLIC COPY_ON_ERROR)
 
       if(BUILD_TESTING)
-          add_test(NAME vulkan_manifest_validation
-                   COMMAND ${Python3_EXECUTABLE}
-                           ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_capabilities.py)
+           add_test(NAME vulkan_manifest_validation
+                    COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_capabilities.py)
+           set_tests_properties(vulkan_manifest_validation PROPERTIES
+                                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                 ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
            add_test(NAME vulkan_supported_workload_validation
                     COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_conformance.py)

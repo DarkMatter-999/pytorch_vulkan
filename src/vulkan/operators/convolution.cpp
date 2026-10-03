@@ -1,5 +1,4 @@
 #include "convolution.h"
-#include "autograd.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
@@ -13,6 +12,18 @@
 
 namespace pytorch_vulkan {
 namespace {
+
+std::array<int64_t, 2> normalize_convolution_output_padding_2d(
+    at::IntArrayRef output_padding) {
+    TORCH_CHECK(output_padding.size() == 1 || output_padding.size() == 2,
+                "output_padding must have one or two components for 2-D convolution");
+    const std::array<int64_t, 2> normalized{
+        output_padding[0], output_padding.size() == 1
+            ? output_padding[0] : output_padding[1]};
+    TORCH_CHECK(normalized[0] >= 0 && normalized[1] >= 0,
+                "negative output_padding is not supported");
+    return normalized;
+}
 
 uint64_t checked_add(uint64_t lhs, uint64_t rhs) {
     if (rhs > std::numeric_limits<uint64_t>::max() - lhs)
@@ -657,16 +668,14 @@ at::Tensor convolution(const at::Tensor &input, const at::Tensor &weight,
                        int64_t groups) {
     TORCH_CHECK(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
                 "Vulkan convolution requires 2-D stride, padding and dilation");
-    TORCH_CHECK(output_padding.size() == 2,
-                "Vulkan convolution requires 2-D output_padding");
-    TORCH_CHECK(transposed || output_padding.equals({0, 0}),
-                "Vulkan convolution supports only zero output_padding for ordinary convolutions");
+    const auto normalized_output_padding =
+        normalize_convolution_output_padding_2d(output_padding);
     const bool has_bias = bias.has_value() && bias->defined();
     const ConvolutionGeometry geometry{stride[0], stride[1], padding[0], padding[1],
                                        dilation[0], dilation[1], groups};
     const at::Tensor *defined_bias = has_bias ? &*bias : nullptr;
     return run_single(input, weight, defined_bias, nullptr, geometry, transposed,
-                      {output_padding[0], output_padding[1]});
+                      normalized_output_padding);
 }
 
 at::Tensor convolution_backward_input(const at::Tensor &grad, const at::Tensor &weight,
@@ -694,16 +703,18 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     (void)bias_sizes;
     TORCH_CHECK(stride.size() == 2 && padding.size() == 2 && dilation.size() == 2,
                 "Vulkan convolution backward requires 2-D stride, padding and dilation");
-    TORCH_CHECK(output_padding.size() == 2,
-                "Vulkan convolution backward requires 2-D output_padding");
-    TORCH_CHECK(transposed || output_padding.equals({0, 0}),
-                "Vulkan convolution backward supports only zero output_padding for ordinary convolutions");
+    const auto normalized_output_padding =
+        normalize_convolution_output_padding_2d(output_padding);
+    TORCH_CHECK(transposed ||
+                    (normalized_output_padding[0] == 0 &&
+                     normalized_output_padding[1] == 0),
+                "output_padding is not supported for non-transposed convolutions");
     const ConvolutionGeometry geometry{stride[0], stride[1], padding[0], padding[1],
                                        dilation[0], dilation[1], groups};
     auto plan = preflight_convolution(input, weight, nullptr, &grad_output,
-                                       geometry, transposed,
-                                       {output_padding[0], output_padding[1]},
-                                       output_mask, false);
+                                     geometry, transposed,
+                                     normalized_output_padding,
+                                     output_mask, false);
     std::array<at::Tensor, 3> outputs;
     for (size_t i = 0; i < plan.output_count; ++i) {
         const auto &spec = plan.outputs[i];
@@ -717,14 +728,22 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     }
     return {outputs[0], outputs[1], outputs[2]};
 }
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward_overrideable(
+    const at::Tensor &grad_output, const at::Tensor &input,
+    const at::Tensor &weight, at::IntArrayRef stride, at::IntArrayRef padding,
+    at::IntArrayRef dilation, bool transposed, at::IntArrayRef output_padding,
+    int64_t groups, std::array<bool, 3> output_mask) {
+    return pytorch_vulkan::convolution_backward(
+        grad_output, input, weight, c10::nullopt, stride, padding, dilation,
+        transposed, output_padding, groups, output_mask);
+}
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("convolution", &pytorch_vulkan::convolution);
     m.impl("convolution_overrideable", &pytorch_vulkan::convolution);
     m.impl("convolution_backward", &pytorch_vulkan::convolution_backward);
-}
-TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
-    m.impl("convolution", &pytorch_vulkan::autograd_convolution);
-    m.impl("convolution_overrideable", &pytorch_vulkan::autograd_convolution);
+    m.impl("convolution_backward_overrideable",
+           &pytorch_vulkan::convolution_backward_overrideable);
 }

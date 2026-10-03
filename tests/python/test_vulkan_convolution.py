@@ -3,8 +3,63 @@ from pathlib import Path
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 
 import pytorch_vulkan
+
+
+def _trace_tensor_metadata(value):
+    if isinstance(value, torch.Tensor):
+        return {"shape": list(value.shape), "strides": list(value.stride()),
+                "storage_offset": value.storage_offset(), "device": str(value.device)}
+    if isinstance(value, (tuple, list)):
+        return [_trace_tensor_metadata(child) for child in value]
+    return value
+
+
+def _flatten_trace_metadata(value):
+    if isinstance(value, dict) and "shape" in value:
+        yield value
+    elif isinstance(value, (tuple, list)):
+        for child in value:
+            yield from _flatten_trace_metadata(child)
+
+
+def _synchronized_cpu(value):
+    pytorch_vulkan._C.synchronize()
+    return value.cpu()
+
+
+class ConvolutionRouteTrace(TorchDispatchMode):
+    def __init__(self, phase):
+        super().__init__()
+        self.phase = phase
+        self.events = []
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        output = func(*args, **(kwargs or {}))
+        self.events.append({"phase": self.phase, "operator": str(func),
+                            "arguments": _trace_tensor_metadata(args),
+                            "output": _trace_tensor_metadata(output)})
+        return output
+
+
+def _assert_grouped_ggi_route(trace, device):
+    convolutions = [event for event in trace.events
+                    if event["operator"] == "aten.convolution.default"]
+    assert convolutions
+    inputs = [metadata for event in convolutions
+              for metadata in _flatten_trace_metadata(event["arguments"])]
+    observed = {(tuple(item["shape"]), tuple(item["strides"]), item["storage_offset"])
+                for item in inputs if item["device"] == str(device)}
+    assert ((2, 1, 6, 7), (42, 168, 7, 1), 0) in observed
+    assert ((2, 1, 6, 7), (42, 168, 7, 1), 84) in observed
+    assert ((3, 1, 3, 5), (15, 90, 5, 1), 0) in observed
+    assert ((3, 1, 3, 5), (15, 90, 5, 1), 45) in observed
+    cats = [event for event in trace.events if event["operator"] == "aten.cat.default"]
+    assert any(item["shape"] == [2, 6, 4, 2]
+               for event in cats
+               for item in _flatten_trace_metadata(event["output"]))
 
 
 @pytest.fixture
@@ -119,19 +174,532 @@ def test_conv2d_cnn_batch_weight_gradient_matches_cpu(vulkan_backend):
         torch.testing.assert_close(actual.cpu(), expected, rtol=3e-3, atol=3e-3)
 
 
-def test_conv2d_backward_is_first_order_only(vulkan_backend):
-    input, weight, bias = _conv_inputs(vulkan_backend, requires_grad=True)
-    output = torch.nn.functional.conv2d(input, weight, bias, padding=1)
+def test_conv2d_stock_module_create_graph_first_backward(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(4611)
+    module = torch.nn.Conv2d(4, 6, (3, 2), stride=(2, 1), padding=(1, 0),
+                             dilation=(1, 2), groups=2, bias=True)
+    x_cpu = torch.randn((1, 4, 6, 7), generator=generator, requires_grad=True)
+    seed_cpu = torch.randn((1, 6, 3, 5), generator=generator, requires_grad=True)
+    x_vk = x_cpu.detach().to(vulkan_backend).requires_grad_()
+    module_vk = copy.deepcopy(module).to(vulkan_backend)
+    module_vk.weight.requires_grad_(True)
+    module_vk.bias.requires_grad_(True)
+    seed_vk = seed_cpu.detach().to(vulkan_backend).requires_grad_()
+    cpu_y = module(x_cpu)
+    vk_y = module_vk(x_vk)
+    cpu_grads = torch.autograd.grad(cpu_y, (x_cpu, module.weight, module.bias),
+                                    seed_cpu, create_graph=True)
+    assert [type(value.grad_fn).__name__ for value in cpu_grads] == [
+        "ConvolutionBackwardBackward0", "ConvolutionBackwardBackward0",
+        "ConvolutionBackwardBackward0",
+    ]
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_grads = torch.autograd.grad(vk_y, (x_vk, module_vk.weight, module_vk.bias),
+                                   seed_vk, create_graph=True)
+    assert all(g.requires_grad and g.grad_fn is not None for g in vk_grads)
+    assert [type(value.grad_fn).__name__ for value in vk_grads] == [
+        type(value.grad_fn).__name__ for value in cpu_grads
+    ]
+    dispatches, copies, transfers, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert dispatches == 3
+    assert copies == transfers == fallbacks == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_y.cpu(), cpu_y.detach(), rtol=3e-4, atol=3e-4)
+    for actual, expected in zip(vk_grads, cpu_grads):
+        pytorch_vulkan._C.synchronize()
+        torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
 
-    gradient = torch.autograd.grad(
-        output,
-        input,
-        torch.ones_like(output.cpu()).to(vulkan_backend),
+
+def test_convolution_overrideable_forward_generated_first_backward(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(4615)
+    x_cpu = torch.randn((1, 2, 4, 5), generator=generator, requires_grad=True)
+    w_cpu = torch.randn((3, 2, 2, 3), generator=generator, requires_grad=True)
+    b_cpu = torch.randn((3,), generator=generator, requires_grad=True)
+    seed_cpu = torch.randn((1, 3, 3, 3), generator=generator, requires_grad=True)
+    xv, wv, bv, sv = (value.detach().to(vulkan_backend).requires_grad_()
+                      for value in (x_cpu, w_cpu, b_cpu, seed_cpu))
+    vk_y = torch.ops.aten.convolution_overrideable.default(
+        xv, wv, bv, [1, 1], [0, 0], [1, 1], False, [0], 1,
+    )
+    cpu_y = torch.nn.functional.conv2d(x_cpu, w_cpu, b_cpu)
+    cpu_grads = torch.autograd.grad(cpu_y, (x_cpu, w_cpu, b_cpu), seed_cpu,
+                                    create_graph=True)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_grads = torch.autograd.grad(vk_y, (xv, wv, bv), sv, create_graph=True)
+    assert all(value.requires_grad and value.grad_fn is not None for value in vk_grads)
+    dispatches, copies, transfers, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert dispatches == 3
+    assert copies == transfers == fallbacks == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_y.cpu(), cpu_y.detach(), rtol=3e-4, atol=3e-4)
+    for actual, expected in zip(vk_grads, cpu_grads):
+        pytorch_vulkan._C.synchronize()
+        torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
+
+
+@pytest.mark.parametrize("mask_bits", range(8), ids=[f"mask-{value:03b}" for value in range(8)])
+def test_convolution_backward_overrideable_exact_schema_adapter(vulkan_backend, mask_bits):
+    x = torch.randn((1, 2, 4, 5), generator=torch.Generator().manual_seed(4612))
+    w = torch.randn((3, 2, 2, 3), generator=torch.Generator().manual_seed(4613))
+    go = torch.randn((1, 3, 3, 3), generator=torch.Generator().manual_seed(4614))
+    mask = [(mask_bits & (1 << (2 - index))) != 0 for index in range(3)]
+    args = ([1, 1], [0, 0], [1, 1], False, [0], 1, mask)
+    expected = torch.ops.aten.convolution_backward.default(
+        go, x, w, None, [1, 1], [0, 0], [1, 1], False, [0], 1, mask,
+    )
+    vk_inputs = (go.to(vulkan_backend), x.to(vulkan_backend), w.to(vulkan_backend))
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_timing = pytorch_vulkan._C.timing_breakdown()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    actual = torch.ops.aten.convolution_backward_overrideable.default(
+        *vk_inputs, *args
+    )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (sum(mask), 0, 0, 0)
+    if not any(mask):
+        assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_timing["buffer_creations"]
+        assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+    for value, reference in zip(actual, expected):
+        assert (value is None) == (reference is None)
+        if value is not None:
+            assert tuple(value.shape) == tuple(reference.shape)
+            pytorch_vulkan._C.synchronize()
+            torch.testing.assert_close(value.cpu(), reference, rtol=3e-4, atol=3e-4)
+
+
+def test_transposed_conv_first_backward_preserves_graph_and_matches_cpu(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(4616)
+    cpu_module = torch.nn.ConvTranspose2d(
+        2, 3, 2, stride=(2, 2), output_padding=(1, 0), bias=True,
+    )
+    cpu_input = torch.randn((1, 2, 3, 3), generator=generator, requires_grad=True)
+    cpu_seed = torch.randn((1, 3, 7, 6), generator=generator, requires_grad=True)
+    vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    vk_seed = cpu_seed.detach().to(vulkan_backend).requires_grad_()
+    cpu_output = cpu_module(cpu_input)
+    vk_output = vk_module(vk_input)
+    cpu_grads = torch.autograd.grad(
+        cpu_output, (cpu_input, cpu_module.weight, cpu_module.bias), cpu_seed,
         create_graph=True,
-    )[0]
+    )
+    assert [type(value.grad_fn).__name__ for value in cpu_grads] == [
+        "ConvolutionBackwardBackward0", "ConvolutionBackwardBackward0",
+        "ConvolutionBackwardBackward0",
+    ]
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_grads = torch.autograd.grad(
+        vk_output, (vk_input, vk_module.weight, vk_module.bias), vk_seed,
+        create_graph=True,
+    )
+    assert all(value.requires_grad and value.grad_fn is not None for value in vk_grads)
+    assert [type(value.grad_fn).__name__ for value in vk_grads] == [
+        type(value.grad_fn).__name__ for value in cpu_grads
+    ]
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (3, 0, 0, 0)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach(), rtol=3e-4, atol=3e-4)
+    for actual, expected in zip(vk_grads, cpu_grads):
+        pytorch_vulkan._C.synchronize()
+        torch.testing.assert_close(actual.cpu(), expected, rtol=4e-4, atol=4e-4)
 
-    assert gradient.device == torch.device("vk:0")
-    assert not gradient.requires_grad
+
+@pytest.mark.parametrize("mutated_role", ["input", "weight"])
+def test_generated_convolution_saved_variable_version_checks(vulkan_backend, mutated_role):
+    generator = torch.Generator(device="cpu").manual_seed(4617)
+    x_cpu = torch.randn((1, 2, 4, 5), generator=generator, requires_grad=True)
+    w_cpu = torch.randn((3, 2, 2, 3), generator=generator, requires_grad=True)
+    x_vk = x_cpu.detach().to(vulkan_backend).requires_grad_()
+    w_vk = w_cpu.detach().to(vulkan_backend).requires_grad_()
+    cpu_y = torch.nn.functional.conv2d(x_cpu, w_cpu)
+    vk_y = torch.nn.functional.conv2d(x_vk, w_vk)
+    cpu_target = x_cpu if mutated_role == "input" else w_cpu
+    vk_target = x_vk if mutated_role == "input" else w_vk
+    with torch.no_grad():
+        cpu_target.add_(1)
+        vk_target.add_(1)
+    cpu_seed = torch.ones(cpu_y.shape)
+    vk_seed = cpu_seed.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        torch.autograd.grad(cpu_y, (x_cpu, w_cpu), cpu_seed)
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        torch.autograd.grad(vk_y, (x_vk, w_vk), vk_seed)
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
+def test_grouped_generated_convolution_second_roles_and_selected_third(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(4701)
+    x = torch.randn((1, 4, 6, 7), generator=generator, requires_grad=True)
+    w = torch.randn((6, 2, 3, 2), generator=generator, requires_grad=True)
+    b = torch.randn((6,), generator=generator, requires_grad=True)
+    g = torch.randn((1, 6, 3, 5), generator=generator, requires_grad=True)
+    xv, wv, bv, gv = (t.detach().to(vulkan_backend).requires_grad_()
+                      for t in (x, w, b, g))
+    params = dict(stride=(2, 1), padding=(1, 0), dilation=(1, 2), groups=2)
+    y = torch.nn.functional.conv2d(x, w, b, **params)
+    yv = torch.nn.functional.conv2d(xv, wv, bv, **params)
+    first = torch.autograd.grad(y, (x, w, b), g, create_graph=True, retain_graph=True)
+    first_vk = torch.autograd.grad(yv, (xv, wv, bv), gv,
+                                   create_graph=True, retain_graph=True)
+    assert all(value.requires_grad and value.grad_fn is not None
+               for value in first + first_vk)
+    assert [type(value.grad_fn).__name__ for value in first_vk] == [
+        type(value.grad_fn).__name__ for value in first
+    ]
+    print(f"grouped y/first shapes={tuple(y.shape)}/{[tuple(v.shape) for v in first]}; "
+          f"history={[type(v.grad_fn).__name__ for v in first_vk]}")
+
+    seeds = tuple(torch.randn(t.shape, generator=generator) for t in first)
+    seeds_vk = tuple(seed.to(vulkan_backend) for seed in seeds)
+    sx = torch.randn(x.shape, generator=generator)
+    sx_vk = sx.to(vulkan_backend)
+    contractions = tuple((q * seed).sum() for q, seed in zip(first, seeds))
+    contractions_vk = tuple((q * seed).sum()
+                            for q, seed in zip(first_vk, seeds_vk))
+
+    cpu_trace = ConvolutionRouteTrace("second_reverse_ggI")
+    vk_trace = ConvolutionRouteTrace("second_reverse_ggI")
+    with cpu_trace:
+        cpu_ggi = torch.autograd.grad(contractions[0], (w, g), allow_unused=True,
+                                      retain_graph=True)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with vk_trace:
+        vk_ggi = torch.autograd.grad(contractions_vk[0], (wv, gv),
+                                     allow_unused=True, retain_graph=True)
+    _assert_grouped_ggi_route(cpu_trace, "cpu")
+    _assert_grouped_ggi_route(vk_trace, vulkan_backend)
+    assert tuple(vk_ggi[0].shape) == (6, 2, 3, 2)
+    for label, trace in (("cpu", cpu_trace), ("vulkan", vk_trace)):
+        route_inputs = sorted({
+            (tuple(item["shape"]), tuple(item["strides"]), item["storage_offset"])
+            for event in trace.events
+            if event["operator"] == "aten.convolution.default"
+            for item in _flatten_trace_metadata(event["arguments"])
+            if item["device"] == ("cpu" if label == "cpu" else str(vulkan_backend))
+        })
+        cat_outputs = [item["shape"] for event in trace.events
+                       if event["operator"] == "aten.cat.default"
+                       for item in _flatten_trace_metadata(event["output"])]
+        print(f"grouped {label} ggI convolution inputs={route_inputs} cat outputs={cat_outputs}")
+
+    cpu_ggw = torch.autograd.grad(contractions[1], (x, g), allow_unused=True,
+                                  retain_graph=True)
+    vk_ggw = torch.autograd.grad(contractions_vk[1], (xv, gv),
+                                 allow_unused=True, retain_graph=True)
+    cpu_ggb_trace = ConvolutionRouteTrace("second_reverse_ggb")
+    vk_ggb_trace = ConvolutionRouteTrace("second_reverse_ggb")
+    with cpu_ggb_trace:
+        cpu_ggb = torch.autograd.grad(contractions[2], (x, w, g), allow_unused=True,
+                                      retain_graph=True)
+    with vk_ggb_trace:
+        vk_ggb = torch.autograd.grad(contractions_vk[2], (xv, wv, gv),
+                                     allow_unused=True, retain_graph=True)
+    cpu_combined_trace = ConvolutionRouteTrace("second_combined")
+    vk_combined_trace = ConvolutionRouteTrace("second_combined")
+    with cpu_combined_trace:
+        cpu_combined = torch.autograd.grad(first, (x, w, b, g), grad_outputs=seeds,
+                                           allow_unused=True, retain_graph=True)
+    with vk_combined_trace:
+        vk_combined = torch.autograd.grad(first_vk, (xv, wv, bv, gv),
+                                          grad_outputs=seeds_vk, allow_unused=True,
+                                          retain_graph=True)
+    for label, trace in (("cpu-ggb", cpu_ggb_trace), ("vulkan-ggb", vk_ggb_trace),
+                         ("cpu-combined", cpu_combined_trace),
+                         ("vulkan-combined", vk_combined_trace)):
+        print(f"grouped observed {label} operators="
+              f"{sorted({event['operator'] for event in trace.events})}")
+    assert cpu_ggb[:2] == (None, None) and vk_ggb[:2] == (None, None)
+    assert cpu_combined[2] is None and vk_combined[2] is None
+
+    sw = seeds[1]
+    cpu_mixed = torch.autograd.grad(contractions[1], x, create_graph=True,
+                                    retain_graph=True)[0]
+    vk_mixed = torch.autograd.grad(contractions_vk[1], xv, create_graph=True,
+                                   retain_graph=True)[0]
+    cpu_third = torch.autograd.grad((cpu_mixed * sx).sum(), g)[0]
+    vk_third = torch.autograd.grad((vk_mixed * sx_vk).sum(), gv)[0]
+    oracle = torch.nn.functional.conv2d(sx, sw, None, **params)
+    assert torch.count_nonzero(cpu_third).item() > 0
+    torch.testing.assert_close(cpu_third, oracle, rtol=0, atol=0)
+
+    pytorch_vulkan._C.synchronize()
+    dispatches, copies, transfers, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert dispatches > 0
+    assert transfers == fallbacks == 0
+    print(f"grouped second/selected-third counters={(dispatches, copies, transfers, fallbacks)}")
+    for actual, expected in zip(first_vk, first):
+        torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                   rtol=7e-4, atol=7e-4)
+    for actual, expected in zip(vk_ggi, cpu_ggi):
+        assert (actual is None) == (expected is None)
+        if actual is not None:
+            assert torch.count_nonzero(expected).item() > 0
+            torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                       rtol=8e-4, atol=8e-4)
+    for actual_group, expected_group in ((vk_ggw, cpu_ggw), (vk_ggb, cpu_ggb),
+                                         (vk_combined, cpu_combined)):
+        for actual, expected in zip(actual_group, expected_group):
+            assert (actual is None) == (expected is None)
+            if actual is not None:
+                assert torch.count_nonzero(expected).item() > 0
+                torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                           rtol=8e-4, atol=8e-4)
+    vk_third_cpu = _synchronized_cpu(vk_third)
+    torch.testing.assert_close(vk_third_cpu, oracle, rtol=8e-4, atol=8e-4)
+    assert torch.count_nonzero(vk_third_cpu).item() > 0
+
+
+def test_depthwise_generated_convolution_selected_second_and_third(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(4702)
+    x = torch.randn((1, 2, 5, 6), generator=generator, requires_grad=True)
+    w = torch.randn((4, 1, 2, 3), generator=generator, requires_grad=True)
+    g = torch.randn((1, 4, 4, 3), generator=generator, requires_grad=True)
+    xv, wv, gv = (value.detach().to(vulkan_backend).requires_grad_()
+                  for value in (x, w, g))
+    params = dict(stride=(1, 2), padding=(0, 1), dilation=(1, 1), groups=2)
+    y = torch.nn.functional.conv2d(x, w, None, **params)
+    yv = torch.nn.functional.conv2d(xv, wv, None, **params)
+    first = torch.autograd.grad(y, (x, w), g, create_graph=True, retain_graph=True)
+    first_vk = torch.autograd.grad(yv, (xv, wv), gv,
+                                   create_graph=True, retain_graph=True)
+    assert [tuple(value.shape) for value in first_vk] == [
+        tuple(value.shape) for value in first
+    ] == [(1, 2, 5, 6), (4, 1, 2, 3)]
+    assert all(value.requires_grad and value.grad_fn is not None
+               for value in first + first_vk)
+    assert [type(value.grad_fn).__name__ for value in first_vk] == [
+        type(value.grad_fn).__name__ for value in first
+    ]
+    print(f"depthwise y/first shapes={tuple(y.shape)}/{[tuple(v.shape) for v in first]}; "
+          f"history={[type(v.grad_fn).__name__ for v in first_vk]}")
+    seeds = tuple(torch.randn(value.shape, generator=generator) for value in first)
+    seeds_vk = tuple(value.to(vulkan_backend) for value in seeds)
+    sx = torch.randn(x.shape, generator=generator)
+    sx_vk = sx.to(vulkan_backend)
+    gx_contraction = (first[0] * seeds[0]).sum()
+    gw_contraction = (first[1] * seeds[1]).sum()
+    gx_contraction_vk = (first_vk[0] * seeds_vk[0]).sum()
+    gw_contraction_vk = (first_vk[1] * seeds_vk[1]).sum()
+    cpu_xw = torch.autograd.grad(gx_contraction, w, retain_graph=True)[0]
+    cpu_xg = torch.autograd.grad(gx_contraction, g, retain_graph=True)[0]
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_xw = torch.autograd.grad(gx_contraction_vk, wv, retain_graph=True)[0]
+    vk_xg = torch.autograd.grad(gx_contraction_vk, gv, retain_graph=True)[0]
+    cpu_wx = torch.autograd.grad(gw_contraction, x, create_graph=True,
+                                 retain_graph=True)[0]
+    vk_wx = torch.autograd.grad(gw_contraction_vk, xv, create_graph=True,
+                                retain_graph=True)[0]
+    cpu_wg = torch.autograd.grad(gw_contraction, g, retain_graph=True)[0]
+    vk_wg = torch.autograd.grad(gw_contraction_vk, gv, retain_graph=True)[0]
+    cpu_third = torch.autograd.grad((cpu_wx * sx).sum(), g)[0]
+    vk_third = torch.autograd.grad((vk_wx * sx_vk).sum(), gv)[0]
+    oracle = torch.nn.functional.conv2d(sx, seeds[1], None, **params)
+    assert all(torch.count_nonzero(value).item() > 0
+               for value in (cpu_xw, cpu_xg, cpu_wg, cpu_third))
+    torch.testing.assert_close(cpu_third, oracle, rtol=0, atol=0)
+
+    pytorch_vulkan._C.synchronize()
+    dispatches, copies, transfers, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert dispatches > 0 and transfers == fallbacks == 0
+    print(f"depthwise second/selected-third counters={(dispatches, copies, transfers, fallbacks)}")
+    for actual, expected in zip(first_vk, first):
+        torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                   rtol=7e-4, atol=7e-4)
+    for actual, expected in ((vk_xw, cpu_xw), (vk_xg, cpu_xg), (vk_wx, cpu_wx),
+                             (vk_wg, cpu_wg), (vk_third, cpu_third)):
+        torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                   rtol=8e-4, atol=8e-4)
+    vk_third_cpu = _synchronized_cpu(vk_third)
+    assert torch.count_nonzero(vk_third_cpu).item() > 0
+    torch.testing.assert_close(vk_third_cpu, oracle, rtol=8e-4, atol=8e-4)
+
+
+def test_transposed_generated_convolution_second_order_boundary(vulkan_backend):
+    generator = torch.Generator(device="cpu").manual_seed(4703)
+    x = torch.randn((1, 2, 3, 3), generator=generator, requires_grad=True)
+    w = torch.randn((2, 3, 2, 2), generator=generator, requires_grad=True)
+    b = torch.randn((3,), generator=generator, requires_grad=True)
+    g = torch.randn((1, 3, 7, 6), generator=generator, requires_grad=True)
+    xv, wv, bv, gv = (value.detach().to(vulkan_backend).requires_grad_()
+                      for value in (x, w, b, g))
+    params = dict(stride=(2, 2), output_padding=(1, 0))
+    y = torch.nn.functional.conv_transpose2d(x, w, b, **params)
+    yv = torch.nn.functional.conv_transpose2d(xv, wv, bv, **params)
+    first = torch.autograd.grad(y, (x, w, b), g, create_graph=True, retain_graph=True)
+    first_vk = torch.autograd.grad(yv, (xv, wv, bv), gv,
+                                   create_graph=True, retain_graph=True)
+    assert [tuple(value.shape) for value in first_vk] == [
+        tuple(value.shape) for value in first
+    ] == [(1, 2, 3, 3), (2, 3, 2, 2), (3,)]
+    assert all(value.requires_grad and value.grad_fn is not None
+               for value in first + first_vk)
+    assert [type(value.grad_fn).__name__ for value in first_vk] == [
+        type(value.grad_fn).__name__ for value in first
+    ]
+    print(f"transposed y/first shapes={tuple(y.shape)}/{[tuple(v.shape) for v in first]}; "
+          f"history={[type(v.grad_fn).__name__ for v in first_vk]}")
+    seeds = tuple(torch.randn(value.shape, generator=generator) for value in first)
+    seeds_vk = tuple(value.to(vulkan_backend) for value in seeds)
+    sx = torch.randn(x.shape, generator=generator)
+    sw = torch.randn(w.shape, generator=generator)
+    sx_vk, sw_vk = sx.to(vulkan_backend), sw.to(vulkan_backend)
+
+    cpu_ggi = torch.autograd.grad((first[0] * seeds[0]).sum(), (w, g),
+                                  allow_unused=True, retain_graph=True)
+    cpu_ggw = torch.autograd.grad((first[1] * seeds[1]).sum(), (x, g),
+                                  allow_unused=True, retain_graph=True)
+    cpu_ggb = torch.autograd.grad((first[2] * seeds[2]).sum(), (x, w, g),
+                                  allow_unused=True, retain_graph=True)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_ggi = torch.autograd.grad((first_vk[0] * seeds_vk[0]).sum(), (wv, gv),
+                                 allow_unused=True, retain_graph=True)
+    vk_ggw = torch.autograd.grad((first_vk[1] * seeds_vk[1]).sum(), (xv, gv),
+                                 allow_unused=True, retain_graph=True)
+    vk_ggb = torch.autograd.grad((first_vk[2] * seeds_vk[2]).sum(),
+                                 (xv, wv, gv), allow_unused=True, retain_graph=True)
+    cpu_combined = torch.autograd.grad(
+        first, (x, w, b, g), grad_outputs=seeds, allow_unused=True,
+        retain_graph=True,
+    )
+    vk_combined = torch.autograd.grad(
+        first_vk, (xv, wv, bv, gv), grad_outputs=seeds_vk,
+        allow_unused=True, retain_graph=True,
+    )
+    for cpu_values, vk_values in ((cpu_ggi, vk_ggi), (cpu_ggw, vk_ggw),
+                                  (cpu_ggb, vk_ggb),
+                                  (cpu_combined, vk_combined)):
+        for cpu_value, vk_value in zip(cpu_values, vk_values):
+            assert (cpu_value is None) == (vk_value is None)
+            if cpu_value is not None:
+                assert torch.count_nonzero(cpu_value).item() > 0
+    assert cpu_ggb[:2] == (None, None) and vk_ggb[:2] == (None, None)
+    assert cpu_combined[2] is None and vk_combined[2] is None
+
+    cpu_mixed = torch.autograd.grad((first[1] * sw).sum(), x,
+                                    create_graph=True, retain_graph=True)[0]
+    vk_mixed = torch.autograd.grad((first_vk[1] * sw_vk).sum(), xv,
+                                   create_graph=True, retain_graph=True)[0]
+    pytorch_vulkan._C.synchronize()
+    successful_dispatches, successful_copies, successful_transfers, successful_fallbacks = \
+        pytorch_vulkan._C.execution_counter_snapshot()
+    assert successful_dispatches > 0
+    assert successful_transfers == successful_fallbacks == 0
+    print(f"transposed positive-second counters={(successful_dispatches, successful_copies, successful_transfers, successful_fallbacks)}")
+    with pytest.raises(RuntimeError, match="output_padding is not supported for non-transposed convolutions") as cpu_boundary:
+        torch.autograd.grad((cpu_mixed * sx).sum(), g)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_timing = pytorch_vulkan._C.timing_breakdown()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    with pytest.raises(RuntimeError, match="output_padding is not supported for non-transposed convolutions") as vk_boundary:
+        torch.autograd.grad((vk_mixed * sx_vk).sum(), gv)
+    pytorch_vulkan._C.synchronize()
+    graph_boundary_counters = pytorch_vulkan._C.execution_counter_snapshot()
+    print(f"transposed CPU boundary={type(cpu_boundary.value).__name__}: {cpu_boundary.value}")
+    print(f"transposed Vulkan graph boundary={type(vk_boundary.value).__name__}: {vk_boundary.value}; counters={graph_boundary_counters}")
+    assert graph_boundary_counters[2:] == (0, 0)
+
+    # The native graph may perform valid composite work before it reaches the
+    # offending ordinary backward. Qualify that leaf's preflight independently
+    # through its public ATen schema with the retained nonzero metadata.
+    pytorch_vulkan._C.reset_execution_counters()
+    before_timing = pytorch_vulkan._C.timing_breakdown()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    with pytest.raises(RuntimeError, match="output_padding is not supported for non-transposed convolutions"):
+        torch.ops.aten.convolution_backward.default(
+            gv, xv, wv, None, [1, 1], [0, 0], [1, 1], False, [1, 0], 1,
+            [True, True, False],
+        )
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    print("transposed Vulkan direct ordinary-backward boundary counters=(0, 0, 0, 0)")
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_timing["buffer_creations"]
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+
+    for actual, expected in zip(first_vk, first):
+        torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                   rtol=5e-4, atol=5e-4)
+    for cpu_values, vk_values in ((cpu_ggi, vk_ggi), (cpu_ggw, vk_ggw),
+                                  (cpu_ggb, vk_ggb),
+                                  (cpu_combined, vk_combined)):
+        for cpu_value, vk_value in zip(cpu_values, vk_values):
+            if vk_value is not None:
+                torch.testing.assert_close(_synchronized_cpu(vk_value), cpu_value,
+                                           rtol=8e-4, atol=8e-4)
+
+
+@pytest.mark.parametrize("bias,trainable", [
+    (True, (False, False, False)), (True, (False, False, True)),
+    (True, (False, True, False)), (True, (False, True, True)),
+    (True, (True, False, False)), (True, (True, False, True)),
+    (True, (True, True, False)), (True, (True, True, True)),
+    (False, (False, False, False)), (False, (True, True, False)),
+], ids=["mask-000", "mask-001", "mask-010", "mask-011", "mask-100",
+       "mask-101", "mask-110", "mask-111", "biasfree-frozen", "biasfree-trainable"])
+def test_stock_conv2d_trainability_mask_matrix_matches_generated_autograd(
+    vulkan_backend, bias, trainable,
+):
+    generator = torch.Generator(device="cpu").manual_seed(4710 + sum(trainable) + int(bias))
+    cpu_module = torch.nn.Conv2d(2, 3, (2, 3), bias=bias)
+    cpu_module.weight.requires_grad_(trainable[1])
+    if bias:
+        cpu_module.bias.requires_grad_(trainable[2])
+    cpu_input = torch.randn((1, 2, 4, 5), generator=generator)
+    cpu_input.requires_grad_(trainable[0])
+    cpu_module_vk = copy.deepcopy(cpu_module).to(vulkan_backend)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_(trainable[0])
+    cpu_output = cpu_module(cpu_input)
+    vk_output = cpu_module_vk(vk_input)
+    cpu_seed = torch.randn(cpu_output.shape, generator=generator, requires_grad=True)
+    vk_seed = cpu_seed.detach().to(vulkan_backend).requires_grad_()
+    assert tuple(vk_output.shape) == tuple(cpu_output.shape)
+    vk_targets_needed = (trainable[0], trainable[1], bias and trainable[2])
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    if any(vk_targets_needed):
+        cpu_output.backward(cpu_seed, create_graph=True, retain_graph=True)
+        vk_output.backward(vk_seed, create_graph=True, retain_graph=True)
+        pytorch_vulkan._C.synchronize()
+        counters = pytorch_vulkan._C.execution_counter_snapshot()
+        assert counters[0] == sum(vk_targets_needed)
+        assert counters[2:] == (0, 0)
+    else:
+        assert not cpu_output.requires_grad and not vk_output.requires_grad
+        assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+        counters = pytorch_vulkan._C.execution_counter_snapshot()
+    print(f"stock Conv2d bias={bias} trainable={trainable} counters={counters}")
+    pairs = ((vk_input.grad, cpu_input.grad, trainable[0]),
+             (cpu_module_vk.weight.grad, cpu_module.weight.grad, trainable[1]))
+    if bias:
+        pairs += ((cpu_module_vk.bias.grad, cpu_module.bias.grad, trainable[2]),)
+    for actual, expected, selected in pairs:
+        assert (actual is not None) is selected
+        assert (expected is not None) is selected
+        if selected:
+            assert actual.requires_grad == expected.requires_grad
+            assert (actual.grad_fn is not None) == (expected.grad_fn is not None)
+            torch.testing.assert_close(_synchronized_cpu(actual), expected,
+                                       rtol=4e-4, atol=4e-4)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(_synchronized_cpu(vk_output), cpu_output.detach(),
+                               rtol=3e-4, atol=3e-4)
+    cpu_input.grad = None
+    vk_input.grad = None
+    cpu_module.weight.grad = None
+    cpu_module_vk.weight.grad = None
+    if bias:
+        cpu_module.bias.grad = None
+        cpu_module_vk.bias.grad = None
 
 
 @pytest.mark.parametrize(
@@ -1006,53 +1574,6 @@ def test_conv_transpose2d_accepts_canonical_dual_contiguous_singletons(vulkan_ba
 
 
 @pytest.mark.parametrize("route", ["functional", "module"])
-def test_transposed_create_graph_is_rejected_before_vulkan_work(vulkan_backend, route):
-    generator = torch.Generator(device="cpu").manual_seed(8053)
-    cpu_input = torch.randn((1, 2, 2, 2), generator=generator, requires_grad=True)
-    cpu_weight = torch.randn((2, 3, 2, 2), generator=generator, requires_grad=True)
-    if route == "functional":
-        cpu_output = torch.nn.functional.conv_transpose2d(cpu_input, cpu_weight)
-        vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
-        vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
-        vk_output = torch.nn.functional.conv_transpose2d(vk_input, vk_weight)
-    else:
-        cpu_module = torch.nn.ConvTranspose2d(2, 3, 2, bias=False)
-        with torch.no_grad():
-            cpu_module.weight.copy_(cpu_weight)
-        vk_module = copy.deepcopy(cpu_module).to(vulkan_backend)
-        vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
-        cpu_output = cpu_module(cpu_input)
-        vk_output = vk_module(vk_input)
-        cpu_weight = cpu_module.weight
-
-    grad_output_cpu = torch.randn(cpu_output.shape, generator=generator)
-    grad_output_vk = grad_output_cpu.to(vulkan_backend)
-    cpu_grad, = torch.autograd.grad(
-        cpu_output, (cpu_input, cpu_weight), grad_outputs=grad_output_cpu,
-        create_graph=True, retain_graph=True,
-    )[0:1]
-    assert cpu_grad.requires_grad
-    if route == "module":
-        vk_targets = (vk_input, vk_module.weight)
-    else:
-        vk_targets = (vk_input, vk_weight)
-
-    pytorch_vulkan._C.synchronize()
-    pytorch_vulkan._C.reset_execution_counters()
-    before_timing = pytorch_vulkan._C.timing_breakdown()
-    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
-    with pytest.raises(RuntimeError, match="transposed convolution.*create_graph or higher-order"):
-        torch.autograd.grad(
-            vk_output, vk_targets, grad_outputs=grad_output_vk,
-            create_graph=True,
-        )
-    pytorch_vulkan._C.synchronize()
-    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
-    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_timing["buffer_creations"]
-    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
-
-
-@pytest.mark.parametrize("route", ["functional", "module"])
 def test_transposed_first_backward_matches_cpu_when_create_graph_is_false(
     vulkan_backend, route
 ):
@@ -1085,6 +1606,7 @@ def test_transposed_first_backward_matches_cpu_when_create_graph_is_false(
         vk_output, vk_targets, grad_outputs=grad_output_cpu.to(vulkan_backend),
         create_graph=False,
     )
+    pytorch_vulkan._C.synchronize()
     for actual, expected in zip(vk_grads, cpu_grads):
         torch.testing.assert_close(actual.cpu(), expected)
 
@@ -1708,15 +2230,76 @@ def test_grouped_convolution_divisibility_rejections_match_cpu(vulkan_backend, g
         torch.nn.functional.conv2d(*(t.to(vulkan_backend) for t in tensors), padding=1, groups=groups)
 
 
-def test_convolution_retains_ordinary_nonzero_output_padding_rejection(vulkan_backend):
-    tensors = tuple(torch.ones(shape) for shape in ((2, 4, 8, 8), (4, 4, 3, 3), (4,)))
-    args = ([2, 2], [1, 1], [1, 1], False, [0, 0], 1)
-    torch.ops.aten.convolution.default(*tensors, *args)
-    with pytest.raises(RuntimeError, match="zero output_padding for ordinary"):
+@pytest.mark.parametrize("output_padding", [(1,), (1, 0), (2**63 - 1, 0)])
+def test_ordinary_forward_ignores_nonnegative_output_padding(vulkan_backend, output_padding):
+    generator = torch.Generator(device="cpu").manual_seed(4601)
+    value = torch.randn((1, 2, 4, 5), generator=generator)
+    weight = torch.randn((3, 2, 2, 3), generator=generator)
+    expected = torch.nn.functional.conv2d(value, weight)
+    zero_vk = torch.nn.functional.conv2d(value.to(vulkan_backend), weight.to(vulkan_backend))
+    actual = torch.ops.aten.convolution.default(
+        value.to(vulkan_backend), weight.to(vulkan_backend), None,
+        [1, 1], [0, 0], [1, 1], False, list(output_padding), 1,
+    )
+    pytorch_vulkan._C.synchronize()
+    assert tuple(actual.shape) == tuple(expected.shape) == (1, 3, 3, 3)
+    torch.testing.assert_close(actual.cpu(), zero_vk.cpu(), rtol=0, atol=0)
+    torch.testing.assert_close(actual.cpu(), expected, rtol=3e-4, atol=3e-4)
+
+
+@pytest.mark.parametrize("output_padding", [[], [-1], [0, -1], [0, 0, 0]])
+def test_convolution_rejects_malformed_output_padding(vulkan_backend, output_padding):
+    value = torch.ones((1, 2, 4, 5))
+    weight = torch.ones((3, 2, 2, 3))
+    arguments = (None, [1, 1], [0, 0], [1, 1], False, output_padding, 1)
+    with pytest.raises(RuntimeError):
+        torch.ops.aten.convolution.default(value, weight, *arguments)
+    with pytest.raises(RuntimeError):
         torch.ops.aten.convolution.default(
-            *(t.to(vulkan_backend) for t in tensors),
-            [2, 2], [1, 1], [1, 1], False, [1, 0], 1,
+            value.to(vulkan_backend), weight.to(vulkan_backend), *arguments
         )
+
+
+def test_ordinary_backward_nonzero_output_padding_rejects_before_allocation(vulkan_backend):
+    value = torch.ones((1, 2, 4, 5))
+    weight = torch.ones((3, 2, 2, 3))
+    grad = torch.ones((1, 3, 3, 3))
+    args = (None, [1, 1], [0, 0], [1, 1], False, [1, 0], 1, [False, False, False])
+    with pytest.raises(RuntimeError, match="output_padding is not supported for non-transposed convolutions"):
+        torch.ops.aten.convolution_backward.default(grad, value, weight, *args)
+    vk_args = (grad.to(vulkan_backend), value.to(vulkan_backend), weight.to(vulkan_backend), *args)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    before_timing = pytorch_vulkan._C.timing_breakdown()
+    before_live = pytorch_vulkan._C.live_resource_snapshot()[6]
+    with pytest.raises(RuntimeError, match="output_padding"):
+        torch.ops.aten.convolution_backward.default(*vk_args)
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    assert pytorch_vulkan._C.timing_breakdown()["buffer_creations"] == before_timing["buffer_creations"]
+    assert pytorch_vulkan._C.live_resource_snapshot()[6] == before_live
+
+
+@pytest.mark.parametrize("output_padding", [(0,), (0, 0)])
+def test_ordinary_backward_accepts_zero_output_padding_normalization(vulkan_backend, output_padding):
+    generator = torch.Generator(device="cpu").manual_seed(4603)
+    value = torch.randn((1, 2, 4, 5), generator=generator)
+    weight = torch.randn((3, 2, 2, 3), generator=generator)
+    grad = torch.randn((1, 3, 3, 3), generator=generator)
+    args = (None, [1, 1], [0, 0], [1, 1], False, list(output_padding), 1,
+            [True, True, False])
+    expected = torch.ops.aten.convolution_backward.default(
+        grad, value, weight, None, [1, 1], [0, 0], [1, 1], False,
+        [0, 0], 1, [True, True, False],
+    )
+    actual = torch.ops.aten.convolution_backward.default(
+        grad.to(vulkan_backend), value.to(vulkan_backend), weight.to(vulkan_backend), *args
+    )
+    pytorch_vulkan._C.synchronize()
+    for got, reference in zip(actual, expected):
+        assert (got is None) == (reference is None)
+        if got is not None:
+            torch.testing.assert_close(got.cpu(), reference, rtol=3e-4, atol=3e-4)
 
 
 @pytest.mark.parametrize("output_padding", [(0, 0), (1, 0)])

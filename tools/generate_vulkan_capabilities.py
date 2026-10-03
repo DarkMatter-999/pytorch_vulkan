@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,11 +22,13 @@ from tools.validate_vulkan_capabilities import (  # noqa: E402
     _source_registration_inventory,
     load_coverage_evidence,
     validate_stock_composite_routes,
+    validate_overrideable_backward_evidence,
 )  # noqa: E402
 from tools.vulkan_capability_declarations import (  # noqa: E402
     DECLARATIONS,
     STOCK_COMPOSITE_ROUTES,
 )
+import vulkan_conformance as vc  # noqa: E402
 
 MANIFEST = ROOT / "docs/vulkan_capabilities.json"
 COVERAGE_RECORD = ROOT / "docs/vulkan_coverage.json"
@@ -261,7 +264,7 @@ def _build_manifest() -> dict:
         if schema not in schemas:
             continue
         declared = DECLARATIONS[schema]
-        entry = dict(declared)
+        entry = deepcopy(declared)
         entry["schema"] = schema
         case = cases.get(schema, {"test_cases": [], "tests": set(), "shapes": set()})
         entry["test_cases"] = list(case["test_cases"])
@@ -286,7 +289,7 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
             continue
         bucket = witnesses.setdefault(
             record["schema"],
-            {"dtypes": set(), "ranks": set(), "pairs": set(), "cases": set(), "reverse_second_order_cases": set()},
+            {"dtypes": set(), "ranks": set(), "pairs": set(), "cases": set(), "reverse_second_order_cases": set(), "reverse_first_order_graph_cases": set(), "reverse_selected_third_order_cases": set()},
         )
         primary = record.get("primary_input")
         if primary is not None:
@@ -296,11 +299,19 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
         bucket["cases"].add(name)
         if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}:
             bucket["reverse_second_order_cases"].add(name)
+        graph = record.get("graph_autograd")
+        if graph is not None:
+            if "first_reverse" in graph["directions"]:
+                bucket["reverse_first_order_graph_cases"].add(name)
+            if "selected_third_d_g_d_x_d_w" in graph["directions"]:
+                bucket["reverse_selected_third_order_cases"].add(name)
+            if any(direction.startswith("second_reverse") for direction in graph["directions"]):
+                bucket["reverse_second_order_cases"].add(name)
     return {
         schema: {
             key: [list(pair) for pair in sorted(value)] if key == "pairs" else sorted(value)
             for key, value in bucket.items()
-            if key != "reverse_second_order_cases" or value
+            if key == "cases" or value
         }
         for schema, bucket in witnesses.items()
     }
@@ -314,6 +325,7 @@ def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
 
     validate_tensor_list_evidence(coverage, require_complete=True)
     validate_convolution_evidence(coverage, require_complete=True)
+    vc.validate_graph_autograd_evidence(coverage, _build_manifest()["entries"])
     manifest = _build_manifest()
     source, rejected = _source_registration_inventory(ROOT / "src")
     validate_stock_composite_routes(
@@ -341,6 +353,7 @@ def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
                 f"{entry['schema']}: declared shapes {sorted(set(declared) - set(observed))} "
                 f"were not exercised; observed {observed}"
             )
+    validate_overrideable_backward_evidence(manifest["entries"], coverage)
     return manifest
 
 
