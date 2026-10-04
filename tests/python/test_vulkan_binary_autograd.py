@@ -163,10 +163,11 @@ def test_autograd_sub_scalar_rejects_invalid_alpha_without_work(vulkan_backend):
 
 
 def test_binary_rejections_remain_explicit(vulkan_backend):
-    lhs = torch.empty((2, 1), device=vulkan_backend)
-    rhs = torch.empty((2, 3), device=vulkan_backend)
-    with pytest.raises(RuntimeError, match="broadcast"):
-        torch.mul(lhs, rhs)
+    cpu_lhs = torch.tensor([[1.0], [2.0]])
+    cpu_rhs = torch.tensor([[3.0, 4.0, 5.0], [6.0, 7.0, 8.0]])
+    lhs = cpu_lhs.to(vulkan_backend)
+    rhs = cpu_rhs.to(vulkan_backend)
+    torch.testing.assert_close(torch.mul(lhs, rhs).cpu(), torch.mul(cpu_lhs, cpu_rhs))
 
     equal_lhs = torch.empty((2,), device=vulkan_backend)
     equal_rhs = torch.empty((2,), device=vulkan_backend)

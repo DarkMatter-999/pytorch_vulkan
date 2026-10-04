@@ -22,6 +22,10 @@ than duplicate schema entries.
 | `aten::mse_loss` / `aten::mse_loss_backward` | F32 | F32 | matching, contiguous F32 input/target and Vulkan-resident outputs; reductions `none`, `sum`, and `mean` | first-order reverse mode | empty `sum` is zero, empty `mean` is NaN, empty `none` is empty |
 | `aten::sigmoid` / `aten::tanh` / `aten::gelu` | F32 | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; GELU requires `approximate="tanh"` and the standard `0.044715` polynomial; fresh Vulkan output | first-order reverse mode | empty output supported without dispatch |
 | stock `aten::linear` composite (rank-2 weight) | F32 | F32 | Ordinary `nn.Linear`/`F.linear`, weight `(4,3)`, input ranks 1–8 with per-rank witnesses, bias present/absent, and trainable/frozen/no-grad states. Contiguous inputs at all ranks; for ranks 3–8, also nonzero-offset leading-axis-transposed slices. CPU-created tensors transferred to `vk:0`; observed stock routes include `addmm`, promoted `mm`/`squeeze_`, folded `mm`, folded `mm` with reshape-copy, and expanded `bmm` with optional broadcast bias `add_`. | First gradients for trainable and frozen-weight inputs on named witnesses; graph-preserving selected second direction for the rank-2 trainable+bias witness only | GEMM dispatch |
+| allocating `aten::mul.Tensor` | F32 | F32 | Broadcasting allocation on `vk:0`; actual fixtures include rank-0/rank-1, `(2,1)`/`(1,3)`, and `(2,1,3)`/`(4,3)` operands. Captured readable views include offset operands; the executable suite covers rank-0, nonunit-stride, and expanded reads. Only allocating Tensor mul gains broadcasting; `mul_`/`mul.out` and existing aliases retain their separate contracts. Source-bound cases: `g1.mul.broadcast.rank0-rank1`, `g1.mul.broadcast.rank2`, and `g1.mul.broadcast.rank3-rank2`. | Stock generated first reverse; selected mixed reverse for the first two named broadcast cases with nonzero independent projections and centered CPU finite differences | Empty/broadcast result behavior remains covered by `tests/python/test_vulkan_mul_broadcast.py` |
+| allocating `aten::dot` | F32 | F32 | Equal-length rank-1 vectors on `vk:0`; captured nonunit-stride vector input. Executable fixtures also cover offset, zero-stride, overlapping reads, and empty contraction. Source-bound cases: `g1.dot.rank1.forward`, `g1.dot.rank1.grad-a-wrt-b`, and `g1.dot.rank1.grad-b-wrt-a`. | Stock generated first reverse and both selected cross-operand mixed reverse directions; each mixed direction has an independent nonzero CPU centered-FD projection | Empty contraction returns rank-0 zero |
+| allocating `aten::mv` | F32 | F32 | Rank-2 matrix and rank-1 vector with matching contraction size on `vk:0`; captured transposed matrix and nonunit-stride vector. Executable fixtures additionally cover offset, zero-stride, and read-overlapping inputs. Source-bound cases: `g1.mv.rank2-rank1.forward`, `g1.mv.rank2-rank1.grad-m-wrt-x`, and `g1.mv.rank2-rank1.grad-x-wrt-m`. | Stock generated first reverse and both selected cross-operand mixed reverse directions; each mixed direction has an independent nonzero CPU centered-FD projection | Empty rows produce an empty vector; empty contraction produces zeros |
+| stock low-rank `aten::matmul` and `@` composite | F32 | F32 | Only vector-vector, matrix-vector, and vector-matrix routes on `vk:0`, through public `torch.matmul` and `@`. PyTorch 2.4 stock routes are dot, mv, and unsqueeze/mm/squeeze. Captured route witnesses include nonunit-stride vectors and transposed matrices; named route IDs bind profiler leaves and runtime dispatch evidence in the manifest. General/batched/broadcasted matmul is not covered. | First reverse on the named route witnesses, compared with CPU; no higher mixed direction is claimed for the matmul composite itself. Dot/mv mixed reverse is separately measured above. | Inherits the named dot/mv empty contracts; other route geometries are not inferred |
 | `aten::stack` | F32 | F32 | Bounded stack of matching contiguous 2-D Vulkan matrices, with insertion dimension `0` or `1`; output remains Vulkan-resident and uses Vulkan-to-Vulkan copies only | first-order | empty rejected |
 | `aten::mm` | F32 | F32 | Rank-2 matrices on `vk:0` with matching inner dimensions; readable contiguous, transposed, positive-stride, offset, zero-stride, and internally-overlapping inputs are consumed or safely materialized; fresh dense output. Named layout witnesses: `test_mm_reads_valid_offset_positive_stride_and_transpose_views`, `test_mm_reads_zero_stride_and_overlapping_operands`, and `test_mm_materializes_singleton_stride_views_in_each_gemm_role`. | Generated first reverse and finite mixed second reverse on `matrix.graph.mm.generated`; forward-mode, transforms, and arbitrary derivative order are unclaimed | Empty M, N, and K witnesses in `test_mm_empty_dimensions_match_cpu` |
 | `aten::addmm` | F32 | F32 | Allocating form: rank-2 matrices on `vk:0`, broadcastable `self`, independent alpha/beta handling, readable matrix layouts, and GEMM dispatch. Finite nonzero alpha uses the fixed shared GEMM policy: accumulate the F32 dot first, then multiply its accumulator by alpha once in the F32 epilogue; this does not emulate MKL layout/ISA routes or guarantee CPU overflow-class parity when finite intermediates overflow. Well-scaled finite cases retain CPU parity at the direct F32 tolerance. Extreme finite-alpha witnesses compare with the independent scalar policy oracle and separately record pinned-CPU classes/differences; they retain all original signed, transposed, offset, zero-stride, singleton, and dense-column inputs. NaN/Inf alpha keeps the qualified pre-product behavior. Named witnesses include `test_addmm_broadcast_self_and_independent_scalars`, `test_addmm_finite_alpha_uses_policy_oracle_and_records_cpu_class`, `test_addmm_finite_alpha_uses_policy_oracle_for_cpu_view_cases`, and `matrix.graph.addmm.generated`. `aten::addmm.out` retains its separate existing output/alias/autograd restrictions and is not included in the allocating contract. | Generated first reverse and finite mixed second reverse on `matrix.graph.addmm.generated`; forward-mode, transforms, and arbitrary derivative order are unclaimed | Empty M/N return empty outputs; K=0 follows CPU beta/self behavior and ignores alpha; witnessed by `test_addmm_empty_dimensions_match_cpu_and_stay_on_vulkan` and `test_addmm_zero_k_underflowed_nonzero_beta_still_multiplies_self` |
@@ -31,7 +35,7 @@ than duplicate schema entries.
 | `aten::native_batch_norm` / `native_batch_norm_backward` | F32 | F32 | fixed contiguous training inputs `(2,4)` or `(2,4,2,2)`; affine F32 `(4,)`; Vulkan running mean/variance; momentum `0.1`, eps `1e-5`; backward output mask `[true,true,true]` | first-order | eval, partial affine, missing stats, other shapes, and masks rejected |
 | `aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward` | F32 logits, I64 labels | F32 | contiguous Vulkan logits `(2,3)`, class dimension `1`, contiguous Vulkan I64 labels `(2,)`, no weight, reduction `mean`, `ignore_index=-100` | first-order | other reductions, weights, labels, shapes, and class dimensions rejected |
 | unary `neg`/`abs`/`relu` | F32 (formatter Double exceptions documented below) | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; fresh output | first-order | empty output supported |
-| pointwise `add`/`sub`/`mul` scalar and `out=` forms | F32 | F32 | `aten::add.Scalar`, `aten::sub.Scalar`, `aten::rsub.Scalar`, `aten::mul.Scalar` plus their promoted `Scalar_out` and tensor `out` forms; `vk:0` F32 tensors, equal shapes, no promotion or broadcasting; `add`/`sub` require finite representable `alpha == 1` | first-order for functional forms; `out=` follows PyTorch autograd restrictions | empty output supported without dispatch |
+| pointwise `add`/`sub` and non-broadcast `mul` scalar/`out=` forms | F32 | F32 | `aten::add.Scalar`, `aten::sub.Scalar`, `aten::rsub.Scalar`, `aten::mul.Scalar` plus existing scalar-out and tensor-out forms; equal-shape tensor forms retain their prior contracts. Allocating `mul.Tensor` broadcasting is specified separately above. No promotion; `add`/`sub` require finite representable `alpha == 1`. | first-order for functional forms; `out=` follows PyTorch autograd restrictions | empty output supported without dispatch |
 | `aten::as_strided` | F32 | F32 | Metadata-only on `vk:0`; requested sizes/strides must be non-negative and reference a valid in-allocation range. Non-zero offsets, non-contiguous layouts, overlap, and changed logical element counts are permitted. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
 | `aten::view` | F32 | F32 | Requires PyTorch-compatible `computeStride` metadata, then validates the resulting sizes/strides and storage range/device/dtype contract before creating the metadata-only alias. Named evidence: `view.view.trainable-seed` (float32 primary rank 2, shape `(3,4)`). | reverse second-order on the named seed witness only | metadata contract |
 | `aten::_reshape_alias` | F32 | F32 | Accepts the ATen-supplied size/stride alias metadata after shared storage-range, device, and dtype validation; creates no copy or dispatch. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
@@ -76,14 +80,46 @@ and are listed in the deferred schema inventory below. Forward AD/JVP,
 arbitrary derivative order, and portability are not claimed.
 
 The stock Linear contract is not a general arbitrary-shape matmul or vector-weight
-`F.linear`/dot/mv contract; forward-mode, `torch.func`/vmap, and arbitrary
-higher-order derivatives have not been qualified. Shared in-place `add_` supports
+`F.linear` contract. Standalone `addmv`/`addmv_`/`addmv.out`, dot/mv/matmul `out`
+forms, and general batched/broadcasted matmul remain unqualified. The finite low-rank
+matmul and selected mul/dot/mv reverse directions above do not qualify forward AD/JVP,
+`torch.func`/vmap or other transforms, arbitrary higher reverse order, or other
+numerical dtypes. Shared in-place `add_` supports
 the qualified broadcast required by these Linear routes, but rejects an RHS
 broadcast whose expanded storage intersects the destination: the pinned CPU
 implementation admits `TooHard` overlap with shape/vector-chunk-dependent results,
 so no stable parity contract is established. Exact aliases and proven-disjoint
 broadcast storage remain supported; this narrow restriction does not widen the
 contract of other in-place operators.
+
+For the finite G1 vector/matmul captures, well-scaled CPU/Vulkan values and
+derivatives use `rtol=0.003`, `atol=0.003`. Dot/mv and broadcast-mul mixed
+reverse projections use independent nonzero seeds and directions; their CPU
+centered differences use `eps=0.001`, `rtol=0.008`, `atol=0.002`. These are
+finite fixture comparisons, not bitwise guarantees or broad extreme-value
+claims. The existing fixed F32 GEMM policy and its documented CPU overflow-class
+distinction remain unchanged.
+
+G1 durable evidence validation is CPU-only: it checks current fixture/leaf source
+hashes and re-executes the deterministic ordinary PyTorch CPU output, first
+gradients, selected mixed tensor and independent centered finite difference.
+The persisted upstream seed, mixed probe, direction, shapes and epsilon are
+source-bound; stored CPU values must reproduce this pinned reference recipe.
+The capture/oracle factory's complete local semantic code is included in its
+source hash, and its external ATen/autograd dependency is identified by the
+PyTorch version and upstream revision. Vulkan componentwise parity keeps the
+tolerances above.
+
+Each case retains its extension artifact SHA256, absolute capture path, checkout
+HEAD, execution mode and named device/driver as historical provenance. A normal
+commit, rebuild or relocation does not invalidate that history. Validation checks
+metadata formats and cross-record consistency, rather than equating that history
+with the live checkout/build/mode. Live qualification uses the separate explicit
+`qualify_vector_matmul_current_runtime` gate and fresh execution; validating an
+async record in a sync process is not sync execution evidence. G1 captures here
+remain async Renoir observations; stage qualification owns mode-specific gates.
+Neither CPU recipe reproducibility nor source hashes establish hardware portability
+or registration/dispatch behavior beyond the executed witnesses.
 
 ## Formatter-Compatible Double
 

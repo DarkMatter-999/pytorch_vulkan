@@ -15,11 +15,14 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.vulkan_capability_declarations import (
     STOCK_COMPOSITE_ROUTE_CONTRACT,
+    STOCK_MATMUL_ROUTE_CONTRACT,
     STOCK_COMPOSITE_ROUTES,
     STOCK_LINEAR_ROUTE_CASES,
 )
 KNOWN_STOCK_COMPOSITE_SCHEMAS = frozenset({
-    STOCK_COMPOSITE_ROUTE_CONTRACT["schema"], "aten::linear.default",
+    STOCK_COMPOSITE_ROUTE_CONTRACT["schema"],
+    STOCK_MATMUL_ROUTE_CONTRACT["schema"],
+    "aten::linear.default",
 })
 
 REQUIRED_ENTRY_KEYS = frozenset(
@@ -88,6 +91,7 @@ TEST_VALUES = frozenset(
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py",
         "tests/python/test_vulkan_linear.py",
+        "tests/python/test_vulkan_vector_matmul_capability_evidence.py",
     }
 )
 
@@ -119,6 +123,415 @@ def load_coverage_evidence(root: Path) -> dict[str, Any]:
     if not isinstance(coverage, dict):
         raise ValueError("coverage evidence must be an object")
     return coverage
+
+
+def _validate_vector_capture_identity(runtime: Any, name: str) -> None:
+    """Recorded provenance is historical, not an implicit live GPU qualification."""
+    fields = {"pytorch_version", "pytorch_git_revision", "checkout_head",
+              "extension_sha256", "extension_path", "device", "hardware", "driver",
+              "vulkan_api_version", "vulkan_instance_version", "execution_mode"}
+    if (not isinstance(runtime, dict) or set(runtime) != fields
+            or any(not isinstance(value, str) or not value.strip()
+                   for value in runtime.values())
+            or not re.fullmatch(r"[0-9a-f]{40}", runtime["checkout_head"])
+            or not re.fullmatch(r"[0-9a-f]{64}", runtime["extension_sha256"])
+            or not re.fullmatch(r"[0-9a-f]{40}", runtime["pytorch_git_revision"])
+            or not Path(runtime["extension_path"]).is_absolute()
+            or runtime["device"] != "vk:0"
+            or runtime["execution_mode"] not in {"async", "sync"}
+            or any(not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", runtime[key])
+                   for key in ("vulkan_api_version", "vulkan_instance_version"))):
+        raise ValueError(f"{name}: runtime/build identity metadata is malformed")
+    # The CPU oracle executes this revision; HEAD/path/mode/artifact remain capture
+    # provenance. Other CPU versions need a separately qualified reference recipe.
+    if (runtime["pytorch_version"] != torch.__version__
+            or runtime["pytorch_git_revision"] != str(torch.version.git_version)):
+        raise ValueError(f"{name}: runtime/build identity uses a different CPU reference revision")
+
+
+def qualify_vector_matmul_current_runtime(coverage: dict[str, Any], root: Path) -> None:
+    """Explicit live build/device/mode gate, separate from offline validation.
+
+    A different recorded mode cannot establish current-mode execution. Relocation
+    and ordinary commits are allowed when the artifact and source content agree.
+    """
+    validate_vector_matmul_evidence(coverage, root, require_complete=True)
+    from vector_matmul_capability_evidence import runtime_identity
+
+    current = runtime_identity(root)
+    compared = set(current) - {"checkout_head", "extension_path"}
+    for name, record in coverage.items():
+        if name.startswith("g1."):
+            recorded = record["vector_matmul_evidence"]["runtime_identity"]
+            if any(recorded[key] != current[key] for key in compared):
+                raise ValueError(f"{name}: capture does not qualify the current build/device/mode")
+
+
+def validate_vector_matmul_evidence(
+    coverage: dict[str, Any], root: Path, *, require_complete: bool = False
+) -> None:
+    """Bind finite G1 vector/matmul claims to source-owned executed fixtures."""
+    import math
+    import sys
+
+    tests_path = root / "tests/python"
+    if str(tests_path) not in sys.path:
+        sys.path.insert(0, str(tests_path))
+    try:
+        from vector_matmul_capability_evidence import (
+            REQUIRED_CASES,
+            cpu_fixture_reference,
+            source_identity,
+        )
+    except ImportError as error:
+        raise ValueError("source-owned vector/matmul evidence factory is unavailable") from error
+
+    named = {name for name in coverage if name.startswith("g1.")}
+    unexpected = named - set(REQUIRED_CASES)
+    if unexpected:
+        raise ValueError(f"unexpected source-owned vector/matmul case IDs: {sorted(unexpected)}")
+    missing = set(REQUIRED_CASES) - set(coverage)
+    if require_complete and missing:
+        raise ValueError(
+            "required executed vector/matmul witness is missing: " + ", ".join(sorted(missing))
+        )
+    if not named:
+        return
+
+    expected_source = source_identity(root)
+    observed_runtime: dict[str, Any] | None = None
+
+    def validate_value_fact(value: Any, *, case_name: str, expected_shape: list[int],
+                            label: str) -> tuple[float, list[float], list[float]]:
+        import math
+
+        message = f"{case_name}: {label} values violate componentwise CPU/Vulkan parity"
+        if (not isinstance(value, dict) or set(value) != {
+                "value_class", "shape", "cpu_values", "vulkan_values"}
+                or value.get("value_class") != "finite"
+                or not isinstance(value.get("shape"), list)
+                or any(type(extent) is not int for extent in value["shape"])
+                or value.get("shape") != expected_shape):
+            raise ValueError(f"{case_name}: {label} value evidence has invalid shape or value-class metadata")
+        count = 1
+        for extent in expected_shape:
+            if type(extent) is not int or extent < 0:
+                raise ValueError(f"{case_name}: {label} value evidence has invalid shape metadata")
+            count *= extent
+        cpu_values, vk_values = value.get("cpu_values"), value.get("vulkan_values")
+        if (not isinstance(cpu_values, list) or not isinstance(vk_values, list)
+                or len(cpu_values) != count or len(vk_values) != count):
+            raise ValueError(f"{case_name}: {label} value evidence has invalid flattened length")
+        for item in cpu_values + vk_values:
+            if type(item) not in (int, float) or not math.isfinite(item):
+                raise ValueError(
+                    f"{case_name}: numerical value evidence must contain finite real numbers"
+                )
+        errors = [abs(float(vk) - float(cpu)) for cpu, vk in zip(cpu_values, vk_values)]
+        if any(error > 0.003 + 0.003 * abs(float(cpu))
+               for error, cpu in zip(errors, cpu_values)):
+            raise ValueError(message)
+        return (max(errors, default=0.0), cpu_values, vk_values)
+
+    def bind_cpu_values(actual, expected, *, case_name, label):
+        # Exact deterministic CPU replay of this pinned tiny fixture, independent
+        # of the Vulkan parity tolerance and of mutable persisted summaries.
+        if actual != expected:
+            raise ValueError(f"{case_name}: {label} values differ from recomputed CPU fixture")
+
+    def bind_recipe(actual, expected, *, case_name):
+        if not isinstance(actual, dict) or set(actual) != set(expected):
+            raise ValueError(f"{case_name}: CPU reference recipe metadata is missing or malformed")
+        for key in ("upstream_seed", "mixed_probe"):
+            fact = actual[key]
+            if expected[key] is None:
+                if fact is not None:
+                    raise ValueError(f"{case_name}: CPU reference recipe differs from recomputed CPU fixture")
+            elif (not isinstance(fact, dict) or set(fact) != {"shape", "values"}
+                  or not isinstance(fact.get("shape"), list)
+                  or any(type(x) is not int for x in fact["shape"])
+                  or not isinstance(fact.get("values"), list)
+                  or any(type(x) not in (int, float) or not math.isfinite(x) for x in fact["values"])
+                  or fact != expected[key]):
+                raise ValueError(f"{case_name}: CPU reference recipe differs from recomputed CPU fixture")
+        eps = actual["fd_epsilon"]
+        if ((expected["fd_epsilon"] is None and eps is not None)
+                or (expected["fd_epsilon"] is not None
+                    and (type(eps) not in (int, float) or eps != expected["fd_epsilon"]))):
+            raise ValueError(f"{case_name}: CPU reference recipe differs from recomputed CPU fixture")
+
+    def validate_error_summary(actual: Any, measured: float, *, case_name: str,
+                               label: str) -> None:
+        import math
+
+        if (type(actual) not in (int, float) or not math.isfinite(actual)
+                or not math.isclose(float(actual), measured, rel_tol=1e-7, abs_tol=1e-12)):
+            raise ValueError(f"{case_name}: {label} summary does not match stored CPU/Vulkan values")
+
+    def valid_counter(value: Any) -> bool:
+        return (isinstance(value, dict)
+                and set(value) == {"compute_dispatches", "vulkan_copies",
+                                   "explicit_transfers", "fallbacks"}
+                and all(type(count) is int and count >= 0 for count in value.values())
+                and value["compute_dispatches"] > 0
+                and value["explicit_transfers"] == 0
+                and value["fallbacks"] == 0)
+
+    for name in sorted(named):
+        case = REQUIRED_CASES[name]
+        record = coverage[name]
+        if not isinstance(record, dict) or record.get("parity") is not True:
+            raise ValueError(f"{name}: vector/matmul record is not an executed parity witness")
+        evidence = record.get("vector_matmul_evidence")
+        if not isinstance(evidence, dict) or evidence.get("case_id") != name:
+            raise ValueError(f"{name}: missing actual source-owned fixture evidence")
+        if evidence.get("source_identity") != expected_source:
+            raise ValueError(f"{name}: source identity differs from current fixture/source")
+        runtime = evidence.get("runtime_identity")
+        _validate_vector_capture_identity(runtime, name)
+        if observed_runtime is None:
+            observed_runtime = runtime
+        elif runtime != observed_runtime:
+            raise ValueError(f"{name}: runtime/build identity differs across captured records")
+
+        expected_shapes = case["shapes"]
+        reference = cpu_fixture_reference(case)
+        expected_input_values = reference["inputs"]
+        bind_recipe(evidence.get("cpu_reference_recipe"), reference["recipe"], case_name=name)
+        operands = evidence.get("inputs")
+        if (not isinstance(operands, list) or len(operands) != len(expected_shapes)
+                or any(not isinstance(item, dict) or set(item) != {"cpu", "vulkan", "values"}
+                       for item in operands)):
+            raise ValueError(f"{name}: actual input metadata differs from its source-owned fixture")
+        for index, (operand, shape) in enumerate(zip(operands, expected_shapes)):
+            layout = case["layouts"][index]
+            if layout == "nonunit":
+                expected_strides = [2]
+                expected_offset = 0
+            elif layout == "transpose":
+                expected_strides = [1, shape[0]]
+                expected_offset = 0
+            else:
+                expected_strides = []
+                stride = 1
+                for extent in reversed(shape):
+                    expected_strides.append(stride)
+                    stride *= extent
+                expected_strides.reverse()
+                expected_offset = 1 if layout == "offset" else 0
+            for side, device in (("cpu", "cpu"), ("vulkan", "vk:0")):
+                meta = operand[side]
+                if (not isinstance(meta, dict)
+                        or meta.get("dtype") != "float32"
+                        or type(meta.get("rank")) is not int
+                        or meta.get("rank") != len(shape)
+                        or not isinstance(meta.get("shape"), list)
+                        or any(type(extent) is not int for extent in meta["shape"])
+                        or meta.get("shape") != shape
+                        or meta.get("device") != device
+                        or not isinstance(meta.get("strides"), list)
+                        or any(type(stride) is not int for stride in meta["strides"])
+                        or meta.get("strides") != expected_strides
+                        or type(meta.get("storage_offset")) is not int
+                        or meta.get("storage_offset") != expected_offset):
+                    raise ValueError(
+                        f"{name}: actual input metadata differs from its source-owned fixture"
+                    )
+            if (operands[index]["cpu"]["strides"] != operands[index]["vulkan"]["strides"]
+                    or operands[index]["cpu"]["storage_offset"]
+                    != operands[index]["vulkan"]["storage_offset"]):
+                raise ValueError(f"{name}: CPU/Vulkan input layout witness differs")
+            _, fixture_cpu_values, _ = validate_value_fact(
+                operand["values"], case_name=name, expected_shape=shape,
+                label=f"input{index}",
+            )
+            if fixture_cpu_values != expected_input_values[index]:
+                raise ValueError(f"{name}: CPU input values differ from the deterministic source fixture")
+
+        if (record.get("schema") != case["schema"]
+                or record.get("primary_input") != {"dtype": "float32", "rank": len(expected_shapes[0])}
+                or record.get("input_dtypes") != ["float32"]
+                or record.get("input_ranks") != sorted({len(shape) for shape in expected_shapes})
+                or record.get("input_shapes") != sorted({"x".join(map(str, shape))
+                                                          for shape in expected_shapes if shape})
+                or record.get("gradients") is not True):
+            raise ValueError(f"{name}: aggregate capability metadata differs from actual inputs")
+
+        output = evidence.get("output")
+        if not isinstance(output, dict) or set(output) != {"cpu", "vulkan"}:
+            raise ValueError(f"{name}: actual output metadata is missing")
+        cpu_output, vk_output = output["cpu"], output["vulkan"]
+        if (not isinstance(cpu_output, dict) or not isinstance(vk_output, dict)
+                or cpu_output.get("dtype") != "float32" or vk_output.get("dtype") != "float32"
+                or cpu_output.get("device") != "cpu" or vk_output.get("device") != "vk:0"
+                or any(type(meta.get("rank")) is not int
+                       or meta["rank"] != len(case["output_shape"])
+                       or not isinstance(meta.get("shape"), list)
+                       or any(type(extent) is not int for extent in meta["shape"])
+                       for meta in (cpu_output, vk_output))
+                or cpu_output.get("shape") != case["output_shape"]
+                or vk_output.get("shape") != case["output_shape"]
+                or cpu_output.get("rank") != vk_output.get("rank")
+                or record.get("output_dtype") != "float32"
+                or record.get("output_rank") != cpu_output.get("rank")):
+            raise ValueError(f"{name}: actual output residency/metadata is inconsistent")
+
+        if (evidence.get("api") != case["api"]
+                or evidence.get("route_leaf") != case["route"]
+                or evidence.get("seed") != case["seed"]
+                or evidence.get("layouts") != case["layouts"]
+                or evidence.get("capture_command") != (
+                    "vector_matmul_capability_evidence.capture_all_vector_matmul_cases(device='vk:0')"
+                )):
+            raise ValueError(f"{name}: API, route, or seed differs from source-owned fixture")
+        for side in ("cpu_forward_ops", "vulkan_forward_ops"):
+            ops = evidence.get(side)
+            if (not isinstance(ops, list) or any(not isinstance(op, str) for op in ops)
+                    or ops != sorted(set(ops))):
+                raise ValueError(f"{name}: profiler route observations are malformed")
+            if case["route"] and f"aten::{case['route']}" not in ops:
+                raise ValueError(f"{name}: profiler route does not contain the expected stock leaf")
+
+        for key in ("runtime", "first_backward_runtime"):
+            if not valid_counter(evidence.get(key)):
+                raise ValueError(f"{name}: runtime execution evidence is malformed")
+        output_error, cpu_values, _ = validate_value_fact(
+            evidence.get("output_values"), case_name=name,
+            expected_shape=cpu_output["shape"], label="output",
+        )
+        bind_cpu_values(cpu_values, reference["output"], case_name=name, label="output")
+        validate_error_summary(
+            evidence.get("output_max_abs_error"), output_error,
+            case_name=name, label="output_max_abs_error",
+        )
+
+        graph = evidence.get("graph")
+        expected_directions = ["first_reverse"]
+        if case["mixed"] is not None:
+            expected_directions.append("selected_mixed_reverse")
+        if not isinstance(graph, dict) or graph.get("directions") != expected_directions:
+            raise ValueError(f"{name}: graph history is incomplete or differs from its fixture")
+        first = graph.get("first_reverse")
+        if (not isinstance(first, dict)
+                or first.get("targets") != [f"input{i}" for i in range(len(expected_shapes))]
+                or not isinstance(first.get("history"), list)
+                or len(first["history"]) != len(expected_shapes)
+                or len(first.get("max_abs_errors", [])) != len(expected_shapes)
+                or not isinstance(first.get("values"), list)
+                or len(first["values"]) != len(expected_shapes)):
+            raise ValueError(f"{name}: graph history is incomplete")
+        for index, history in enumerate(first["history"]):
+            if (not isinstance(history, dict) or history.get("target") != f"input{index}"
+                    or history.get("cpu_requires_grad") is not True
+                    or history.get("vulkan_requires_grad") is not True
+                    or not history.get("cpu_grad_fn") or not history.get("vulkan_grad_fn")
+                    or history.get("parity") is not True):
+                raise ValueError(f"{name}: graph history is incomplete")
+        for index, (error, value, shape) in enumerate(zip(
+                first["max_abs_errors"], first["values"], expected_shapes)):
+            grad_shape = operands[index]["cpu"]["shape"]
+            measured_error, cpu_values, _ = validate_value_fact(
+                value, case_name=name, expected_shape=grad_shape,
+                label=f"first-reverse input{index}",
+            )
+            bind_cpu_values(cpu_values, reference["first"][index],
+                            case_name=name, label=f"first-reverse input{index}")
+            validate_error_summary(
+                error, measured_error, case_name=name,
+                label=f"first_reverse.max_abs_errors[{index}]",
+            )
+
+        if case["mixed"] is not None:
+            mixed = graph.get("selected_mixed_reverse")
+            if (not isinstance(mixed, dict)
+                    or mixed.get("direction") != f"grad_input{case['mixed'][0]}_wrt_input{case['mixed'][1]}"
+                    or mixed.get("target") != f"input{case['mixed'][1]}"
+                    or mixed.get("cpu_nonzero") is not True
+                    or mixed.get("vulkan_nonzero") is not True):
+                raise ValueError(f"{name}: selected mixed graph history/signal is incomplete")
+            mixed_shape = operands[case["mixed"][1]]["cpu"]["shape"]
+            mixed_error, cpu_mixed_values, vk_mixed_values = validate_value_fact(
+                mixed.get("values"), case_name=name,
+                expected_shape=mixed_shape, label="selected mixed-reverse",
+            )
+            bind_cpu_values(cpu_mixed_values, reference["mixed"],
+                            case_name=name, label="selected mixed-reverse")
+            validate_error_summary(
+                mixed.get("max_abs_error"), mixed_error, case_name=name,
+                label="selected_mixed_reverse.max_abs_error",
+            )
+            direction_values = mixed.get("direction_values")
+            if (not isinstance(direction_values, list)
+                    or len(direction_values) != len(cpu_mixed_values)
+                    or any(type(item) not in (int, float) or not math.isfinite(item)
+                           for item in direction_values)
+                    or direction_values != reference["direction"]):
+                raise ValueError(f"{name}: selected mixed direction values are malformed")
+            cpu_projection = sum(float(value) * float(direction)
+                                 for value, direction in zip(cpu_mixed_values, direction_values))
+            vk_projection = sum(float(value) * float(direction)
+                                for value, direction in zip(vk_mixed_values, direction_values))
+            numeric = ("cpu_analytic_projection", "cpu_centered_fd_projection",
+                       "cpu_fd_abs_error", "vulkan_projection", "max_abs_error")
+            if any(type(mixed.get(field)) not in (int, float)
+                   or not math.isfinite(mixed[field]) for field in numeric):
+                raise ValueError(f"{name}: selected mixed numerical evidence is malformed")
+            analytic = mixed["cpu_analytic_projection"]
+            finite_difference = mixed["cpu_centered_fd_projection"]
+            fd_error = abs(analytic - finite_difference)
+            if (not math.isclose(fd_error, mixed["cpu_fd_abs_error"], rel_tol=1e-7, abs_tol=1e-9)
+                    or fd_error > max(0.002, 0.008 * abs(analytic))):
+                raise ValueError(f"{name}: CPU finite-difference projection does not match its analytic signal")
+            if (not math.isclose(analytic, cpu_projection, rel_tol=1e-7, abs_tol=1e-9)
+                    or not math.isclose(mixed["vulkan_projection"], vk_projection,
+                                        rel_tol=1e-7, abs_tol=1e-9)):
+                raise ValueError(f"{name}: stored mixed projections do not match stored tensor values")
+            if abs(vk_projection - cpu_projection) > 0.003 + 0.003 * abs(cpu_projection):
+                raise ValueError(f"{name}: Vulkan mixed projection differs from its CPU analytic oracle")
+            if finite_difference != reference["fd"]:
+                raise ValueError(f"{name}: centered FD differs from recomputed CPU fixture")
+            if not valid_counter(mixed.get("runtime")):
+                raise ValueError(f"{name}: runtime execution evidence is malformed")
+
+
+def validate_vector_matmul_manifest_bindings(
+    entries: list[dict[str, Any]], coverage: dict[str, Any], root: Path
+) -> None:
+    """Require source fixture IDs and graph directions in their schema entries."""
+    import sys
+
+    tests_path = str(root / "tests/python")
+    if tests_path not in sys.path:
+        sys.path.insert(0, tests_path)
+    from vector_matmul_capability_evidence import REQUIRED_CASES
+
+    by_schema = {entry.get("schema"): entry for entry in entries}
+    schemas = sorted({case["schema"] for case in REQUIRED_CASES.values()})
+    for schema in schemas:
+        entry = by_schema.get(schema)
+        if entry is None:
+            raise ValueError(f"{schema}: source-owned vector/matmul evidence has no manifest entry")
+        expected_names = {name for name, case in REQUIRED_CASES.items()
+                          if case["schema"] == schema}
+        supported = {case.get("name") for case in entry.get("test_cases", [])
+                     if isinstance(case, dict) and case.get("supported") is True}
+        witness_cases = set(entry.get("witnesses", {}).get("cases", []))
+        if not expected_names <= supported or not expected_names <= witness_cases:
+            raise ValueError(f"{schema}: manifest is missing source-owned vector/matmul test-case bindings")
+        first_names = {name for name in expected_names
+                       if "first_reverse" in coverage[name]["vector_matmul_evidence"]["graph"]["directions"]}
+        mixed_names = {name for name in expected_names
+                       if "selected_mixed_reverse" in coverage[name]["vector_matmul_evidence"]["graph"]["directions"]}
+        first_links = set(entry["witnesses"].get("reverse_first_order_graph_cases", []))
+        mixed_links = set(entry["witnesses"].get("reverse_second_order_cases", []))
+        if (entry.get("autograd") in {
+                "reverse_first_order_graph_witnessed",
+                "reverse_finite_second_order_witnessed",
+                "reverse_selected_third_order_witnessed",
+        } and not first_names <= first_links):
+            raise ValueError(f"{schema}: source-owned first-reverse graph links are missing")
+        if mixed_names and not mixed_names <= mixed_links:
+            raise ValueError(f"{schema}: source-owned finite mixed-reverse links are missing")
 
 
 def validate_convolution_evidence(
@@ -631,6 +1044,20 @@ def validate_stock_composite_routes(
                         or execution["vulkan_copies"] <= 0 or execution["compute_dispatches"] != 0
                         or execution["explicit_transfers"] != 0 or execution["fallbacks"] != 0):
                     raise ValueError(f"stock-composite route execution evidence is invalid: {name}")
+        elif expected_schema == STOCK_MATMUL_ROUTE_CONTRACT["schema"]:
+            validate_vector_matmul_evidence(
+                coverage, Path(__file__).resolve().parents[1], require_complete=True
+            )
+            from vector_matmul_capability_evidence import REQUIRED_CASES
+            expected_route_cases = set(STOCK_MATMUL_ROUTE_CONTRACT["evidence_cases"])
+            for name in expected_route_cases:
+                record = coverage.get(name)
+                evidence = record.get("vector_matmul_evidence") if isinstance(record, dict) else None
+                if (name not in REQUIRED_CASES or not isinstance(evidence, dict)
+                        or evidence.get("case_id") != name
+                        or evidence.get("route_leaf") != REQUIRED_CASES[name]["route"]
+                        or evidence.get("api") != REQUIRED_CASES[name]["api"]):
+                    raise ValueError(f"stock matmul route lacks matching executed route evidence: {name}")
         else:
             validate_stock_linear_route_evidence(coverage)
 
@@ -1064,7 +1491,13 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
                 if not isinstance(record, dict) or record.get("schema") != schema or record.get("parity") is not True:
                     raise ValueError(f"{path}.witnesses.{link_key}: {name!r} lacks matching parity evidence")
                 if record.get("graph_autograd") is None:
-                    if link_key != "reverse_second_order_cases" or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}:
+                    vector_graph = record.get("vector_matmul_evidence", {}).get("graph")
+                    vector_directions = vector_graph.get("directions", []) if isinstance(vector_graph, dict) else []
+                    if (link_key == "reverse_first_order_graph_cases"
+                            and "first_reverse" in vector_directions):
+                        continue
+                    if (link_key != "reverse_second_order_cases"
+                            or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}):
                         raise ValueError(f"{path}.witnesses.{link_key}: {name!r} lacks matching nested graph evidence")
                     continue
                 vc.validate_graph_autograd_record(name, record)
@@ -1183,6 +1616,14 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         coverage,
         require_complete=any(entry.get("schema") == "aten::cat.default" for entry in entries),
     )
+    has_vector_matmul_entry = any(
+        entry.get("schema") in {"aten::mul.Tensor", "aten::dot.default",
+                                 "aten::mv.default", "aten::matmul.default"}
+        for entry in entries
+    )
+    if has_vector_matmul_entry:
+        validate_vector_matmul_evidence(coverage, root, require_complete=True)
+        validate_vector_matmul_manifest_bindings(entries, coverage, root)
     validate_stock_composite_routes(
         STOCK_COMPOSITE_ROUTES, entries, coverage, source, explicit_rejected
     )

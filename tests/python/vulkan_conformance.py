@@ -882,6 +882,8 @@ def run_case(case: ConformanceCase, device: str = "vk:0") -> Any:
     inputs = case.inputs()
     if case.convert_inputs:
         inputs = to_vulkan_inputs(inputs, device)
+    if case.setup_inputs is not None:
+        inputs = case.setup_inputs(inputs, device)
     kwargs = case.kwargs or {}
     return case.operation(*inputs, *case.args, **kwargs)
 
@@ -1070,16 +1072,42 @@ def assert_no_vulkan_work() -> None:
 
 def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
     cpu_inputs = case.inputs()
+    if case.setup_inputs is not None:
+        cpu_inputs = case.setup_inputs(cpu_inputs, "cpu")
     vk_inputs = to_vulkan_inputs(cpu_inputs, device)
+    if case.setup_inputs is not None:
+        vk_inputs = case.setup_inputs(vk_inputs, device)
+    if case.name == "g1.mul.broadcast.rank0-rank1":
+        assert vk_inputs[0].device == torch.device(device)
+        assert vk_inputs[0].requires_grad
+        assert vk_inputs[0].grad_fn is not None, (
+            "G1 rank-0 operand must retain its ordinary device-transfer graph"
+        )
     kwargs = case.kwargs or {}
     cpu_result = case.cpu_reference(*cpu_inputs, *case.args, **kwargs)
     gradient = torch.ones_like(cpu_result)
     vk_gradient = gradient.to(device)
-    pytorch_vulkan._C.reset_execution_counters()
-    vk_result = case.operation(*vk_inputs, *case.args, **kwargs)
-    cpu_result.backward(gradient)
-    pytorch_vulkan._C.reset_execution_counters()
-    vk_result.backward(vk_gradient)
+    if case.setup_inputs is None:
+        # Preserve the established leaf-input/backward path for all existing
+        # conformance cases; some generated backward routes dispatch only when
+        # gradients are accumulated through .backward().
+        pytorch_vulkan._C.reset_execution_counters()
+        vk_result = case.operation(*vk_inputs, *case.args, **kwargs)
+        cpu_result.backward(gradient)
+        pytorch_vulkan._C.reset_execution_counters()
+        vk_result.backward(vk_gradient)
+        pytorch_vulkan._C.synchronize()
+        cpu_gradients = tuple(input.grad for input in cpu_inputs)
+        vk_gradients = tuple(input.grad for input in vk_inputs)
+    else:
+        # A per-case setup can create non-leaf device operands via ordinary
+        # .to(device). Request gradients directly at those operands rather than
+        # relying on .grad, which is only accumulated for leaves by default.
+        vk_result = case.operation(*vk_inputs, *case.args, **kwargs)
+        cpu_gradients = torch.autograd.grad(cpu_result, cpu_inputs, gradient)
+        pytorch_vulkan._C.reset_execution_counters()
+        vk_gradients = torch.autograd.grad(vk_result, vk_inputs, vk_gradient)
+        pytorch_vulkan._C.synchronize()
     dispatches, vulkan_copies, explicit_transfers, fallbacks = (
         pytorch_vulkan._C.execution_counter_snapshot()
     )
@@ -1094,14 +1122,28 @@ def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
         )
     assert explicit_transfers == 0, f"{case.name} backward transferred explicitly"
     assert fallbacks == 0, f"{case.name} backward used implicit CPU fallback"
-    for cpu_input, vk_input in zip(cpu_inputs, vk_inputs):
-        if not isinstance(cpu_input, torch.Tensor) or not cpu_input.requires_grad:
+    for index, (cpu_input, vk_input, cpu_gradient, vk_gradient) in enumerate(
+        zip(cpu_inputs, vk_inputs, cpu_gradients, vk_gradients)
+    ):
+        if not cpu_input.requires_grad:
+            assert cpu_gradient is None and vk_gradient is None, (
+                f"{case.name}: unused operand {index} unexpectedly received a gradient"
+            )
             continue
-        assert cpu_input.grad is not None
-        assert vk_input.grad is not None
-        assert vk_input.grad.device == torch.device(device)
+        assert cpu_gradient is not None, (
+            f"{case.name}: CPU operand {index} has no requested gradient"
+        )
+        assert vk_gradient is not None, (
+            f"{case.name}: Vulkan operand {index} has no requested gradient"
+        )
+        assert tuple(vk_gradient.shape) == tuple(cpu_input.shape), (
+            f"{case.name}: gradient {index} shape differs from the CPU operand"
+        )
+        assert vk_gradient.device == torch.device(device), (
+            f"{case.name}: gradient {index} is not resident on {device}"
+        )
         torch.testing.assert_close(
-            vk_input.grad.cpu(), cpu_input.grad, rtol=case.rtol, atol=case.atol
+            vk_gradient.cpu(), cpu_gradient, rtol=case.rtol, atol=case.atol
         )
 
 
@@ -3061,6 +3103,23 @@ _MANIFEST_CASES.update({
         for state in ("present", "absent") for mask in range(8)
     },
 })
+_MANIFEST_CASES.update({
+    "g1.mul.broadcast.rank0-rank1": ("aten::mul.Tensor", True),
+    "g1.mul.broadcast.rank2": ("aten::mul.Tensor", True),
+    "g1.mul.broadcast.rank3-rank2": ("aten::mul.Tensor", True),
+    "g1.dot.rank1.forward": ("aten::dot.default", True),
+    "g1.dot.rank1.grad-a-wrt-b": ("aten::dot.default", True),
+    "g1.dot.rank1.grad-b-wrt-a": ("aten::dot.default", True),
+    "g1.mv.rank2-rank1.forward": ("aten::mv.default", True),
+    "g1.mv.rank2-rank1.grad-m-wrt-x": ("aten::mv.default", True),
+    "g1.mv.rank2-rank1.grad-x-wrt-m": ("aten::mv.default", True),
+    "g1.matmul.vv.torch-matmul": ("aten::matmul.default", True),
+    "g1.matmul.mv.torch-matmul": ("aten::matmul.default", True),
+    "g1.matmul.vm.torch-matmul": ("aten::matmul.default", True),
+    "g1.matmul.vv.at": ("aten::matmul.default", True),
+    "g1.matmul.mv.at": ("aten::matmul.default", True),
+    "g1.matmul.vm.at": ("aten::matmul.default", True),
+})
 _MANIFEST_CASES.pop("convolution.parameters.output-padding.rejected", None)
 _MANIFEST_CASES["convolution.parameters.output-padding.ignored"] = (
     "aten::convolution.default", True,
@@ -3462,8 +3521,70 @@ _GRAPH_CPU_REFERENCES = {
 }
 
 
+def _g1_vector_pair(shapes, seed, *, requires_grad=False):
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    return tuple(
+        (torch.randn(shape, generator=generator) + 0.35).requires_grad_(requires_grad)
+        for shape in shapes
+    )
+
+
+def _g1_move_all_tensor_operands(inputs, device):
+    # General conformance conversion preserves CPU 0-D tensors as scalar
+    # metadata. G1's rank-0 witness is a real tensor operand and must be moved
+    # to Vulkan like its vector peer.
+    if device == "cpu":
+        return inputs
+    return tuple(value.to(device) for value in inputs)
+
+
+def _g1_conformance_cases():
+    definitions = (
+        ("g1.mul.broadcast.rank0-rank1", torch.mul, ((), (3,)), (3,), 611),
+        ("g1.mul.broadcast.rank2", torch.mul, ((2, 1), (1, 3)), (2, 3), 612),
+        ("g1.mul.broadcast.rank3-rank2", torch.mul, ((2, 1, 3), (4, 3)), (2, 4, 3), 613),
+        ("g1.dot.rank1.forward", torch.dot, ((3,), (3,)), (), 621),
+        ("g1.dot.rank1.grad-a-wrt-b", torch.dot, ((3,), (3,)), (), 622),
+        ("g1.dot.rank1.grad-b-wrt-a", torch.dot, ((3,), (3,)), (), 623),
+        ("g1.mv.rank2-rank1.forward", torch.mv, ((2, 3), (3,)), (2,), 631),
+        ("g1.mv.rank2-rank1.grad-m-wrt-x", torch.mv, ((2, 3), (3,)), (2,), 632),
+        ("g1.mv.rank2-rank1.grad-x-wrt-m", torch.mv, ((2, 3), (3,)), (2,), 633),
+        ("g1.matmul.vv.torch-matmul", torch.matmul, ((3,), (3,)), (), 641),
+        ("g1.matmul.mv.torch-matmul", torch.matmul, ((2, 3), (3,)), (2,), 642),
+        ("g1.matmul.vm.torch-matmul", torch.matmul, ((3,), (3, 2)), (2,), 643),
+        ("g1.matmul.vv.at", lambda left, right: left @ right, ((3,), (3,)), (), 651),
+        ("g1.matmul.mv.at", lambda left, right: left @ right, ((2, 3), (3,)), (2,), 652),
+        ("g1.matmul.vm.at", lambda left, right: left @ right, ((3,), (3, 2)), (2,), 653),
+    )
+    cases = []
+    for name, operation, shapes, output_shape, seed in definitions:
+        cases.append(_case(
+            name,
+            "vector-matmul",
+            operation,
+            lambda requires_grad=False, shapes=shapes, seed=seed: _g1_vector_pair(
+                shapes, seed, requires_grad=requires_grad
+            ),
+            cpu_reference=operation,
+            expected_shape=output_shape,
+            check_gradients=True,
+            setup_inputs=(
+                _g1_move_all_tensor_operands
+                if name == "g1.mul.broadcast.rank0-rank1"
+                else None
+            ),
+            declared_shapes=tuple(
+                "x".join(map(str, shape)) for shape in shapes if shape
+            ),
+            rtol=0.003,
+            atol=0.003,
+        ))
+    return tuple(cases)
+
+
 ALL_CASES = tuple(
     case for case in (
+    *_g1_conformance_cases(),
     _case("cat.rank1.forward", "cat", _cat_call, lambda **kw: _cat_values(((2,), (3,)), **kw), args=(0,), cpu_reference=_cat_reference, expected_shape=(5,)),
     _case("cat.rank2.forward", "cat", _cat_call, lambda **kw: _cat_values(((2, 3), (2, 4)), **kw), args=(1,), cpu_reference=_cat_reference, expected_shape=(2, 7), declared_shapes=("2x3", "2x4")),
     _case("cat.rank3.forward", "cat", _cat_call, lambda **kw: _cat_values(((2, 2, 3), (2, 2, 4)), **kw), args=(2,), cpu_reference=_cat_reference, expected_shape=(2, 2, 7), declared_shapes=("2x2x3", "2x2x4")),

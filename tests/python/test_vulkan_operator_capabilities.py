@@ -100,11 +100,19 @@ def test_stock_composite_routes_are_an_explicit_source_owned_allowlist():
     assert set(STOCK_COMPOSITE_ROUTES) == {
         "aten::reshape.default",
         "aten::linear.default",
+        "aten::matmul.default",
     }
     reshape_route = STOCK_COMPOSITE_ROUTES["aten::reshape.default"]
     linear_route = STOCK_COMPOSITE_ROUTES["aten::linear.default"]
+    matmul_route = STOCK_COMPOSITE_ROUTES["aten::matmul.default"]
     assert reshape_route == STOCK_COMPOSITE_ROUTE_CONTRACT
     assert linear_route == STOCK_LINEAR_ROUTE_CONTRACT
+    assert matmul_route["reference"]["source"] == (
+        "aten/src/ATen/native/LinearAlgebra.cpp::_matmul_impl"
+    )
+    assert {item["schema"] for item in matmul_route["dependencies"]} == {
+        "aten::dot.default", "aten::mv.default", "aten::mm.default"
+    }
     assert reshape_route["reference"] == {
         "pytorch_version": "2.4.0",
         "source": "aten/src/ATen/native/TensorShape.cpp::reshape_symint",
@@ -300,9 +308,13 @@ def test_source_registrations_cannot_be_supported_without_a_declaration():
     source_inventory, explicit_rejected = _source_registration_classifications()
     source_supported = source_inventory - ROADMAP_DEFERRED_SCHEMAS - explicit_rejected
     assert source_supported | set(STOCK_COMPOSITE_ROUTES) == DECLARED_OPERATION_MANIFEST
-    assert {
-        case.declaration_id for case in ALL_CASES if case.supported
-    } - set(STOCK_COMPOSITE_ROUTES) == source_supported
+    from vector_matmul_capability_evidence import VECTOR_MATMUL_CASES
+
+    source_owned_cases = {case["schema"] for case in VECTOR_MATMUL_CASES}
+    assert (
+        {case.declaration_id for case in ALL_CASES if case.supported}
+        | source_owned_cases
+    ) - set(STOCK_COMPOSITE_ROUTES) == source_supported
 
 
 def test_every_deferred_roadmap_schema_has_an_explicit_reason():

@@ -457,7 +457,7 @@ def test_mixed_cpu_vulkan_add_does_not_fallback(vulkan_backend, vulkan_first):
     _assert_add_rejected(lambda: torch.add(*operands), "same device")
 
 
-@pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
+@pytest.mark.parametrize("operation", [torch.add, torch.sub])
 @pytest.mark.parametrize("scalar_left", [False, True])
 def test_scalar_tensor_operand_is_rejected(vulkan_backend, operation, scalar_left):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
@@ -470,6 +470,26 @@ def test_scalar_tensor_operand_is_rejected(vulkan_backend, operation, scalar_lef
     ):
         operation(*operands)
     _assert_zero_work()
+
+
+@pytest.mark.parametrize("scalar_left", [False, True])
+def test_allocating_mul_tensor_accepts_scalar_tensor_operand(vulkan_backend, scalar_left):
+    vector_cpu = torch.tensor([2.0, -3.0], dtype=torch.float32)
+    scalar_cpu = torch.tensor(0.5, dtype=torch.float32)
+    cpu_operands = (scalar_cpu, vector_cpu) if scalar_left else (vector_cpu, scalar_cpu)
+    expected = torch.mul(*cpu_operands)
+    vector_vk, scalar_vk = vector_cpu.to(vulkan_backend), scalar_cpu.to(vulkan_backend)
+    vk_operands = (scalar_vk, vector_vk) if scalar_left else (vector_vk, scalar_vk)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    result = torch.mul(*vk_operands)
+    assert result.device == vector_vk.device
+    assert result.dtype == torch.float32
+    assert result.shape == expected.shape
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0.003, atol=0.003)
 
 
 def test_zero_dim_tensor_add_operands_are_supported(vulkan_backend):
@@ -946,7 +966,7 @@ def test_scalar_mixed_cpu_vulkan_tensor_is_rejected(vulkan_backend, operation):
     _assert_zero_work()
 
 
-@pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
+@pytest.mark.parametrize("operation", [torch.add, torch.sub])
 def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
     lhs = torch.empty((2, 1), dtype=torch.float32, device=vulkan_backend)
     rhs = torch.empty((2, 3), dtype=torch.float32, device=vulkan_backend)
@@ -956,6 +976,23 @@ def test_scalar_tensor_broadcasting_is_rejected(vulkan_backend, operation):
     ):
         operation(lhs, rhs)
     _assert_zero_work()
+
+
+def test_allocating_mul_tensor_broadcasting_matches_cpu(vulkan_backend):
+    lhs_cpu = torch.tensor([[0.2], [-0.4]], dtype=torch.float32)
+    rhs_cpu = torch.tensor([[0.6, -0.2, 0.9]], dtype=torch.float32)
+    expected = torch.mul(lhs_cpu, rhs_cpu)
+    lhs, rhs = lhs_cpu.to(vulkan_backend), rhs_cpu.to(vulkan_backend)
+
+    pytorch_vulkan._C.reset_execution_counters()
+    result = torch.mul(lhs, rhs)
+    assert result.device == lhs.device
+    assert result.dtype == torch.float32
+    assert result.shape == (2, 3)
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0.003, atol=0.003)
 
 
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])

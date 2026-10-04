@@ -317,9 +317,10 @@ def test_declaration_with_a_typoed_key_is_rejected(monkeypatch):
 
 def test_unregistered_declarations_are_roadmap_not_errors():
     roadmap = generator._roadmap_schemas()
-    assert len(roadmap) == 85
+    assert len(roadmap) == 84
     assert "aten::concat.default" in roadmap
     assert "aten::reshape.default" not in roadmap
+    assert not {"aten::dot.default", "aten::mv.default", "aten::matmul.default"} & roadmap
     adapter_schema = "aten::convolution_backward_overrideable.default"
     adapter_case = "convolution.backward-overrideable.bias-present.mask-111"
     assert adapter_schema not in roadmap
@@ -552,14 +553,20 @@ def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage()
         name: record for name, record in coverage.items()
         if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}
     }
-    assert len(witnessed) == 11
-    for name, record in witnessed.items():
+    legacy = {name: record for name, record in witnessed.items() if not name.startswith("g1.")}
+    assert len(legacy) == 11
+    for name, record in legacy.items():
         assert name.startswith(("arithmetic.autograd.", "view.", "cat."))
         assert record["schema"] in {
             "aten::add.Tensor", "aten::add.Scalar", "aten::mul.Tensor",
             "aten::mul.Scalar", "aten::sum.default", "aten::sum.dim_IntList",
             "aten::view.default", "aten::reshape.default", "aten::cat.default",
         }
+    from vector_matmul_capability_evidence import REQUIRED_CASES
+    finite_vector_mixed = {
+        name for name, case in REQUIRED_CASES.items() if case["mixed"] is not None
+    }
+    assert set(witnessed) == set(legacy) | finite_vector_mixed
 
 
 def test_cat_tensor_list_evidence_validator_binds_aggregates_to_members():
@@ -859,9 +866,24 @@ def test_committed_manifest_matches_regenerated_output():
         pytest.skip("no Vulkan device: coverage cannot be recorded without executing cases")
     coverage = _run_all_supported_cases()
     from stock_linear_route_evidence import capture_all_stock_linear_routes
+    from vector_matmul_capability_evidence import capture_all_vector_matmul_cases
 
     coverage.update(capture_all_stock_linear_routes("vk:0"))
+    coverage.update(capture_all_vector_matmul_cases("vk:0"))
+    # Fresh captures qualify the live build/mode explicitly. Historical records
+    # retain the original HEAD/path/artifact/mode as provenance after a human
+    # commit, rebuild, or relocation; offline validation never probes the GPU.
+    capability_validator.qualify_vector_matmul_current_runtime(coverage, ROOT)
     committed_coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    capability_validator.validate_vector_matmul_evidence(
+        committed_coverage, ROOT, require_complete=True
+    )
+    comparison_coverage = json.loads(json.dumps(coverage))
+    for name in coverage:
+        if name.startswith("g1."):
+            comparison_coverage[name]["vector_matmul_evidence"]["runtime_identity"] = (
+                committed_coverage[name]["vector_matmul_evidence"]["runtime_identity"]
+            )
     for name in vc.MATRIX_GRAPH_MODE_OBSERVATION_CASES:
         fresh_payload = coverage[name]["graph_autograd"]
         committed_payload = committed_coverage[name]["graph_autograd"]
@@ -877,8 +899,9 @@ def test_committed_manifest_matches_regenerated_output():
         assert capture["execution"] == expected["execution"]
         fresh_payload["execution"] = committed_payload["execution"]
         fresh_payload["execution_modes"] = committed_payload["execution_modes"]
-    assert coverage == committed_coverage, _coverage_drift_message(
-        committed_coverage, coverage
+        comparison_coverage[name]["graph_autograd"] = fresh_payload
+    assert comparison_coverage == committed_coverage, _coverage_drift_message(
+        committed_coverage, comparison_coverage
     )
     assert COMMITTED.read_text() == generator.render(
         generator.build_coverage_manifest(coverage)

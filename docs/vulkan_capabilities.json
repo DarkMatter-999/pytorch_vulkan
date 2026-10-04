@@ -3704,6 +3704,112 @@
     },
     {
       "aliasing": "no_overlap",
+      "autograd": "reverse_first_order_graph_witnessed",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 2,
+        "min": 1
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::matmul.default",
+      "shape_constraints": [
+        "2x3",
+        "3",
+        "3x2"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "g1.matmul.vv.torch-matmul",
+          "supported": true
+        },
+        {
+          "name": "g1.matmul.mv.torch-matmul",
+          "supported": true
+        },
+        {
+          "name": "g1.matmul.vm.torch-matmul",
+          "supported": true
+        },
+        {
+          "name": "g1.matmul.vv.at",
+          "supported": true
+        },
+        {
+          "name": "g1.matmul.mv.at",
+          "supported": true
+        },
+        {
+          "name": "g1.matmul.vm.at",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py",
+        "tests/python/test_vulkan_vector_matmul_capability_evidence.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "g1.matmul.mv.at",
+          "g1.matmul.mv.torch-matmul",
+          "g1.matmul.vm.at",
+          "g1.matmul.vm.torch-matmul",
+          "g1.matmul.vv.at",
+          "g1.matmul.vv.torch-matmul"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          1,
+          2
+        ],
+        "reverse_first_order_graph_cases": [
+          "g1.matmul.mv.at",
+          "g1.matmul.mv.torch-matmul",
+          "g1.matmul.vm.at",
+          "g1.matmul.vm.torch-matmul",
+          "g1.matmul.vv.at",
+          "g1.matmul.vv.torch-matmul"
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
       "autograd": "first_order_or_none",
       "device": {
         "index": 0,
@@ -4014,10 +4120,26 @@
       ],
       "schema": "aten::mul.Tensor",
       "shape_constraints": [
-        "unwitnessed"
+        "1x3",
+        "2x1",
+        "2x1x3",
+        "3",
+        "4x3"
       ],
       "status": "supported",
       "test_cases": [
+        {
+          "name": "g1.mul.broadcast.rank0-rank1",
+          "supported": true
+        },
+        {
+          "name": "g1.mul.broadcast.rank2",
+          "supported": true
+        },
+        {
+          "name": "g1.mul.broadcast.rank3-rank2",
+          "supported": true
+        },
         {
           "name": "binary.mul.float32.empty",
           "supported": true
@@ -4029,12 +4151,16 @@
       ],
       "tests": [
         "tests/python/test_vulkan_conformance.py",
-        "tests/python/test_vulkan_operator_capabilities.py"
+        "tests/python/test_vulkan_operator_capabilities.py",
+        "tests/python/test_vulkan_vector_matmul_capability_evidence.py"
       ],
       "witnesses": {
         "cases": [
           "arithmetic.autograd.mul-tensor",
-          "binary.mul.float32.empty"
+          "binary.mul.float32.empty",
+          "g1.mul.broadcast.rank0-rank1",
+          "g1.mul.broadcast.rank2",
+          "g1.mul.broadcast.rank3-rank2"
         ],
         "dtypes": [
           "float32"
@@ -4042,14 +4168,26 @@
         "pairs": [
           [
             "float32",
+            0
+          ],
+          [
+            "float32",
             2
+          ],
+          [
+            "float32",
+            3
           ]
         ],
         "ranks": [
-          2
+          0,
+          2,
+          3
         ],
         "reverse_second_order_cases": [
-          "arithmetic.autograd.mul-tensor"
+          "arithmetic.autograd.mul-tensor",
+          "g1.mul.broadcast.rank0-rank1",
+          "g1.mul.broadcast.rank2"
         ]
       }
     },
@@ -7684,7 +7822,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "reverse_finite_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -7697,8 +7835,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -7706,28 +7844,151 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 1,
+        "min": 1
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
       ],
       "schema": "aten::dot.default",
       "shape_constraints": [
-        "unwitnessed"
+        "3"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "g1.dot.rank1.forward",
+          "supported": true
+        },
+        {
+          "name": "g1.dot.rank1.grad-a-wrt-b",
+          "supported": true
+        },
+        {
+          "name": "g1.dot.rank1.grad-b-wrt-a",
+          "supported": true
+        }
+      ],
       "tests": [
-        "tests/python/test_vulkan_operator_capabilities.py"
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py",
+        "tests/python/test_vulkan_vector_matmul_capability_evidence.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "g1.dot.rank1.forward",
+          "g1.dot.rank1.grad-a-wrt-b",
+          "g1.dot.rank1.grad-b-wrt-a"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
+        ],
+        "reverse_first_order_graph_cases": [
+          "g1.dot.rank1.forward",
+          "g1.dot.rank1.grad-a-wrt-b",
+          "g1.dot.rank1.grad-b-wrt-a"
+        ],
+        "reverse_second_order_cases": [
+          "g1.dot.rank1.grad-a-wrt-b",
+          "g1.dot.rank1.grad-b-wrt-a"
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "reverse_finite_second_order_witnessed",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 2,
+        "min": 2
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::mv.default",
+      "shape_constraints": [
+        "2x3",
+        "3"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "g1.mv.rank2-rank1.forward",
+          "supported": true
+        },
+        {
+          "name": "g1.mv.rank2-rank1.grad-m-wrt-x",
+          "supported": true
+        },
+        {
+          "name": "g1.mv.rank2-rank1.grad-x-wrt-m",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py",
+        "tests/python/test_vulkan_vector_matmul_capability_evidence.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "g1.mv.rank2-rank1.forward",
+          "g1.mv.rank2-rank1.grad-m-wrt-x",
+          "g1.mv.rank2-rank1.grad-x-wrt-m"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          2
+        ],
+        "reverse_first_order_graph_cases": [
+          "g1.mv.rank2-rank1.forward",
+          "g1.mv.rank2-rank1.grad-m-wrt-x",
+          "g1.mv.rank2-rank1.grad-x-wrt-m"
+        ],
+        "reverse_second_order_cases": [
+          "g1.mv.rank2-rank1.grad-m-wrt-x",
+          "g1.mv.rank2-rank1.grad-x-wrt-m"
+        ]
       }
     },
     {

@@ -23,6 +23,7 @@ from tools.validate_vulkan_capabilities import (  # noqa: E402
     load_coverage_evidence,
     validate_stock_composite_routes,
     validate_overrideable_backward_evidence,
+    validate_vector_matmul_evidence,
 )  # noqa: E402
 from tools.vulkan_capability_declarations import (  # noqa: E402
     DECLARATIONS,
@@ -77,6 +78,7 @@ ENTRY_ORDER = (
     'aten::masked_select.default',
     'aten::mean.dim',
     'aten::mm.default',
+    'aten::matmul.default',
     'aten::mse_loss.default',
     'aten::mse_loss_backward.default',
     'aten::mul.Scalar',
@@ -143,6 +145,7 @@ ENTRY_ORDER = (
     'aten::convolution_overrideable.default',
     'aten::div.out',
     'aten::dot.default',
+    'aten::mv.default',
     'aten::eq.Scalar_out',
     'aten::eq.Tensor_out',
     'aten::exp.out',
@@ -254,6 +257,21 @@ def _case_index() -> dict[str, dict[str, object]]:
         entry["tests"].add("tests/python/test_vulkan_conformance.py")
         for shape in case.declared_shapes:
             entry["shapes"].add(shape)
+    case_names_by_schema = {
+        schema: {case["name"] for case in entry["test_cases"]}
+        for schema, entry in index.items()
+    }
+    from vector_matmul_capability_evidence import VECTOR_MATMUL_CASES
+
+    for case in VECTOR_MATMUL_CASES:
+        entry = index[case["schema"]]
+        if case["name"] not in case_names_by_schema[case["schema"]]:
+            entry["test_cases"].append({"name": case["name"], "supported": True})
+            case_names_by_schema[case["schema"]].add(case["name"])
+        entry["tests"].add("tests/python/test_vulkan_vector_matmul_capability_evidence.py")
+        for shape in case["shapes"]:
+            if shape:
+                entry["shapes"].add("x".join(map(str, shape)))
     linear_entry = index["aten::linear.default"]
     linear_entry["tests"].add("tests/python/test_vulkan_linear.py")
     for route_case in STOCK_LINEAR_ROUTE_CASES:
@@ -312,6 +330,17 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
                 bucket["reverse_selected_third_order_cases"].add(name)
             if any(direction.startswith("second_reverse") for direction in graph["directions"]):
                 bucket["reverse_second_order_cases"].add(name)
+        vector_graph = record.get("vector_matmul_evidence", {}).get("graph")
+        if vector_graph is not None:
+            if ("first_reverse" in vector_graph.get("directions", [])
+                    and DECLARATIONS[record["schema"]]["autograd"] in {
+                        "reverse_first_order_graph_witnessed",
+                        "reverse_finite_second_order_witnessed",
+                        "reverse_selected_third_order_witnessed",
+                    }):
+                bucket["reverse_first_order_graph_cases"].add(name)
+            if "selected_mixed_reverse" in vector_graph.get("directions", []):
+                bucket["reverse_second_order_cases"].add(name)
     return {
         schema: {
             key: [list(pair) for pair in sorted(value)] if key == "pairs" else sorted(value)
@@ -330,6 +359,7 @@ def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
 
     validate_tensor_list_evidence(coverage, require_complete=True)
     validate_convolution_evidence(coverage, require_complete=True)
+    validate_vector_matmul_evidence(coverage, ROOT, require_complete=True)
     vc.validate_graph_autograd_evidence(coverage, _build_manifest()["entries"])
     manifest = _build_manifest()
     source, rejected = _source_registration_inventory(ROOT / "src")

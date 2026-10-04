@@ -375,6 +375,40 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
     return output;
 }
 
+at::Tensor dot(const at::Tensor &lhs, const at::Tensor &rhs) {
+    TORCH_CHECK(lhs.dim() == 1 && rhs.dim() == 1 && lhs.size(0) == rhs.size(0),
+                "Vulkan dot requires equal-length 1-D vectors");
+    TORCH_CHECK(lhs.device().type() == c10::DeviceType::PrivateUse1 &&
+                    lhs.device().index() == 0 && rhs.device() == lhs.device(),
+                "Vulkan dot requires matching Vulkan device index 0 vectors");
+    TORCH_CHECK(lhs.scalar_type() == at::kFloat && rhs.scalar_type() == at::kFloat &&
+                    lhs.layout() == at::kStrided && rhs.layout() == at::kStrided,
+                "Vulkan dot requires matching strided float32 vectors");
+
+    // Retain the original read layouts and offsets in the promoted views. The
+    // shared checked mm planner materializes only layouts its GEMM kernel cannot
+    // read directly, and its K=0 path produces the scalar additive identity.
+    return pytorch_vulkan::mm(lhs.unsqueeze(0), rhs.unsqueeze(1))
+        .squeeze(0).squeeze(0);
+}
+
+at::Tensor mv(const at::Tensor &matrix, const at::Tensor &vector) {
+    TORCH_CHECK(matrix.dim() == 2 && vector.dim() == 1 &&
+                    matrix.size(1) == vector.size(0),
+                "Vulkan mv requires a 2-D matrix and matching 1-D vector");
+    TORCH_CHECK(matrix.device().type() == c10::DeviceType::PrivateUse1 &&
+                    matrix.device().index() == 0 && vector.device() == matrix.device(),
+                "Vulkan mv requires matching Vulkan device index 0 operands");
+    TORCH_CHECK(matrix.scalar_type() == at::kFloat &&
+                    vector.scalar_type() == at::kFloat &&
+                    matrix.layout() == at::kStrided && vector.layout() == at::kStrided,
+                "Vulkan mv requires matching strided float32 operands");
+
+    // Promotion to a column keeps vector storage offset/stride intact; mm's
+    // planner validates and materializes readable noncanonical views.
+    return pytorch_vulkan::mm(matrix, vector.unsqueeze(1)).squeeze(1);
+}
+
 at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
     TORCH_CHECK(mat1.dim() == 3 && mat2.dim() == 3,
                 "Vulkan bmm requires matching 3-D batch matrices");
@@ -900,6 +934,8 @@ at::Tensor &addmm_out(const at::Tensor &self, const at::Tensor &mat1,
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+    m.impl("dot", &pytorch_vulkan::dot);
+    m.impl("mv", &pytorch_vulkan::mv);
     m.impl("mm", &pytorch_vulkan::mm);
     m.impl("bmm", &pytorch_vulkan::bmm);
     m.impl("addmm", &pytorch_vulkan::addmm);

@@ -163,7 +163,70 @@ STOCK_COMPOSITE_ROUTES[STOCK_LINEAR_ROUTE_CONTRACT["schema"]] = deepcopy(
     STOCK_LINEAR_ROUTE_CONTRACT
 )
 
+STOCK_MATMUL_ROUTE_CONTRACT = {
+    "schema": "aten::matmul.default",
+    "reference": {
+        "pytorch_version": "2.4.0",
+        "source": "aten/src/ATen/native/LinearAlgebra.cpp::_matmul_impl",
+        "routes": [
+            "vector-vector -> dot",
+            "matrix-vector -> mv",
+            "vector-matrix -> unsqueeze/mm/squeeze",
+        ],
+    },
+    "dependencies": [
+        {"schema": "aten::dot.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::dot.default"},
+        {"schema": "aten::mv.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::mv.default"},
+        {"schema": "aten::mm.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::mm.default"},
+    ],
+    "evidence_cases": [
+        "g1.matmul.vv.torch-matmul", "g1.matmul.mv.torch-matmul",
+        "g1.matmul.vm.torch-matmul", "g1.matmul.vv.at",
+        "g1.matmul.mv.at", "g1.matmul.vm.at",
+    ],
+}
+STOCK_COMPOSITE_ROUTES[STOCK_MATMUL_ROUTE_CONTRACT["schema"]] = deepcopy(
+    STOCK_MATMUL_ROUTE_CONTRACT
+)
+
+
+def _direct_declaration(*, rank_min: int, rank_max: int, empty: str,
+                        autograd: str) -> dict[str, object]:
+    return {
+        "aliasing": "no_overlap",
+        "autograd": autograd,
+        "device": {"index": 0, "type": "PrivateUse1"},
+        "dtypes": {"inputs": ["float32"], "outputs": ["float32"]},
+        "empty": empty,
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": ["strided", "non-overlapping"],
+        "out": "not_applicable",
+        "ranks": {"max": rank_max, "min": rank_min},
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": ["none"],
+        "status": "supported",
+    }
+
+
+def _matmul_declaration() -> dict[str, object]:
+    declaration = _direct_declaration(
+        rank_min=1, rank_max=2, empty="empty_output_supported",
+        autograd="reverse_first_order_graph_witnessed",
+    )
+    declaration["reason"] = "supported_contract"
+    return declaration
+
 DECLARATIONS: dict[str, dict[str, object]] = {
+    "aten::matmul.default": _matmul_declaration(),
+    "aten::mv.default": _direct_declaration(
+        rank_min=2, rank_max=2, empty="empty_output_supported",
+        autograd="reverse_finite_second_order_witnessed",
+    ),
     'aten::_adaptive_avg_pool2d.default':     {
         "aliasing": "no_overlap",
         "autograd": "first_order_or_none",
@@ -2456,40 +2519,10 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "status": "deferred"
     },
-    'aten::dot.default':     {
-        "aliasing": "no_overlap",
-        "autograd": "not_applicable",
-        "device": {
-            "index": 0,
-            "type": "PrivateUse1"
-        },
-        "dtypes": {
-            "inputs": [
-                "float32"
-            ],
-            "outputs": [
-                "float32"
-            ]
-        },
-        "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
-        "inplace": "not_applicable",
-        "layouts": [
-            "strided",
-            "non-overlapping"
-        ],
-        "out": "not_applicable",
-        "ranks": {
-            "max": 8,
-            "min": 0
-        },
-        "reason": "deferred_contract",
-        "required_vulkan_features": [],
-        "scalar_constraints": [
-            "none"
-        ],
-        "status": "deferred"
-    },
+    'aten::dot.default': _direct_declaration(
+        rank_min=1, rank_max=1, empty="empty_output_supported",
+        autograd="reverse_finite_second_order_witnessed",
+    ),
     'aten::empty.memory_format':     {
         "aliasing": "no_overlap",
         "autograd": "first_order_or_none",

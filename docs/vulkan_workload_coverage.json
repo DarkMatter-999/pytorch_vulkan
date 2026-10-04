@@ -64305,7 +64305,7 @@
         }
       ],
       "execution_mode": "async",
-      "extension_sha256": "0b5617f6bab277fe582d777e62678d5f17dcf8cff180fa642da056cdd793cd11",
+      "extension_sha256": "6015917bf530cd9dcb27496108768419dd29f7aa1e1ce7ccb312114ee6819838",
       "fixture": {
         "input": {
           "dtype": "torch.float32",
@@ -66393,7 +66393,7 @@
         }
       ],
       "execution_mode": "sync",
-      "extension_sha256": "0b5617f6bab277fe582d777e62678d5f17dcf8cff180fa642da056cdd793cd11",
+      "extension_sha256": "6015917bf530cd9dcb27496108768419dd29f7aa1e1ce7ccb312114ee6819838",
       "fixture": {
         "input": {
           "dtype": "torch.float32",
@@ -68625,7 +68625,7 @@
         }
       ],
       "execution_mode": "async",
-      "extension_sha256": "0b5617f6bab277fe582d777e62678d5f17dcf8cff180fa642da056cdd793cd11",
+      "extension_sha256": "6015917bf530cd9dcb27496108768419dd29f7aa1e1ce7ccb312114ee6819838",
       "fixture": {
         "input": {
           "dtype": "torch.float32",
@@ -70993,7 +70993,7 @@
         }
       ],
       "execution_mode": "sync",
-      "extension_sha256": "0b5617f6bab277fe582d777e62678d5f17dcf8cff180fa642da056cdd793cd11",
+      "extension_sha256": "6015917bf530cd9dcb27496108768419dd29f7aa1e1ce7ccb312114ee6819838",
       "fixture": {
         "input": {
           "dtype": "torch.float32",
@@ -72447,7 +72447,7 @@
         }
       ],
       "execution_mode": "async",
-      "extension_sha256": "0b5617f6bab277fe582d777e62678d5f17dcf8cff180fa642da056cdd793cd11",
+      "extension_sha256": "6015917bf530cd9dcb27496108768419dd29f7aa1e1ce7ccb312114ee6819838",
       "fixture": {
         "direction_seed": 932,
         "input": {
@@ -73031,7 +73031,7 @@
         }
       ],
       "execution_mode": "sync",
-      "extension_sha256": "0b5617f6bab277fe582d777e62678d5f17dcf8cff180fa642da056cdd793cd11",
+      "extension_sha256": "6015917bf530cd9dcb27496108768419dd29f7aa1e1ce7ccb312114ee6819838",
       "fixture": {
         "direction_seed": 932,
         "input": {

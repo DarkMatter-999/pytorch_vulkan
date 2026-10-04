@@ -5,6 +5,8 @@
 #include <tuple>
 
 namespace pytorch_vulkan {
+at::Tensor dot(const at::Tensor &lhs, const at::Tensor &rhs);
+at::Tensor mv(const at::Tensor &matrix, const at::Tensor &vector);
 at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2);
 at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2);
 at::Tensor bmm_out(const at::Tensor &mat1, const at::Tensor &mat2,

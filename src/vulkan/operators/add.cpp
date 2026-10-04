@@ -9,10 +9,12 @@
 #include "vulkan_layout.h"
 #include "vulkan_platform.h"
 
+#include <ATen/ExpandUtils.h>
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
 #include <torch/library.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -72,7 +74,7 @@ pytorch_vulkan::VulkanTensorLayout validate_binary_layout(const at::Tensor &tens
 
 void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &alpha,
               pytorch_vulkan::PointwiseOperation operation,
-              const char *operation_name) {
+              const char *operation_name, bool allow_broadcast = false) {
     TORCH_CHECK(!(lhs.device().is_cpu() && rhs.device().is_cpu()), "Vulkan ",
                 operation_name, " requires a Vulkan operand");
     TORCH_CHECK(!(lhs.device().is_cpu() && lhs.dim() == 0) &&
@@ -91,7 +93,8 @@ void validate(const at::Tensor &lhs, const at::Tensor &rhs, const at::Scalar &al
                 operation_name, " requires strided tensors");
     pytorch_vulkan::validate_binary_dtypes(lhs.scalar_type(), rhs.scalar_type(),
                                            operation, operation_name);
-    TORCH_CHECK(lhs.sizes().equals(rhs.sizes()), "Vulkan ", operation_name,
+    TORCH_CHECK(allow_broadcast || lhs.sizes().equals(rhs.sizes()), "Vulkan ",
+                operation_name,
                 " requires equal tensor sizes; broadcasting is unsupported");
     (void)validate_binary_layout(lhs, operation_name);
     (void)validate_binary_layout(rhs, operation_name);
@@ -180,18 +183,48 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
     const bool rhs_wrapped_number = rhs.device().is_cpu() && rhs.dim() == 0 &&
                                     rhs.unsafeGetTensorImpl()->is_wrapped_number();
     if (!lhs_wrapped_number && !rhs_wrapped_number) {
-        validate(lhs, rhs, alpha, operation, operation_name);
+        const bool broadcast_mul =
+            operation == PointwiseOperation::Mul &&
+            lhs.scalar_type() == at::kFloat && rhs.scalar_type() == at::kFloat;
+        validate(lhs, rhs, alpha, operation, operation_name, broadcast_mul);
+        const at::DimVector output_sizes = broadcast_mul
+            ? at::infer_size_dimvector(lhs.sizes(), rhs.sizes())
+            : at::DimVector(lhs.sizes());
+        TORCH_CHECK(output_sizes.size() <= 8, "Vulkan ", operation_name,
+                    " supports ranks up to 8");
+        const bool empty_output =
+            std::find(output_sizes.begin(), output_sizes.end(), 0) !=
+            output_sizes.end();
+        if (!empty_output) {
+            uint64_t output_numel = 1;
+            for (const int64_t size : output_sizes) {
+                TORCH_CHECK(size >= 0 &&
+                                static_cast<uint64_t>(size) <=
+                                    std::numeric_limits<uint32_t>::max() /
+                                        output_numel,
+                            "Vulkan ", operation_name,
+                            " element count exceeds the supported range");
+                output_numel *= static_cast<uint64_t>(size);
+            }
+        }
+        const at::Tensor expanded_lhs = lhs.sizes().equals(output_sizes)
+            ? lhs
+            : lhs.expand(output_sizes);
+        const at::Tensor expanded_rhs = rhs.sizes().equals(output_sizes)
+            ? rhs
+            : rhs.expand(output_sizes);
         const bool uses_bool = pointwise_uses_bool(lhs.scalar_type(), operation);
         validate_pointwise_device_capability(
             uses_bool,
             !uses_bool ||
                 allocation_platform(lhs.storage().data_ptr()).supports_bool_pointwise(),
             operation_name);
-        at::Tensor output = at::empty(lhs.sizes(), lhs.options().device(lhs.device()));
+        at::Tensor output =
+            at::empty(output_sizes, lhs.options().device(lhs.device()));
         const auto lhs_layout =
-            pytorch_vulkan::inspect_vulkan_tensor_layout(lhs, operation_name);
+            pytorch_vulkan::inspect_vulkan_tensor_layout(expanded_lhs, operation_name);
         const auto rhs_layout =
-            pytorch_vulkan::inspect_vulkan_tensor_layout(rhs, operation_name);
+            pytorch_vulkan::inspect_vulkan_tensor_layout(expanded_rhs, operation_name);
         const auto output_layout =
             pytorch_vulkan::inspect_vulkan_tensor_layout(output, operation_name);
         if (lhs_layout.numel == 0) {
