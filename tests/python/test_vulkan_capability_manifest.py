@@ -11,6 +11,7 @@ from tools.validate_vulkan_capabilities import (
     load_manifest,
     validate_manifest_data,
     validate_stock_composite_routes,
+    validate_stock_linear_route_evidence,
 )
 from tools.vulkan_capability_declarations import STOCK_COMPOSITE_ROUTES
 from tools.vulkan_capability_declarations import DECLARATIONS
@@ -25,14 +26,15 @@ def test_convolution_autograd_manifest_claims_only_source_required_cases():
     entries = {entry["schema"]: entry for entry in manifest["entries"]}
     graph_cases = vc.GRAPH_AUTOGRAD_CASES
 
-    expected_first = {name for name in graph_cases}
+    convolution_graph_cases = {name for name in graph_cases if name.startswith("convolution.graph.")}
+    expected_first = convolution_graph_cases
     expected_second = {
-        name for name, contract in graph_cases.items()
+        name for name, contract in graph_cases.items() if name.startswith("convolution.graph.")
         if any(direction.startswith("second_reverse_")
                for direction in contract["directions"])
     }
     expected_selected_third = {
-        name for name, contract in graph_cases.items()
+        name for name, contract in graph_cases.items() if name.startswith("convolution.graph.")
         if "selected_third_d_g_d_x_d_w" in contract["directions"]
     }
     assert len(expected_first) == 5
@@ -67,6 +69,129 @@ def test_convolution_autograd_manifest_claims_only_source_required_cases():
         assert declaration["autograd"] not in unsupported_claims
         assert entry["autograd"] == declaration["autograd"]
         assert not (set(entry["witnesses"]) & unsupported_claims)
+
+
+def test_matrix_autograd_manifest_claims_only_finite_generated_routes():
+    import vulkan_conformance as vc
+
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    entries = {entry["schema"]: entry for entry in manifest["entries"]}
+    expected = {
+        "aten::mm.default": "matrix.graph.mm.generated",
+        "aten::addmm.default": "matrix.graph.addmm.generated",
+        "aten::bmm.default": "matrix.graph.bmm.generated",
+    }
+    for schema, case_name in expected.items():
+        declaration = DECLARATIONS[schema]
+        entry = entries[schema]
+        assert declaration["autograd"] == "reverse_finite_second_order_witnessed"
+        assert entry["autograd"] == declaration["autograd"]
+        assert case_name in entry["witnesses"]["reverse_first_order_graph_cases"]
+        assert case_name in entry["witnesses"]["reverse_second_order_cases"]
+        contract = vc.GRAPH_AUTOGRAD_CASES[case_name]
+        assert contract["directions"] == ["first_reverse", "second_reverse_mixed"]
+        assert contract["graph_levels"] == [1, 2]
+        assert contract["schema"] == schema
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    ["matrix.graph.mm.generated", "matrix.graph.addmm.generated",
+     "matrix.graph.bmm.generated"],
+)
+@pytest.mark.parametrize(
+    "mutation,error",
+    [
+        ("first_detached_both", "first_reverse.*history"),
+        ("first_detached_cpu", "first_reverse.*history"),
+        ("first_detached_vulkan", "first_reverse.*history"),
+        ("duplicate_first", "duplicate derivative result"),
+        ("wrong_slot", "derivative result identities"),
+        ("wrong_direction_type", "malformed derivative result identity"),
+        ("malformed_result", "malformed derivative result identity"),
+        ("non_boolean_history", "malformed derivative result field"),
+        ("second_history_added", "second_reverse_mixed.*graphless"),
+        ("frozen_seed", "grad_output.*requires_grad"),
+        ("missing_counter_field", "compute-only"),
+        ("boolean_counter", "compute-only"),
+        ("negative_copy_counter", "compute-only"),
+        ("extra_counter_field", "compute-only"),
+    ],
+)
+def test_matrix_graph_autograd_rejects_reference_contract_mutations(
+    case_name, mutation, error
+):
+    import vulkan_conformance as vc
+
+    coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+    record = copy.deepcopy(coverage[case_name])
+    results = record["graph_autograd"]["derivative_results"]
+    if mutation.startswith("first_detached"):
+        row = next(item for item in results if item["direction"] == "first_reverse")
+        sides = {"first_detached_both": ("cpu", "vulkan"),
+                 "first_detached_cpu": ("cpu",),
+                 "first_detached_vulkan": ("vulkan",)}[mutation]
+        for side in sides:
+            row[f"{side}_requires_grad"] = False
+            row[f"{side}_grad_fn"] = None
+    elif mutation == "duplicate_first":
+        row = next(item for item in results if item["direction"] == "first_reverse")
+        results.append(copy.deepcopy(row))
+    elif mutation == "wrong_slot":
+        row = next(item for item in results if item["direction"] == "first_reverse")
+        row["slot"] = 99
+    elif mutation == "wrong_direction_type":
+        results[0]["direction"] = []
+    elif mutation == "malformed_result":
+        results[0] = None
+    elif mutation == "non_boolean_history":
+        results[0]["cpu_requires_grad"] = 1
+    elif mutation == "second_history_added":
+        row = next(item for item in results if item["direction"] == "second_reverse_mixed")
+        row["cpu_requires_grad"] = row["vulkan_requires_grad"] = True
+        row["cpu_grad_fn"] = row["vulkan_grad_fn"] = "InventedBackward0"
+    elif mutation == "frozen_seed":
+        for side in ("cpu", "vulkan"):
+            record["graph_autograd"]["operands"]["grad_output"][side]["requires_grad"] = False
+    elif mutation in {"missing_counter_field", "boolean_counter", "negative_copy_counter", "extra_counter_field"}:
+        counters = record["graph_autograd"]["execution"]["first_backward"]
+        if mutation == "missing_counter_field":
+            del counters["buffer_creations_delta"]
+        elif mutation == "boolean_counter":
+            counters["compute_dispatches"] = True
+        elif mutation == "negative_copy_counter":
+            counters["vulkan_copies"] = -1
+        else:
+            counters["unexpected"] = 0
+
+    with pytest.raises(ValueError, match=error):
+        vc.validate_graph_autograd_record(case_name, record)
+
+
+@pytest.mark.parametrize("phase", ["first_backward", "higher_order"])
+@pytest.mark.parametrize("mutation", [
+    "missing_field", "boolean_dispatch", "boolean_transfer", "negative_copy", "extra_field",
+])
+def test_addmm_graph_validator_rejects_malformed_counter_fields_in_both_phases(
+    phase, mutation
+):
+    import vulkan_conformance as vc
+
+    coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+    record = copy.deepcopy(coverage["matrix.graph.addmm.generated"])
+    counters = record["graph_autograd"]["execution"][phase]
+    if mutation == "missing_field":
+        del counters["buffer_creations_delta"]
+    elif mutation == "boolean_dispatch":
+        counters["compute_dispatches"] = True
+    elif mutation == "boolean_transfer":
+        counters["explicit_transfers"] = False
+    elif mutation == "negative_copy":
+        counters["vulkan_copies"] = -1
+    else:
+        counters["unexpected"] = 0
+    with pytest.raises(ValueError, match="compute-only Vulkan evidence"):
+        vc.validate_graph_autograd_record("matrix.graph.addmm.generated", record)
 
 
 def test_overrideable_backward_source_owned_case_cannot_be_jointly_deleted(monkeypatch):
@@ -735,6 +860,15 @@ def test_stock_composite_allowlist_route_must_be_present_in_manifest(monkeypatch
         validate_manifest_data(manifest, ROOT)
 
 
+def test_stock_linear_composite_route_is_source_owned_and_finite():
+    route = STOCK_COMPOSITE_ROUTES["aten::linear.default"]
+    assert route["schema"] == "aten::linear.default"
+    assert route["reference"]["pytorch_version"] == "2.4.0"
+    assert route["reference"]["source"].endswith("Linear.cpp::linear")
+    assert len(route["evidence_cases"]) == 84
+    assert len(set(route["evidence_cases"])) == 84
+
+
 def _stock_route_inputs():
     manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
     coverage = json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
@@ -763,6 +897,13 @@ def test_stock_route_rejects_unexecuted_or_wrongly_linked_evidence():
     entries, coverage, source, rejected = _stock_route_inputs()
     routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
     routes["aten::reshape.default"]["evidence_cases"] = ["review.unexecuted"]
+    with pytest.raises(ValueError, match="evidence case links"):
+        validate_stock_composite_routes(routes, entries, coverage, source, rejected)
+
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    routes["aten::reshape.default"]["evidence_cases"] = [
+        "view.reshape.copy.trainable-seed"
+    ]
     with pytest.raises(ValueError, match="evidence case links"):
         validate_stock_composite_routes(routes, entries, coverage, source, rejected)
 
@@ -803,6 +944,83 @@ def test_stock_route_rejects_unexecuted_or_wrongly_linked_evidence():
     }
     with pytest.raises(ValueError, match="execution evidence"):
         validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+
+def test_stock_linear_route_requires_durable_measured_case_records():
+    entries, coverage, source, rejected = _stock_route_inputs()
+    routes = copy.deepcopy(STOCK_COMPOSITE_ROUTES)
+    validate_stock_composite_routes(routes, entries, coverage, source, rejected)
+    altered = copy.deepcopy(coverage)
+    del altered["linear.rank8.offset-transposed.bias-present.no-grad"]
+    with pytest.raises(ValueError, match="executed Linear route evidence"):
+        validate_stock_composite_routes(routes, entries, altered, source, rejected)
+
+
+def _linear_route_coverage():
+    return json.loads((ROOT / "docs/vulkan_coverage.json").read_text())
+
+
+def test_stock_linear_records_are_durable_and_self_contained():
+    coverage = _linear_route_coverage()
+    validate_stock_linear_route_evidence(coverage)
+    records = {name: record["stock_linear_route"] for name, record in coverage.items()
+               if name.startswith("linear.rank")}
+    assert len(records) == 84
+    assert records["linear.rank1.contiguous.bias-absent.no-grad"]["grad_mode"] == "no_grad"
+    assert records["linear.rank2.contiguous.bias-present.trainable"]["selected_second_direction"]
+
+
+def test_linear_manifest_rank_range_requires_measured_rank_witnesses():
+    manifest = load_manifest(ROOT / "docs/vulkan_capabilities.json")
+    linear = next(entry for entry in manifest["entries"] if entry["schema"] == "aten::linear.default")
+    linear["witnesses"]["ranks"].remove(8)
+    linear["witnesses"]["pairs"] = [
+        pair for pair in linear["witnesses"]["pairs"] if pair[1] != 8
+    ]
+    with pytest.raises(ValueError, match="rank 8 was never exercised"):
+        validate_manifest_data(manifest, ROOT)
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "wrong-rank", "wrong-state", "wrong-layout", "wrong-stride",
+    "missing-first-graph", "missing-second-graph", "zero-dispatch", "no-grad-mode",
+    "extra-case-id", "malformed-grad-history", "boolean-grad-history",
+])
+def test_stock_linear_route_validator_rejects_mutated_measured_records(mutation):
+    coverage = _linear_route_coverage()
+    target = "linear.rank2.contiguous.bias-present.trainable"
+    record = coverage[target]
+    route = record["stock_linear_route"]
+    if mutation == "missing":
+        del coverage[target]
+    elif mutation == "wrong-rank":
+        route["rank"] = 3
+    elif mutation == "wrong-state":
+        route["state"] = "frozen-weight"
+    elif mutation == "wrong-layout":
+        route["layout"] = "offset-transposed"
+    elif mutation == "wrong-stride":
+        route["input_metadata"]["vulkan"]["strides"] = [1, 2]
+    elif mutation == "missing-first-graph":
+        route["first_gradient_graph_preserved"] = False
+    elif mutation == "missing-second-graph":
+        route["selected_second_direction"] = None
+    elif mutation == "zero-dispatch":
+        route["forward_counters"]["compute_dispatches"] = 0
+    elif mutation == "no-grad-mode":
+        coverage["linear.rank1.contiguous.bias-absent.no-grad"]["stock_linear_route"]["grad_mode"] = "enabled"
+    elif mutation == "extra-case-id":
+        coverage["linear.rank9.contiguous.bias-absent.trainable"] = copy.deepcopy(record)
+        coverage["linear.rank9.contiguous.bias-absent.trainable"]["stock_linear_route"]["case_id"] = (
+            "linear.rank9.contiguous.bias-absent.trainable"
+        )
+    elif mutation == "malformed-grad-history":
+        route["first_gradient_facts"][0]["cpu_grad_fn"] = []
+        route["first_gradient_facts"][0]["vulkan_grad_fn"] = []
+    elif mutation == "boolean-grad-history":
+        route["first_gradient_facts"][0]["cpu_requires_grad"] = 1
+    with pytest.raises(ValueError, match="executed Linear route|input layout|profiler|first-gradient|second-direction|counter|grad mode"):
+        validate_stock_linear_route_evidence(coverage)
 
 
 def test_stock_route_rejects_unknown_supported_route_with_fabricated_witness(monkeypatch):

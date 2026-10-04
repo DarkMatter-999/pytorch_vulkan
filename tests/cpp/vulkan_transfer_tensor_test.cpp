@@ -44,12 +44,16 @@ void expect_error(const std::function<void()> &operation, const char *text) {
     try {
         operation();
     } catch (const c10::Error &error) {
-        expect(std::string(error.what()).find(text) != std::string::npos,
-               "unexpected Vulkan transfer error");
+        const std::string message = error.what();
+        expect(message.find(text) != std::string::npos,
+               (std::string("expected '") + text + "' in Vulkan transfer error: " +
+                message).c_str());
         return;
     } catch (const std::exception &error) {
-        expect(std::string(error.what()).find(text) != std::string::npos,
-               "unexpected Vulkan transfer error");
+        const std::string message = error.what();
+        expect(message.find(text) != std::string::npos,
+               (std::string("expected '") + text + "' in Vulkan transfer error: " +
+                message).c_str());
         return;
     }
     throw std::runtime_error("Vulkan transfer accepted invalid input");
@@ -1124,7 +1128,7 @@ void test_shared_out_rejects_partial_and_internal_overlap() {
                 partial_input, rhs, at::Scalar(1.0F), partial_output,
                 pytorch_vulkan::PointwiseOperation::Add, "add");
         },
-        "partially overlaps");
+        "partially overlaps an input");
     expect(platform->compute_dispatch_count() == before,
            "partial overlap rejection submitted a compute dispatch");
 
@@ -1322,7 +1326,7 @@ void test_reduction_indexing_reject_malformed_metadata() {
             platform->compute().broadcast(input_buffer, input_layout, output_buffer,
                                           missing_output, 2U, 1.0F);
         },
-        "output metadata lengths");
+        "output layout metadata lengths");
 }
 
 } // namespace

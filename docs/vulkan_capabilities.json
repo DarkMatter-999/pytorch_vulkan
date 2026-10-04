@@ -2,7 +2,7 @@
   "entries": [
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_backward",
+      "autograd": "reverse_finite_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -35,12 +35,17 @@
       ],
       "schema": "aten::bmm.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x3x4",
+        "2x4x5"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "attention.bmm.forward_backward",
+          "supported": true
+        },
+        {
+          "name": "matrix.graph.bmm.generated",
           "supported": true
         }
       ],
@@ -50,7 +55,8 @@
       ],
       "witnesses": {
         "cases": [
-          "attention.bmm.forward_backward"
+          "attention.bmm.forward_backward",
+          "matrix.graph.bmm.generated"
         ],
         "dtypes": [
           "float32"
@@ -63,6 +69,12 @@
         ],
         "ranks": [
           3
+        ],
+        "reverse_first_order_graph_cases": [
+          "matrix.graph.bmm.generated"
+        ],
+        "reverse_second_order_cases": [
+          "matrix.graph.bmm.generated"
         ]
       }
     },
@@ -1340,7 +1352,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_finite_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -1373,12 +1385,18 @@
       ],
       "schema": "aten::addmm.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x3",
+        "3x4",
+        "4"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "addmm.forward",
+          "supported": true
+        },
+        {
+          "name": "matrix.graph.addmm.generated",
           "supported": true
         }
       ],
@@ -1388,7 +1406,8 @@
       ],
       "witnesses": {
         "cases": [
-          "addmm.forward"
+          "addmm.forward",
+          "matrix.graph.addmm.generated"
         ],
         "dtypes": [
           "float32"
@@ -1396,11 +1415,22 @@
         "pairs": [
           [
             "float32",
+            1
+          ],
+          [
+            "float32",
             2
           ]
         ],
         "ranks": [
+          1,
           2
+        ],
+        "reverse_first_order_graph_cases": [
+          "matrix.graph.addmm.generated"
+        ],
+        "reverse_second_order_cases": [
+          "matrix.graph.addmm.generated"
         ]
       }
     },
@@ -2935,8 +2965,8 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 3,
-        "min": 2
+        "max": 8,
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -2960,17 +2990,438 @@
         {
           "name": "linear.attention.3d",
           "supported": true
+        },
+        {
+          "name": "linear.rank1.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank1.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank1.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank1.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank1.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank1.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank2.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank2.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank2.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank2.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank2.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank2.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.contiguous.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.contiguous.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.contiguous.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.contiguous.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.contiguous.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.contiguous.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.offset-transposed.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.offset-transposed.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.offset-transposed.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.offset-transposed.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.offset-transposed.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank3.offset-transposed.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.offset-transposed.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.offset-transposed.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.offset-transposed.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.offset-transposed.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.offset-transposed.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank4.offset-transposed.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.offset-transposed.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.offset-transposed.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.offset-transposed.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.offset-transposed.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.offset-transposed.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank5.offset-transposed.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.offset-transposed.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.offset-transposed.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.offset-transposed.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.offset-transposed.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.offset-transposed.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank6.offset-transposed.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.offset-transposed.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.offset-transposed.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.offset-transposed.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.offset-transposed.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.offset-transposed.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank7.offset-transposed.bias-present.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.offset-transposed.bias-absent.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.offset-transposed.bias-absent.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.offset-transposed.bias-absent.no-grad",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.offset-transposed.bias-present.trainable",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.offset-transposed.bias-present.frozen-weight",
+          "supported": true
+        },
+        {
+          "name": "linear.rank8.offset-transposed.bias-present.no-grad",
+          "supported": true
         }
       ],
       "tests": [
         "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_linear.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
         "cases": [
           "linear.attention.3d",
           "linear.forward",
-          "linear.forward.strided"
+          "linear.forward.strided",
+          "linear.rank1.contiguous.bias-absent.frozen-weight",
+          "linear.rank1.contiguous.bias-absent.no-grad",
+          "linear.rank1.contiguous.bias-absent.trainable",
+          "linear.rank1.contiguous.bias-present.frozen-weight",
+          "linear.rank1.contiguous.bias-present.no-grad",
+          "linear.rank1.contiguous.bias-present.trainable",
+          "linear.rank2.contiguous.bias-absent.frozen-weight",
+          "linear.rank2.contiguous.bias-absent.no-grad",
+          "linear.rank2.contiguous.bias-absent.trainable",
+          "linear.rank2.contiguous.bias-present.frozen-weight",
+          "linear.rank2.contiguous.bias-present.no-grad",
+          "linear.rank2.contiguous.bias-present.trainable",
+          "linear.rank3.contiguous.bias-absent.frozen-weight",
+          "linear.rank3.contiguous.bias-absent.no-grad",
+          "linear.rank3.contiguous.bias-absent.trainable",
+          "linear.rank3.contiguous.bias-present.frozen-weight",
+          "linear.rank3.contiguous.bias-present.no-grad",
+          "linear.rank3.contiguous.bias-present.trainable",
+          "linear.rank3.offset-transposed.bias-absent.frozen-weight",
+          "linear.rank3.offset-transposed.bias-absent.no-grad",
+          "linear.rank3.offset-transposed.bias-absent.trainable",
+          "linear.rank3.offset-transposed.bias-present.frozen-weight",
+          "linear.rank3.offset-transposed.bias-present.no-grad",
+          "linear.rank3.offset-transposed.bias-present.trainable",
+          "linear.rank4.contiguous.bias-absent.frozen-weight",
+          "linear.rank4.contiguous.bias-absent.no-grad",
+          "linear.rank4.contiguous.bias-absent.trainable",
+          "linear.rank4.contiguous.bias-present.frozen-weight",
+          "linear.rank4.contiguous.bias-present.no-grad",
+          "linear.rank4.contiguous.bias-present.trainable",
+          "linear.rank4.offset-transposed.bias-absent.frozen-weight",
+          "linear.rank4.offset-transposed.bias-absent.no-grad",
+          "linear.rank4.offset-transposed.bias-absent.trainable",
+          "linear.rank4.offset-transposed.bias-present.frozen-weight",
+          "linear.rank4.offset-transposed.bias-present.no-grad",
+          "linear.rank4.offset-transposed.bias-present.trainable",
+          "linear.rank5.contiguous.bias-absent.frozen-weight",
+          "linear.rank5.contiguous.bias-absent.no-grad",
+          "linear.rank5.contiguous.bias-absent.trainable",
+          "linear.rank5.contiguous.bias-present.frozen-weight",
+          "linear.rank5.contiguous.bias-present.no-grad",
+          "linear.rank5.contiguous.bias-present.trainable",
+          "linear.rank5.offset-transposed.bias-absent.frozen-weight",
+          "linear.rank5.offset-transposed.bias-absent.no-grad",
+          "linear.rank5.offset-transposed.bias-absent.trainable",
+          "linear.rank5.offset-transposed.bias-present.frozen-weight",
+          "linear.rank5.offset-transposed.bias-present.no-grad",
+          "linear.rank5.offset-transposed.bias-present.trainable",
+          "linear.rank6.contiguous.bias-absent.frozen-weight",
+          "linear.rank6.contiguous.bias-absent.no-grad",
+          "linear.rank6.contiguous.bias-absent.trainable",
+          "linear.rank6.contiguous.bias-present.frozen-weight",
+          "linear.rank6.contiguous.bias-present.no-grad",
+          "linear.rank6.contiguous.bias-present.trainable",
+          "linear.rank6.offset-transposed.bias-absent.frozen-weight",
+          "linear.rank6.offset-transposed.bias-absent.no-grad",
+          "linear.rank6.offset-transposed.bias-absent.trainable",
+          "linear.rank6.offset-transposed.bias-present.frozen-weight",
+          "linear.rank6.offset-transposed.bias-present.no-grad",
+          "linear.rank6.offset-transposed.bias-present.trainable",
+          "linear.rank7.contiguous.bias-absent.frozen-weight",
+          "linear.rank7.contiguous.bias-absent.no-grad",
+          "linear.rank7.contiguous.bias-absent.trainable",
+          "linear.rank7.contiguous.bias-present.frozen-weight",
+          "linear.rank7.contiguous.bias-present.no-grad",
+          "linear.rank7.contiguous.bias-present.trainable",
+          "linear.rank7.offset-transposed.bias-absent.frozen-weight",
+          "linear.rank7.offset-transposed.bias-absent.no-grad",
+          "linear.rank7.offset-transposed.bias-absent.trainable",
+          "linear.rank7.offset-transposed.bias-present.frozen-weight",
+          "linear.rank7.offset-transposed.bias-present.no-grad",
+          "linear.rank7.offset-transposed.bias-present.trainable",
+          "linear.rank8.contiguous.bias-absent.frozen-weight",
+          "linear.rank8.contiguous.bias-absent.no-grad",
+          "linear.rank8.contiguous.bias-absent.trainable",
+          "linear.rank8.contiguous.bias-present.frozen-weight",
+          "linear.rank8.contiguous.bias-present.no-grad",
+          "linear.rank8.contiguous.bias-present.trainable",
+          "linear.rank8.offset-transposed.bias-absent.frozen-weight",
+          "linear.rank8.offset-transposed.bias-absent.no-grad",
+          "linear.rank8.offset-transposed.bias-absent.trainable",
+          "linear.rank8.offset-transposed.bias-present.frozen-weight",
+          "linear.rank8.offset-transposed.bias-present.no-grad",
+          "linear.rank8.offset-transposed.bias-present.trainable"
         ],
         "dtypes": [
           "float32"
@@ -2978,16 +3429,46 @@
         "pairs": [
           [
             "float32",
+            1
+          ],
+          [
+            "float32",
             2
           ],
           [
             "float32",
             3
+          ],
+          [
+            "float32",
+            4
+          ],
+          [
+            "float32",
+            5
+          ],
+          [
+            "float32",
+            6
+          ],
+          [
+            "float32",
+            7
+          ],
+          [
+            "float32",
+            8
           ]
         ],
         "ranks": [
+          1,
           2,
-          3
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
         ]
       }
     },
@@ -3145,7 +3626,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_finite_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -3178,12 +3659,17 @@
       ],
       "schema": "aten::mm.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x3",
+        "3x4"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "mm.forward",
+          "supported": true
+        },
+        {
+          "name": "matrix.graph.mm.generated",
           "supported": true
         }
       ],
@@ -3193,6 +3679,7 @@
       ],
       "witnesses": {
         "cases": [
+          "matrix.graph.mm.generated",
           "mm.forward"
         ],
         "dtypes": [
@@ -3206,6 +3693,12 @@
         ],
         "ranks": [
           2
+        ],
+        "reverse_first_order_graph_cases": [
+          "matrix.graph.mm.generated"
+        ],
+        "reverse_second_order_cases": [
+          "matrix.graph.mm.generated"
         ]
       }
     },

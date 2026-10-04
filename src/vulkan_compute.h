@@ -5,6 +5,7 @@
 #include <atomic>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <vector>
@@ -115,6 +116,10 @@ class VulkanCompute final {
     void broadcast(VkBuffer input, const VulkanTensorLayout &input_layout,
                    VkBuffer output, const VulkanTensorLayout &output_layout,
                    uint32_t output_numel, float scale) const;
+    // Pure metadata/device-limit validation, shared with broadcast dispatch.
+    void validate_broadcast_preflight(const VulkanTensorLayout &input_layout,
+                                      const VulkanTensorLayout &output_layout,
+                                      uint32_t output_numel) const;
     void linear(VkBuffer input, VkBuffer weight, VkBuffer bias, VkBuffer output,
                 const VulkanTensorLayout &input_layout,
                 const VulkanTensorLayout &weight_layout,
@@ -128,9 +133,19 @@ class VulkanCompute final {
               const VulkanTensorLayout &output_layout, VkBuffer bias,
               const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n, uint32_t k,
               float alpha = 1.0F, float beta = 0.0F, bool has_bias = false,
-              uint32_t batch_count = 0, uint32_t batch_stride_a = 0,
-              uint32_t batch_stride_b = 0, uint32_t batch_stride_c = 0,
-               uint32_t batch_stride_d = 0) const;
+               uint32_t batch_count = 0, uint32_t batch_stride_a = 0,
+                uint32_t batch_stride_b = 0, uint32_t batch_stride_c = 0,
+                uint32_t batch_stride_d = 0) const;
+    void validate_gemm_preflight(const VulkanTensorLayout &a_layout,
+                                 const VulkanTensorLayout &b_layout,
+                                 const VulkanTensorLayout &output_layout, uint32_t m,
+                                 uint32_t n, uint32_t k,
+                                 bool allow_transposed_a = false,
+                                 uint32_t batch_count = 0,
+                                 uint32_t batch_stride_a = 0,
+                                 uint32_t batch_stride_b = 0,
+                                 uint32_t batch_stride_output = 0,
+                                 const VulkanTensorLayout *c_layout = nullptr) const;
     void rnn_sequence(VkBuffer input, VkBuffer weight, VkBuffer recurrent_weight,
                       VkBuffer bias, VkBuffer output, uint32_t batch,
                       uint32_t sequence, uint32_t input_dimension,
@@ -248,12 +263,16 @@ class VulkanCompute final {
     void test_inject_pre_dispatch_failure() const;
 
   private:
+    uint32_t validate_dispatch_extra_limits(
+        VkDeviceSize input_bytes, VkDeviceSize output_bytes, uint32_t params_size,
+        uint32_t output_numel, VkDeviceSize metadata_size,
+        bool one_workgroup_per_output = false) const;
     void dispatch(uint32_t mode, VkBuffer lhs, const VulkanTensorLayout *lhs_layout,
                   VkBuffer rhs, const VulkanTensorLayout *rhs_layout, VkBuffer output,
-                  const VulkanTensorLayout &output_layout, float scalar,
-                   uint32_t operation, bool exact_alias, bool bool_dtype,
-                   bool bool_output = false, VkDeviceSize lhs_offset = 0,
-                   VkDeviceSize output_offset = 0, float alpha = 1.0F) const;
+                    const VulkanTensorLayout &output_layout, float scalar,
+                    uint32_t operation, bool exact_alias, bool bool_dtype,
+                    bool bool_output = false, VkDeviceSize lhs_offset = 0,
+                    VkDeviceSize output_offset = 0, float alpha = 1.0F) const;
     void dispatch_compound(VkBuffer self, const VulkanTensorLayout &self_layout,
                            VkBuffer tensor1, const VulkanTensorLayout &tensor1_layout,
                            VkBuffer tensor2, const VulkanTensorLayout &tensor2_layout,

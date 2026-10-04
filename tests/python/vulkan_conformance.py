@@ -2180,6 +2180,37 @@ def _argmax_out(value, out, dim, keepdim=False):
 
 
 GRAPH_AUTOGRAD_CASES = {
+    "matrix.graph.mm.generated": {
+        "schema": "aten::mm.default", "forward_schema": "aten::mm.default",
+        "generated_backward_schema": "aten::mm.default",
+        "native_double_backward_schema": None,
+        "directions": ["first_reverse", "second_reverse_mixed"],
+        "derivative_contract": {"first_reverse": {"targets": ["input", "weight"], "requires_grad": True},
+                               "second_reverse_mixed": {"targets": ["input", "weight"], "requires_grad": False}},
+        "graph_levels": [1, 2],
+        "geometry": {"shapes": [[2, 3], [3, 4]], "layouts": ["contiguous", "contiguous"]},
+    },
+    "matrix.graph.addmm.generated": {
+        "schema": "aten::addmm.default", "forward_schema": "aten::addmm.default",
+        "generated_backward_schema": "aten::mm.default",
+        "native_double_backward_schema": None,
+        "directions": ["first_reverse", "second_reverse_mixed"],
+        "derivative_contract": {"first_reverse": {"targets": ["bias", "input", "weight"], "requires_grad": True},
+                               "second_reverse_mixed": {"targets": ["bias", "input", "weight"], "requires_grad": False}},
+        "graph_levels": [1, 2],
+        "geometry": {"shapes": [[4], [2, 3], [3, 4]], "layouts": ["contiguous"] * 3,
+                     "alpha": 1.75, "beta": -0.5, "self_shape": [4]},
+    },
+    "matrix.graph.bmm.generated": {
+        "schema": "aten::bmm.default", "forward_schema": "aten::bmm.default",
+        "generated_backward_schema": "aten::bmm.default",
+        "native_double_backward_schema": None,
+        "directions": ["first_reverse", "second_reverse_mixed"],
+        "derivative_contract": {"first_reverse": {"targets": ["input", "weight"], "requires_grad": True},
+                               "second_reverse_mixed": {"targets": ["input", "weight"], "requires_grad": False}},
+        "graph_levels": [1, 2],
+        "geometry": {"shapes": [[2, 3, 4], [2, 4, 5]], "layouts": ["contiguous", "contiguous"]},
+    },
     "convolution.graph.grouped.ggI-ggW-ggb": {
         "schema": "aten::convolution.default", "forward_schema": "aten::convolution.default",
         "generated_backward_schema": "aten::convolution_backward.default",
@@ -2216,11 +2247,41 @@ GRAPH_AUTOGRAD_CASES = {
     },
 }
 GRAPH_AUTOGRAD_REQUIRED_CASES = frozenset(GRAPH_AUTOGRAD_CASES)
+MATRIX_GRAPH_MODE_OBSERVATION_CASES = frozenset({
+    "matrix.graph.mm.generated",
+    "matrix.graph.bmm.generated",
+})
+MATRIX_GRAPH_MODE_EXECUTION_CONTRACT = {
+    "async": {
+        "first_backward": {
+            "compute_dispatches": 4, "vulkan_copies": 0,
+            "explicit_transfers": 0, "fallbacks": 0,
+            "buffer_creations_delta": 6, "live_allocations_delta": 2,
+        },
+        "higher_order": {
+            "compute_dispatches": 33, "vulkan_copies": 0,
+            "explicit_transfers": 0, "fallbacks": 0,
+            "buffer_creations_delta": 55, "live_allocations_delta": 5,
+        },
+    },
+    "sync": {
+        "first_backward": {
+            "compute_dispatches": 4, "vulkan_copies": 0,
+            "explicit_transfers": 0, "fallbacks": 0,
+            "buffer_creations_delta": 6, "live_allocations_delta": 2,
+        },
+        "higher_order": {
+            "compute_dispatches": 33, "vulkan_copies": 0,
+            "explicit_transfers": 0, "fallbacks": 0,
+            "buffer_creations_delta": 54, "live_allocations_delta": 5,
+        },
+    },
+}
 
 
 def record_graph_autograd_coverage(case_name, route, geometry, operands, directions,
                                    graph_levels, derivative_results,
-                                   route_observations, execution):
+                                   route_observations, execution, numerical_errors=None):
     """Build the bounded, source-owned graph witness envelope."""
     contract = GRAPH_AUTOGRAD_CASES[case_name]
     if route != {key: contract[key] for key in (
@@ -2228,10 +2289,13 @@ def record_graph_autograd_coverage(case_name, route, geometry, operands, directi
         raise ValueError(f"{case_name}: graph route is not source-owned")
     if geometry != contract["geometry"] or directions != contract["directions"] or graph_levels != contract["graph_levels"]:
         raise ValueError(f"{case_name}: graph recipe is not source-owned")
-    return {"route": route, "geometry": geometry, "operands": operands,
+    payload = {"route": route, "geometry": geometry, "operands": operands,
             "directions": directions, "graph_levels": graph_levels,
             "derivative_results": derivative_results,
             "route_observations": route_observations, "execution": execution}
+    if numerical_errors is not None:
+        payload["numerical_errors"] = numerical_errors
+    return payload
 
 
 def _graph_tensor_meta(value):
@@ -2278,6 +2342,124 @@ def _graph_delta(before, after):
             "live_allocations_delta": after[1] - before[1]}
 
 
+def _run_matrix_graph_autograd_case(case: ConformanceCase, device: str):
+    name = case.graph_autograd_case
+    contract = GRAPH_AUTOGRAD_CASES[name]
+    seed = {"matrix.graph.mm.generated": 4301,
+            "matrix.graph.addmm.generated": 4302,
+            "matrix.graph.bmm.generated": 4303}[name]
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    if name == "matrix.graph.mm.generated":
+        shapes, roles = ((2, 3), (3, 4)), ("input", "weight")
+        operation = torch.mm
+    elif name == "matrix.graph.addmm.generated":
+        shapes, roles = ((4,), (2, 3), (3, 4)), ("bias", "input", "weight")
+        operation = lambda bias, a, b: torch.addmm(bias, a, b, alpha=1.75, beta=-0.5)
+    else:
+        shapes, roles = ((2, 3, 4), (2, 4, 5)), ("input", "weight")
+        operation = torch.bmm
+    cpu_inputs = tuple(torch.randn(shape, generator=generator, dtype=torch.float32,
+                                   requires_grad=True) for shape in shapes)
+    vk_inputs = tuple(value.detach().to(device).requires_grad_() for value in cpu_inputs)
+    cpu_output, vk_output = operation(*cpu_inputs), operation(*vk_inputs)
+    generator_output = torch.Generator(device="cpu").manual_seed(seed + 100)
+    cpu_seed = torch.randn(cpu_output.shape, generator=generator_output).requires_grad_()
+    vk_seed = cpu_seed.detach().to(device).requires_grad_()
+    directions = tuple(torch.randn(value.shape, generator=generator_output) + 0.25
+                       for value in cpu_inputs)
+    vk_directions = tuple(value.to(device) for value in directions)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    first_before = _graph_snap()
+    vk_first = torch.autograd.grad(vk_output, vk_inputs, vk_seed, create_graph=True)
+    pytorch_vulkan._C.synchronize()
+    first_after = _graph_snap()
+    cpu_first = torch.autograd.grad(cpu_output, cpu_inputs, cpu_seed, create_graph=True)
+    for actual, expected in zip(vk_first, cpu_first):
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+        assert actual.requires_grad == expected.requires_grad
+    cpu_energy_output, vk_energy_output = operation(*cpu_inputs), operation(*vk_inputs)
+    cpu_energy = (cpu_energy_output * cpu_energy_output).sum()
+    vk_energy = (vk_energy_output * vk_energy_output).sum()
+    cpu_energy_first = torch.autograd.grad(cpu_energy, cpu_inputs, create_graph=True)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    higher_before = _graph_snap()
+    vk_energy_first = torch.autograd.grad(vk_energy, vk_inputs, create_graph=True)
+    cpu_directional = sum((gradient * direction).sum()
+                          for gradient, direction in zip(cpu_energy_first, directions))
+    vk_directional = sum((gradient * direction).sum()
+                         for gradient, direction in zip(vk_energy_first, vk_directions))
+    cpu_hvp = torch.autograd.grad(cpu_directional, cpu_inputs)
+    vk_hvp = torch.autograd.grad(vk_directional, vk_inputs)
+    pytorch_vulkan._C.synchronize()
+    higher_after = _graph_snap()
+    for actual, expected in zip(vk_hvp, cpu_hvp):
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+    base = tuple(value.detach() for value in cpu_inputs)
+    eps = 0.001
+    def directional_first(step):
+        shifted = tuple((value + step * direction).requires_grad_()
+                        for value, direction in zip(base, directions))
+        output = operation(*shifted)
+        gradients = torch.autograd.grad((output * output).sum(), shifted)
+        return sum((gradient * direction).sum()
+                   for gradient, direction in zip(gradients, directions))
+    fd = (directional_first(eps) - directional_first(-eps)) / (2 * eps)
+    analytic = sum((gradient * direction).sum()
+                   for gradient, direction in zip(cpu_hvp, directions))
+    torch.testing.assert_close(analytic, fd, rtol=0.008, atol=0.002)
+    first_error = max((actual.detach().cpu() - expected.detach()).abs().max().item()
+                      for actual, expected in zip(vk_first, cpu_first))
+    hvp_error = max((actual.detach().cpu() - expected.detach()).abs().max().item()
+                    for actual, expected in zip(vk_hvp, cpu_hvp))
+    fd_error = abs((analytic - fd).item())
+    torch.testing.assert_close(vk_output.cpu(), cpu_output, rtol=0.003, atol=0.003)
+    execution = {"first_backward": _graph_delta(first_before, first_after),
+                "higher_order": _graph_delta(higher_before, higher_after)}
+    for measured in execution.values():
+        if measured["compute_dispatches"] <= 0 or any(
+                measured[key] for key in ("explicit_transfers", "fallbacks")):
+            raise AssertionError(f"{name}: graph route used no compute or incurred host/fallback work: {measured}")
+    operand_metadata = {}
+    for role, cpu_value, vk_value in zip(roles, cpu_inputs, vk_inputs):
+        operand_metadata[role] = {"cpu": _graph_tensor_meta(cpu_value),
+                                  "vulkan": _graph_tensor_meta(vk_value)}
+    operand_metadata["grad_output"] = {"cpu": _graph_tensor_meta(cpu_seed),
+                                        "vulkan": _graph_tensor_meta(vk_seed)}
+    derivative_results = []
+    for direction, actuals, expecteds in (("first_reverse", vk_first, cpu_first),
+                                          ("second_reverse_mixed", vk_hvp, cpu_hvp)):
+        for slot, (actual, expected) in enumerate(zip(actuals, expecteds)):
+            derivative_results.append({"direction": direction, "target": roles[slot],
+                                       "slot": slot, "cpu_defined": True,
+                                       "vulkan_defined": True,
+                                       "cpu_shape": list(expected.shape),
+                                       "vulkan_shape": list(actual.shape),
+                                       "cpu_requires_grad": bool(expected.requires_grad),
+                                       "vulkan_requires_grad": bool(actual.requires_grad),
+                                       "cpu_grad_fn": _graph_grad_fn(expected),
+                                       "vulkan_grad_fn": _graph_grad_fn(actual),
+                                       "cpu_nonzero": _graph_nonzero(expected),
+                                       "vulkan_nonzero": _graph_nonzero(actual.detach().cpu()),
+                                       "oracle": "cpu"})
+    route = {key: contract[key] for key in (
+        "forward_schema", "generated_backward_schema", "native_double_backward_schema")}
+    payload = record_graph_autograd_coverage(
+        name, route, contract["geometry"], operand_metadata,
+        contract["directions"], contract["graph_levels"], derivative_results,
+        {"cpu": [], "vulkan": []}, execution,
+         {"first_reverse_max_abs": first_error,
+          "second_reverse_hvp_max_abs": hvp_error,
+          "cpu_centered_fd_abs": fd_error})
+    if name in MATRIX_GRAPH_MODE_OBSERVATION_CASES:
+        payload["execution_mode_observation"] = {
+            "execution_mode": pytorch_vulkan._C.execution_mode(),
+            "execution": execution,
+        }
+    return vk_output, cpu_output, vk_inputs, payload
+
+
 class _GraphTrace(torch.utils._python_dispatch.TorchDispatchMode):
     def __init__(self, phase):
         super().__init__()
@@ -2303,6 +2485,8 @@ class _GraphTrace(torch.utils._python_dispatch.TorchDispatchMode):
 def run_graph_autograd_case(case: ConformanceCase, device: str = "vk:0"):
     """Execute one of the five finite public-API graph recipes and record actual work."""
     name = case.graph_autograd_case
+    if name.startswith("matrix.graph."):
+        return _run_matrix_graph_autograd_case(case, device)
     contract = GRAPH_AUTOGRAD_CASES[name]
     seed = {"convolution.graph.grouped.ggI-ggW-ggb": 4701,
             "convolution.graph.grouped.selected-third": 4701,
@@ -2462,6 +2646,161 @@ def validate_graph_autograd_record(case_name, record):
     if not isinstance(record, dict):
         raise ValueError(f"{case_name}: coverage record must be an object")
     contract = GRAPH_AUTOGRAD_CASES[case_name]
+    if case_name.startswith("matrix.graph."):
+        payload = record.get("graph_autograd")
+        if (record.get("schema") != contract["schema"] or record.get("parity") is not True
+                or record.get("output_dtype") != "float32"):
+            raise ValueError(f"{case_name}: direct matrix witness schema/dtype/parity mismatch")
+        output_rank = 3 if case_name.endswith("bmm.generated") else 2
+        if record.get("output_rank") != output_rank:
+            raise ValueError(f"{case_name}: direct matrix witness output rank mismatch")
+        route = {key: contract[key] for key in (
+            "forward_schema", "generated_backward_schema", "native_double_backward_schema")}
+        if (not isinstance(payload, dict)
+                or payload.get("route") != route
+                or payload.get("geometry") != contract["geometry"]
+                or payload.get("directions") != contract["directions"]
+                or payload.get("graph_levels") != contract["graph_levels"]):
+            raise ValueError(f"{case_name}: direct matrix graph payload differs from its source contract")
+        roles = payload.get("operands")
+        expected_roles = {"input", "weight", "grad_output"} | ({"bias"} if case_name.endswith("addmm.generated") else set())
+        if not isinstance(roles, dict) or set(roles) != expected_roles:
+            raise ValueError(f"{case_name}: direct matrix operand roles mismatch")
+        geometries = contract["geometry"]["shapes"]
+        expected_shapes = {"input": geometries[0], "weight": geometries[1]}
+        if case_name.endswith("addmm.generated"):
+            expected_shapes = {"bias": contract["geometry"]["self_shape"],
+                               "input": geometries[1], "weight": geometries[2]}
+        expected_shapes["grad_output"] = [2, 3, 5] if output_rank == 3 else [2, 4]
+        for role, pair in roles.items():
+            if not isinstance(pair, dict) or set(pair) != {"cpu", "vulkan"}:
+                raise ValueError(f"{case_name}: malformed {role} metadata pair")
+            for side, meta in pair.items():
+                if (not isinstance(meta, dict) or meta.get("defined") is not True
+                        or meta.get("dtype") != "float32" or meta.get("device") != ("cpu" if side == "cpu" else "vk:0")
+                        or type(meta.get("requires_grad")) is not bool
+                        or meta.get("requires_grad") is not True
+                        or meta.get("shape") != expected_shapes[role]
+                        or meta.get("strides") != list(torch.empty(expected_shapes[role]).stride())
+                        or meta.get("storage_offset") != 0):
+                    raise ValueError(f"{case_name}: malformed {side} {role} metadata; requires_grad must be true")
+        results = payload.get("derivative_results")
+        derivative_contract = contract["derivative_contract"]
+        expected_identity = {
+            (direction, role, slot)
+            for direction, derivative in derivative_contract.items()
+            for slot, role in enumerate(derivative["targets"])
+        }
+        if not isinstance(results, list):
+            raise ValueError(f"{case_name}: derivative results must be a list")
+        actual_identity = []
+        for result in results:
+            if (not isinstance(result, dict)
+                    or type(result.get("direction")) is not str
+                    or type(result.get("target")) is not str
+                    or type(result.get("slot")) is not int):
+                raise ValueError(f"{case_name}: malformed derivative result identity")
+            actual_identity.append((result["direction"], result["target"], result["slot"]))
+        if len(actual_identity) != len(set(actual_identity)):
+            raise ValueError(f"{case_name}: duplicate derivative result identity")
+        if set(actual_identity) != expected_identity or len(actual_identity) != len(expected_identity):
+            raise ValueError(f"{case_name}: derivative result identities differ from source slots")
+        for result in results:
+            direction, target = result["direction"], result["target"]
+            expected_shape = expected_shapes[target]
+            expected_history = derivative_contract[direction]["requires_grad"]
+            for key in ("cpu_defined", "vulkan_defined", "cpu_nonzero", "vulkan_nonzero",
+                        "cpu_requires_grad", "vulkan_requires_grad"):
+                if type(result.get(key)) is not bool:
+                    raise ValueError(f"{case_name}: malformed derivative result field {key}")
+            if (result["cpu_defined"] is not True or result["vulkan_defined"] is not True
+                    or result["cpu_nonzero"] is not True or result["vulkan_nonzero"] is not True
+                    or result.get("oracle") != "cpu"
+                    or result.get("cpu_shape") != expected_shape
+                    or result.get("vulkan_shape") != expected_shape):
+                raise ValueError(f"{case_name}: {direction}/{target} derivative dependency/shape differs from source")
+            for side in ("cpu", "vulkan"):
+                history = result[f"{side}_requires_grad"]
+                grad_fn = result.get(f"{side}_grad_fn")
+                if history is not expected_history or (expected_history and
+                        (type(grad_fn) is not str or not grad_fn)) or (not expected_history and grad_fn is not None):
+                    if direction == "second_reverse_mixed":
+                        raise ValueError(f"{case_name}: second_reverse_mixed derivative must be graphless")
+                    raise ValueError(f"{case_name}: first_reverse derivative must preserve graph history")
+        if payload.get("route_observations") != {"cpu": [], "vulkan": []}:
+            raise ValueError(f"{case_name}: matrix dispatcher trace is outside this finite witness schema")
+        errors = payload.get("numerical_errors")
+        if (not isinstance(errors, dict)
+                or set(errors) != {"first_reverse_max_abs", "second_reverse_hvp_max_abs", "cpu_centered_fd_abs"}
+                or any(not isinstance(value, (int, float)) or not torch.isfinite(torch.tensor(value))
+                       or value < 0 for value in errors.values())):
+            raise ValueError(f"{case_name}: missing measured matrix finite derivative errors")
+        execution = payload.get("execution")
+        if not isinstance(execution, dict) or set(execution) != {"first_backward", "higher_order"}:
+            raise ValueError(f"{case_name}: missing direct matrix execution phases")
+        counter_fields = {
+            "compute_dispatches", "vulkan_copies", "explicit_transfers",
+            "fallbacks", "buffer_creations_delta", "live_allocations_delta",
+        }
+        for counters in execution.values():
+            if (not isinstance(counters, dict) or set(counters) != counter_fields
+                    or any(type(value) is not int or value < 0 for value in counters.values())
+                    or counters["compute_dispatches"] <= 0
+                    or counters["explicit_transfers"] != 0 or counters["fallbacks"] != 0):
+                raise ValueError(f"{case_name}: direct matrix phase lacks compute-only Vulkan evidence")
+        if case_name in MATRIX_GRAPH_MODE_OBSERVATION_CASES:
+            def validate_mode_execution(mode, measured):
+                expected = MATRIX_GRAPH_MODE_EXECUTION_CONTRACT.get(mode)
+                if expected is None or not isinstance(measured, dict):
+                    raise ValueError(f"{case_name}: unknown or malformed runtime execution mode")
+                if set(measured) != {"first_backward", "higher_order"}:
+                    raise ValueError(f"{case_name}: runtime observation is missing a measured phase")
+                counter_fields = {
+                    "compute_dispatches", "vulkan_copies", "explicit_transfers",
+                    "fallbacks", "buffer_creations_delta", "live_allocations_delta",
+                }
+                for phase, counters in measured.items():
+                    if (not isinstance(counters, dict) or set(counters) != counter_fields
+                            or any(type(value) is not int or value < 0
+                                   for value in counters.values())):
+                        raise ValueError(f"{case_name}: malformed {mode}/{phase} counters")
+                if measured != expected:
+                    raise ValueError(
+                        f"{case_name}: {mode} runtime phases differ from the source-owned measurement"
+                    )
+
+            capture = payload.get("execution_mode_observation")
+            mode_observations = payload.get("execution_modes")
+            if capture is not None:
+                if mode_observations is not None or not isinstance(capture, dict) or set(capture) != {
+                    "execution_mode", "execution"
+                }:
+                    raise ValueError(f"{case_name}: malformed single-mode runtime capture")
+                mode = capture["execution_mode"]
+                if mode != pytorch_vulkan._C.execution_mode():
+                    raise ValueError(f"{case_name}: runtime capture mode differs from initialized executor")
+                if capture["execution"] != execution:
+                    raise ValueError(f"{case_name}: runtime capture has no matching phase history")
+                validate_mode_execution(mode, capture["execution"])
+            else:
+                if not isinstance(mode_observations, list) or len(mode_observations) != 2:
+                    raise ValueError(f"{case_name}: async and sync runtime observations are required")
+                by_mode = {}
+                for observation in mode_observations:
+                    if (not isinstance(observation, dict)
+                            or set(observation) != {"execution_mode", "execution"}
+                            or type(observation.get("execution_mode")) is not str):
+                        raise ValueError(f"{case_name}: malformed mode-specific runtime observation")
+                    mode = observation["execution_mode"]
+                    if mode in by_mode:
+                        raise ValueError(f"{case_name}: duplicate runtime mode observation")
+                    validate_mode_execution(mode, observation["execution"])
+                    by_mode[mode] = observation["execution"]
+                if set(by_mode) != {"async", "sync"}:
+                    raise ValueError(f"{case_name}: runtime observations must bind async and sync")
+                if execution != by_mode["async"]:
+                    raise ValueError(f"{case_name}: canonical execution must preserve the async observation")
+        return True
     payload = record.get("graph_autograd")
     if not isinstance(payload, dict):
         raise ValueError(f"{case_name}: missing graph_autograd payload")
@@ -2711,6 +3050,9 @@ _MANIFEST_CASES = {
     for case in entry["test_cases"]
 }
 _MANIFEST_CASES.update({
+    "matrix.graph.mm.generated": ("aten::mm.default", True),
+    "matrix.graph.addmm.generated": ("aten::addmm.default", True),
+    "matrix.graph.bmm.generated": ("aten::bmm.default", True),
     "convolution.forward.bias-present": ("aten::convolution.default", True),
     "convolution.forward.bias-absent": ("aten::convolution.default", True),
     **{
@@ -4617,6 +4959,21 @@ ALL_CASES = tuple(
           _inplace_inputs, args=(0.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.fill_, value, scalar), supported=True, expected_shape=(3, 4)),
     )
     if case is not None
+) + tuple(
+    _case(name, "linear", operation, factory, cpu_reference=operation,
+          expected_shape=shape, requires_grad_inputs=True,
+          rtol=0.003, atol=0.003,
+          declared_shapes=declared_shapes, graph_autograd_case=name)
+    for name, operation, factory, shape, declared_shapes in (
+        ("matrix.graph.mm.generated", torch.mm,
+         lambda **kw: (torch.empty(2, 3), torch.empty(3, 4)), (2, 4), ("2x3", "3x4")),
+        ("matrix.graph.addmm.generated", torch.addmm,
+         lambda **kw: (torch.empty(4), torch.empty(2, 3), torch.empty(3, 4)),
+         (2, 4), ("4", "2x3", "3x4")),
+        ("matrix.graph.bmm.generated", torch.bmm,
+         lambda **kw: (torch.empty(2, 3, 4), torch.empty(2, 4, 5)),
+         (2, 3, 5), ("2x3x4", "2x4x5")),
+    )
 ) + _convolution_evidence_cases() + _transposed_convolution_evidence_cases() + tuple(
     _case(name, "convolution", _GRAPH_FORWARD_OPERATIONS[name],
           (lambda shapes=shapes: lambda **kw: tuple(torch.randn(s, generator=torch.Generator().manual_seed(71 + i), requires_grad=False) for i, s in enumerate(shapes)))(),

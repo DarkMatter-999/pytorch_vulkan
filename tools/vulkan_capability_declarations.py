@@ -52,6 +52,117 @@ STOCK_COMPOSITE_ROUTES = {
     STOCK_COMPOSITE_ROUTE_CONTRACT["schema"]: deepcopy(STOCK_COMPOSITE_ROUTE_CONTRACT)
 }
 
+
+def _stock_linear_route_cases() -> tuple[dict[str, object], ...]:
+    cases = []
+    layouts = ("contiguous", "offset-transposed")
+    for layout in layouts:
+        ranks = range(1, 9) if layout == "contiguous" else range(3, 9)
+        for rank in ranks:
+            shape = [2] * (rank - 1) + [3]
+            for bias_present in (False, True):
+                for state in ("trainable", "frozen-weight", "no-grad"):
+                    case_name = (
+                        f"linear.rank{rank}.{layout}.bias-"
+                        f"{'present' if bias_present else 'absent'}.{state}"
+                    )
+                    if layout == "offset-transposed":
+                        leaf = "mm" if state == "trainable" else "bmm"
+                        required = ["aten::matmul", f"aten::{leaf}"]
+                        required.append(
+                            "aten::clone" if state == "trainable" else "aten::expand"
+                        )
+                        if bias_present:
+                            required.append("aten::add_")
+                        route = (
+                            "folded_mm_copy" if state == "trainable"
+                            else "expanded_bmm"
+                        )
+                    elif rank == 1 and not bias_present:
+                        leaf = "mm"
+                        required = ["aten::matmul", "aten::mm", "aten::squeeze_"]
+                        route = "promoted_mm_squeeze"
+                    elif bias_present:
+                        leaf = "addmm"
+                        required = ["aten::addmm"]
+                        route = "flatten_addmm" if rank != 2 else "addmm"
+                    else:
+                        leaf = "mm"
+                        required = ["aten::matmul", "aten::mm"]
+                        if rank > 2:
+                            required.append("aten::_unsafe_view")
+                        route = "folded_mm"
+                    cases.append({
+                        "name": case_name,
+                        "rank": rank,
+                        "layout": layout,
+                        "input_shape": shape,
+                        "bias_present": bias_present,
+                        "state": state,
+                        "matrix_leaf": f"aten::{leaf}",
+                        "route": route,
+                        "required_forward_ops": required,
+                        "runtime_counters": {
+                            "compute_dispatches_min": 1,
+                            "explicit_transfers": 0,
+                            "fallbacks": 0,
+                        },
+                        "second_direction": case_name == "linear.rank2.contiguous.bias-present.trainable",
+                    })
+    return tuple(cases)
+
+
+STOCK_LINEAR_ROUTE_CASES = _stock_linear_route_cases()
+STOCK_LINEAR_ROUTE_CONTRACT = {
+    "schema": "aten::linear.default",
+    "reference": {
+        "pytorch_version": "2.4.0",
+        "source": "aten/src/ATen/native/Linear.cpp::linear",
+        "matmul_source": "aten/src/ATen/native/LinearAlgebra.cpp::_matmul_impl",
+        "routes": [
+            "rank-2 input plus bias -> addmm(input, weight.t(), bias)",
+            "rank-1 no-bias -> promoted mm then squeeze_",
+            "contiguous higher-rank plus bias -> flatten then addmm",
+            "matmul -> fold to mm when source geometry/gradient state permits",
+            "otherwise expand/reshape/bmm and restore output view",
+            "higher-rank bias after matmul -> in-place broadcast add_",
+        ],
+    },
+    "dependencies": [
+        {"schema": "aten::matmul.default", "dispatch": "stock_composite",
+         "vulkan_leaf": "aten::mm.default", "alternate_vulkan_leaf": "aten::bmm.default"},
+        {"schema": "aten::mm.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::mm.default"},
+        {"schema": "aten::addmm.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::addmm.default"},
+        {"schema": "aten::bmm.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::bmm.default"},
+        {"schema": "aten::add_.Tensor", "dispatch": "direct_privateuse1_add_broadcast",
+         "vulkan_leaf": "aten::add_.Tensor"},
+        {"schema": "aten::clone.default", "dispatch": "stock_generated_privateuse1",
+         "vulkan_leaf": "aten::copy_.default"},
+        {"schema": "aten::reshape.default", "dispatch": "stock_composite",
+         "vulkan_leaf": "aten::_reshape_alias.default",
+         "alternate_vulkan_leaf": "aten::copy_.default"},
+        {"schema": "aten::view.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::view.default"},
+        {"schema": "aten::as_strided.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::as_strided.default"},
+        {"schema": "aten::expand.default", "dispatch": "stock_composite",
+         "vulkan_leaf": "aten::as_strided.default"},
+        {"schema": "aten::_unsafe_view.default", "dispatch": "stock_generated_privateuse1",
+         "vulkan_leaf": "aten::view.default"},
+        {"schema": "aten::t.default", "dispatch": "stock_composite",
+         "vulkan_leaf": "aten::as_strided.default"},
+        {"schema": "aten::sum_to_size.default", "dispatch": "stock_composite",
+         "vulkan_leaf": "aten::sum.dim_IntList"},
+    ],
+    "evidence_cases": [case["name"] for case in STOCK_LINEAR_ROUTE_CASES],
+}
+STOCK_COMPOSITE_ROUTES[STOCK_LINEAR_ROUTE_CONTRACT["schema"]] = deepcopy(
+    STOCK_LINEAR_ROUTE_CONTRACT
+)
+
 DECLARATIONS: dict[str, dict[str, object]] = {
     'aten::_adaptive_avg_pool2d.default':     {
         "aliasing": "no_overlap",
@@ -1133,7 +1244,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::addmm.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_finite_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -1829,7 +1940,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::bmm.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_backward",
+        "autograd": "reverse_finite_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -3362,8 +3473,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 3,
-            "min": 2
+            "max": 8,
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4022,7 +4133,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::mm.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_finite_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"

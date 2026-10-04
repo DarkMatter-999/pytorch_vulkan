@@ -7,6 +7,7 @@
 #include "vulkan_layout.h"
 #include "vulkan_platform.h"
 
+#include <ATen/ExpandUtils.h>
 #include <ATen/MemoryOverlap.h>
 #include <c10/core/DeviceType.h>
 #include <c10/core/GradMode.h>
@@ -131,15 +132,17 @@ void validate_zero_allocation(const at::Tensor &tensor, const char *name) {
                 "Vulkan ", name, " has invalid Vulkan storage provenance");
 }
 
-VulkanTensorLayout validate_alias_input(const at::Tensor &tensor, const char *name) {
+VulkanTensorLayout validate_alias_input(const at::Tensor &tensor, const char *name,
+                                        bool allow_internal_overlap = false) {
     TORCH_CHECK(is_vulkan_device(tensor.device()), "Vulkan ", name,
                 " requires a Vulkan tensor");
     TORCH_CHECK(tensor.device().index() == 0, "Vulkan ", name,
                 " supports only Vulkan device index 0");
     TORCH_CHECK(tensor.layout() == at::kStrided && tensor.scalar_type() == at::kFloat,
                 "Vulkan ", name, " requires a strided float32 tensor");
-    TORCH_CHECK(at::has_internal_overlap(tensor) == at::MemOverlap::No, "Vulkan ", name,
-                " tensor has internal overlap");
+    TORCH_CHECK(allow_internal_overlap ||
+                    at::has_internal_overlap(tensor) == at::MemOverlap::No,
+                "Vulkan ", name, " tensor has internal overlap");
     auto layout = pytorch_vulkan::inspect_vulkan_tensor_layout(tensor, name);
     TORCH_CHECK(layout.rank <= 8 &&
                     layout.numel <= std::numeric_limits<uint32_t>::max(),
@@ -196,7 +199,8 @@ float scalar_to_float(const at::Scalar &scalar, const char *name) {
 const VulkanPlatform &validate_allocations(const at::Tensor *first,
                                            const at::Tensor *second,
                                            const at::Tensor &out, std::size_t bytes,
-                                           const char *name) {
+                                           const char *name,
+                                           std::size_t second_bytes = 0) {
     const VkDeviceSize size = static_cast<VkDeviceSize>(bytes);
     const at::DataPtr &out_data = out.storage().data_ptr();
     pytorch_vulkan::validate_allocation(out_data, size, "output");
@@ -212,7 +216,9 @@ const VulkanPlatform &validate_allocations(const at::Tensor *first,
                 " requires all tensors to use the same Vulkan platform/device");
     if (second) {
         const at::DataPtr &second_data = second->storage().data_ptr();
-        pytorch_vulkan::validate_allocation(second_data, size, "input");
+        const VkDeviceSize required_second_bytes =
+            static_cast<VkDeviceSize>(second_bytes == 0 ? bytes : second_bytes);
+        pytorch_vulkan::validate_allocation(second_data, required_second_bytes, "input");
         const VulkanPlatform &second_platform =
             pytorch_vulkan::allocation_platform(second_data);
         TORCH_CHECK(&platform == &second_platform &&
@@ -377,7 +383,8 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor,
 at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &other,
                                          const at::Scalar &alpha,
                                          PointwiseOperation operation,
-                                         const char *name) {
+                                         const char *name,
+                                         bool allow_broadcast) {
     const auto self_layout = validate_alias_input(self, name);
     const bool wrapped_scalar = other.device().is_cpu() && other.dim() == 0 &&
                                 other.unsafeGetTensorImpl()->is_wrapped_number();
@@ -386,13 +393,58 @@ at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &oth
             scalar_to_float(other.item(), name) * scalar_to_float(alpha, name);
         return dispatch_tensor_scalar_alias(self, at::Scalar(scalar), operation, name);
     }
-    const auto other_layout = validate_alias_input(other, name);
-    TORCH_CHECK(self.device() == other.device() && self.sizes().equals(other.sizes()) &&
+    const bool permit_broadcast =
+        allow_broadcast && operation == PointwiseOperation::Add;
+    auto other_layout = validate_alias_input(other, name, permit_broadcast);
+    TORCH_CHECK(
+        other_layout.internal_overlap == pytorch_vulkan::VulkanOverlap::No ||
+            (permit_broadcast &&
+             pytorch_vulkan::is_non_overlapping_except_broadcast_dims(other_layout)),
+        "Vulkan ", name, " RHS has unsupported internal overlap");
+    TORCH_CHECK(self.device() == other.device() &&
                     self.scalar_type() == other.scalar_type(),
-                "Vulkan ", name, " requires matching Vulkan tensor operands");
+                "Vulkan ", name, " requires matching Vulkan devices and dtypes");
+    if (permit_broadcast) {
+        TORCH_CHECK(other.dim() <= self.dim(), "Vulkan ", name,
+                    " RHS is not broadcastable to the fixed self shape");
+        auto [expanded_sizes, expanded_strides] = at::inferExpandGeometry(
+            other.sizes(), other.strides(), self.sizes());
+        TORCH_CHECK(at::IntArrayRef(expanded_sizes).equals(self.sizes()),
+                    "Vulkan ", name,
+                    " RHS is not broadcastable to the fixed self shape");
+        other_layout = pytorch_vulkan::inspect_vulkan_view_layout(
+            other, self.sizes(), expanded_strides, other.storage_offset(), name);
+    } else {
+        TORCH_CHECK(self.sizes().equals(other.sizes()), "Vulkan ", name,
+                    " requires matching Vulkan tensor operands");
+    }
     const float scale = scalar_to_float(alpha, name);
-    const auto overlap = at::get_overlap_status(other, self);
-    validate_overlap_status(overlap, other, self, name);
+    const bool same_storage =
+        other.storage().is_alias_of(self.storage());
+    const auto overlap = same_storage ? at::get_overlap_status(other, self)
+                                      : at::MemOverlapStatus::No;
+    const bool exact_alias =
+        self.sizes().equals(other.sizes()) &&
+        self.strides().equals(other.strides()) &&
+        self.storage_offset() == other.storage_offset() &&
+        self.data_ptr() == other.data_ptr();
+    if (permit_broadcast && same_storage && !exact_alias &&
+        overlap != at::MemOverlapStatus::No) {
+        // PyTorch admits some expanded aliases as TooHard without establishing
+        // a stable result for overlapping reads and in-place writes. Reject a
+        // conservative byte-range intersection before dispatch.
+        const uint64_t self_end =
+            static_cast<uint64_t>(self_layout.byte_offset) + self_layout.byte_range;
+        const uint64_t other_end =
+            static_cast<uint64_t>(other_layout.byte_offset) + other_layout.byte_range;
+        TORCH_CHECK(self_layout.byte_range == 0 || other_layout.byte_range == 0 ||
+                        self_end <= other_layout.byte_offset ||
+                        other_end <= self_layout.byte_offset,
+                    "Vulkan ", name,
+                    " output partially overlaps an input (broadcast RHS storage)");
+    } else {
+        validate_overlap_status(overlap, other, self, name);
+    }
     if (self_layout.numel == 0) {
         validate_zero_allocation(self, name);
         validate_zero_allocation(other, name);
@@ -400,7 +452,8 @@ at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &oth
     }
     const auto bytes = static_cast<std::size_t>(self_layout.byte_range);
     const VulkanPlatform &platform =
-        validate_allocations(&self, &other, self, bytes, name);
+        validate_allocations(&self, &other, self, bytes, name,
+                             static_cast<std::size_t>(other_layout.byte_range));
     platform.compute().tensor_tensor_alias(
         allocation_buffer(self.storage().data_ptr()).buffer(), self_layout,
         allocation_buffer(other.storage().data_ptr()).buffer(), other_layout,

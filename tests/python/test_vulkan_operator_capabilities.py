@@ -27,6 +27,8 @@ from tools.validate_vulkan_capabilities import (
 from tools.vulkan_capability_declarations import (
     STOCK_COMPOSITE_ROUTE_CONTRACT,
     STOCK_COMPOSITE_ROUTES,
+    STOCK_LINEAR_ROUTE_CONTRACT,
+    STOCK_LINEAR_ROUTE_CASES,
 )
 
 
@@ -94,11 +96,16 @@ def test_declared_manifest_matches_source_registrations():
     assert "aten::reshape.default" not in source_inventory
 
 
-def test_stock_composite_route_is_an_explicit_single_schema_allowlist():
-    assert set(STOCK_COMPOSITE_ROUTES) == {"aten::reshape.default"}
-    route = STOCK_COMPOSITE_ROUTES["aten::reshape.default"]
-    assert route == STOCK_COMPOSITE_ROUTE_CONTRACT
-    assert route["reference"] == {
+def test_stock_composite_routes_are_an_explicit_source_owned_allowlist():
+    assert set(STOCK_COMPOSITE_ROUTES) == {
+        "aten::reshape.default",
+        "aten::linear.default",
+    }
+    reshape_route = STOCK_COMPOSITE_ROUTES["aten::reshape.default"]
+    linear_route = STOCK_COMPOSITE_ROUTES["aten::linear.default"]
+    assert reshape_route == STOCK_COMPOSITE_ROUTE_CONTRACT
+    assert linear_route == STOCK_LINEAR_ROUTE_CONTRACT
+    assert reshape_route["reference"] == {
         "pytorch_version": "2.4.0",
         "source": "aten/src/ATen/native/TensorShape.cpp::reshape_symint",
         "routes": [
@@ -106,7 +113,7 @@ def test_stock_composite_route_is_an_explicit_single_schema_allowlist():
             "otherwise -> clone(MemoryFormat::Contiguous) -> _unsafe_view",
         ],
     }
-    dependencies = {item["schema"]: item for item in route["dependencies"]}
+    dependencies = {item["schema"]: item for item in reshape_route["dependencies"]}
     assert dependencies["aten::clone.default"]["dispatch"] == "stock_generated_privateuse1"
     assert dependencies["aten::clone.default"]["vulkan_leaf"] == "aten::copy_.default"
     assert dependencies["aten::_unsafe_view.default"]["dispatch"] == "stock_generated_privateuse1"
@@ -114,6 +121,25 @@ def test_stock_composite_route_is_an_explicit_single_schema_allowlist():
     source_inventory, _ = _source_registration_classifications()
     assert "aten::clone.default" not in source_inventory
     assert "aten::_unsafe_view.default" not in source_inventory
+    linear_dependencies = {
+        item["schema"] for item in linear_route["dependencies"]
+    }
+    assert linear_dependencies == {
+        "aten::matmul.default",
+        "aten::mm.default",
+        "aten::addmm.default",
+        "aten::bmm.default",
+        "aten::add_.Tensor",
+        "aten::clone.default",
+        "aten::reshape.default",
+        "aten::view.default",
+        "aten::as_strided.default",
+        "aten::expand.default",
+        "aten::_unsafe_view.default",
+        "aten::t.default",
+        "aten::sum_to_size.default",
+    }
+    assert linear_route["evidence_cases"] == [case["name"] for case in STOCK_LINEAR_ROUTE_CASES]
 def test_gemm_declarations_cover_supported_frontends_and_deferred_forms():
     assert {
         "aten::mm.default",

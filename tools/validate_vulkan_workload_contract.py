@@ -15,6 +15,9 @@ REQUIRED_WORKLOADS = (
     ("classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-none", "none"),
     ("classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-zero", "zero"),
     ("hvp.grouped-depthwise.output-energy.parameters", None),
+    ("dense.two-linear.output-energy.sgd-momentum.zero-grad-none", "none"),
+    ("dense.two-linear.output-energy.sgd-momentum.zero-grad-zero", "zero"),
+    ("hvp.dense.two-linear.output-energy.parameters", None),
 )
 REQUIRED_MODES = ("async", "sync")
 SCHEMA_VERSION = 1
@@ -91,7 +94,7 @@ def _walk_tensor_pairs(cpu, vk, path=""):
             yield from _walk_tensor_pairs(left, right, f"{path}[{index}]")
 
 
-def _validate_tensor(tensor, path, expected_device):
+def _validate_tensor(tensor, path, expected_device, *, require_contiguous=True):
     if not isinstance(tensor, dict):
         _fail(f"{path}: expected tensor payload")
     required = {"dtype", "shape", "device", "contiguous", "values", "nonzero_count"}
@@ -102,8 +105,8 @@ def _validate_tensor(tensor, path, expected_device):
     shape = tensor["shape"]
     if not isinstance(shape, list) or any(type(dim) is not int or dim < 0 for dim in shape):
         _fail(f"{path}: malformed shape")
-    if type(tensor["contiguous"]) is not bool or tensor["contiguous"] is not True:
-        _fail(f"{path}: tensor must be contiguous")
+    if type(tensor["contiguous"]) is not bool or (require_contiguous and tensor["contiguous"] is not True):
+        _fail(f"{path}: tensor contiguity metadata is invalid")
     values = tensor["values"]
     count = math.prod(shape)
     if not isinstance(values, list) or len(values) != count:
@@ -115,16 +118,16 @@ def _validate_tensor(tensor, path, expected_device):
         _fail(f"{path}: incorrect nonzero_count")
 
 
-def _validate_tensor_tree(node, path, device):
+def _validate_tensor_tree(node, path, device, *, require_contiguous=True):
     if isinstance(node, dict):
         if {"dtype", "shape", "device", "values", "contiguous", "nonzero_count"} <= node.keys():
-            _validate_tensor(node, path, device)
+            _validate_tensor(node, path, device, require_contiguous=require_contiguous)
             return
         for key, child in node.items():
-            _validate_tensor_tree(child, f"{path}.{key}" if path else key, device)
+            _validate_tensor_tree(child, f"{path}.{key}" if path else key, device, require_contiguous=require_contiguous)
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            _validate_tensor_tree(child, f"{path}[{index}]", device)
+            _validate_tensor_tree(child, f"{path}[{index}]", device, require_contiguous=require_contiguous)
 
 
 def _same_json(left, right, path=""):
@@ -267,8 +270,9 @@ def _validate_record(record, oracle, expected_key):
     if not isinstance(record["cpu"], dict) or not isinstance(record["vulkan"], dict):
         _fail(f"{workload_id}: CPU and Vulkan payloads are required")
     _same_json(oracle, record["cpu"], f"{workload_id}: CPU oracle payload")
-    _validate_tensor_tree(record["cpu"], "cpu", "cpu")
-    _validate_tensor_tree(record["vulkan"], "vulkan", "vk:0")
+    matrix_workload = workload_id.startswith("dense.two-linear.") or workload_id.startswith("hvp.dense.two-linear.")
+    _validate_tensor_tree(record["cpu"], "cpu", "cpu", require_contiguous=not matrix_workload)
+    _validate_tensor_tree(record["vulkan"], "vulkan", "vk:0", require_contiguous=not matrix_workload)
     _set_expected_vk_devices(record["cpu"], record["vulkan"])
     errors = _check_vulkan_parity(record["cpu"], record["vulkan"])
     is_hvp = reset_mode is None
@@ -279,21 +283,25 @@ def _validate_record(record, oracle, expected_key):
         if not isinstance(history, dict) or history.keys() != {"grad_fns", "first_gradients_require_grad"}:
             _fail(f"{workload_id}: missing HVP history")
         requires_grad = history["first_gradients_require_grad"]
-        if not isinstance(requires_grad, dict) or requires_grad.keys() != set(_HVP_NAMES) or any(
+        hvp_names = ("0.weight", "0.bias", "1.weight", "1.bias") if workload_id == "hvp.dense.two-linear.output-energy.parameters" else _HVP_NAMES
+        if not isinstance(requires_grad, dict) or requires_grad.keys() != set(hvp_names) or any(
             type(requires_grad[name]) is not bool or requires_grad[name] is not True
             for name in _HVP_NAMES
         ):
             _fail(f"{workload_id}: first-gradient history is detached")
-        if not isinstance(history["grad_fns"], dict) or history["grad_fns"].keys() != set(_HVP_NAMES) or any(
+        if not isinstance(history["grad_fns"], dict) or history["grad_fns"].keys() != set(hvp_names) or any(
             not isinstance(value, str) or not value or value == "NoneType"
             for value in history["grad_fns"].values()
         ):
             _fail(f"{workload_id}: invalid first-gradient grad_fn history")
         hvp = record["vulkan"].get("hvp", {})
-        if hvp.keys() != set(_HVP_NAMES) or any(tensor["nonzero_count"] <= 0 for tensor in hvp.values()):
+        if hvp.keys() != set(hvp_names) or any(tensor["nonzero_count"] <= 0 for tensor in hvp.values()):
             _fail(f"{workload_id}: every HVP role must be nonzero")
     else:
-        _validate_classifier_state(record, workload_id, reset_mode)
+        if workload_id.startswith("dense.two-linear."):
+            _validate_matrix_sgd_state(record, workload_id, reset_mode)
+        else:
+            _validate_classifier_state(record, workload_id, reset_mode)
     comparison = record["comparison"]
     if not isinstance(comparison, dict) or comparison.keys() != {"rtol", "atol", "passed", "max_abs_errors"}:
         _fail(f"{workload_id}: malformed comparison report")
@@ -352,6 +360,49 @@ def _validate_classifier_state(record, workload_id, reset_mode):
                 _fail(f"{workload_id}: reset gradients must be present and zero")
 
 
+def _validate_matrix_sgd_state(record, workload_id, reset_mode):
+    vk = record["vulkan"]
+    names = ("0.weight", "0.bias", "1.weight", "1.bias")
+    steps = vk.get("steps")
+    if not isinstance(steps, list) or len(steps) != 3:
+        _fail(f"{workload_id}: exactly three update steps required")
+    if vk.get("initial_state_keys") != {}:
+        _fail(f"{workload_id}: initial optimizer state must be empty")
+    previous_momentum = None
+    for index, step in enumerate(steps, 1):
+        if step.get("index") != index or any(step.get(group, {}).keys() != set(names)
+                for group in ("gradients", "parameters", "momentum")):
+            _fail(f"{workload_id}: named two-Linear step evidence is incomplete")
+        if step.get("state_keys") != {name: ["momentum_buffer"] for name in names}:
+            _fail(f"{workload_id}: SGD momentum state mismatch")
+        if previous_momentum is not None:
+            for name in names:
+                grad = torch.tensor(step["gradients"][name]["values"], dtype=torch.float32)
+                previous = torch.tensor(previous_momentum[name]["values"], dtype=torch.float32)
+                momentum = torch.tensor(step["momentum"][name]["values"], dtype=torch.float32)
+                if not torch.allclose(momentum, 0.9 * previous + grad, rtol=RTOL, atol=ATOL):
+                    _fail(f"{workload_id}: momentum recurrence failed at step {index} {name}")
+        previous_momentum = step["momentum"]
+    resets = vk.get("reset_observations")
+    if not isinstance(resets, list) or len(resets) != 3:
+        _fail(f"{workload_id}: reset observations missing")
+    for index, reset in enumerate(resets, 1):
+        if reset.get("index") != index:
+            _fail(f"{workload_id}: reset index mismatch")
+        if reset_mode == "none" or index == 1:
+            if reset.get("all_grad_none") is not True:
+                _fail(f"{workload_id}: zero_grad(set_to_none=True) mismatch")
+        elif reset.get("all_grad_none") is not False or reset.get("same_grad_objects") is not True or reset.get("all_grad_zero") is not True:
+            _fail(f"{workload_id}: zero_grad(set_to_none=False) reset mismatch")
+        else:
+            gradients = reset.get("gradients")
+            if not isinstance(gradients, dict) or gradients.keys() != set(names) or any(
+                any(float(value) != 0.0 for value in tensor["values"])
+                for tensor in gradients.values() if isinstance(tensor, dict)
+            ):
+                _fail(f"{workload_id}: reset gradients must remain present and zero")
+
+
 def _workload_module():
     import vulkan_workload_conformance as workload
     return workload
@@ -363,7 +414,9 @@ def _oracle_cache():
     validate_required_matrix(workload.SCENARIOS)
     return {
         (workload_id, reset_mode): (
-            workload.run_cpu_hvp() if reset_mode is None else workload.run_cpu_classifier(reset_mode)
+            workload.run_cpu_matrix_hvp() if workload_id == "hvp.dense.two-linear.output-energy.parameters" else
+            workload.run_cpu_hvp() if reset_mode is None else
+            workload.run_cpu_matrix_sgd(reset_mode) if workload_id.startswith("dense.two-linear.") else workload.run_cpu_classifier(reset_mode)
         )
         for workload_id, reset_mode in REQUIRED_WORKLOADS
     }
@@ -378,7 +431,7 @@ def _validate_collection(document, expected_mode, oracles):
         _fail("PyTorch version/revision differs from source contract")
     records = document["records"]
     if not isinstance(records, list) or len(records) != len(REQUIRED_WORKLOADS):
-        _fail("source-owned required workload collection must contain exactly three records")
+        _fail("source-owned required workload collection must contain exactly six records")
     expected = {(workload_id, reset_mode, expected_mode) for workload_id, reset_mode in REQUIRED_WORKLOADS}
     seen = set()
     for record in records:
@@ -389,9 +442,12 @@ def _validate_collection(document, expected_mode, oracles):
         _validate_record(record, oracles[(key[0], key[1])], key)
     if seen != expected:
         _fail("source-owned required workload collection is incomplete")
-    fingerprints = {(r["hardware"], r["driver"], r["extension_sha256"], r["device"]) for r in records}
-    if len(fingerprints) != 1:
-        _fail("workload records mix hardware/device/driver/extension builds")
+    physical = {(r["hardware"], r["driver"], r["device"]) for r in records}
+    builds = {(r["extension_sha256"], r["workload_id"].startswith("dense.two-linear.") or r["workload_id"].startswith("hvp.dense.two-linear.")) for r in records}
+    if len(physical) != 1 or len({(digest, family) for digest, family in builds}) > 2 or any(
+        len({digest for digest, is_matrix in builds if is_matrix == family}) > 1 for family in (False, True)
+    ):
+        _fail("workload records mix hardware/device or incoherent within-stage extension builds")
     return document
 
 
@@ -399,6 +455,65 @@ def validate_collection(document, expected_mode):
     if expected_mode not in REQUIRED_MODES:
         _fail("expected_mode must be async or sync")
     return _validate_collection(document, expected_mode, _oracle_cache())
+
+
+def validate_fragment(document, expected_mode, selected_workload_ids):
+    """Validate a deliberately selected, nonempty per-mode source fragment."""
+    if expected_mode not in REQUIRED_MODES or not selected_workload_ids:
+        _fail("fragment requires a mode and at least one selected workload")
+    if not isinstance(document, dict) or document.keys() != {"schema_version", "torch_version", "torch_git_revision", "records"}:
+        _fail("malformed workload fragment")
+    if document["schema_version"] != SCHEMA_VERSION or (document["torch_version"], document["torch_git_revision"]) != (TORCH_VERSION, TORCH_GIT_REVISION):
+        _fail("fragment PyTorch version/revision differs from source contract")
+    workload = _workload_module()
+    source_ids = {item.workload_id for item in workload.SCENARIOS}
+    if len(set(selected_workload_ids)) != len(selected_workload_ids) or not set(selected_workload_ids) <= source_ids:
+        _fail("selected workload IDs must be unique source-owned IDs")
+    records = document["records"]
+    if not isinstance(records, list):
+        _fail("fragment records must be a list")
+    fragment_keys = [_record_identity_key(record) for record in records]
+    if len(set(fragment_keys)) != len(fragment_keys):
+        _fail("fragment contains duplicate identity/mode records")
+    if len(records) != len(selected_workload_ids):
+        _fail("fragment must contain exactly one record for each selected workload")
+    seen = set()
+    for record in records:
+        key = _record_identity_key(record)
+        if key[2] != expected_mode or key[0] not in selected_workload_ids or key in seen:
+            _fail("fragment has missing, duplicate, or unselected identity/mode")
+        seen.add(key)
+        validate_record(record)
+    if {key[0] for key in seen} != set(selected_workload_ids):
+        _fail("fragment is missing a selected workload identity")
+    return document
+
+
+def validate_historical_stage_g_base(document):
+    """Validate the immutable pre-matrix six-record Stage G base."""
+    legacy = {
+        ("classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-none", "none"),
+        ("classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-zero", "zero"),
+        ("hvp.grouped-depthwise.output-energy.parameters", None),
+    }
+    if not isinstance(document, dict) or document.keys() != {"schema_version", "torch_version", "torch_git_revision", "records"}:
+        _fail("malformed historical Stage G base")
+    if document["schema_version"] != SCHEMA_VERSION or (document["torch_version"], document["torch_git_revision"]) != (TORCH_VERSION, TORCH_GIT_REVISION):
+        _fail("historical base PyTorch identity mismatch")
+    expected = {(wid, reset, mode) for wid, reset in legacy for mode in REQUIRED_MODES}
+    records = document["records"]
+    if not isinstance(records, list) or len(records) != len(expected):
+        _fail("historical Stage G base must contain its exact six records")
+    oracles = _oracle_cache(); seen = set()
+    for record in records:
+        key = _record_identity_key(record)
+        if key not in expected or key in seen:
+            _fail("historical Stage G base has missing or duplicate identity")
+        seen.add(key)
+        _validate_record(record, oracles[(key[0], key[1])], key)
+    if seen != expected:
+        _fail("historical Stage G base is incomplete")
+    return document
 
 
 def validate_record(record):
@@ -410,7 +525,10 @@ def validate_record(record):
     literal = {(workload_id, reset_mode, mode) for workload_id, reset_mode in REQUIRED_WORKLOADS for mode in REQUIRED_MODES}
     if key not in literal or key not in workload.REQUIRED_RECORD_KEYS:
         _fail(f"source-owned required workload identity/mode mismatch: {key}")
-    oracle = workload.run_cpu_hvp() if key[1] is None else workload.run_cpu_classifier(key[1])
+    if key[0] == "hvp.dense.two-linear.output-energy.parameters": oracle = workload.run_cpu_matrix_hvp()
+    elif key[1] is None: oracle = workload.run_cpu_hvp()
+    elif key[0].startswith("dense.two-linear."): oracle = workload.run_cpu_matrix_sgd(key[1])
+    else: oracle = workload.run_cpu_classifier(key[1])
     _validate_record(record, oracle, key)
     return record
 
@@ -431,7 +549,7 @@ def validate_document(document):
     if expected != literal_expected:
         _fail("source-owned required workload matrix differs from literal contract")
     if not isinstance(records, list) or len(records) != len(literal_expected):
-        _fail("source-owned required workload document must contain exactly six records")
+        _fail("source-owned required workload document must contain exactly twelve records")
     seen = set()
     for record in records:
         key = _record_identity_key(record)
@@ -441,7 +559,11 @@ def validate_document(document):
         _validate_record(record, oracles[(key[0], key[1])], key)
     if seen != literal_expected:
         _fail("source-owned required workload document is incomplete")
-    fingerprints = {(r["hardware"], r["driver"], r["extension_sha256"], r["device"]) for r in records}
-    if len(fingerprints) != 1:
-        _fail("workload records mix hardware/device/driver/extension builds")
+    physical = {(r["hardware"], r["driver"], r["device"]) for r in records}
+    by_family = {}
+    for record in records:
+        matrix = record["workload_id"].startswith("dense.two-linear.") or record["workload_id"].startswith("hvp.dense.two-linear.")
+        by_family.setdefault(matrix, set()).add(record["extension_sha256"])
+    if len(physical) != 1 or any(len(hashes) != 1 for hashes in by_family.values()):
+        _fail("workload records mix hardware/device or incoherent within-stage extension builds")
     return document

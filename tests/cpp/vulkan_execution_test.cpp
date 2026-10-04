@@ -720,6 +720,105 @@ void test_gemm_transposed_a_and_preflight_rejections(VulkanPlatform &platform) {
     rejected(at, a.buffer(), alias_output); // output aliases A
 }
 
+void test_mm_preflight_rejects_actual_device_group_limit(VulkanPlatform &platform) {
+    using pytorch_vulkan::VulkanOverlap;
+    using pytorch_vulkan::VulkanTensorLayout;
+    const auto layout = [](int64_t rows, int64_t columns, uint64_t bytes) {
+        return VulkanTensorLayout{2,
+                                  {rows, columns},
+                                  {columns, 1},
+                                  6,
+                                  sizeof(float),
+                                  0,
+                                  rows * columns,
+                                  0,
+                                  bytes,
+                                  bytes,
+                                  VulkanOverlap::No};
+    };
+    const auto a = layout(static_cast<int64_t>(UINT32_MAX), 1, sizeof(float));
+    const auto b = layout(1, 1, sizeof(float));
+    const auto output = layout(static_cast<int64_t>(UINT32_MAX), 1, sizeof(float));
+
+    platform.reset_execution_counters();
+    bool rejected_for_device_limits = false;
+    try {
+        platform.compute().validate_gemm_preflight(a, b, output, UINT32_MAX, 1, 1,
+                                                   true);
+    } catch (const std::exception &error) {
+        rejected_for_device_limits =
+            std::string(error.what()).find("device limits") != std::string::npos;
+    }
+    expect(rejected_for_device_limits,
+           "GEMM preflight did not use the active device group limits");
+    expect(platform.compute_dispatch_count() == 0,
+           "GEMM device-limit preflight dispatched work");
+    expect(platform.vulkan_copy_count() == 0,
+           "GEMM device-limit preflight recorded a copy");
+
+    const VkDeviceSize over_storage_limit =
+        platform.compute().cat_max_storage_buffer_range() + sizeof(float);
+    const auto tiny = layout(1, 1, sizeof(float));
+    const auto oversized_allocation = layout(1, 1, over_storage_limit);
+    bool rejected_for_storage_limit = false;
+    try {
+        platform.compute().validate_broadcast_preflight(
+            oversized_allocation, tiny, 1);
+    } catch (const std::exception &error) {
+        rejected_for_storage_limit =
+            std::string(error.what()).find("device limits") != std::string::npos;
+    }
+    expect(rejected_for_storage_limit,
+           "broadcast preflight did not use the active storage-buffer limit");
+    expect(platform.compute_dispatch_count() == 0,
+           "broadcast storage-limit preflight dispatched work");
+
+    bool rejected_gemm_storage = false;
+    try {
+        platform.compute().validate_gemm_preflight(
+            oversized_allocation, tiny, tiny, 1, 1, 1);
+    } catch (const std::exception &error) {
+        rejected_gemm_storage =
+            std::string(error.what()).find("storage-buffer limit") != std::string::npos;
+    }
+    expect(rejected_gemm_storage,
+           "GEMM preflight did not use the active storage-buffer limit");
+    expect(platform.compute_dispatch_count() == 0,
+           "GEMM storage-limit preflight dispatched work");
+
+    const auto batched_layout = [](uint32_t batches, uint32_t batch_stride,
+                                   uint64_t bytes) {
+        return VulkanTensorLayout{3,
+                                  {static_cast<int64_t>(batches), 1, 1},
+                                  {static_cast<int64_t>(batch_stride), 1, 1},
+                                  6,
+                                  sizeof(float),
+                                  0,
+                                  static_cast<int64_t>(batches),
+                                  0,
+                                  bytes,
+                                  bytes,
+                                  VulkanOverlap::No};
+    };
+    const auto batch_two = batched_layout(2, 1, 2 * sizeof(float));
+    platform.compute().validate_gemm_preflight(
+        batch_two, batch_two, batch_two, 1, 1, 1, false, 2, 1, 1, 1);
+    platform.reset_execution_counters();
+    const auto excessive_batch = batched_layout(UINT32_MAX, 1, sizeof(float));
+    bool rejected_batch_limit = false;
+    try {
+        platform.compute().validate_gemm_preflight(
+            excessive_batch, excessive_batch, excessive_batch, 1, 1, 1, false,
+            UINT32_MAX, 1, 1, 1);
+    } catch (const std::exception &) {
+        rejected_batch_limit = true;
+    }
+    expect(rejected_batch_limit,
+           "batched GEMM preflight accepted an unrepresentable batch count");
+    expect(platform.compute_dispatch_count() == 0,
+           "batched GEMM device-limit preflight dispatched work");
+}
+
 void test_execution_counters_and_timing(VulkanPlatform &platform) {
     platform.reset_execution_counters();
     platform.reset_timing();
@@ -777,6 +876,7 @@ int main() {
         test_platform_pending_compute_count(platform);
         test_descriptor_cache_rollover_and_cancellation(platform);
         test_gemm_transposed_a_and_preflight_rejections(platform);
+        test_mm_preflight_rejects_actual_device_group_limit(platform);
         test_scoped_training_batches_device_copy(platform);
         if (platform.async_execution_enabled())
             test_async_eager_batch_and_sync_fill_order(platform);

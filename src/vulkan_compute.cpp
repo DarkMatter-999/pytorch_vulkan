@@ -1696,6 +1696,7 @@ void VulkanCompute::argmax(VkBuffer input, const VulkanTensorLayout &input_layou
 void VulkanCompute::broadcast(VkBuffer input, const VulkanTensorLayout &input_layout,
                               VkBuffer output, const VulkanTensorLayout &output_layout,
                               uint32_t output_numel, float scale) const {
+    validate_broadcast_preflight(input_layout, output_layout, output_numel);
     BroadcastParams params{};
     BroadcastMetadata metadata{};
     ReductionParams input_metadata{};
@@ -1706,13 +1707,6 @@ void VulkanCompute::broadcast(VkBuffer input, const VulkanTensorLayout &input_la
         metadata.sizes[i] = input_metadata.sizes[i];
         metadata.strides[i] = input_metadata.strides[i];
     }
-    if (output_layout.rank != input_layout.rank ||
-        output_layout.sizes.size() != static_cast<size_t>(output_layout.rank) ||
-        output_layout.strides.size() != static_cast<size_t>(output_layout.rank))
-        throw std::invalid_argument(
-            "Vulkan compute broadcast output metadata lengths do not match rank");
-    if (output_layout.rank > 8)
-        throw std::invalid_argument("Vulkan compute broadcast supports ranks up to 8");
     params.output_numel = output_numel;
     params.scale = scale;
     for (uint32_t i = 0; i < params.rank; ++i) {
@@ -1723,6 +1717,28 @@ void VulkanCompute::broadcast(VkBuffer input, const VulkanTensorLayout &input_la
                    output_layout.allocation_bytes, broadcast_pipeline_,
                    broadcast_pipeline_layout_, broadcast_descriptor_layout_, &params,
                    sizeof(params), output_numel, &metadata, sizeof(metadata));
+}
+
+void VulkanCompute::validate_broadcast_preflight(
+    const VulkanTensorLayout &input_layout,
+    const VulkanTensorLayout &output_layout, uint32_t output_numel) const {
+    ReductionParams input_metadata{};
+    ReductionParams output_metadata{};
+    fill_layout_metadata(input_metadata, input_layout, "broadcast");
+    fill_layout_metadata(output_metadata, output_layout, "broadcast output");
+    if (input_layout.rank != output_layout.rank ||
+        output_layout.numel != static_cast<int64_t>(output_numel) ||
+        input_layout.byte_range == 0 || output_layout.byte_range == 0 ||
+        input_layout.allocation_bytes == 0 || output_layout.allocation_bytes == 0 ||
+        input_layout.byte_offset > input_layout.allocation_bytes ||
+        input_layout.byte_range > input_layout.allocation_bytes - input_layout.byte_offset ||
+        output_layout.byte_offset > output_layout.allocation_bytes ||
+        output_layout.byte_range >
+            output_layout.allocation_bytes - output_layout.byte_offset)
+        throw std::invalid_argument("Vulkan compute broadcast has an invalid layout range");
+    validate_dispatch_extra_limits(
+        input_layout.allocation_bytes, output_layout.allocation_bytes,
+        sizeof(BroadcastParams), output_numel, sizeof(BroadcastMetadata));
 }
 
 void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
@@ -1778,19 +1794,173 @@ void VulkanCompute::linear(VkBuffer input, VkBuffer weight, VkBuffer bias,
                    VK_NULL_HANDLE, VK_NULL_HANDLE, &metadata, sizeof(metadata));
 }
 
+void VulkanCompute::validate_gemm_preflight(
+    const VulkanTensorLayout &a_layout, const VulkanTensorLayout &b_layout,
+    const VulkanTensorLayout &output_layout, uint32_t m, uint32_t n, uint32_t k,
+    bool allow_transposed_a, uint32_t batch_count, uint32_t batch_stride_a,
+    uint32_t batch_stride_b, uint32_t batch_stride_output,
+    const VulkanTensorLayout *c_layout) const {
+    if (batch_count != 0) {
+        if (a_layout.rank != 3 || b_layout.rank != 3 || output_layout.rank != 3 ||
+            a_layout.sizes.size() != 3 || b_layout.sizes.size() != 3 ||
+            output_layout.sizes.size() != 3 || a_layout.strides.size() != 3 ||
+            b_layout.strides.size() != 3 || output_layout.strides.size() != 3 ||
+            a_layout.sizes[0] != batch_count || b_layout.sizes[0] != batch_count ||
+            output_layout.sizes[0] != batch_count || a_layout.strides[0] < 0 ||
+            b_layout.strides[0] < 0 || output_layout.strides[0] < 0 ||
+            static_cast<uint64_t>(a_layout.strides[0]) != batch_stride_a ||
+            static_cast<uint64_t>(b_layout.strides[0]) != batch_stride_b ||
+            static_cast<uint64_t>(output_layout.strides[0]) != batch_stride_output ||
+            batch_stride_a > std::numeric_limits<uint32_t>::max() ||
+            batch_stride_b > std::numeric_limits<uint32_t>::max() ||
+            batch_stride_output > std::numeric_limits<uint32_t>::max() ||
+            batch_count > max_compute_workgroup_count_z_)
+            throw std::invalid_argument("Vulkan batched GEMM has invalid batch metadata");
+        VulkanTensorLayout a_matrix = a_layout;
+        VulkanTensorLayout b_matrix = b_layout;
+        VulkanTensorLayout output_matrix = output_layout;
+        VulkanTensorLayout c_matrix;
+        if (c_layout != nullptr) {
+            if (c_layout->rank != 3 || c_layout->sizes.size() != 3 ||
+                c_layout->strides.size() != 3 || c_layout->sizes[0] != batch_count ||
+                c_layout->strides[0] < 0 ||
+                static_cast<uint64_t>(c_layout->strides[0]) >
+                    std::numeric_limits<uint32_t>::max())
+                throw std::invalid_argument("Vulkan batched GEMM has invalid C metadata");
+            c_matrix = *c_layout;
+        }
+        for (auto *layout : {&a_matrix, &b_matrix, &output_matrix}) {
+            layout->rank = 2;
+            layout->sizes = {layout->sizes[1], layout->sizes[2]};
+            layout->strides = {layout->strides[1], layout->strides[2]};
+        }
+        if (c_layout != nullptr) {
+            c_matrix.rank = 2;
+            c_matrix.sizes = {c_matrix.sizes[1], c_matrix.sizes[2]};
+            c_matrix.strides = {c_matrix.strides[1], c_matrix.strides[2]};
+        }
+        validate_gemm_preflight(a_matrix, b_matrix, output_matrix, m, n, k,
+                                allow_transposed_a, 0, 0, 0, 0,
+                                c_layout == nullptr ? nullptr : &c_matrix);
+        const auto validate_batch_footprint = [&](const VulkanTensorLayout &layout,
+                                                  uint32_t batch_stride,
+                                                  uint32_t rows, uint32_t columns,
+                                                  const char *name) {
+            const uint64_t matrix_end =
+                static_cast<uint64_t>(rows - 1) *
+                    static_cast<uint64_t>(layout.strides[1]) +
+                static_cast<uint64_t>(columns - 1) *
+                    static_cast<uint64_t>(layout.strides[2]) + 1;
+            const uint64_t batch_offset =
+                static_cast<uint64_t>(batch_count - 1) * batch_stride;
+            if (batch_offset > std::numeric_limits<uint64_t>::max() - matrix_end ||
+                batch_offset + matrix_end >
+                    static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1 ||
+                batch_offset + matrix_end > layout.byte_range / sizeof(float) ||
+                batch_offset + matrix_end >
+                    (max_storage_buffer_range_ - layout.byte_offset) / sizeof(float))
+                throw std::invalid_argument(std::string("Vulkan batched GEMM ") + name +
+                                            " exceeds its checked storage range");
+        };
+        validate_batch_footprint(a_layout, batch_stride_a, m, k, "A");
+        validate_batch_footprint(b_layout, batch_stride_b, k, n, "B");
+        validate_batch_footprint(output_layout, batch_stride_output, m, n, "output");
+        if (c_layout != nullptr)
+            validate_batch_footprint(*c_layout,
+                                     static_cast<uint32_t>(c_layout->strides[0]),
+                                     m, n, "C");
+        if (sizeof(GemmParams) > max_push_constants_size_ ||
+            2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_)
+            throw std::invalid_argument("Vulkan batched GEMM exceeds device limits");
+        return;
+    }
+    const uint64_t m_groups = (static_cast<uint64_t>(m) + 15) / 16;
+    const uint64_t n_groups = (static_cast<uint64_t>(n) + 15) / 16;
+    if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
+        m_groups > max_compute_workgroup_count_y_ ||
+        n_groups > max_compute_workgroup_count_x_ ||
+        2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_)
+        throw std::invalid_argument("Vulkan GEMM exceeds device limits");
+
+    const auto validate_matrix = [&](const VulkanTensorLayout &layout, uint32_t rows,
+                                     uint32_t columns, const char *name,
+                                     bool allow_transpose) {
+        if (layout.rank != 2 || layout.scalar_type != kFloatScalarType ||
+            layout.element_bytes != sizeof(float) || layout.sizes.size() != 2 ||
+            layout.strides.size() != 2 || layout.storage_offset < 0 ||
+            layout.byte_range == 0 || layout.allocation_bytes == 0 ||
+            layout.byte_offset > layout.allocation_bytes ||
+            layout.byte_range > layout.allocation_bytes - layout.byte_offset ||
+            layout.internal_overlap != pytorch_vulkan::VulkanOverlap::No)
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " has an invalid layout");
+        if (layout.sizes[0] != rows || layout.sizes[1] != columns ||
+            layout.strides[0] < 0 || layout.strides[1] < 0 ||
+            !((layout.strides[1] == 1 && layout.strides[0] == columns) ||
+              (allow_transpose && layout.strides[0] == 1 &&
+               layout.strides[1] == rows)) ||
+            static_cast<uint64_t>(layout.storage_offset) >
+                std::numeric_limits<uint32_t>::max() ||
+            static_cast<uint64_t>(layout.strides[0]) >
+                std::numeric_limits<uint32_t>::max() ||
+            static_cast<uint64_t>(layout.strides[1]) >
+                std::numeric_limits<uint32_t>::max())
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " is not a representable matrix");
+        const uint64_t row_extent = static_cast<uint64_t>(rows - 1);
+        const uint64_t column_extent = static_cast<uint64_t>(columns - 1);
+        const uint64_t row_stride = static_cast<uint64_t>(layout.strides[0]);
+        const uint64_t column_stride = static_cast<uint64_t>(layout.strides[1]);
+        if ((row_extent != 0 && row_stride >
+                                    std::numeric_limits<uint64_t>::max() / row_extent) ||
+            (column_extent != 0 && column_stride >
+                                       std::numeric_limits<uint64_t>::max() /
+                                           column_extent))
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " footprint overflows");
+        const uint64_t row_span = row_extent * row_stride;
+        const uint64_t column_span = column_extent * column_stride;
+        if (row_span > std::numeric_limits<uint64_t>::max() - column_span ||
+            row_span + column_span == std::numeric_limits<uint64_t>::max())
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " footprint overflows");
+        const uint64_t required_elements = row_span + column_span + 1;
+        if (required_elements >
+                std::numeric_limits<uint64_t>::max() / layout.element_bytes ||
+            layout.byte_range < required_elements * layout.element_bytes)
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " byte range is smaller than its footprint");
+        if (layout.byte_offset % sizeof(float) != 0 ||
+            layout.byte_range > max_storage_buffer_range_ ||
+            layout.byte_offset > max_storage_buffer_range_ - layout.byte_range)
+            throw std::invalid_argument(std::string("Vulkan GEMM ") + name +
+                                        " exceeds the storage-buffer limit");
+    };
+    validate_matrix(a_layout, m, k, "A", allow_transposed_a);
+    validate_matrix(b_layout, k, n, "B", false);
+    validate_matrix(output_layout, m, n, "output", false);
+    if (c_layout != nullptr)
+        validate_matrix(*c_layout, m, n, "C", false);
+}
+
 void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffer b,
                          const VulkanTensorLayout &b_layout, VkBuffer c,
                          const VulkanTensorLayout &c_layout, VkBuffer output,
                          const VulkanTensorLayout &output_layout, VkBuffer bias,
                          const VulkanTensorLayout &bias_layout, uint32_t m, uint32_t n,
                          uint32_t k, float alpha, float beta, bool has_bias,
-                         uint32_t batch_count, uint32_t batch_stride_a,
-                         uint32_t batch_stride_b, uint32_t batch_stride_c,
-                         uint32_t batch_stride_d) const {
+                          uint32_t batch_count, uint32_t batch_stride_a,
+                          uint32_t batch_stride_b, uint32_t batch_stride_c,
+                          uint32_t batch_stride_d) const {
     const bool batched = batch_count != 0;
     const uint32_t dispatch_batches = batched ? batch_count : 1U;
     const uint32_t matrix_rank = batched ? 3U : 2U;
     const uint32_t matrix_base = batched ? 1U : 0U;
+    validate_gemm_preflight(a_layout, b_layout, output_layout, m, n, k, true,
+                            batch_count, batch_stride_a, batch_stride_b,
+                            batch_stride_d);
+    if (a == VK_NULL_HANDLE || b == VK_NULL_HANDLE || output == VK_NULL_HANDLE)
+        throw std::invalid_argument("Vulkan GEMM has an invalid matrix buffer");
     const auto validate_layout = [&](VkBuffer buffer, const VulkanTensorLayout &layout,
                                      uint32_t rank, uint32_t rows, uint32_t columns,
                                      const char *name, bool allow_transposed = false) {
@@ -1875,15 +2045,19 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     };
     const uint64_t m_groups = (static_cast<uint64_t>(m) + 15) / 16;
     const uint64_t n_groups = (static_cast<uint64_t>(n) + 15) / 16;
-    if (m == 0 || n == 0 || k == 0 || sizeof(GemmParams) > max_push_constants_size_ ||
-        m_groups > max_compute_workgroup_count_y_ ||
-        n_groups > max_compute_workgroup_count_x_ ||
+    if ((batched && (m == 0 || n == 0 || k == 0)) ||
+        (batched && sizeof(GemmParams) > max_push_constants_size_) ||
         (batched && dispatch_batches > max_compute_workgroup_count_z_) ||
-        2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_)
+        (batched &&
+         (m_groups > max_compute_workgroup_count_y_ ||
+          n_groups > max_compute_workgroup_count_x_)) ||
+        (batched && 2U * 16U * 16U * sizeof(float) > max_compute_shared_memory_size_))
         throw std::invalid_argument("Vulkan GEMM exceeds device limits");
-    validate_layout(a, a_layout, 2, m, k, "A", !batched);
-    validate_layout(b, b_layout, 2, k, n, "B");
-    validate_layout(output, output_layout, 2, m, n, "output");
+    if (batched) {
+        validate_layout(a, a_layout, 2, m, k, "A", false);
+        validate_layout(b, b_layout, 2, k, n, "B");
+        validate_layout(output, output_layout, 2, m, n, "output");
+    }
     if (c != VK_NULL_HANDLE)
         validate_layout(c, c_layout, 2, m, n, "C");
     else if (beta != 0.0F)
@@ -2686,26 +2860,39 @@ void VulkanCompute::compute_multi_output(
                           output_count, classification ? 6 : 10);
 }
 
-void VulkanCompute::dispatch_extra(
-    VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
-    VkDeviceSize output_bytes, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
-    VkDescriptorSetLayout descriptor_layout, const void *params, uint32_t params_size,
-    uint32_t output_numel, const void *metadata, VkDeviceSize metadata_size,
+uint32_t VulkanCompute::validate_dispatch_extra_limits(
+    VkDeviceSize input_bytes, VkDeviceSize output_bytes, uint32_t params_size,
+    uint32_t output_numel, VkDeviceSize metadata_size,
     bool one_workgroup_per_output) const {
     const uint64_t max_elements =
         checked_product(static_cast<uint64_t>(max_compute_workgroup_count_x_),
                         kWorkgroupSize, "dispatch workgroup limit");
     const uint64_t dispatch_groups =
         one_workgroup_per_output ? output_numel : checked_dispatch_groups(output_numel);
-    if (input == VK_NULL_HANDLE || output == VK_NULL_HANDLE || output_numel == 0 ||
-        input_bytes == 0 || input_bytes > max_storage_buffer_range_ ||
+    if (output_numel == 0 || input_bytes == 0 ||
+        input_bytes > max_storage_buffer_range_ || output_bytes == 0 ||
         output_bytes > max_storage_buffer_range_ ||
+        params_size > max_push_constants_size_ ||
         static_cast<uint64_t>(output_numel) > max_elements ||
         dispatch_groups > static_cast<uint64_t>(max_compute_workgroup_count_x_) ||
-        dispatch_groups > std::numeric_limits<uint32_t>::max())
-        throw std::invalid_argument("Vulkan compute reduction has an invalid range");
-    if ((metadata == nullptr) != (metadata_size == 0) ||
-        (metadata_size && metadata_size > max_storage_buffer_range_))
+        dispatch_groups > std::numeric_limits<uint32_t>::max() ||
+        metadata_size > max_storage_buffer_range_)
+        throw std::invalid_argument("Vulkan compute dispatch exceeds device limits");
+    return static_cast<uint32_t>(dispatch_groups);
+}
+
+void VulkanCompute::dispatch_extra(
+    VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
+    VkDeviceSize output_bytes, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
+    VkDescriptorSetLayout descriptor_layout, const void *params, uint32_t params_size,
+    uint32_t output_numel, const void *metadata, VkDeviceSize metadata_size,
+    bool one_workgroup_per_output) const {
+    if (input == VK_NULL_HANDLE || output == VK_NULL_HANDLE)
+        throw std::invalid_argument("Vulkan compute dispatch has an invalid buffer");
+    const uint32_t dispatch_groups = validate_dispatch_extra_limits(
+        input_bytes, output_bytes, params_size, output_numel, metadata_size,
+        one_workgroup_per_output);
+    if ((metadata == nullptr) != (metadata_size == 0))
         throw std::invalid_argument("Vulkan compute metadata is invalid");
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;

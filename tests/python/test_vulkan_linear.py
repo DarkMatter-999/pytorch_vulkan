@@ -1,10 +1,14 @@
-import re
 from pathlib import Path
 
 import pytest
 import torch
+from torch.profiler import ProfilerActivity, profile
 
 import pytorch_vulkan
+from tools.vulkan_capability_declarations import STOCK_LINEAR_ROUTE_CASES
+
+
+_STOCK_LINEAR_CASES = {case["name"]: case for case in STOCK_LINEAR_ROUTE_CASES}
 
 
 @pytest.fixture
@@ -28,19 +32,12 @@ def _linear_inputs(device):
     )
 
 
-def test_linear_input_gradient_uses_tiled_gemm_path():
+def test_linear_uses_pytorch_composite_dispatch_boundary():
     source_path = Path(__file__).resolve().parents[2] / "src/vulkan/operators/linear.cpp"
     source = source_path.read_text()
-    linear_gradient = source.split("at::Tensor linear_gradient(", 1)[1].split(
-        "at::Tensor fused_gradient(", 1
-    )[0]
-    input_gradient_branches = re.findall(
-        r"if \(operation == 1[^\{]*\{(.*?)\n    \}",
-        linear_gradient,
-        re.DOTALL,
-    )
-
-    assert any("platform.compute().gemm(" in branch for branch in input_gradient_branches)
+    assert 'm.impl("linear",' not in source
+    assert 'm.impl("linear", &pytorch_vulkan::autograd_linear)' not in source
+    assert 'm.impl("addmm", &pytorch_vulkan::addmm)' in source
 
 
 def test_linear_forward_matches_cpu_and_returns_contiguous_f32(vulkan_backend):
@@ -56,7 +53,7 @@ def test_linear_forward_matches_cpu_and_returns_contiguous_f32(vulkan_backend):
     assert result.dtype is torch.float32
     assert result.shape == (2, 16)
     assert result.is_contiguous()
-    assert pytorch_vulkan._C.compute_dispatch_count() == 2
+    assert pytorch_vulkan._C.compute_dispatch_count() == 3
     torch.testing.assert_close(
         result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)
     )
@@ -75,6 +72,25 @@ def test_linear_forward_without_bias_matches_cpu(vulkan_backend):
     torch.testing.assert_close(
         result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight)
     )
+
+
+def test_linear_forward_accepts_contiguous_singleton_stride_input(vulkan_backend):
+    cpu_base = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    cpu_input = cpu_base.as_strided((1, 3), (1, 1))
+    cpu_weight = torch.tensor([[1.0, 2.0, 3.0], [-1.0, 0.0, 1.0]])
+    vk_base = cpu_base.to(vulkan_backend)
+    vk_input = vk_base.as_strided((1, 3), (1, 1))
+    vk_weight = cpu_weight.to(vulkan_backend)
+    assert vk_input.stride() == (1, 1) and vk_input.is_contiguous()
+
+    result = torch.nn.functional.linear(vk_input, vk_weight)
+    pytorch_vulkan._C.synchronize()
+
+    torch.testing.assert_close(
+        result.cpu(), torch.nn.functional.linear(cpu_input, cpu_weight),
+        rtol=0.003, atol=0.003,
+    )
+    torch.testing.assert_close(vk_base.cpu(), cpu_base)
 
 
 def test_standalone_linear_is_complete_before_return(vulkan_backend):
@@ -142,20 +158,224 @@ def test_linear_backward_without_bias_returns_undefined_bias_gradient(vulkan_bac
     )
 
 
-def test_linear_backward_is_first_order_only(vulkan_backend):
-    input = torch.randn(2, 8, dtype=torch.float32).to(vulkan_backend).requires_grad_()
-    weight = torch.randn(16, 8, dtype=torch.float32).to(vulkan_backend).requires_grad_()
-    output = torch.nn.functional.linear(input, weight)
+def test_linear_backward_preserves_create_graph_history(vulkan_backend):
+    cpu_input = torch.tensor([[0.2, -0.7, 1.1]], requires_grad=True)
+    cpu_weight = torch.tensor([[0.3, 0.4, -0.2], [-0.6, 0.8, 0.5]], requires_grad=True)
+    cpu_bias = torch.tensor([0.1, -0.3], requires_grad=True)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+    vk_bias = cpu_bias.detach().to(vulkan_backend).requires_grad_()
 
-    gradient = torch.autograd.grad(
-        output,
-        input,
-        torch.ones_like(output.cpu()).to(vulkan_backend),
-        create_graph=True,
-    )[0]
+    cpu_output = torch.nn.functional.linear(cpu_input, cpu_weight, cpu_bias)
+    vk_output = torch.nn.functional.linear(vk_input, vk_weight, vk_bias)
+    cpu_first = torch.autograd.grad((cpu_output * cpu_output).sum(), (cpu_input, cpu_weight, cpu_bias), create_graph=True)
+    vk_first = torch.autograd.grad((vk_output * vk_output).sum(), (vk_input, vk_weight, vk_bias), create_graph=True)
+    for actual, expected in zip(vk_first, cpu_first):
+        assert actual.requires_grad == expected.requires_grad
+        assert actual.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
 
-    assert gradient.device == torch.device(vulkan_backend)
-    assert not gradient.requires_grad
+    cpu_direction = tuple(torch.full_like(value, 0.25 + index) for index, value in enumerate(cpu_first))
+    vk_direction = tuple(value.to(vulkan_backend) for value in cpu_direction)
+    cpu_second = torch.autograd.grad(sum((grad * direction).sum() for grad, direction in zip(cpu_first, cpu_direction)), (cpu_input, cpu_weight, cpu_bias))
+    vk_second = torch.autograd.grad(sum((grad * direction).sum() for grad, direction in zip(vk_first, vk_direction)), (vk_input, vk_weight, vk_bias))
+    for actual, expected in zip(vk_second, cpu_second):
+        assert actual.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+
+
+def _profile_linear(module, input, no_grad=False):
+    context = torch.no_grad() if no_grad else torch.enable_grad()
+    with context:
+        with profile(activities=[ProfilerActivity.CPU]) as trace:
+            output = module(input)
+    return output, {event.key for event in trace.key_averages()}
+
+
+@pytest.mark.parametrize("rank", range(1, 9))
+@pytest.mark.parametrize("has_bias", [False, True], ids=["bias-absent", "bias-present"])
+@pytest.mark.parametrize("state", ["trainable", "frozen-weight", "no-grad"], ids=lambda value: value)
+def test_stock_linear_each_declared_rank(vulkan_backend, rank, has_bias, state):
+    shape = (2,) * (rank - 1) + (3,)
+    generator = torch.Generator(device="cpu").manual_seed(4100 + rank * 10 + has_bias)
+    cpu_input = torch.randn(shape, generator=generator)
+    cpu_weight = torch.randn((4, 3), generator=generator)
+    cpu_bias = torch.randn((4,), generator=generator) if has_bias else None
+    cpu_input.requires_grad_(state != "no-grad")
+    cpu_weight.requires_grad_(state == "trainable")
+    if cpu_bias is not None:
+        cpu_bias.requires_grad_(state == "trainable")
+    cpu_module = torch.nn.Linear(3, 4, bias=has_bias)
+    with torch.no_grad():
+        cpu_module.weight.copy_(cpu_weight)
+        if has_bias:
+            cpu_module.bias.copy_(cpu_bias)
+    cpu_module.weight.requires_grad_(state == "trainable")
+    if has_bias:
+        cpu_module.bias.requires_grad_(state == "trainable")
+    module = torch.nn.Linear(3, 4, bias=has_bias)
+    with torch.no_grad():
+        module.weight.copy_(cpu_weight)
+        if has_bias:
+            module.bias.copy_(cpu_bias)
+    module.weight.requires_grad_(state == "trainable")
+    if has_bias:
+        module.bias.requires_grad_(state == "trainable")
+    module.to(vulkan_backend)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_(state != "no-grad")
+
+    cpu_output, cpu_trace = _profile_linear(cpu_module, cpu_input, no_grad=state == "no-grad")
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output, vk_trace = _profile_linear(module, vk_input, no_grad=state == "no-grad")
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    assert vk_output.device == torch.device(vulkan_backend)
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach(), rtol=0.003, atol=0.003)
+
+    matrix_ops = {schema for schema in vk_trace if schema in {
+        "aten::mm", "aten::addmm", "aten::bmm"
+    }}
+    assert matrix_ops, f"rank {rank} {state} bias={has_bias} did not reach a matrix leaf: {vk_trace}"
+    assert matrix_ops == {schema for schema in cpu_trace if schema in {
+        "aten::mm", "aten::addmm", "aten::bmm"
+    }}
+    case_id = (
+        f"linear.rank{rank}.contiguous.bias-{'present' if has_bias else 'absent'}.{state}"
+    )
+    route = _STOCK_LINEAR_CASES[case_id]
+    assert route["matrix_leaf"].removesuffix(".default") in matrix_ops
+    assert {op.removesuffix(".default") for op in route["required_forward_ops"]} <= vk_trace
+    if state == "no-grad":
+        assert not vk_output.requires_grad
+        return
+
+    cpu_loss, vk_loss = (cpu_output * cpu_output).sum(), (vk_output * vk_output).sum()
+    cpu_targets = (cpu_input,)
+    vk_targets = (vk_input,)
+    if state == "trainable":
+        cpu_targets += (cpu_module.weight,)
+        vk_targets += (module.weight,)
+        if has_bias:
+            cpu_targets += (cpu_module.bias,)
+            vk_targets += (module.bias,)
+    cpu_first = torch.autograd.grad(cpu_loss, cpu_targets, create_graph=state == "trainable")
+    vk_first = torch.autograd.grad(vk_loss, vk_targets, create_graph=state == "trainable")
+    for actual, expected in zip(vk_first, cpu_first):
+        assert actual.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+
+    if state == "trainable" and rank == 2 and has_bias:
+        directions = tuple(torch.full_like(value, 0.2 + index).to(vulkan_backend) for index, value in enumerate(vk_first))
+        cpu_directions = tuple(value.cpu() for value in directions)
+        cpu_second = torch.autograd.grad(sum((g * d).sum() for g, d in zip(cpu_first, cpu_directions)), cpu_targets)
+        vk_second = torch.autograd.grad(sum((g * d).sum() for g, d in zip(vk_first, directions)), vk_targets)
+        for actual, expected in zip(vk_second, cpu_second):
+            assert actual.device == torch.device(vulkan_backend)
+            torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+
+
+@pytest.mark.parametrize("rank", range(3, 9))
+@pytest.mark.parametrize("has_bias", [False, True], ids=["bias-absent", "bias-present"])
+@pytest.mark.parametrize("state", ["trainable", "frozen-weight", "no-grad"])
+def test_stock_linear_offset_transpose_uses_observed_bmm_routes(
+    vulkan_backend, rank, has_bias, state
+):
+    base_shape = (2,) * (rank - 1) + (5,)
+    generator = torch.Generator(device="cpu").manual_seed(8700 + rank * 10 + has_bias)
+    cpu_base = torch.randn(base_shape, generator=generator)
+    cpu_input = cpu_base.transpose(0, 1)[..., 1:4]
+    assert cpu_input.storage_offset() != 0 and not cpu_input.is_contiguous()
+    cpu_input.requires_grad_(state != "no-grad")
+    cpu_weight = torch.randn((4, 3), generator=generator)
+    cpu_bias = torch.randn((4,), generator=generator) if has_bias else None
+
+    cpu_module = torch.nn.Linear(3, 4, bias=has_bias)
+    with torch.no_grad():
+        cpu_module.weight.copy_(cpu_weight)
+        if has_bias:
+            cpu_module.bias.copy_(cpu_bias)
+    cpu_module.weight.requires_grad_(state == "trainable")
+    if has_bias:
+        cpu_module.bias.requires_grad_(state == "trainable")
+
+    vk_base = cpu_base.to(vulkan_backend)
+    vk_input = vk_base.transpose(0, 1)[..., 1:4].detach().requires_grad_(state != "no-grad")
+    module = torch.nn.Linear(3, 4, bias=has_bias)
+    with torch.no_grad():
+        module.weight.copy_(cpu_weight)
+        if has_bias:
+            module.bias.copy_(cpu_bias)
+    module.weight.requires_grad_(state == "trainable")
+    if has_bias:
+        module.bias.requires_grad_(state == "trainable")
+    module.to(vulkan_backend)
+    assert vk_input.storage_offset() != 0 and not vk_input.is_contiguous()
+
+    cpu_output, cpu_trace = _profile_linear(cpu_module, cpu_input, no_grad=state == "no-grad")
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    vk_output, vk_trace = _profile_linear(module, vk_input, no_grad=state == "no-grad")
+    pytorch_vulkan._C.synchronize()
+    matrix_leaf = "aten::mm" if state == "trainable" else "aten::bmm"
+    case_id = (
+        f"linear.rank{rank}.offset-transposed.bias-{'present' if has_bias else 'absent'}.{state}"
+    )
+    route = _STOCK_LINEAR_CASES[case_id]
+    assert route["matrix_leaf"].removesuffix(".default") == matrix_leaf
+    assert {op.removesuffix(".default") for op in route["required_forward_ops"]} <= vk_trace
+    assert matrix_leaf in vk_trace
+    assert matrix_leaf in cpu_trace
+    if state == "trainable":
+        assert "aten::clone" in vk_trace
+        assert "aten::clone" in cpu_trace
+    else:
+        assert "aten::expand" in vk_trace
+        assert "aten::expand" in cpu_trace
+    assert ("aten::add_" in vk_trace) == has_bias
+    assert ("aten::add_" in cpu_trace) == has_bias
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach(), rtol=0.003, atol=0.003)
+
+    if state == "no-grad":
+        assert not vk_output.requires_grad
+        return
+    cpu_targets = (cpu_input,)
+    vk_targets = (vk_input,)
+    if state == "trainable":
+        cpu_targets += (cpu_module.weight,)
+        vk_targets += (module.weight,)
+        if has_bias:
+            cpu_targets += (cpu_module.bias,)
+            vk_targets += (module.bias,)
+    cpu_first = torch.autograd.grad((cpu_output * cpu_output).sum(), cpu_targets, create_graph=state == "trainable")
+    vk_first = torch.autograd.grad((vk_output * vk_output).sum(), vk_targets, create_graph=state == "trainable")
+    for actual, expected in zip(vk_first, cpu_first):
+        assert actual.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+
+
+def test_stock_linear_saved_weight_mutation_matches_cpu_version_check(vulkan_backend):
+    cpu_input = torch.randn((2, 3), generator=torch.Generator().manual_seed(9281), requires_grad=True)
+    cpu_module = torch.nn.Linear(3, 4)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    module = torch.nn.Linear(3, 4).to(vulkan_backend)
+    with torch.no_grad():
+        module.weight.copy_(cpu_module.weight)
+        module.bias.copy_(cpu_module.bias)
+    cpu_output = cpu_module(cpu_input)
+    vk_output = module(vk_input)
+    with torch.no_grad():
+        cpu_module.weight.add_(1)
+        module.weight.add_(1)
+    with pytest.raises(RuntimeError, match="modified by an inplace operation|version"):
+        cpu_output.sum().backward()
+    with pytest.raises(RuntimeError, match="modified by an inplace operation|version"):
+        vk_output.sum().backward()
 
 
 def test_addmm_forward_and_out_are_reachable(vulkan_backend):
@@ -198,7 +418,7 @@ def test_addmm_rejects_arbitrary_non_contiguous_mat2(vulkan_backend):
     torch.testing.assert_close(result.cpu(), torch.addmm(bias, cpu_input, cpu_mat2))
 
 
-def test_linear_rejects_invalid_rank_shape_dtype_layout_device_and_offset(
+def test_linear_rejects_invalid_shape_dtype_device_and_accepts_supported_layouts(
     vulkan_backend,
 ):
     cpu_input, cpu_weight, cpu_bias = _linear_inputs("cpu")
@@ -209,10 +429,15 @@ def test_linear_rejects_invalid_rank_shape_dtype_layout_device_and_offset(
     )
 
     pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="2-D|rank|dimension"):
-        torch.nn.functional.linear(input_vk.unsqueeze(0).unsqueeze(0), weight_vk, bias_vk)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
-    with pytest.raises(RuntimeError, match="matching features|size|shape"):
+    high_rank = input_vk.unsqueeze(0).unsqueeze(0)
+    high_rank_result = torch.nn.functional.linear(high_rank, weight_vk, bias_vk)
+    assert high_rank_result.shape == (1, 1, 2, 16)
+    torch.testing.assert_close(
+        high_rank_result.cpu(),
+        torch.nn.functional.linear(high_rank.cpu(), cpu_weight, cpu_bias),
+        rtol=0.003, atol=0.003,
+    )
+    with pytest.raises(RuntimeError, match="matching features|size|shape|matrices"):
         torch.nn.functional.linear(
             input_vk, torch.empty((16, 7), device=vulkan_backend), bias_vk
         )
@@ -317,11 +542,15 @@ def test_linear_backward_accepts_view_operands(vulkan_backend):
     torch.testing.assert_close(vk_weight.grad.cpu(), cpu_weight_view.grad)
 
 
-def test_linear_backward_rejects_unsupported_view_rank(vulkan_backend):
-    _, cpu_weight, _ = _linear_inputs("cpu")
-    weight = cpu_weight.to(vulkan_backend)
-    value = torch.randn((2, 8)).unsqueeze(0).unsqueeze(0).to(vulkan_backend).requires_grad_()
-    pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="2-D|rank|dimension"):
-        torch.nn.functional.linear(value, weight)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 0
+def test_linear_backward_accepts_high_rank_input(vulkan_backend):
+    cpu_input = torch.randn((1, 1, 2, 8), generator=torch.Generator().manual_seed(9291), requires_grad=True)
+    cpu_weight = torch.randn((16, 8), generator=torch.Generator().manual_seed(9292), requires_grad=True)
+    vk_input = cpu_input.detach().to(vulkan_backend).requires_grad_()
+    vk_weight = cpu_weight.detach().to(vulkan_backend).requires_grad_()
+    cpu_output = torch.nn.functional.linear(cpu_input, cpu_weight)
+    vk_output = torch.nn.functional.linear(vk_input, vk_weight)
+    cpu_output.sum().backward()
+    vk_output.sum().backward()
+    torch.testing.assert_close(vk_output.cpu(), cpu_output.detach(), rtol=0.003, atol=0.003)
+    torch.testing.assert_close(vk_input.grad.cpu(), cpu_input.grad, rtol=0.003, atol=0.003)
+    torch.testing.assert_close(vk_weight.grad.cpu(), cpu_weight.grad, rtol=0.003, atol=0.003)

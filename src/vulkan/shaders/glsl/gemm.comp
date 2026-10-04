@@ -44,10 +44,14 @@ void main() {
   for (uint tile = 0u; tile < tile_count; ++tile) {
     uint a_col = tile * 16u + gl_LocalInvocationID.x;
     uint b_row = tile * 16u + gl_LocalInvocationID.y;
-    if (row < params.M && a_col < params.K)
-      tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] =
+    if (row < params.M && a_col < params.K) {
+      float a_value =
           a.values[batch * params.batch_stride_a +
                    row * params.a_row_stride + a_col * params.a_col_stride];
+      if (isnan(params.alpha) || isinf(params.alpha))
+        a_value *= params.alpha;
+      tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = a_value;
+    }
     else
       tile_a[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
     if (b_row < params.K && col < params.N)
@@ -69,8 +73,12 @@ void main() {
 
   if (row < params.M && col < params.N) {
     float value = 0.0;
-    if (params.alpha != 0.0)
-      value += params.alpha * accumulator;
+    if (params.alpha != 0.0) {
+      float product = accumulator;
+      if (!isnan(params.alpha) && !isinf(params.alpha))
+        product *= params.alpha;
+      value += product;
+    }
     if (params.beta != 0.0)
       value += params.beta * c.values[batch * params.batch_stride_c +
                                       row * params.c_row_stride + col * params.c_col_stride];

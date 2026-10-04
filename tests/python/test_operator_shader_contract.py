@@ -97,7 +97,7 @@ def test_gemm_shader_contract_guards_tiles_and_epilogue():
 def test_gemm_verifier_source_contract_accepts_batched_strides():
     source = _source("gemm.comp")
     verify_source(source)
-    assert "params.reserved" not in source
+    assert "params.alpha_mode" not in source
 
 
 def test_gemm_verifier_checks_compiled_spirv_descriptor_contract():

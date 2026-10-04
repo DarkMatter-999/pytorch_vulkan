@@ -23,6 +23,11 @@ DERIVED_FIELDS = frozenset({"schema", "test_cases", "tests", "witnesses"})
 STAGE_F_NEW_CASES = {"convolution.parameters.output-padding.ignored",
                      "convolution.backward-overrideable.bias-present.mask-111",
                      *vc.GRAPH_AUTOGRAD_REQUIRED_CASES}
+MATRIX_GRAPH_GRADIENT_CASES = frozenset({
+    "matrix.graph.mm.generated",
+    "matrix.graph.addmm.generated",
+    "matrix.graph.bmm.generated",
+})
 
 
 def _transposed_validator_fixture():
@@ -351,6 +356,27 @@ def test_every_supported_schema_has_a_conformance_case():
     assert supported == witnessed
 
 
+def test_matrix_graph_runtime_recapture_marks_derivative_gradients_present():
+    import vulkan_conformance as vc
+
+    names = MATRIX_GRAPH_GRADIENT_CASES
+    cases = tuple(case for case in vc.SUPPORTED_CASES if case.name in names)
+    fresh = _run_all_supported_cases(cases=cases)
+    assert set(fresh) == names
+    assert all(fresh[name]["gradients"] is True for name in names)
+
+
+def test_matrix_graph_gradient_flag_exception_preserves_convolution_provenance():
+    by_name = {case.name: case for case in vc.SUPPORTED_CASES}
+    assert all(not by_name[name].check_gradients for name in MATRIX_GRAPH_GRADIENT_CASES)
+    convolution_graph_cases = [case for case in vc.SUPPORTED_CASES
+                               if case.name.startswith("convolution.graph.")]
+    assert all(not case.check_gradients for case in convolution_graph_cases)
+    committed = json.loads(COVERAGE_COMMITTED.read_text())
+    assert all(committed[name]["gradients"] is True for name in MATRIX_GRAPH_GRADIENT_CASES)
+    assert all(committed[case.name]["gradients"] is False for case in convolution_graph_cases)
+
+
 def test_witnesses_field_is_derived_from_executed_coverage():
     committed = _committed_entries()
     generated = {
@@ -376,6 +402,12 @@ def test_supported_entries_only_declare_what_witnesses_exercise():
         proven = set(witnesses["ranks"])
         assert proven, f"{schema} is supported with no rank witness"
         for rank in range(entry["ranks"]["min"], entry["ranks"]["max"] + 1):
+            if schema == "aten::linear.default":
+                assert any(
+                    route_case["rank"] == rank
+                    for route_case in generator.STOCK_LINEAR_ROUTE_CASES
+                ), f"{schema} has no named route witness for rank {rank}"
+                continue
             assert rank in proven, (
                 f"{schema} declares ranks {entry['ranks']['min']}-{entry['ranks']['max']} "
                 f"but rank {rank} was never exercised"
@@ -826,13 +858,90 @@ def test_committed_manifest_matches_regenerated_output():
     if not _vulkan_device_available():
         pytest.skip("no Vulkan device: coverage cannot be recorded without executing cases")
     coverage = _run_all_supported_cases()
+    from stock_linear_route_evidence import capture_all_stock_linear_routes
+
+    coverage.update(capture_all_stock_linear_routes("vk:0"))
     committed_coverage = json.loads(COVERAGE_COMMITTED.read_text())
+    for name in vc.MATRIX_GRAPH_MODE_OBSERVATION_CASES:
+        fresh_payload = coverage[name]["graph_autograd"]
+        committed_payload = committed_coverage[name]["graph_autograd"]
+        capture = fresh_payload.pop("execution_mode_observation", None)
+        assert capture is not None
+        mode = pytorch_vulkan._C.execution_mode()
+        assert capture["execution_mode"] == mode
+        expected = next(
+            observation
+            for observation in committed_payload["execution_modes"]
+            if observation["execution_mode"] == mode
+        )
+        assert capture["execution"] == expected["execution"]
+        fresh_payload["execution"] = committed_payload["execution"]
+        fresh_payload["execution_modes"] = committed_payload["execution_modes"]
     assert coverage == committed_coverage, _coverage_drift_message(
         committed_coverage, coverage
     )
     assert COMMITTED.read_text() == generator.render(
         generator.build_coverage_manifest(coverage)
     )
+
+
+@pytest.mark.parametrize(
+    "mutation", [
+        "missing_mode", "duplicate_mode", "wrong_mode", "bad_phase",
+        "no_history", "transfer", "fallback", "wrong_count", "counter_type",
+    ]
+)
+def test_matrix_graph_runtime_mode_observations_are_source_bound(mutation):
+    from copy import deepcopy
+
+    name = "matrix.graph.mm.generated"
+    record = deepcopy(json.loads(COVERAGE_COMMITTED.read_text())[name])
+    payload = record["graph_autograd"]
+    payload["execution_modes"] = [
+        {"execution_mode": "async", "execution": deepcopy(payload["execution"])},
+        {"execution_mode": "sync", "execution": deepcopy(payload["execution"])},
+    ]
+    payload["execution_modes"][1]["execution"]["higher_order"][
+        "buffer_creations_delta"
+    ] = 54
+
+    if mutation == "missing_mode":
+        payload["execution_modes"].pop()
+    elif mutation == "duplicate_mode":
+        payload["execution_modes"][1]["execution_mode"] = "async"
+    elif mutation == "wrong_mode":
+        payload["execution_modes"][1]["execution_mode"] = "deferred"
+    elif mutation == "bad_phase":
+        payload["execution_modes"][1]["execution"].pop("higher_order")
+    elif mutation == "no_history":
+        payload["execution_modes"][1].pop("execution")
+    elif mutation == "transfer":
+        payload["execution_modes"][1]["execution"]["higher_order"][
+            "explicit_transfers"
+        ] = 1
+    elif mutation == "fallback":
+        payload["execution_modes"][1]["execution"]["higher_order"][
+            "fallbacks"
+        ] = 1
+    elif mutation == "wrong_count":
+        payload["execution_modes"][1]["execution"]["higher_order"][
+            "buffer_creations_delta"
+        ] = 55
+    else:
+        payload["execution_modes"][1]["execution"]["higher_order"][
+            "buffer_creations_delta"
+        ] = True
+
+    with pytest.raises(ValueError):
+        vc.validate_graph_autograd_record(name, record)
+
+
+@pytest.mark.parametrize(
+    "name", ["matrix.graph.mm.generated", "matrix.graph.bmm.generated"]
+)
+def test_matrix_graph_runtime_mode_observations_match_exact_measurements(name):
+    record = json.loads(COVERAGE_COMMITTED.read_text())[name]
+    assert vc.validate_graph_autograd_record(name, record)
 
 
 def _coverage_drift_message(committed: dict, observed: dict) -> str:
@@ -888,7 +997,7 @@ def _run_all_supported_cases(cases=None):
                 case,
                 inputs,
                 result,
-                gradients=case.check_gradients,
+                gradients=case.check_gradients or case.name in MATRIX_GRAPH_GRADIENT_CASES,
                 parity=True,
                 reverse_autograd=reverse_autograd,
                 convolution_context=convolution_context,

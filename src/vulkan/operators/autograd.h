@@ -204,12 +204,6 @@ at::Tensor autograd_sub_scalar(const at::Tensor &, const at::Scalar &,
 at::Tensor autograd_rsub_scalar(const at::Tensor &, const at::Scalar &,
                                 const at::Scalar &);
 at::Tensor autograd_mul_scalar(const at::Tensor &, const at::Scalar &);
-at::Tensor autograd_linear(const at::Tensor &, const at::Tensor &,
-                           const c10::optional<at::Tensor> &);
-at::Tensor autograd_mm(const at::Tensor &, const at::Tensor &);
-at::Tensor autograd_bmm(const at::Tensor &, const at::Tensor &);
-at::Tensor autograd_addmm(const at::Tensor &, const at::Tensor &, const at::Tensor &,
-                          const at::Scalar &, const at::Scalar &);
 at::Tensor autograd_linear_relu(const at::Tensor &, const at::Tensor &,
                                 const at::Tensor &);
 at::Tensor autograd_adaptive_avg_pool2d(const at::Tensor &, at::IntArrayRef);

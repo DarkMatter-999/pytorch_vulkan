@@ -6,11 +6,14 @@ import os
 import vulkan_workload_conformance as workload
 
 
-def test_source_contract_has_exact_six_scenario_mode_pairs():
+def test_source_contract_has_exact_six_workload_three_mode_pairs():
     expected_ids = {
         "classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-none",
         "classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-zero",
         "hvp.grouped-depthwise.output-energy.parameters",
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-none",
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-zero",
+        "hvp.dense.two-linear.output-energy.parameters",
     }
     assert {scenario.workload_id for scenario in workload.SCENARIOS} == expected_ids
     assert all(scenario.required_modes == ("async", "sync") for scenario in workload.SCENARIOS)
@@ -18,6 +21,9 @@ def test_source_contract_has_exact_six_scenario_mode_pairs():
         "classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-none": "none",
         "classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-zero": "zero",
         "hvp.grouped-depthwise.output-energy.parameters": None,
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-none": "none",
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-zero": "zero",
+        "hvp.dense.two-linear.output-energy.parameters": None,
     }
     assert workload.REQUIRED_RECORD_KEYS == frozenset(
         {
@@ -27,8 +33,28 @@ def test_source_contract_has_exact_six_scenario_mode_pairs():
             ("classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-zero", "zero", "sync"),
             ("hvp.grouped-depthwise.output-energy.parameters", None, "async"),
             ("hvp.grouped-depthwise.output-energy.parameters", None, "sync"),
+            ("dense.two-linear.output-energy.sgd-momentum.zero-grad-none", "none", "async"),
+            ("dense.two-linear.output-energy.sgd-momentum.zero-grad-none", "none", "sync"),
+            ("dense.two-linear.output-energy.sgd-momentum.zero-grad-zero", "zero", "async"),
+            ("dense.two-linear.output-energy.sgd-momentum.zero-grad-zero", "zero", "sync"),
+            ("hvp.dense.two-linear.output-energy.parameters", None, "async"),
+            ("hvp.dense.two-linear.output-energy.parameters", None, "sync"),
         }
     )
+
+
+def test_matrix_workload_source_authority_and_cpu_recipes():
+    model, inputs = workload.make_matrix_dense_fixture()
+    assert [type(layer) for layer in model] == [nn.Linear, nn.Linear]
+    assert tuple(inputs.shape) == (2, 3) and inputs.device.type == "cpu"
+    none, zero = workload.run_cpu_matrix_sgd("none"), workload.run_cpu_matrix_sgd("zero")
+    assert len(none["steps"]) == len(zero["steps"]) == 3
+    assert none["steps"] == zero["steps"]
+    assert zero["reset_observations"][2]["same_grad_objects"] is True
+    oracle = workload.run_cpu_matrix_hvp()
+    assert oracle["finite_difference"]["epsilon"] == 0.001
+    assert oracle["finite_difference"]["rtol"] == 0.008
+    assert all(value["nonzero_count"] > 0 for value in oracle["hvp"].values())
 
 
 def test_fixtures_are_stock_modules_with_local_seeded_cpu_inputs():
@@ -285,3 +311,28 @@ def test_parameter_hvp_executes_with_named_live_history(workload_device, monkeyp
     assert all(window["observation_order"] == ["sync", "snapshot", "readback"] for window in record["execution"])
     assert record["vulkan"]["finite_difference"] is None
     assert record["comparison"]["passed"] is True
+
+
+def test_matrix_stock_sgd_executes_three_steps_in_both_reset_modes(workload_device):
+    import pytorch_vulkan
+    expected = "sync" if os.getenv("PYTORCH_VULKAN_ASYNC_EXECUTION") == "0" else "async"
+    assert pytorch_vulkan._C.execution_mode() == expected
+    for mode in ("none", "zero"):
+        record = workload.run_vulkan_matrix_sgd(mode)
+        workload.validate_workload_record(record)
+        assert record["execution_mode"] == expected
+        assert len(record["vulkan"]["steps"]) == 3
+        assert record["comparison"]["passed"] is True
+        assert all(window["fallbacks"] == window["explicit_transfers"] == 0 for window in record["execution"])
+
+
+def test_matrix_parameter_hvp_executes_with_named_live_history(workload_device):
+    import pytorch_vulkan
+    expected = "sync" if os.getenv("PYTORCH_VULKAN_ASYNC_EXECUTION") == "0" else "async"
+    assert pytorch_vulkan._C.execution_mode() == expected
+    record = workload.run_vulkan_matrix_hvp()
+    workload.validate_workload_record(record)
+    assert record["execution_mode"] == expected
+    assert record["comparison"]["passed"] is True
+    assert all(record["vulkan"]["history"]["first_gradients_require_grad"].values())
+    assert all(value["nonzero_count"] > 0 for value in record["vulkan"]["hvp"].values())

@@ -29,5 +29,8 @@ void validate_pointwise_device_capability(bool uses_bool, bool bool_supported,
                                           const char *operation_name);
 VulkanTensorLayout validate_gemm_2d(const at::Tensor &tensor, at::IntArrayRef shape,
                                     const char *name);
+VulkanTensorLayout validate_gemm_2d(const at::Tensor &tensor,
+                                    const VulkanTensorLayout &layout,
+                                    at::IntArrayRef shape, const char *name);
 
 } // namespace pytorch_vulkan

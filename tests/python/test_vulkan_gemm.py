@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytorch_vulkan
+from matrix_f32_policy_oracle import addmm_post_alpha, f32_class
 
 
 @pytest.fixture
@@ -132,7 +133,7 @@ def test_gemm_backward_reads_expanded_nonuniform_gradient(operation, vulkan_back
             vk_output, (vk_self, vk_mat1, vk_mat2), vk_grad
         )
 
-    assert pytorch_vulkan._C.vulkan_copy_count() > 0
+    assert pytorch_vulkan._C.compute_dispatch_count() > 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
     assert pytorch_vulkan._C.fallback_count() == 0
     assert all(value.device == torch.device(vulkan_backend) for value in vk_grads)
@@ -275,13 +276,57 @@ def test_addmm_out_uses_gemm_and_preserves_identity(vulkan_backend):
     )
 
 
-def test_mm_rejects_noncontiguous_inputs_and_wrong_dtype(vulkan_backend):
-    a = torch.randn(4, 8).to(vulkan_backend)
-    b = torch.randn(8, 6).to(vulkan_backend)
-    with pytest.raises(RuntimeError, match="contiguous|row-major"):
-        torch.mm(a[:, ::2], b[::2])
+@pytest.mark.parametrize(
+    "n,a_value,b_value,alpha,cpu_class,cpu_policy_diff",
+    [
+        (1, 1.0e20, 1.0e-20, 1.0e20, "finite", False),
+        (2, 1.0e20, 1.0e20, 1.0e-20, "finite", True),
+    ],
+)
+def test_addmm_out_finite_alpha_uses_policy_oracle_and_records_cpu_class(
+    vulkan_backend, n, a_value, b_value, alpha, cpu_class, cpu_policy_diff
+):
+    self_cpu = torch.zeros((2, n), dtype=torch.float32)
+    a_cpu = torch.full((2, 2), a_value, dtype=torch.float32)
+    b_cpu = torch.full((2, n), b_value, dtype=torch.float32)
+    expected = torch.addmm(self_cpu, a_cpu, b_cpu, beta=0.0, alpha=alpha)
+    assert f32_class(expected) == cpu_class
+    policy = addmm_post_alpha(
+        a_cpu.tolist(), b_cpu.tolist(), self_cpu.tolist(), alpha=alpha, beta=0.0
+    )
+    assert (f32_class(expected) != f32_class(policy)) is cpu_policy_diff
+
+    self_vk, a_vk, b_vk = (value.to(vulkan_backend) for value in (self_cpu, a_cpu, b_cpu))
+    out = torch.empty_like(self_vk)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    assert torch.addmm(self_vk, a_vk, b_vk, beta=0.0, alpha=alpha, out=out) is out
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    pytorch_vulkan._C.synchronize()
+    compute, copies, transfers, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert compute == 1 and transfers == fallbacks == 0
+    assert str(out.device) == vulkan_backend
+    assert f32_class(out.cpu()) == f32_class(policy), (
+        f"policy class mismatch: CPU={cpu_class}, "
+        f"policy={f32_class(policy)}, Vulkan={f32_class(out.cpu())}, "
+        f"CPU/policy differ={cpu_class != f32_class(policy)}"
+    )
+    torch.testing.assert_close(out.cpu(), policy, rtol=0.003, atol=0.003)
+
+
+def test_mm_reads_noncontiguous_inputs_and_rejects_wrong_dtype(vulkan_backend):
+    a_cpu = torch.arange(32, dtype=torch.float32).reshape(4, 8) / 11
+    b_cpu = torch.arange(48, dtype=torch.float32).reshape(8, 6) / 13
+    a = a_cpu.to(vulkan_backend)[:, ::2]
+    b = b_cpu.to(vulkan_backend)[::2]
+    result = torch.mm(a, b)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(
+        result.cpu(), torch.mm(a_cpu[:, ::2], b_cpu[::2]), rtol=0.003, atol=0.003
+    )
+    wrong_dtype = torch.ones((4, 6), dtype=torch.bool).to(vulkan_backend)
     with pytest.raises(RuntimeError, match="float32|dtype"):
-        torch.mm(a.to(torch.float64), b)
+        torch.mm(a, wrong_dtype)
 
 
 def test_mm_rejects_rank_mismatch_and_wrong_device(vulkan_backend):
@@ -350,8 +395,10 @@ def test_mm_and_addmm_support_zero_inner_dimension_without_gemm_dispatch(
 def test_mm_and_addmm_support_empty_output_dimensions_without_zero_work_dispatch(
     vulkan_backend, shape_a, shape_b
 ):
-    a = torch.randn(*shape_a).to(vulkan_backend).requires_grad_()
-    b = torch.randn(*shape_b).to(vulkan_backend).requires_grad_()
+    cpu_a = torch.randn(*shape_a, requires_grad=True)
+    cpu_b = torch.randn(*shape_b, requires_grad=True)
+    a = cpu_a.detach().to(vulkan_backend).requires_grad_()
+    b = cpu_b.detach().to(vulkan_backend).requires_grad_()
     self_cpu = torch.randn(shape_a[0], shape_b[1], requires_grad=True)
     self_vk = self_cpu.detach().clone().to(vulkan_backend).requires_grad_()
 
@@ -362,11 +409,16 @@ def test_mm_and_addmm_support_empty_output_dimensions_without_zero_work_dispatch
     assert addmm_output.shape == (shape_a[0], shape_b[1])
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
 
+    cpu_mm_output = torch.mm(cpu_a, cpu_b)
+    cpu_mm_output.backward(torch.ones_like(cpu_mm_output))
     mm_output.backward(torch.ones_like(mm_output))
     assert a.grad.shape == shape_a
     assert b.grad.shape == shape_b
-    assert pytorch_vulkan._C.compute_dispatch_count() == 2
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
     assert pytorch_vulkan._C.fallback_count() == 0
+    assert a.grad.device == b.grad.device == torch.device(vulkan_backend)
+    torch.testing.assert_close(a.grad.cpu(), cpu_a.grad)
+    torch.testing.assert_close(b.grad.cpu(), cpu_b.grad)
     torch.testing.assert_close(mm_output.cpu(), torch.mm(a.cpu(), b.cpu()))
     torch.testing.assert_close(
         addmm_output.cpu(),
@@ -390,8 +442,9 @@ def test_addmm_empty_output_backward_matches_cpu_without_zero_work_dispatch(
     vk_grad = torch.ones_like(vk_output)
     pytorch_vulkan._C.reset_execution_counters()
     vk_output.backward(vk_grad)
-    assert pytorch_vulkan._C.compute_dispatch_count() == 3
     assert pytorch_vulkan._C.fallback_count() == 0
+    assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert vk_self.grad.device == vk_mat1.grad.device == vk_mat2.grad.device == torch.device(vulkan_backend)
 
     cpu_output.backward(torch.ones_like(cpu_output))
     torch.testing.assert_close(vk_output.cpu(), cpu_output.detach())
@@ -424,9 +477,9 @@ def test_addmm_empty_output_backward_with_1d_bias_matches_cpu(
     vk_output.backward(vk_grad)
     # Non-empty saved operands may still require transpose materialization. A
     # non-empty bias gradient also needs an explicit Vulkan zero operation.
-    assert pytorch_vulkan._C.compute_dispatch_count() == 3 + int(shape_b[1] > 0)
     assert pytorch_vulkan._C.fallback_count() == 0
     assert pytorch_vulkan._C.explicit_transfer_count() == 0
+    assert vk_bias.grad.device == vk_mat1.grad.device == vk_mat2.grad.device == torch.device(vulkan_backend)
 
     cpu_output.backward(torch.ones_like(cpu_output))
     for vk_value, cpu_value in (
@@ -443,14 +496,21 @@ def test_addmm_empty_output_backward_with_1d_bias_matches_cpu(
 @pytest.mark.parametrize(
     "alpha,beta", [(float("nan"), 1.0), (float("inf"), 1.0), (1.0, float("nan"))]
 )
-def test_addmm_empty_output_1d_bias_rejects_nonfinite_scalars(
+def test_addmm_empty_output_1d_bias_matches_cpu_with_nonfinite_scalars(
     vulkan_backend, alpha, beta
 ):
-    bias = torch.zeros(4, device=vulkan_backend)
-    mat1 = torch.empty(0, 3, device=vulkan_backend)
-    mat2 = torch.empty(3, 4, device=vulkan_backend)
-    with pytest.raises(RuntimeError, match="finite|representable"):
-        torch.addmm(bias, mat1, mat2, alpha=alpha, beta=beta)
+    cpu_bias = torch.zeros(4)
+    cpu_mat1 = torch.empty(0, 3)
+    cpu_mat2 = torch.empty(3, 4)
+    expected = torch.addmm(cpu_bias, cpu_mat1, cpu_mat2, alpha=alpha, beta=beta)
+    bias, mat1, mat2 = (x.to(vulkan_backend) for x in
+                        (cpu_bias, cpu_mat1, cpu_mat2))
+    actual = torch.addmm(bias, mat1, mat2, alpha=alpha, beta=beta)
+    pytorch_vulkan._C.synchronize()
+    assert actual.shape == expected.shape == (0, 4)
+    assert str(actual.device) == vulkan_backend
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0.003,
+                               atol=0.003, equal_nan=True)
 
 
 def test_addmm_empty_output_1d_bias_validates_operand_contract(vulkan_backend):

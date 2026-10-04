@@ -124,7 +124,25 @@ VulkanTensorLayout validate_gemm_2d(const at::Tensor &tensor, at::IntArrayRef sh
                 "Vulkan ", name, " requires the expected 2-D shape");
     TORCH_CHECK(tensor.is_contiguous(), "Vulkan ", name,
                 " requires a contiguous row-major tensor");
-    auto layout = inspect_vulkan_tensor_layout(tensor, name);
+    return validate_gemm_2d(tensor, inspect_vulkan_tensor_layout(tensor, name), shape,
+                            name);
+}
+
+VulkanTensorLayout validate_gemm_2d(const at::Tensor &tensor,
+                                    const VulkanTensorLayout &layout,
+                                    at::IntArrayRef shape, const char *name) {
+    TORCH_CHECK(tensor.device().type() == c10::DeviceType::PrivateUse1 &&
+                    tensor.device().index() == 0,
+                "Vulkan ", name, " requires Vulkan device index 0");
+    TORCH_CHECK(tensor.layout() == at::kStrided && tensor.scalar_type() == at::kFloat,
+                "Vulkan ", name, " requires a strided float32 tensor");
+    TORCH_CHECK(tensor.dim() == 2 && shape.size() == 2 && tensor.sizes().equals(shape) &&
+                    layout.rank == 2 && layout.sizes.size() == 2 &&
+                    layout.sizes[0] == shape[0] && layout.sizes[1] == shape[1],
+                "Vulkan ", name, " requires the expected 2-D shape");
+    TORCH_CHECK(tensor.is_contiguous() && layout.strides.size() == 2 &&
+                    at::IntArrayRef(layout.strides).equals(tensor.strides()),
+                "Vulkan ", name, " requires a contiguous row-major tensor");
     TORCH_CHECK(layout.internal_overlap == VulkanOverlap::No, "Vulkan ", name,
                 " has unsupported internal overlap");
     const auto &data = tensor.storage().data_ptr();

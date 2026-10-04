@@ -45,7 +45,10 @@ def _tensor_paths(cpu, vk, path=""):
 
 
 def _synthetic_record(scenario, mode):
-    cpu = workload.run_cpu_hvp() if scenario.reset_mode is None else workload.run_cpu_classifier(scenario.reset_mode)
+    if scenario.workload_id == workload.MATRIX_HVP_ID: cpu = workload.run_cpu_matrix_hvp()
+    elif scenario.reset_mode is None: cpu = workload.run_cpu_hvp()
+    elif scenario.workload_id in (workload.MATRIX_NONE_ID, workload.MATRIX_ZERO_ID): cpu = workload.run_cpu_matrix_sgd(scenario.reset_mode)
+    else: cpu = workload.run_cpu_classifier(scenario.reset_mode)
     vk = copy.deepcopy(cpu)
     is_hvp = scenario.reset_mode is None
 
@@ -104,11 +107,91 @@ def test_valid_source_bound_document_and_deterministic_merge(valid_document):
     async_capture = _mode_capture(valid_document, "async")
     sync_capture = _mode_capture(valid_document, "sync")
     merged = coverage.merge_documents(async_capture, sync_capture)
-    assert len(merged["records"]) == 6
-    assert len({(r["workload_id"], r["reset_mode"], r["execution_mode"]) for r in merged["records"]}) == 6
+    assert len(merged["records"]) == 12
+    assert len({(r["workload_id"], r["reset_mode"], r["execution_mode"]) for r in merged["records"]}) == 12
     encoded = coverage.dumps_document(merged)
     assert encoded.endswith("\n")
     assert coverage.dumps_document(coverage.merge_documents(async_capture, sync_capture)) == encoded
+
+
+def test_selective_record_cli_accepts_repeatable_workload_ids_and_merges_base(monkeypatch, tmp_path):
+    # Parser-level contract: selected captures are partial, while --base merge
+    # retains a complete historical artifact and validates the resulting union.
+    calls = []
+    monkeypatch.setattr(coverage, "_record", lambda mode, output, workload_ids=None: calls.append((mode, output, workload_ids)))
+    assert coverage.main(["record", "--mode", "async", "--output", "fragment.json",
+                          "--workload", "dense.two-linear.output-energy.sgd-momentum.zero-grad-none",
+                          "--workload", "hvp.dense.two-linear.output-energy.parameters"]) is None
+    assert calls == [("async", "fragment.json", [
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-none",
+        "hvp.dense.two-linear.output-energy.parameters",
+    ])]
+
+
+def test_matrix_workload_ids_are_source_owned_and_have_immutable_mode_keys():
+    expected = {
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-none",
+        "dense.two-linear.output-energy.sgd-momentum.zero-grad-zero",
+        "hvp.dense.two-linear.output-energy.parameters",
+    }
+    assert expected <= {item.workload_id for item in workload.SCENARIOS}
+    assert {("dense.two-linear.output-energy.sgd-momentum.zero-grad-none", "none", mode)
+            for mode in ("async", "sync")} <= workload.REQUIRED_RECORD_KEYS
+
+
+def test_selective_fragments_merge_over_exact_historical_six_records(valid_document, tmp_path):
+    legacy_ids = {workload.CLASSIFIER_NONE_ID, workload.CLASSIFIER_ZERO_ID, workload.HVP_ID}
+    matrix_ids = {workload.MATRIX_NONE_ID, workload.MATRIX_ZERO_ID, workload.MATRIX_HVP_ID}
+    base = {key: value for key, value in valid_document.items() if key != "records"}
+    base["records"] = [record for record in valid_document["records"] if record["workload_id"] in legacy_ids]
+    async_fragment = {**{k:v for k,v in valid_document.items() if k != "records"},
+                      "records": [r for r in valid_document["records"] if r["workload_id"] in matrix_ids and r["execution_mode"] == "async"]}
+    sync_fragment = {**{k:v for k,v in valid_document.items() if k != "records"},
+                     "records": [r for r in valid_document["records"] if r["workload_id"] in matrix_ids and r["execution_mode"] == "sync"]}
+    base_path, async_path, sync_path, output = (tmp_path / name for name in ("base.json", "async.json", "sync.json", "merged.json"))
+    for path, document in ((base_path, base), (async_path, async_fragment), (sync_path, sync_fragment)):
+        path.write_text(json.dumps(document), encoding="utf-8")
+    coverage._merge(str(async_path), str(sync_path), str(output), str(base_path))
+    merged = json.loads(output.read_text(encoding="utf-8"))
+    assert len(merged["records"]) == 12
+    records_by_id = {(r["workload_id"], r["reset_mode"], r["execution_mode"]):r for r in merged["records"]}
+    for record in base["records"]:
+        key = (record["workload_id"], record["reset_mode"], record["execution_mode"])
+        assert records_by_id[key] == record
+    assert coverage.dumps_document(merged) == output.read_text(encoding="utf-8")
+
+
+def test_partial_fragment_rejects_missing_duplicate_and_wrong_mode(valid_document):
+    selected = [workload.MATRIX_NONE_ID]
+    fragment = _mode_capture(valid_document, "async")
+    fragment["records"] = [r for r in fragment["records"] if r["workload_id"] == selected[0]]
+    coverage.validate_fragment(fragment, "async", selected)
+    with pytest.raises(ValueError, match="exactly one"):
+        coverage.validate_fragment({**fragment, "records": []}, "async", selected)
+    with pytest.raises(ValueError, match="duplicate"):
+        coverage.validate_fragment({**fragment, "records": fragment["records"] * 2}, "async", selected)
+    wrong = copy.deepcopy(fragment); wrong["records"][0]["execution_mode"] = "sync"
+    with pytest.raises(ValueError, match="identity/mode"):
+        coverage.validate_fragment(wrong, "async", selected)
+
+
+@pytest.mark.parametrize("mutation", ["fixture", "reset", "residency", "fallback", "history"])
+def test_matrix_record_validator_rejects_semantic_mutations(valid_document, mutation):
+    document = copy.deepcopy(valid_document)
+    record = next(r for r in document["records"] if r["workload_id"] == workload.MATRIX_NONE_ID)
+    if mutation == "fixture":
+        record["fixture"]["input"]["shape"] = [4, 3]
+    elif mutation == "reset":
+        record["reset_mode"] = "zero"
+    elif mutation == "residency":
+        record["vulkan"]["steps"][0]["output"]["device"] = "cpu"
+    elif mutation == "fallback":
+        record["execution"][1]["fallbacks"] = 1
+    else:
+        record = next(r for r in document["records"] if r["workload_id"] == workload.MATRIX_HVP_ID)
+        record["vulkan"]["history"]["first_gradients_require_grad"]["0.weight"] = False
+    with pytest.raises(ValueError):
+        coverage.validate_document(document)
 
 
 @pytest.mark.parametrize("entrypoint", ["record", "collection", "document"])

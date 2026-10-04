@@ -575,6 +575,293 @@ def test_inplace_add_is_supported_outside_optimizer_step(vulkan_backend):
     )
 
 
+@pytest.mark.parametrize("rank", range(1, 9))
+def test_inplace_add_tensor_broadcasts_rhs_without_resizing_self(
+    vulkan_backend, rank
+):
+    shape = (2,) * rank
+    rhs_shape = (2,)
+    self_cpu = torch.arange(1, 2 ** rank + 1, dtype=torch.float32).reshape(shape)
+    rhs_cpu = torch.tensor([0.5, -1.0], dtype=torch.float32)
+    expected = self_cpu.clone().add_(rhs_cpu, alpha=0.5)
+    self_vk = self_cpu.to(vulkan_backend)
+    rhs_vk = rhs_cpu.to(vulkan_backend)
+    self_identity = id(self_vk)
+    self_storage = self_vk.untyped_storage().data_ptr()
+    self_offset = self_vk.storage_offset()
+    self_strides = self_vk.stride()
+    version = self_vk._version
+
+    result = self_vk.add_(rhs_vk, alpha=0.5)
+
+    assert result is self_vk and id(result) == self_identity
+    assert result.untyped_storage().data_ptr() == self_storage
+    assert result.shape == shape
+    assert result.storage_offset() == self_offset
+    assert result.stride() == self_strides
+    assert result._version == version + 1
+    assert rhs_vk.device.type == "vk"
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0.003, atol=0.003)
+    torch.testing.assert_close(rhs_vk.cpu(), rhs_cpu, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("self_shape", "rhs_shape"),
+    [((2, 3, 4), (4,)), ((2, 3, 4), (1, 4)), ((2, 3, 4), (2, 1, 4)), ((3, 4), ())],
+)
+def test_inplace_add_tensor_broadcast_shapes_match_cpu(
+    vulkan_backend, self_shape, rhs_shape
+):
+    self_cpu = torch.arange(torch.tensor(self_shape).prod().item(), dtype=torch.float32)
+    self_cpu = self_cpu.reshape(self_shape)
+    rhs_cpu = torch.arange(max(1, torch.tensor(rhs_shape).prod().item()), dtype=torch.float32)
+    rhs_cpu = rhs_cpu.reshape(rhs_shape)
+    expected = self_cpu.clone().add_(rhs_cpu, alpha=-0.25)
+    self_vk = self_cpu.to(vulkan_backend)
+    rhs_vk = rhs_cpu.to(vulkan_backend)
+
+    result = self_vk.add_(rhs_vk, alpha=-0.25)
+
+    assert result is self_vk
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0.003, atol=0.003)
+
+
+def test_inplace_add_tensor_broadcast_reads_offset_and_zero_stride_rhs(vulkan_backend):
+    self_cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    rhs_base_cpu = torch.tensor([99.0, 7.0, 8.0, 9.0])
+    rhs_offset_cpu = rhs_base_cpu[1:]
+    rhs_broadcast_cpu = rhs_offset_cpu[:1].expand(2, 3)
+    self_base_vk = self_cpu.to(vulkan_backend)
+    rhs_base_vk = rhs_base_cpu.to(vulkan_backend)
+    self_vk = self_base_vk
+    rhs_offset_vk = rhs_base_vk[1:]
+    rhs_vk = rhs_offset_vk[:1].expand(2, 3)
+    expected = self_cpu.clone().add_(rhs_broadcast_cpu, alpha=0.5)
+
+    result = self_vk.add_(rhs_vk, alpha=0.5)
+
+    assert result is self_vk
+    assert rhs_offset_vk.storage_offset() == 1
+    assert rhs_vk.stride() == (0, 0)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0.003, atol=0.003)
+
+
+def test_inplace_add_tensor_broadcast_reads_offset_noncontiguous_rhs(vulkan_backend):
+    self_cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    rhs_base_cpu = torch.tensor(
+        [[99.0, 7.0, 8.0, 9.0, 99.0], [99.0, 11.0, 12.0, 13.0, 99.0]]
+    )
+    rhs_cpu = rhs_base_cpu[:, 1:4]
+    expected = self_cpu.clone().add_(rhs_cpu)
+    self_vk = self_cpu.to(vulkan_backend)
+    rhs_base_vk = rhs_base_cpu.to(vulkan_backend)
+    rhs_vk = rhs_base_vk[:, 1:4]
+
+    result = self_vk.add_(rhs_vk)
+
+    assert rhs_vk.storage_offset() == 1
+    assert rhs_vk.stride() == (5, 1)
+    assert not rhs_vk.is_contiguous()
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "alias_case",
+    ["full-overlap", "partial-overlap-forward", "transposed"],
+)
+def test_inplace_add_tensor_broadcast_rejects_overlap_dependent_alias_before_work(
+    vulkan_backend, alias_case
+):
+    if alias_case == "transposed":
+        base_cpu = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+        self_view = lambda tensor: tensor.transpose(0, 1)
+        rhs_view = lambda tensor, self: self[:1, :].expand_as(self)
+    else:
+        base_cpu = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        slices = {
+            "full-overlap": (slice(None), slice(0, 1)),
+            "partial-overlap-forward": (slice(0, 3), slice(1, 2)),
+        }
+        self_slice, rhs_slice = slices[alias_case]
+        self_view = lambda tensor: tensor[self_slice]
+        rhs_view = lambda tensor, self: tensor[rhs_slice].expand_as(self)
+    base_vk = base_cpu.to(vulkan_backend)
+    self_vk = self_view(base_vk)
+    rhs_vk = rhs_view(base_vk, self_vk)
+    before = base_vk.cpu().clone()
+    version = self_vk._version
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises(RuntimeError):
+        self_vk.add_(rhs_vk)
+
+    _assert_zero_work()
+    assert self_vk._version == version
+    torch.testing.assert_close(base_vk.cpu(), before, rtol=0, atol=0)
+
+
+def test_inplace_add_broadcast_disjoint_same_storage_range_is_supported(vulkan_backend):
+    base_cpu = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    expected_base = base_cpu.clone()
+    expected_base[1:].add_(expected_base[:1].expand_as(expected_base[1:]))
+    base_vk = base_cpu.to(vulkan_backend)
+    self_vk = base_vk[1:]
+    rhs_vk = base_vk[:1].expand_as(self_vk)
+
+    result = self_vk.add_(rhs_vk)
+
+    pytorch_vulkan._C.synchronize()
+    assert result is self_vk
+    torch.testing.assert_close(base_vk.cpu(), expected_base, rtol=0, atol=0)
+
+
+def test_inplace_add_exact_self_alias_remains_supported(vulkan_backend):
+    self_cpu = torch.arange(1, 5, dtype=torch.float32)
+    expected = self_cpu.clone().add_(self_cpu, alpha=0.5)
+    self_vk = self_cpu.to(vulkan_backend)
+    storage = self_vk.untyped_storage().data_ptr()
+    version = self_vk._version
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = self_vk.add_(self_vk, alpha=0.5)
+
+    pytorch_vulkan._C.synchronize()
+    assert result is self_vk
+    assert result.untyped_storage().data_ptr() == storage
+    assert result._version == version + 1
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+
+
+def test_inplace_add_tensor_broadcast_preserves_generated_autograd_history(
+    vulkan_backend,
+):
+    generator = torch.Generator().manual_seed(721)
+    base_cpu = torch.randn((2, 3, 4), generator=generator, requires_grad=True)
+    rhs_cpu = torch.randn((4,), generator=generator, requires_grad=True)
+    seed_cpu = torch.randn((2, 3, 4), generator=generator, requires_grad=True)
+    base_vk = base_cpu.detach().to(vulkan_backend).requires_grad_()
+    rhs_vk = rhs_cpu.detach().to(vulkan_backend).requires_grad_()
+    seed_vk = seed_cpu.detach().to(vulkan_backend).requires_grad_()
+
+    def objective(base, rhs, seed):
+        self = base * 1.5
+        self.add_(rhs, alpha=0.25)
+        return (self * seed).sum()
+
+    cpu_output = objective(base_cpu, rhs_cpu, seed_cpu)
+    vk_output = objective(base_vk, rhs_vk, seed_vk)
+    cpu_grads = torch.autograd.grad(
+        cpu_output, (base_cpu, rhs_cpu), create_graph=True
+    )
+    vk_grads = torch.autograd.grad(vk_output, (base_vk, rhs_vk), create_graph=True)
+    direction_base = torch.arange(1, 25, dtype=torch.float32).reshape(2, 3, 4) / 13
+    direction_rhs = torch.tensor([0.5, -0.25, 0.75, -1.0])
+    direction_base_vk = direction_base.to(vulkan_backend)
+    direction_rhs_vk = direction_rhs.to(vulkan_backend)
+    cpu_second = torch.autograd.grad(
+        (cpu_grads[0] * direction_base).sum()
+        + (cpu_grads[1] * direction_rhs).sum(),
+        seed_cpu,
+    )[0]
+    vk_second = torch.autograd.grad(
+        (vk_grads[0] * direction_base_vk).sum()
+        + (vk_grads[1] * direction_rhs_vk).sum(),
+        seed_vk,
+    )[0]
+
+    assert all(grad.grad_fn is not None for grad in vk_grads)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(vk_output.cpu(), cpu_output, rtol=0.003, atol=0.003)
+    for actual, expected in zip(vk_grads, cpu_grads):
+        assert actual.device.type == "vk"
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0.003, atol=0.003)
+    torch.testing.assert_close(vk_second.cpu(), cpu_second, rtol=0.003, atol=0.003)
+
+
+def test_inplace_add_tensor_empty_broadcast_preserves_fixed_self(vulkan_backend):
+    self_cpu = torch.empty((0, 3), dtype=torch.float32)
+    rhs_cpu = torch.ones((1, 3), dtype=torch.float32)
+    expected = self_cpu.clone().add_(rhs_cpu)
+    self_vk = self_cpu.to(vulkan_backend)
+    rhs_vk = rhs_cpu.to(vulkan_backend)
+    version = self_vk._version
+
+    result = self_vk.add_(rhs_vk)
+
+    assert result is self_vk
+    assert result.shape == (0, 3)
+    assert result._version == version + 1
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+
+
+def test_inplace_add_tensor_scalar_broadcast_zero_alpha_matches_cpu(vulkan_backend):
+    self_cpu = torch.tensor([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]])
+    rhs_cpu = torch.tensor(7.0)
+    expected = self_cpu.clone().add_(rhs_cpu, alpha=0.0)
+    self_vk = self_cpu.to(vulkan_backend)
+    rhs_vk = rhs_cpu.to(vulkan_backend)
+    version = self_vk._version
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = self_vk.add_(rhs_vk, alpha=0.0)
+
+    pytorch_vulkan._C.synchronize()
+    assert result is self_vk
+    assert result._version == version + 1
+    assert pytorch_vulkan._C.compute_dispatch_count() == 1
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("case", ["not_broadcastable", "partial_overlap"])
+def test_inplace_add_tensor_broadcast_rejects_invalid_inputs_before_work(
+    vulkan_backend, case
+):
+    if case == "not_broadcastable":
+        self_vk = torch.ones((2, 3), dtype=torch.float32, device=vulkan_backend)
+        rhs_vk = torch.ones((4,), dtype=torch.float32, device=vulkan_backend)
+    else:
+        base = torch.arange(5, dtype=torch.float32).to(vulkan_backend)
+        self_vk, rhs_vk = base[1:], base[:-1]
+    before = self_vk.cpu().clone()
+    version = self_vk._version
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises(RuntimeError):
+        self_vk.add_(rhs_vk)
+
+    _assert_zero_work()
+    assert self_vk._version == version
+    torch.testing.assert_close(self_vk.cpu(), before, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("case", ["cpu_rhs", "dtype"])
+def test_inplace_add_tensor_broadcast_rejects_device_and_dtype_before_work(
+    vulkan_backend, case
+):
+    self_vk = torch.arange(6, dtype=torch.float32).reshape(2, 3).to(vulkan_backend)
+    if case == "cpu_rhs":
+        rhs = torch.ones((3,), dtype=torch.float32)
+    else:
+        assert pytorch_vulkan.formatter_double_supported()
+        rhs = torch.empty((3,), dtype=torch.float64, device=vulkan_backend)
+    before = self_vk.cpu().clone()
+    version = self_vk._version
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises(RuntimeError):
+        self_vk.add_(rhs)
+
+    _assert_zero_work()
+    assert self_vk._version == version
+    torch.testing.assert_close(self_vk.cpu(), before, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("operation", [torch.add, torch.sub, torch.mul])
 def test_unsupported_python_scalar_conversion_is_rejected(vulkan_backend, operation):
     tensor = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)

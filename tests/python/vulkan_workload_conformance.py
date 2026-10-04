@@ -26,12 +26,18 @@ class ScenarioContract:
 CLASSIFIER_NONE_ID = "classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-none"
 CLASSIFIER_ZERO_ID = "classifier.grouped-depthwise.ce.sgd-momentum.zero-grad-zero"
 HVP_ID = "hvp.grouped-depthwise.output-energy.parameters"
+MATRIX_NONE_ID = "dense.two-linear.output-energy.sgd-momentum.zero-grad-none"
+MATRIX_ZERO_ID = "dense.two-linear.output-energy.sgd-momentum.zero-grad-zero"
+MATRIX_HVP_ID = "hvp.dense.two-linear.output-energy.parameters"
 _MODES = ("async", "sync")
 
 SCENARIOS: tuple[ScenarioContract, ...] = (
     ScenarioContract(CLASSIFIER_NONE_ID, "none", _MODES),
     ScenarioContract(CLASSIFIER_ZERO_ID, "zero", _MODES),
     ScenarioContract(HVP_ID, None, _MODES),
+    ScenarioContract(MATRIX_NONE_ID, "none", _MODES),
+    ScenarioContract(MATRIX_ZERO_ID, "zero", _MODES),
+    ScenarioContract(MATRIX_HVP_ID, None, _MODES),
 )
 
 # Independent immutable authority for required records; do not derive this from
@@ -44,6 +50,9 @@ REQUIRED_RECORD_KEYS: frozenset[tuple[str, str | None, str]] = frozenset(
         (CLASSIFIER_ZERO_ID, "zero", "sync"),
         (HVP_ID, None, "async"),
         (HVP_ID, None, "sync"),
+        (MATRIX_NONE_ID, "none", "async"), (MATRIX_NONE_ID, "none", "sync"),
+        (MATRIX_ZERO_ID, "zero", "async"), (MATRIX_ZERO_ID, "zero", "sync"),
+        (MATRIX_HVP_ID, None, "async"), (MATRIX_HVP_ID, None, "sync"),
     }
 )
 
@@ -101,6 +110,21 @@ def _hvp_model() -> nn.Sequential:
     )
 
 
+def make_matrix_dense_fixture() -> tuple[nn.Sequential, torch.Tensor]:
+    """Source-owned tiny CPU fixture for the ordinary two-Linear workload."""
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(931)
+        model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
+        inputs = torch.randn(2, 3, dtype=torch.float32, device="cpu")
+    return model, inputs
+
+
+def _matrix_directions(model):
+    generator = torch.Generator(device="cpu").manual_seed(932)
+    return tuple(torch.randn(parameter.shape, dtype=torch.float32, generator=generator)
+                 for parameter in model.parameters())
+
+
 def classifier_fixture() -> tuple[nn.Sequential, torch.Tensor, torch.Tensor]:
     """Construct the fixed stock classifier and CPU input from seed 811."""
     with torch.random.fork_rng(devices=[]):
@@ -131,6 +155,34 @@ def hvp_fixture() -> tuple[nn.Sequential, torch.Tensor, tuple[torch.Tensor, ...]
 
 def fixture_metadata(workload_id: str) -> dict[str, object]:
     """Return the immutable, source-owned recipe metadata for a workload."""
+    if workload_id in (MATRIX_NONE_ID, MATRIX_ZERO_ID):
+        return {
+            "seed": 931, "reset_mode": "none" if workload_id == MATRIX_NONE_ID else "zero",
+            "model": [{"type": "Linear", "in_features": 3, "out_features": 4, "bias": True},
+                      {"type": "Linear", "in_features": 4, "out_features": 2, "bias": True}],
+            "input": {"shape": [2, 3], "dtype": "torch.float32"},
+            "input_requires_grad": False,
+            "objective": "(y * y).sum()",
+            "optimizer": {"type": "SGD", "lr": 0.01, "momentum": 0.9, "dampening": 0.0,
+                          "weight_decay": 0.0, "nesterov": False, "maximize": False,
+                          "foreach": None, "differentiable": False, "fused": None}, "updates": 3,
+            "parameter_names": ["0.weight", "0.bias", "1.weight", "1.bias"],
+            "parameter_roles": {"0.weight": {"role": "linear_weight", "shape": [4, 3]},
+                                "0.bias": {"role": "linear_bias", "shape": [4]},
+                                "1.weight": {"role": "linear_weight", "shape": [2, 4]},
+                                "1.bias": {"role": "linear_bias", "shape": [2]}},
+        }
+    if workload_id == MATRIX_HVP_ID:
+        return {"seed": 931, "direction_seed": 932,
+                "model": [{"type": "Linear", "in_features": 3, "out_features": 4, "bias": True},
+                          {"type": "Linear", "in_features": 4, "out_features": 2, "bias": True}],
+                "input": {"shape": [2, 3], "dtype": "torch.float32"},
+                "input_requires_grad": False, "objective": "(y * y).sum()",
+                "parameter_names": ["0.weight", "0.bias", "1.weight", "1.bias"],
+                "parameter_roles": {"0.weight": {"role": "linear_weight", "shape": [4, 3]},
+                                    "0.bias": {"role": "linear_bias", "shape": [4]},
+                                    "1.weight": {"role": "linear_weight", "shape": [2, 4]},
+                                    "1.bias": {"role": "linear_bias", "shape": [2]}}}
     if workload_id in (CLASSIFIER_NONE_ID, CLASSIFIER_ZERO_ID):
         return {
             "seed": 811,
@@ -363,23 +415,86 @@ def run_cpu_hvp() -> dict[str, object]:
             "first_gradients_require_grad": {name: bool(gradient.requires_grad) for name, gradient in zip(names, first_gradients)},
         }
         return {
-            "output": _tensor_payload(output),
-            "loss": _tensor_payload(loss.reshape(())),
+            "output": _tensor_payload(output), "loss": _tensor_payload(loss.reshape(())),
             "first_gradients": _named_payloads(names, first_gradients),
-            "hvp": _named_payloads(names, hvp_values),
-            "history": history,
-            "finite_difference": {
-                "checked": True,
-                "epsilon": _FD_EPSILON,
-                "rtol": _FD_RTOL,
-                "atol": _FD_ATOL,
-                "values": _named_payloads(names, estimates),
-                "max_abs_errors": {
-                    name: float((value - estimate).abs().max().item())
-                    for name, value, estimate in zip(names, hvp_values, estimates)
-                },
-            },
+            "hvp": _named_payloads(names, hvp_values), "history": history,
+            "finite_difference": {"checked": True, "epsilon": _FD_EPSILON, "rtol": _FD_RTOL, "atol": _FD_ATOL,
+                                  "values": _named_payloads(names, estimates),
+                                  "max_abs_errors": {name: float((value-estimate).abs().max().item())
+                                                     for name,value,estimate in zip(names,hvp_values,estimates)}}
         }
+
+
+def run_cpu_matrix_sgd(reset_mode: Literal["none", "zero"]) -> dict[str, object]:
+    """Three ordinary output-energy SGD steps for the stock two-Linear model."""
+    if reset_mode not in ("none", "zero"):
+        raise ValueError("reset_mode must be 'none' or 'zero'")
+    with _cpu_oracle_scope():
+        model, inputs = make_matrix_dense_fixture()
+        names = tuple(name for name, _ in model.named_parameters())
+        params = dict(model.named_parameters())
+        initial_parameters = _named_payloads(names, [p for p in params.values()])
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        steps, resets = [], []
+        for index in range(1, 4):
+            before = tuple(parameter.grad for parameter in params.values())
+            optimizer.zero_grad(set_to_none=reset_mode == "none")
+            after = tuple(parameter.grad for parameter in params.values())
+            none = all(value is None for value in after)
+            same = None if reset_mode == "none" or index == 1 else all(a is b for a, b in zip(before, after))
+            zero = None if none else all(not bool(torch.count_nonzero(value)) for value in after)
+            resets.append({"index": index, "all_grad_none": none, "same_grad_objects": same,
+                           "all_grad_zero": zero,
+                           "gradients": {n: None if p.grad is None else _tensor_payload(p.grad)
+                                         for n, p in params.items()}})
+            output = model(inputs)
+            loss = (output * output).sum()
+            loss.backward()
+            grads = tuple(p.grad.detach().clone() for p in params.values())
+            optimizer.step()
+            values = tuple(p.detach().clone() for p in params.values())
+            momentum = tuple(optimizer.state[p]["momentum_buffer"].detach().clone() for p in params.values())
+            steps.append({"index": index, "output": _tensor_payload(output), "loss": _tensor_payload(loss.reshape(())),
+                          "gradients": _named_payloads(names, grads), "parameters": _named_payloads(names, values),
+                          "momentum": _named_payloads(names, momentum),
+                          "state_keys": {name: ["momentum_buffer"] for name in names}})
+        return {"steps": steps, "reset_observations": resets,
+                "initial_parameters": initial_parameters,
+                "initial_state_keys": {}}
+
+
+def run_cpu_matrix_hvp() -> dict[str, object]:
+    """Parameter HVP plus independent centered finite-difference oracle."""
+    with _cpu_oracle_scope():
+        model, inputs = make_matrix_dense_fixture()
+        names, parameters = zip(*model.named_parameters())
+        directions = _matrix_directions(model)
+        output = model(inputs); loss = (output * output).sum()
+        first = torch.autograd.grad(loss, parameters, create_graph=True)
+        contraction = sum((grad * direction).sum() for grad, direction in zip(first, directions))
+        hvp = torch.autograd.grad(contraction, parameters)
+        originals = tuple(p.detach().clone() for p in parameters)
+        estimates = ()
+        try:
+            with torch.no_grad():
+                for p, original, direction in zip(parameters, originals, directions): p.copy_(original + 0.001 * direction)
+            plus = torch.autograd.grad((model(inputs) ** 2).sum(), parameters)
+            with torch.no_grad():
+                for p, original, direction in zip(parameters, originals, directions): p.copy_(original - 0.001 * direction)
+            minus = torch.autograd.grad((model(inputs) ** 2).sum(), parameters)
+            estimates = tuple((a - b) / 0.002 for a, b in zip(plus, minus))
+            for actual, estimate in zip(hvp, estimates):
+                torch.testing.assert_close(actual, estimate, rtol=0.008, atol=0.002)
+        finally:
+            with torch.no_grad():
+                for p, original in zip(parameters, originals): p.copy_(original)
+        return {"output": _tensor_payload(output), "loss": _tensor_payload(loss.reshape(())),
+                "first_gradients": _named_payloads(names, first), "hvp": _named_payloads(names, hvp),
+                "history": {"grad_fns": {n: type(g.grad_fn).__name__ for n, g in zip(names, first)},
+                            "first_gradients_require_grad": {n: bool(g.requires_grad) for n, g in zip(names, first)}},
+                "finite_difference": {"checked": True, "epsilon": 0.001, "rtol": 0.008, "atol": 0.002,
+                                      "values": _named_payloads(names, estimates),
+                                      "max_abs_errors": {n: float((a-b).abs().max()) for n,a,b in zip(names,hvp,estimates)}}}
 
 
 def _parse_vulkan_device_summary(info: str) -> dict[str, str]:
@@ -709,6 +824,70 @@ def run_vulkan_hvp() -> dict[str, object]:
         "comparison": comparison,
         "execution": execution,
     }
+
+
+def run_vulkan_matrix_sgd(reset_mode: Literal["none", "zero"]):
+    api, runtime = _runtime_context()
+    workload_id = MATRIX_NONE_ID if reset_mode == "none" else MATRIX_ZERO_ID
+    cpu = run_cpu_matrix_sgd(reset_mode)
+    model, inputs = make_matrix_dense_fixture(); model = model.to("vk:0"); vk_input = inputs.to("vk:0")
+    names = tuple(name for name, _ in model.named_parameters()); params = dict(model.named_parameters())
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    api._C.synchronize(); initial = _named_payloads(names, [params[n] for n in names])
+    steps, resets, execution = [], [], []
+    for index in range(1, 4):
+        before = tuple(p.grad for p in params.values())
+        reset, window = _capture_window(api, "reset", index,
+            lambda: optimizer.zero_grad(set_to_none=reset_mode == "none"),
+            lambda _: {"index": index, "all_grad_none": all(p.grad is None for p in params.values()),
+                       "same_grad_objects": None if reset_mode == "none" or index == 1 else all(old is p.grad for old,p in zip(before,params.values())),
+                       "all_grad_zero": None if all(p.grad is None for p in params.values()) else all(_tensor_payload(p.grad)["nonzero_count"] == 0 for p in params.values()),
+                       "gradients": {n: None if p.grad is None else _tensor_payload(p.grad) for n,p in params.items()}})
+        execution.append(window); resets.append(reset)
+        def forward_backward():
+            y = model(vk_input); loss = (y*y).sum(); loss.backward(); return y, loss
+        obs, window = _capture_window(api, "forward_backward", index, forward_backward,
+            lambda result: {"output": _tensor_payload(result[0]), "loss": _tensor_payload(result[1].reshape(())),
+                            "gradients": _named_payloads(names, [params[n].grad for n in names])})
+        execution.append(window)
+        state, window = _capture_window(api, "optimizer", index, lambda: optimizer.step(),
+            lambda _: {"parameters": _named_payloads(names, [params[n] for n in names]),
+                       "momentum": _named_payloads(names, [optimizer.state[params[n]]["momentum_buffer"] for n in names]),
+                       "state_keys": {n: ["momentum_buffer"] for n in names}})
+        execution.append(window)
+        steps.append({"index": index, **obs, **state})
+    vk = {"steps": steps, "reset_observations": resets, "initial_parameters": initial, "initial_state_keys": {}}
+    result = {"workload_id": workload_id, "reset_mode": reset_mode, **runtime,
+              "fixture": fixture_metadata(workload_id), "cpu": cpu, "vulkan": vk,
+              "comparison": _comparison(cpu, vk), "execution": execution}
+    validate_workload_record(result)
+    return result
+
+
+def run_vulkan_matrix_hvp():
+    api, runtime = _runtime_context(); cpu = run_cpu_matrix_hvp()
+    model, inputs = make_matrix_dense_fixture(); directions = _matrix_directions(model)
+    model = model.to("vk:0"); vk_inputs = inputs.to("vk:0"); vk_dirs = tuple(d.to("vk:0") for d in directions)
+    names, params = zip(*model.named_parameters()); retained = {}
+    def first_reverse():
+        y = model(vk_inputs); loss = (y*y).sum(); first = torch.autograd.grad(loss, params, create_graph=True)
+        retained.update(output=y, loss=loss, first=first); return y, loss, first
+    observed, first_window = _capture_window(api, "first_reverse", None, first_reverse,
+        lambda result: {"output": _tensor_payload(result[0]), "loss": _tensor_payload(result[1].reshape(())),
+                        "first_gradients": _named_payloads(names, result[2]),
+                        "history": {"grad_fns": {n:type(g.grad_fn).__name__ for n,g in zip(names,result[2])},
+                                    "first_gradients_require_grad": {n:bool(g.requires_grad) for n,g in zip(names,result[2])}}})
+    def second_reverse():
+        contraction = sum((g*d).sum() for g,d in zip(retained["first"],vk_dirs))
+        retained["hvp"] = torch.autograd.grad(contraction,params); return retained["hvp"]
+    hvp, second_window = _capture_window(api,"second_reverse",None,second_reverse,lambda values:_named_payloads(names,values))
+    vk = {"output": observed["output"], "loss": observed["loss"], "first_gradients": observed["first_gradients"],
+          "hvp": hvp, "history": observed["history"], "finite_difference": None}
+    result = {"workload_id": MATRIX_HVP_ID, "reset_mode": None, **runtime,
+              "fixture": fixture_metadata(MATRIX_HVP_ID), "cpu": cpu, "vulkan": vk,
+              "comparison": _comparison(cpu,vk), "execution": [first_window,second_window]}
+    validate_workload_record(result)
+    return result
 
 
 def validate_workload_record(record):

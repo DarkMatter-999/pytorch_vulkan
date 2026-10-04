@@ -207,8 +207,14 @@ def run_qualification(
                 "-rs",
                 "tests/python/test_vulkan_workload_conformance.py::test_stock_sgd_executes_three_steps_in_both_reset_modes",
                 "tests/python/test_vulkan_workload_conformance.py::test_parameter_hvp_executes_with_named_live_history",
+                "tests/python/test_vulkan_workload_conformance.py::test_matrix_stock_sgd_executes_three_steps_in_both_reset_modes",
+                "tests/python/test_vulkan_workload_conformance.py::test_matrix_parameter_hvp_executes_with_named_live_history",
             ]
         )
+        conformance_commands.append([
+            python, "-m", "pytest", "-q", "-rs",
+            "tests/python/test_vulkan_linear.py::test_stock_linear_each_declared_rank",
+        ])
     gates.append(
         _gate(
             "conformance",

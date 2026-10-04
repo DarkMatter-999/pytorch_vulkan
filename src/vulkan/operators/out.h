@@ -11,7 +11,8 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
 at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &other,
                                          const at::Scalar &alpha,
                                          PointwiseOperation operation,
-                                         const char *name);
+                                         const char *name,
+                                         bool allow_broadcast = false);
 at::Tensor &dispatch_tensor_scalar_alias(at::Tensor &self, const at::Scalar &scalar,
                                          PointwiseOperation operation,
                                          const char *name);

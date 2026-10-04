@@ -289,7 +289,7 @@ at::Tensor &add_scalar_out(const at::Tensor &tensor, const at::Scalar &scalar,
 at::Tensor &add_inplace_tensor(at::Tensor &self, const at::Tensor &other,
                                const at::Scalar &alpha) {
     return pytorch_vulkan::dispatch_tensor_tensor_alias(
-        self, other, alpha, pytorch_vulkan::PointwiseOperation::Add, "add_");
+        self, other, alpha, pytorch_vulkan::PointwiseOperation::Add, "add_", true);
 }
 
 at::Tensor &add_inplace_scalar(at::Tensor &self, const at::Scalar &other,

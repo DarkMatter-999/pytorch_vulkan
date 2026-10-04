@@ -16,7 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.vulkan_capability_declarations import (
     STOCK_COMPOSITE_ROUTE_CONTRACT,
     STOCK_COMPOSITE_ROUTES,
+    STOCK_LINEAR_ROUTE_CASES,
 )
+KNOWN_STOCK_COMPOSITE_SCHEMAS = frozenset({
+    STOCK_COMPOSITE_ROUTE_CONTRACT["schema"], "aten::linear.default",
+})
 
 REQUIRED_ENTRY_KEYS = frozenset(
     {
@@ -52,7 +56,7 @@ SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*(?:x[1-9][0-9]*)*)")
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
-AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "reverse_first_order_graph_witnessed", "reverse_selected_third_order_witnessed", "not_applicable"})
+AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "reverse_first_order_graph_witnessed", "reverse_finite_second_order_witnessed", "reverse_selected_third_order_witnessed", "not_applicable"})
 EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "rejected_before_vulkan", "deferred_before_vulkan"})
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
@@ -83,6 +87,7 @@ TEST_VALUES = frozenset(
         "tests/python/test_vulkan_capability_manifest.py",
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py",
+        "tests/python/test_vulkan_linear.py",
     }
 )
 
@@ -565,96 +570,253 @@ def validate_stock_composite_routes(
     source: set[str],
     explicit_rejected: set[str],
 ) -> None:
-    """Validate the sole versioned composite route and its executed witness links."""
-    expected_schema = STOCK_COMPOSITE_ROUTE_CONTRACT["schema"]
-    route_entries = [entry for entry in entries if entry.get("schema") == expected_schema]
+    """Validate versioned stock composite routes and their executed witness links."""
+    expected_schemas = KNOWN_STOCK_COMPOSITE_SCHEMAS
+    route_entries = [entry for entry in entries if entry.get("schema") in expected_schemas]
     if not routes and not route_entries:
         return
-    if set(routes) != {expected_schema}:
+    if set(routes) != expected_schemas:
         raise ValueError(
-            f"unknown stock-composite route(s): {sorted(set(routes) - {expected_schema})}"
+            f"unknown stock-composite route(s): {sorted(set(routes) - expected_schemas)}"
         )
-    route = routes[expected_schema]
-    if (
-        not isinstance(route, dict)
-        or set(route) != set(STOCK_COMPOSITE_ROUTE_CONTRACT)
-        or route.get("schema") != expected_schema
-        or route.get("reference") != STOCK_COMPOSITE_ROUTE_CONTRACT["reference"]
-        or route.get("dependencies") != STOCK_COMPOSITE_ROUTE_CONTRACT["dependencies"]
-    ):
-        raise ValueError("stock-composite route descriptor/reference/dependency closure is unqualified")
-    if torch.__version__.split("+", 1)[0] != route["reference"]["pytorch_version"]:
-        raise ValueError("stock-composite route PyTorch reference version mismatch")
-
-    # Check dispatcher schemas and direct Vulkan leaf registrations without
-    # representing stock generated clone/_unsafe_view routes as source kernels.
-    for dependency in route["dependencies"]:
-        if not schema_exists(dependency["schema"]):
-            raise ValueError(f"stock-composite dependency schema is unresolved: {dependency['schema']}")
-        if (
-            dependency["dispatch"] == "stock_generated_privateuse1"
-            and dependency["schema"] in source
-        ):
-            raise ValueError(
-                f"stock-generated dependency is misclassified as direct source: {dependency['schema']}"
-            )
-        leaf = dependency["vulkan_leaf"]
-        if not schema_exists(leaf) or leaf not in source or leaf in explicit_rejected:
-            raise ValueError(f"stock-composite dependency closure is unresolved at {leaf}")
-    if expected_schema in source or expected_schema in explicit_rejected:
-        raise ValueError("stock-composite route duplicates a direct or rejected source registration")
-
     entries_by_schema = {entry["schema"]: entry for entry in entries}
-    entry = entries_by_schema.get(expected_schema)
-    if entry is None or entry.get("status") != "supported":
-        raise ValueError("stock-composite route has no supported manifest entry")
-    cases = {
-        case.get("name")
-        for case in entry.get("test_cases", [])
-        if isinstance(case, dict) and case.get("supported") is True
-    }
-    evidence_names = route["evidence_cases"]
-    if (
-        evidence_names != STOCK_COMPOSITE_ROUTE_CONTRACT["evidence_cases"]
-        or not evidence_names
-        or len(set(evidence_names)) != len(evidence_names)
-        or not set(evidence_names) <= cases
-    ):
-        raise ValueError("stock-composite route evidence case links are missing or unsupported")
-    expected_shapes = {
-        "view.reshape.copy.trainable-seed": "2x3",
-        "view.reshape.offset-copy.second-order": "4x6",
-    }
-    for name in evidence_names:
+    for expected_schema, route in routes.items():
+        contract = STOCK_COMPOSITE_ROUTES[expected_schema]
+        if (not isinstance(route, dict) or set(route) != set(contract)
+                or route.get("schema") != contract["schema"]
+                or route.get("reference") != contract["reference"]
+                or route.get("dependencies") != contract["dependencies"]):
+            raise ValueError("stock-composite route descriptor/reference/dependency closure is unqualified")
+        if torch.__version__.split("+", 1)[0] != route["reference"]["pytorch_version"]:
+            raise ValueError("stock-composite route PyTorch reference version mismatch")
+        for dependency in route["dependencies"]:
+            if not schema_exists(dependency["schema"]):
+                raise ValueError(f"stock-composite dependency schema is unresolved: {dependency['schema']}")
+            if dependency["dispatch"] == "stock_generated_privateuse1" and dependency["schema"] in source:
+                raise ValueError(f"stock-generated dependency is misclassified as direct source: {dependency['schema']}")
+            for leaf_key in ("vulkan_leaf", "alternate_vulkan_leaf"):
+                leaf = dependency.get(leaf_key)
+                if leaf is not None and (not schema_exists(leaf) or leaf not in source or leaf in explicit_rejected):
+                    raise ValueError(f"stock-composite dependency closure is unresolved at {leaf}")
+        if expected_schema in source or expected_schema in explicit_rejected:
+            raise ValueError("stock-composite route duplicates a direct or rejected source registration")
+        entry = entries_by_schema.get(expected_schema)
+        if entry is None or entry.get("status") != "supported":
+            raise ValueError("stock-composite route has no supported manifest entry")
+        cases = {case.get("name") for case in entry.get("test_cases", [])
+                 if isinstance(case, dict) and case.get("supported") is True}
+        evidence_names = route["evidence_cases"]
+        if (evidence_names != contract["evidence_cases"]
+                or not evidence_names or len(set(evidence_names)) != len(evidence_names)
+                or not set(evidence_names) <= cases):
+            raise ValueError("stock-composite route evidence case links are missing or unsupported")
+        if expected_schema == STOCK_COMPOSITE_ROUTE_CONTRACT["schema"]:
+            expected_shapes = {"view.reshape.copy.trainable-seed": "2x3",
+                               "view.reshape.offset-copy.second-order": "4x6"}
+            for name in evidence_names:
+                record = coverage.get(name)
+                if (name not in expected_shapes or not isinstance(record, dict)
+                        or record.get("schema") != expected_schema or record.get("parity") is not True
+                        or record.get("gradients") is not True
+                        or record.get("primary_input") != {"dtype": "float32", "rank": 2}
+                        or record.get("input_shapes") != [expected_shapes[name]]
+                        or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}):
+                    raise ValueError(f"stock-composite route lacks matching executed route evidence: {name}")
+                execution = record.get("execution")
+                if (not isinstance(execution, dict) or set(execution) != {
+                        "mode", "compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks"}
+                        or execution.get("mode") != "copy"
+                        or any(type(execution.get(key)) is not int for key in (
+                            "compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks"))
+                        or execution["vulkan_copies"] <= 0 or execution["compute_dispatches"] != 0
+                        or execution["explicit_transfers"] != 0 or execution["fallbacks"] != 0):
+                    raise ValueError(f"stock-composite route execution evidence is invalid: {name}")
+        else:
+            validate_stock_linear_route_evidence(coverage)
+
+
+def validate_stock_linear_route_evidence(coverage: dict[str, Any]) -> None:
+    """Validate all 84 persisted CPU/Vulkan-executed stock Linear route records."""
+    expected = {case["name"]: case for case in STOCK_LINEAR_ROUTE_CASES}
+    names = {name for name in coverage if name.startswith("linear.rank")}
+    if names != set(expected):
+        missing = sorted(set(expected) - names)
+        extra = sorted(names - set(expected))
+        raise ValueError(
+            f"executed Linear route evidence IDs are incomplete or unexpected: missing={missing}, extra={extra}"
+        )
+
+    def check_counter(record: Any, case_name: str, *, required: bool) -> None:
+        if not isinstance(record, dict) or set(record) != {
+            "compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks"
+        }:
+            raise ValueError(f"{case_name}: executed Linear route counter record is malformed")
+        if any(type(value) is not int or value < 0 for value in record.values()):
+            raise ValueError(f"{case_name}: executed Linear route counters must be nonnegative integers")
+        if ((required and record["compute_dispatches"] < 1)
+                or record["explicit_transfers"] != 0 or record["fallbacks"] != 0):
+            raise ValueError(f"{case_name}: executed Linear route counters show no compute or fallback/transfer")
+
+    for name, case in expected.items():
         record = coverage.get(name)
-        if (
-            name not in expected_shapes
-            or not isinstance(record, dict)
-            or record.get("schema") != expected_schema
-            or record.get("parity") is not True
-            or record.get("gradients") is not True
-            or record.get("primary_input") != {"dtype": "float32", "rank": 2}
-            or record.get("input_shapes") != [expected_shapes[name]]
-            or record.get("reverse_autograd") != {"order": 2, "graph_preserved": True}
+        route = record.get("stock_linear_route") if isinstance(record, dict) else None
+        if not isinstance(record, dict) or not isinstance(route, dict):
+            raise ValueError(f"{name}: missing executed Linear route evidence record")
+        expected_primary = {"dtype": "float32", "rank": case["rank"]}
+        expected_shape = case["input_shape"]
+        expected_input_shapes = sorted({
+            "x".join(map(str, expected_shape)), "4x3",
+            *( ["4"] if case["bias_present"] else [] ),
+        })
+        expected_input_ranks = sorted({case["rank"], 2, *( [1] if case["bias_present"] else [] )})
+        expected_operands = [
+            {"role": "primary_input", "dtype": "float32", "rank": case["rank"]},
+            {"role": "operand", "dtype": "float32", "rank": 2},
+        ]
+        if case["bias_present"]:
+            expected_operands.append({"role": "operand", "dtype": "float32", "rank": 1})
+        if (record.get("schema") != "aten::linear.default"
+                or record.get("primary_input") != expected_primary
+                or record.get("operands") != expected_operands
+                or record.get("input_dtypes") != ["float32"]
+                or record.get("input_ranks") != expected_input_ranks
+                or record.get("input_shapes") != expected_input_shapes
+                or record.get("parity") is not True
+                or record.get("gradients") is not (case["state"] != "no-grad")
+                or record.get("output_dtype") != "float32"
+                or record.get("output_rank") != case["rank"]):
+            raise ValueError(f"{name}: executed Linear route aggregate metadata disagrees with source case")
+
+        required_route_keys = {
+            "case_id", "schema", "rank", "input_shape", "layout", "state",
+            "bias_present", "input_metadata", "cpu_forward_ops", "vulkan_forward_ops",
+            "matrix_leaf", "route", "required_forward_ops", "forward_counters",
+            "first_gradient_facts", "first_backward_counters",
+            "first_gradient_graph_preserved", "selected_second_direction",
+            "selected_second_counters", "output_device", "output_requires_grad",
+            "grad_mode",
+        }
+        if set(route) != required_route_keys:
+            raise ValueError(f"{name}: executed Linear route fields are malformed")
+        for key, expected_value in (
+            ("case_id", name), ("schema", "aten::linear.default"),
+            ("rank", case["rank"]), ("input_shape", expected_shape),
+            ("layout", case["layout"]), ("state", case["state"]),
+            ("bias_present", case["bias_present"]),
+            ("matrix_leaf", case["matrix_leaf"]), ("route", case["route"]),
+            ("required_forward_ops", case["required_forward_ops"]),
         ):
-            raise ValueError(f"stock-composite route lacks matching executed route evidence: {name}")
-        execution = record.get("execution")
-        if (
-            not isinstance(execution, dict)
-            or set(execution) != {
-                "mode", "compute_dispatches", "vulkan_copies",
-                "explicit_transfers", "fallbacks",
-            }
-            or execution.get("mode") != "copy"
-            or any(type(execution.get(key)) is not int for key in (
-                "compute_dispatches", "vulkan_copies", "explicit_transfers", "fallbacks"
-            ))
-            or execution["vulkan_copies"] <= 0
-            or execution["compute_dispatches"] != 0
-            or execution["explicit_transfers"] != 0
-            or execution["fallbacks"] != 0
-        ):
-            raise ValueError(f"stock-composite route execution evidence is invalid: {name}")
+            if route.get(key) != expected_value:
+                raise ValueError(f"{name}: executed Linear route {key} differs from its source contract")
+        metadata = route["input_metadata"]
+        if not isinstance(metadata, dict) or set(metadata) != {"cpu", "vulkan"}:
+            raise ValueError(f"{name}: executed Linear route input layout metadata is malformed")
+        cpu_meta, vk_meta = metadata["cpu"], metadata["vulkan"]
+        if not isinstance(cpu_meta, dict) or set(cpu_meta) != {"shape", "strides", "storage_offset"}:
+            raise ValueError(f"{name}: CPU input layout metadata is malformed")
+        if not isinstance(vk_meta, dict) or set(vk_meta) != {"shape", "strides", "storage_offset"}:
+            raise ValueError(f"{name}: Vulkan input layout metadata is malformed")
+        if cpu_meta != vk_meta or cpu_meta["shape"] != expected_shape:
+            raise ValueError(f"{name}: CPU/Vulkan input layout metadata differs")
+        if case["layout"] == "contiguous":
+            expected_strides = []
+            stride = 1
+            for size in reversed(expected_shape):
+                expected_strides.append(stride)
+                stride *= size
+            expected_strides.reverse()
+            expected_offset = 0
+        else:
+            base_shape = [2] * (case["rank"] - 1) + [5]
+            expected_strides = []
+            stride = 1
+            for size in reversed(base_shape):
+                expected_strides.append(stride)
+                stride *= size
+            expected_strides.reverse()
+            expected_strides[0], expected_strides[1] = expected_strides[1], expected_strides[0]
+            expected_offset = 1
+        if cpu_meta["strides"] != expected_strides or cpu_meta["storage_offset"] != expected_offset:
+            raise ValueError(f"{name}: executed Linear input strides/offset differ from source layout")
+
+        for ops_key in ("cpu_forward_ops", "vulkan_forward_ops"):
+            ops = route[ops_key]
+            if not isinstance(ops, list) or ops != sorted(set(ops)) or any(not isinstance(op, str) for op in ops):
+                raise ValueError(f"{name}: profiler operator record is malformed")
+            if case["matrix_leaf"].removesuffix(".default") not in ops:
+                raise ValueError(f"{name}: actual profiler trace lacks its declared matrix leaf")
+            required_ops = {op.removesuffix(".default") for op in case["required_forward_ops"]}
+            if not required_ops <= set(ops):
+                raise ValueError(f"{name}: actual profiler trace lacks required stock-route operators")
+
+        check_counter(route["forward_counters"], name, required=True)
+        for key, expected_value in case["runtime_counters"].items():
+            counter_key = key.removesuffix("_min")
+            observed_value = route["forward_counters"].get(counter_key)
+            if (key.endswith("_min") and observed_value < expected_value):
+                raise ValueError(f"{name}: runtime dispatch count is below source contract")
+            if (not key.endswith("_min") and observed_value != expected_value):
+                raise ValueError(f"{name}: runtime counter differs from source contract for {key}")
+        if route["output_device"] != "vk:0" or route["output_requires_grad"] != (case["state"] != "no-grad"):
+            raise ValueError(f"{name}: Linear output residency/grad-mode evidence is inconsistent")
+        expected_grad_mode = "no_grad" if case["state"] == "no-grad" else "enabled"
+        if route["grad_mode"] != expected_grad_mode:
+            raise ValueError(f"{name}: actual Linear forward grad mode is incorrect")
+
+        expected_targets = [] if case["state"] == "no-grad" else ["input"]
+        if case["state"] == "trainable":
+            expected_targets.append("weight")
+            if case["bias_present"]:
+                expected_targets.append("bias")
+        facts = route["first_gradient_facts"]
+        if not isinstance(facts, list) or [item.get("name") for item in facts if isinstance(item, dict)] != expected_targets:
+            raise ValueError(f"{name}: first-gradient target records differ from trainability contract")
+        if case["state"] == "no-grad":
+            if route["first_backward_counters"] is not None or facts:
+                raise ValueError(f"{name}: no-grad route contains backward evidence")
+        else:
+            check_counter(route["first_backward_counters"], name, required=True)
+            expected_gradient_shapes = {"input": expected_shape, "weight": [4, 3], "bias": [4]}
+            for fact in facts:
+                history_fields = ("cpu_requires_grad", "vulkan_requires_grad")
+                grad_fn_fields = ("cpu_grad_fn", "vulkan_grad_fn")
+                if (set(fact) != {"name", "cpu_shape", "vulkan_shape", "cpu_requires_grad",
+                                  "vulkan_requires_grad", "cpu_grad_fn", "vulkan_grad_fn", "parity"}
+                        or fact["name"] not in expected_gradient_shapes
+                        or fact["cpu_shape"] != expected_gradient_shapes.get(fact["name"])
+                        or fact["cpu_shape"] != fact["vulkan_shape"]
+                        or fact["parity"] is not True
+                        or any(type(fact[key]) is not bool for key in history_fields)
+                        or fact["cpu_requires_grad"] != fact["vulkan_requires_grad"]
+                        or (fact["cpu_grad_fn"] is None) != (fact["vulkan_grad_fn"] is None)
+                        or fact["cpu_requires_grad"] != (case["state"] == "trainable")):
+                    raise ValueError(f"{name}: CPU/Vulkan first-gradient history record is inconsistent")
+                for history_key, grad_fn_key in zip(history_fields, grad_fn_fields):
+                    history = fact[history_key]
+                    grad_fn = fact[grad_fn_key]
+                    if (history and (type(grad_fn) is not str or not grad_fn)
+                            or not history and grad_fn is not None):
+                        raise ValueError(f"{name}: CPU/Vulkan first-gradient history record is malformed")
+
+        second_expected = bool(case["second_direction"])
+        if route["first_gradient_graph_preserved"] is not (case["state"] == "trainable"):
+            raise ValueError(f"{name}: first-gradient graph evidence is missing or overclaimed")
+        second = route["selected_second_direction"]
+        if second_expected:
+            if (not isinstance(second, dict)
+                    or set(second) != {
+                        "direction", "target_names", "cpu_vulkan_parity",
+                        "cpu_requires_grad", "vulkan_requires_grad",
+                    }
+                    or second.get("direction") != ["0.25", "0.50", "0.75"]
+                    or second.get("cpu_vulkan_parity") is not True
+                    or second.get("target_names") != expected_targets
+                    or second.get("cpu_requires_grad") != [True] * len(expected_targets)
+                    or second.get("vulkan_requires_grad") != [True] * len(expected_targets)):
+                raise ValueError(f"{name}: selected second-direction graph facts are invalid")
+            check_counter(route["selected_second_counters"], name, required=True)
+        elif second is not None or route["selected_second_counters"] is not None:
+            raise ValueError(f"{name}: unqualified Linear case claims a selected second derivative")
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text())
@@ -862,6 +1024,9 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         allowed_link_keys = {
             "reverse_second_order_witnessed": {"reverse_second_order_cases"},
             "reverse_first_order_graph_witnessed": {"reverse_first_order_graph_cases"},
+            "reverse_finite_second_order_witnessed": {
+                "reverse_first_order_graph_cases", "reverse_second_order_cases",
+            },
             "reverse_selected_third_order_witnessed": {
                 "reverse_first_order_graph_cases", "reverse_second_order_cases",
                 "reverse_selected_third_order_cases",
@@ -919,6 +1084,10 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         graph_autograd = entry["autograd"]
         if graph_autograd == "reverse_first_order_graph_witnessed" and not witnesses.get("reverse_first_order_graph_cases"):
             raise ValueError(f"{path}.witnesses.reverse_first_order_graph_cases: required for first-order graph witness")
+        if graph_autograd == "reverse_finite_second_order_witnessed":
+            for link_key in ("reverse_first_order_graph_cases", "reverse_second_order_cases"):
+                if not witnesses.get(link_key):
+                    raise ValueError(f"{path}.witnesses.{link_key}: required for finite second-order witness")
         if graph_autograd == "reverse_selected_third_order_witnessed":
             for link_key in ("reverse_first_order_graph_cases", "reverse_second_order_cases", "reverse_selected_third_order_cases"):
                 if not witnesses.get(link_key):

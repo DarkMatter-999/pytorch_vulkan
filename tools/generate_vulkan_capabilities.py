@@ -27,6 +27,7 @@ from tools.validate_vulkan_capabilities import (  # noqa: E402
 from tools.vulkan_capability_declarations import (  # noqa: E402
     DECLARATIONS,
     STOCK_COMPOSITE_ROUTES,
+    STOCK_LINEAR_ROUTE_CASES,
 )
 import vulkan_conformance as vc  # noqa: E402
 
@@ -253,6 +254,10 @@ def _case_index() -> dict[str, dict[str, object]]:
         entry["tests"].add("tests/python/test_vulkan_conformance.py")
         for shape in case.declared_shapes:
             entry["shapes"].add(shape)
+    linear_entry = index["aten::linear.default"]
+    linear_entry["tests"].add("tests/python/test_vulkan_linear.py")
+    for route_case in STOCK_LINEAR_ROUTE_CASES:
+        linear_entry["test_cases"].append({"name": route_case["name"], "supported": True})
     return index
 
 
