@@ -31,9 +31,50 @@ After building, verify the active extension and device with:
 
 ```bash
 PYTHONPATH=build .venv/bin/python -c \
-  'import torch, pytorch_vulkan; print(torch.__version__, pytorch_vulkan.is_available()); print(torch.device("vk:0"))'
-PYTHONPATH=build .venv/bin/python -m pytest -q tests/python
+  'import pytorch_vulkan as torch; print(torch.version.__version__, torch.is_available()); print(torch.device("vk:0"))'
+PYTHONPATH=.:build .venv/bin/python tools/vulkan_wrapper_pytest.py -q tests/python
 ```
+
+Use the wrapper as the application entry point, **before any autograd execution**
+(including backward run by another library):
+
+```python
+import pytorch_vulkan as torch
+
+model = torch.nn.Linear(4, 2).to("vk:0")
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+```
+
+Upstream PyTorch 2.4.0 remains a required dependency, not a replacement runtime.
+Public APIs such as `Tensor`, `tensor`, dtypes, `nn`, `optim`, and `autograd` resolve
+to upstream objects; existing Vulkan optimizer validation remains installed.
+Package-owned device/compiler helpers and `save`/`load` take precedence. In
+particular, the latter retain the package's explicit Vulkan serialization format,
+not generic upstream `torch.save`/`torch.load` semantics. Use `torch.nn` through
+the facade; arbitrary `from pytorch_vulkan.nn import ...` imports are not promised.
+Private upstream names are not forwarded, and `sys.modules['torch']` is unchanged.
+The dependency version is available as `torch.version.__version__`.
+
+Successful wrapper import registers the extension guard and `vk` device module
+before returning, without an artificial backward or Vulkan tensor allocation.
+It does not establish device availability: check `torch.is_available()` before
+using `vk:0`; unavailable devices do not silently fall back to CPU. CPU APIs
+retain upstream behavior, while Vulkan execution is limited to the documented
+operator/layout/dtype/autograd contracts.
+
+The legacy `import torch; import pytorch_vulkan` style remains compatible when
+no autograd has executed beforehand. Importing upstream torch alone first is
+allowed; importing the wrapper after a CPU backward is outside the supported
+startup boundary because the shared-engine initialization limitation remains
+unresolved. This facade does not repair or reliably detect that late-import case,
+and does not qualify arbitrary higher-order AD, forward AD, or transforms.
+
+The full Python CTest suite and qualification runner use that explicit
+wrapper-first driver; standalone CPU evidence validators do not import the
+backend. [Bootstrap evidence policy](docs/vulkan-bootstrap-evidence.md) separates
+immutable historical measurements from current-source startup qualification.
+A missing/stale bootstrap provenance sidecar is a failing gate, not permission
+to reuse old hashes.
 
 The active capability sources are the authority for what passes this gate:
 

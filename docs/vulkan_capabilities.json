@@ -2551,6 +2551,92 @@
       }
     },
     {
+      "aliasing": "same_storage_alias",
+      "autograd": "not_applicable",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "validated_exact_alias_inplace",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 2,
+        "min": 0
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "scalar_supported"
+      ],
+      "schema": "aten::div_.Scalar",
+      "shape_constraints": [
+        "2x3",
+        "3"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "scalar-division.rank0",
+          "supported": true
+        },
+        {
+          "name": "scalar-division.rank1",
+          "supported": true
+        },
+        {
+          "name": "scalar-division.rank2",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "scalar-division.rank0",
+          "scalar-division.rank1",
+          "scalar-division.rank2"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            0
+          ],
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          0,
+          1,
+          2
+        ]
+      }
+    },
+    {
       "aliasing": "no_overlap",
       "autograd": "first_order_or_none",
       "device": {
@@ -3704,7 +3790,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "reverse_first_order_graph_witnessed",
+      "autograd": "reverse_finite_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -3726,7 +3812,7 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 2,
+        "max": 8,
         "min": 1
       },
       "reason": "supported_contract",
@@ -3736,9 +3822,43 @@
       ],
       "schema": "aten::matmul.default",
       "shape_constraints": [
+        "0x1x3x4",
+        "0x3x4",
+        "1x0x2",
+        "1x1x1x1x1x1x3x2",
+        "1x1x1x1x1x3x2",
+        "1x1x1x1x3x2",
+        "1x1x1x3x2",
+        "1x1x3x2",
+        "1x2x3",
+        "1x3x2",
+        "1x3x4",
+        "1x4x0",
+        "1x4x2",
+        "1x5x2x4",
+        "1x5x4x2",
+        "2x0x4",
+        "2x1x1x1x1x1x2x3",
+        "2x1x1x1x1x1x3x2",
+        "2x1x1x1x1x2x3",
+        "2x1x1x1x2x3",
+        "2x1x1x2x3",
+        "2x1x2x3",
+        "2x1x3x4",
+        "2x1x4x3",
         "2x3",
+        "2x3x0",
+        "2x3x4",
+        "2x4x2",
+        "2x4x3",
         "3",
-        "3x2"
+        "3x2",
+        "3x2x4",
+        "3x3x4",
+        "3x4",
+        "4",
+        "4x2",
+        "5x4x2"
       ],
       "status": "supported",
       "test_cases": [
@@ -3765,10 +3885,884 @@
         {
           "name": "g1.matmul.vm.at",
           "supported": true
+        },
+        {
+          "name": "g2.batch-vector.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-vector.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-batch.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.batch-matrix.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.matrix-batch.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.equal-batch.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.equal-batch.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.equal-batch.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.equal-batch.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.equal-batch.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.equal-batch.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-left.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.singleton-right.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.unequal-rank.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.unequal-rank.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.unequal-rank.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.unequal-rank.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.unequal-rank.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.unequal-rank.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-broadcast.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-4.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-4.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-4.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-4.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-4.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-4.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-5.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-5.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-5.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-5.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-5.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-5.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-6.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-6.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-6.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-6.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-6.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-6.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-7.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-7.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-7.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-7.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-7.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-7.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-8.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-8.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-8.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-8.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-8.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank-8.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-vector.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-vector.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-vector.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-vector.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-vector.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-vector.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-rank8.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-rank8.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-rank8.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-rank8.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-rank8.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.vector-rank8.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-rank3.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-rank3.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-rank3.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-rank3.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-rank3.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank8-rank3.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank3-rank8.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank3-rank8.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank3-rank8.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank3-rank8.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.rank3-rank8.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.rank3-rank8.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.transpose-matrix.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.nonfoldable-vector.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.offset-fold.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.offset-fold.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.offset-fold.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.offset-fold.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.offset-fold.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.offset-fold.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.a.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.a.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.b.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.b.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.expanded.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-transposed.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-transposed.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-transposed.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-transposed.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-transposed.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-transposed.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-M.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-M.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-M.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-M.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-M.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-M.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-N.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-N.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-N.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-N.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-N.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-N.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-K.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-K.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-K.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-K.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-K.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.empty-K.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.zero-batch.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.zero-batch.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.zero-batch.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.zero-batch.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.zero-batch.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.zero-batch.both.no-grad.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-zero.none.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-zero.none.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-zero.both.grad-mode.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-zero.both.grad-mode.@",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-zero.both.no-grad.matmul",
+          "supported": true
+        },
+        {
+          "name": "g2.cross-zero.both.no-grad.@",
+          "supported": true
         }
       ],
       "tests": [
         "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_general_matmul.py",
+        "tests/python/test_vulkan_general_matmul_capability_evidence.py",
         "tests/python/test_vulkan_operator_capabilities.py",
         "tests/python/test_vulkan_vector_matmul_capability_evidence.py"
       ],
@@ -3779,7 +4773,225 @@
           "g1.matmul.vm.at",
           "g1.matmul.vm.torch-matmul",
           "g1.matmul.vv.at",
-          "g1.matmul.vv.torch-matmul"
+          "g1.matmul.vv.torch-matmul",
+          "g2.batch-matrix.a.grad-mode.@",
+          "g2.batch-matrix.a.grad-mode.matmul",
+          "g2.batch-matrix.b.grad-mode.@",
+          "g2.batch-matrix.b.grad-mode.matmul",
+          "g2.batch-matrix.both.grad-mode.@",
+          "g2.batch-matrix.both.grad-mode.matmul",
+          "g2.batch-matrix.both.no-grad.@",
+          "g2.batch-matrix.both.no-grad.matmul",
+          "g2.batch-matrix.none.grad-mode.@",
+          "g2.batch-matrix.none.grad-mode.matmul",
+          "g2.batch-vector.a.grad-mode.@",
+          "g2.batch-vector.a.grad-mode.matmul",
+          "g2.batch-vector.b.grad-mode.@",
+          "g2.batch-vector.b.grad-mode.matmul",
+          "g2.batch-vector.both.grad-mode.@",
+          "g2.batch-vector.both.grad-mode.matmul",
+          "g2.batch-vector.both.no-grad.@",
+          "g2.batch-vector.both.no-grad.matmul",
+          "g2.batch-vector.none.grad-mode.@",
+          "g2.batch-vector.none.grad-mode.matmul",
+          "g2.cross-broadcast.a.grad-mode.@",
+          "g2.cross-broadcast.a.grad-mode.matmul",
+          "g2.cross-broadcast.b.grad-mode.@",
+          "g2.cross-broadcast.b.grad-mode.matmul",
+          "g2.cross-broadcast.both.grad-mode.@",
+          "g2.cross-broadcast.both.grad-mode.matmul",
+          "g2.cross-broadcast.both.no-grad.@",
+          "g2.cross-broadcast.both.no-grad.matmul",
+          "g2.cross-broadcast.none.grad-mode.@",
+          "g2.cross-broadcast.none.grad-mode.matmul",
+          "g2.cross-transposed.both.grad-mode.@",
+          "g2.cross-transposed.both.grad-mode.matmul",
+          "g2.cross-transposed.both.no-grad.@",
+          "g2.cross-transposed.both.no-grad.matmul",
+          "g2.cross-transposed.none.grad-mode.@",
+          "g2.cross-transposed.none.grad-mode.matmul",
+          "g2.cross-zero.both.grad-mode.@",
+          "g2.cross-zero.both.grad-mode.matmul",
+          "g2.cross-zero.both.no-grad.@",
+          "g2.cross-zero.both.no-grad.matmul",
+          "g2.cross-zero.none.grad-mode.@",
+          "g2.cross-zero.none.grad-mode.matmul",
+          "g2.empty-K.both.grad-mode.@",
+          "g2.empty-K.both.grad-mode.matmul",
+          "g2.empty-K.both.no-grad.@",
+          "g2.empty-K.both.no-grad.matmul",
+          "g2.empty-K.none.grad-mode.@",
+          "g2.empty-K.none.grad-mode.matmul",
+          "g2.empty-M.both.grad-mode.@",
+          "g2.empty-M.both.grad-mode.matmul",
+          "g2.empty-M.both.no-grad.@",
+          "g2.empty-M.both.no-grad.matmul",
+          "g2.empty-M.none.grad-mode.@",
+          "g2.empty-M.none.grad-mode.matmul",
+          "g2.empty-N.both.grad-mode.@",
+          "g2.empty-N.both.grad-mode.matmul",
+          "g2.empty-N.both.no-grad.@",
+          "g2.empty-N.both.no-grad.matmul",
+          "g2.empty-N.none.grad-mode.@",
+          "g2.empty-N.none.grad-mode.matmul",
+          "g2.equal-batch.both.grad-mode.@",
+          "g2.equal-batch.both.grad-mode.matmul",
+          "g2.equal-batch.both.no-grad.@",
+          "g2.equal-batch.both.no-grad.matmul",
+          "g2.equal-batch.none.grad-mode.@",
+          "g2.equal-batch.none.grad-mode.matmul",
+          "g2.expanded.a.grad-mode.@",
+          "g2.expanded.a.grad-mode.matmul",
+          "g2.expanded.b.grad-mode.@",
+          "g2.expanded.b.grad-mode.matmul",
+          "g2.expanded.both.grad-mode.@",
+          "g2.expanded.both.grad-mode.matmul",
+          "g2.expanded.both.no-grad.@",
+          "g2.expanded.both.no-grad.matmul",
+          "g2.expanded.none.grad-mode.@",
+          "g2.expanded.none.grad-mode.matmul",
+          "g2.matrix-batch.a.grad-mode.@",
+          "g2.matrix-batch.a.grad-mode.matmul",
+          "g2.matrix-batch.b.grad-mode.@",
+          "g2.matrix-batch.b.grad-mode.matmul",
+          "g2.matrix-batch.both.grad-mode.@",
+          "g2.matrix-batch.both.grad-mode.matmul",
+          "g2.matrix-batch.both.no-grad.@",
+          "g2.matrix-batch.both.no-grad.matmul",
+          "g2.matrix-batch.none.grad-mode.@",
+          "g2.matrix-batch.none.grad-mode.matmul",
+          "g2.nonfoldable-vector.a.grad-mode.@",
+          "g2.nonfoldable-vector.a.grad-mode.matmul",
+          "g2.nonfoldable-vector.b.grad-mode.@",
+          "g2.nonfoldable-vector.b.grad-mode.matmul",
+          "g2.nonfoldable-vector.both.grad-mode.@",
+          "g2.nonfoldable-vector.both.grad-mode.matmul",
+          "g2.nonfoldable-vector.both.no-grad.@",
+          "g2.nonfoldable-vector.both.no-grad.matmul",
+          "g2.nonfoldable-vector.none.grad-mode.@",
+          "g2.nonfoldable-vector.none.grad-mode.matmul",
+          "g2.nonfoldable.a.grad-mode.@",
+          "g2.nonfoldable.a.grad-mode.matmul",
+          "g2.nonfoldable.b.grad-mode.@",
+          "g2.nonfoldable.b.grad-mode.matmul",
+          "g2.nonfoldable.both.grad-mode.@",
+          "g2.nonfoldable.both.grad-mode.matmul",
+          "g2.nonfoldable.both.no-grad.@",
+          "g2.nonfoldable.both.no-grad.matmul",
+          "g2.nonfoldable.none.grad-mode.@",
+          "g2.nonfoldable.none.grad-mode.matmul",
+          "g2.offset-fold.both.grad-mode.@",
+          "g2.offset-fold.both.grad-mode.matmul",
+          "g2.offset-fold.both.no-grad.@",
+          "g2.offset-fold.both.no-grad.matmul",
+          "g2.offset-fold.none.grad-mode.@",
+          "g2.offset-fold.none.grad-mode.matmul",
+          "g2.rank-4.both.grad-mode.@",
+          "g2.rank-4.both.grad-mode.matmul",
+          "g2.rank-4.both.no-grad.@",
+          "g2.rank-4.both.no-grad.matmul",
+          "g2.rank-4.none.grad-mode.@",
+          "g2.rank-4.none.grad-mode.matmul",
+          "g2.rank-5.both.grad-mode.@",
+          "g2.rank-5.both.grad-mode.matmul",
+          "g2.rank-5.both.no-grad.@",
+          "g2.rank-5.both.no-grad.matmul",
+          "g2.rank-5.none.grad-mode.@",
+          "g2.rank-5.none.grad-mode.matmul",
+          "g2.rank-6.both.grad-mode.@",
+          "g2.rank-6.both.grad-mode.matmul",
+          "g2.rank-6.both.no-grad.@",
+          "g2.rank-6.both.no-grad.matmul",
+          "g2.rank-6.none.grad-mode.@",
+          "g2.rank-6.none.grad-mode.matmul",
+          "g2.rank-7.both.grad-mode.@",
+          "g2.rank-7.both.grad-mode.matmul",
+          "g2.rank-7.both.no-grad.@",
+          "g2.rank-7.both.no-grad.matmul",
+          "g2.rank-7.none.grad-mode.@",
+          "g2.rank-7.none.grad-mode.matmul",
+          "g2.rank-8.both.grad-mode.@",
+          "g2.rank-8.both.grad-mode.matmul",
+          "g2.rank-8.both.no-grad.@",
+          "g2.rank-8.both.no-grad.matmul",
+          "g2.rank-8.none.grad-mode.@",
+          "g2.rank-8.none.grad-mode.matmul",
+          "g2.rank3-rank8.both.grad-mode.@",
+          "g2.rank3-rank8.both.grad-mode.matmul",
+          "g2.rank3-rank8.both.no-grad.@",
+          "g2.rank3-rank8.both.no-grad.matmul",
+          "g2.rank3-rank8.none.grad-mode.@",
+          "g2.rank3-rank8.none.grad-mode.matmul",
+          "g2.rank8-rank3.both.grad-mode.@",
+          "g2.rank8-rank3.both.grad-mode.matmul",
+          "g2.rank8-rank3.both.no-grad.@",
+          "g2.rank8-rank3.both.no-grad.matmul",
+          "g2.rank8-rank3.none.grad-mode.@",
+          "g2.rank8-rank3.none.grad-mode.matmul",
+          "g2.rank8-vector.both.grad-mode.@",
+          "g2.rank8-vector.both.grad-mode.matmul",
+          "g2.rank8-vector.both.no-grad.@",
+          "g2.rank8-vector.both.no-grad.matmul",
+          "g2.rank8-vector.none.grad-mode.@",
+          "g2.rank8-vector.none.grad-mode.matmul",
+          "g2.singleton-left.a.grad-mode.@",
+          "g2.singleton-left.a.grad-mode.matmul",
+          "g2.singleton-left.b.grad-mode.@",
+          "g2.singleton-left.b.grad-mode.matmul",
+          "g2.singleton-left.both.grad-mode.@",
+          "g2.singleton-left.both.grad-mode.matmul",
+          "g2.singleton-left.both.no-grad.@",
+          "g2.singleton-left.both.no-grad.matmul",
+          "g2.singleton-left.none.grad-mode.@",
+          "g2.singleton-left.none.grad-mode.matmul",
+          "g2.singleton-right.a.grad-mode.@",
+          "g2.singleton-right.a.grad-mode.matmul",
+          "g2.singleton-right.b.grad-mode.@",
+          "g2.singleton-right.b.grad-mode.matmul",
+          "g2.singleton-right.both.grad-mode.@",
+          "g2.singleton-right.both.grad-mode.matmul",
+          "g2.singleton-right.both.no-grad.@",
+          "g2.singleton-right.both.no-grad.matmul",
+          "g2.singleton-right.none.grad-mode.@",
+          "g2.singleton-right.none.grad-mode.matmul",
+          "g2.transpose-matrix.a.grad-mode.@",
+          "g2.transpose-matrix.a.grad-mode.matmul",
+          "g2.transpose-matrix.b.grad-mode.@",
+          "g2.transpose-matrix.b.grad-mode.matmul",
+          "g2.transpose-matrix.both.grad-mode.@",
+          "g2.transpose-matrix.both.grad-mode.matmul",
+          "g2.transpose-matrix.both.no-grad.@",
+          "g2.transpose-matrix.both.no-grad.matmul",
+          "g2.transpose-matrix.none.grad-mode.@",
+          "g2.transpose-matrix.none.grad-mode.matmul",
+          "g2.unequal-rank.both.grad-mode.@",
+          "g2.unequal-rank.both.grad-mode.matmul",
+          "g2.unequal-rank.both.no-grad.@",
+          "g2.unequal-rank.both.no-grad.matmul",
+          "g2.unequal-rank.none.grad-mode.@",
+          "g2.unequal-rank.none.grad-mode.matmul",
+          "g2.vector-batch.a.grad-mode.@",
+          "g2.vector-batch.a.grad-mode.matmul",
+          "g2.vector-batch.b.grad-mode.@",
+          "g2.vector-batch.b.grad-mode.matmul",
+          "g2.vector-batch.both.grad-mode.@",
+          "g2.vector-batch.both.grad-mode.matmul",
+          "g2.vector-batch.both.no-grad.@",
+          "g2.vector-batch.both.no-grad.matmul",
+          "g2.vector-batch.none.grad-mode.@",
+          "g2.vector-batch.none.grad-mode.matmul",
+          "g2.vector-rank8.both.grad-mode.@",
+          "g2.vector-rank8.both.grad-mode.matmul",
+          "g2.vector-rank8.both.no-grad.@",
+          "g2.vector-rank8.both.no-grad.matmul",
+          "g2.vector-rank8.none.grad-mode.@",
+          "g2.vector-rank8.none.grad-mode.matmul",
+          "g2.zero-batch.both.grad-mode.@",
+          "g2.zero-batch.both.grad-mode.matmul",
+          "g2.zero-batch.both.no-grad.@",
+          "g2.zero-batch.both.no-grad.matmul",
+          "g2.zero-batch.none.grad-mode.@",
+          "g2.zero-batch.none.grad-mode.matmul"
         ],
         "dtypes": [
           "float32"
@@ -3792,11 +5004,41 @@
           [
             "float32",
             2
+          ],
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ],
+          [
+            "float32",
+            5
+          ],
+          [
+            "float32",
+            6
+          ],
+          [
+            "float32",
+            7
+          ],
+          [
+            "float32",
+            8
           ]
         ],
         "ranks": [
           1,
-          2
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
         ],
         "reverse_first_order_graph_cases": [
           "g1.matmul.mv.at",
@@ -3804,13 +5046,121 @@
           "g1.matmul.vm.at",
           "g1.matmul.vm.torch-matmul",
           "g1.matmul.vv.at",
-          "g1.matmul.vv.torch-matmul"
+          "g1.matmul.vv.torch-matmul",
+          "g2.batch-matrix.a.grad-mode.@",
+          "g2.batch-matrix.a.grad-mode.matmul",
+          "g2.batch-matrix.b.grad-mode.@",
+          "g2.batch-matrix.b.grad-mode.matmul",
+          "g2.batch-matrix.both.grad-mode.@",
+          "g2.batch-matrix.both.grad-mode.matmul",
+          "g2.batch-vector.a.grad-mode.@",
+          "g2.batch-vector.a.grad-mode.matmul",
+          "g2.batch-vector.b.grad-mode.@",
+          "g2.batch-vector.b.grad-mode.matmul",
+          "g2.batch-vector.both.grad-mode.@",
+          "g2.batch-vector.both.grad-mode.matmul",
+          "g2.cross-broadcast.a.grad-mode.@",
+          "g2.cross-broadcast.a.grad-mode.matmul",
+          "g2.cross-broadcast.b.grad-mode.@",
+          "g2.cross-broadcast.b.grad-mode.matmul",
+          "g2.cross-broadcast.both.grad-mode.@",
+          "g2.cross-broadcast.both.grad-mode.matmul",
+          "g2.cross-transposed.both.grad-mode.@",
+          "g2.cross-transposed.both.grad-mode.matmul",
+          "g2.cross-zero.both.grad-mode.@",
+          "g2.cross-zero.both.grad-mode.matmul",
+          "g2.empty-K.both.grad-mode.@",
+          "g2.empty-K.both.grad-mode.matmul",
+          "g2.empty-M.both.grad-mode.@",
+          "g2.empty-M.both.grad-mode.matmul",
+          "g2.empty-N.both.grad-mode.@",
+          "g2.empty-N.both.grad-mode.matmul",
+          "g2.equal-batch.both.grad-mode.@",
+          "g2.equal-batch.both.grad-mode.matmul",
+          "g2.expanded.a.grad-mode.@",
+          "g2.expanded.a.grad-mode.matmul",
+          "g2.expanded.b.grad-mode.@",
+          "g2.expanded.b.grad-mode.matmul",
+          "g2.expanded.both.grad-mode.@",
+          "g2.expanded.both.grad-mode.matmul",
+          "g2.matrix-batch.a.grad-mode.@",
+          "g2.matrix-batch.a.grad-mode.matmul",
+          "g2.matrix-batch.b.grad-mode.@",
+          "g2.matrix-batch.b.grad-mode.matmul",
+          "g2.matrix-batch.both.grad-mode.@",
+          "g2.matrix-batch.both.grad-mode.matmul",
+          "g2.nonfoldable-vector.a.grad-mode.@",
+          "g2.nonfoldable-vector.a.grad-mode.matmul",
+          "g2.nonfoldable-vector.b.grad-mode.@",
+          "g2.nonfoldable-vector.b.grad-mode.matmul",
+          "g2.nonfoldable-vector.both.grad-mode.@",
+          "g2.nonfoldable-vector.both.grad-mode.matmul",
+          "g2.nonfoldable.a.grad-mode.@",
+          "g2.nonfoldable.a.grad-mode.matmul",
+          "g2.nonfoldable.b.grad-mode.@",
+          "g2.nonfoldable.b.grad-mode.matmul",
+          "g2.nonfoldable.both.grad-mode.@",
+          "g2.nonfoldable.both.grad-mode.matmul",
+          "g2.offset-fold.both.grad-mode.@",
+          "g2.offset-fold.both.grad-mode.matmul",
+          "g2.rank-4.both.grad-mode.@",
+          "g2.rank-4.both.grad-mode.matmul",
+          "g2.rank-5.both.grad-mode.@",
+          "g2.rank-5.both.grad-mode.matmul",
+          "g2.rank-6.both.grad-mode.@",
+          "g2.rank-6.both.grad-mode.matmul",
+          "g2.rank-7.both.grad-mode.@",
+          "g2.rank-7.both.grad-mode.matmul",
+          "g2.rank-8.both.grad-mode.@",
+          "g2.rank-8.both.grad-mode.matmul",
+          "g2.rank3-rank8.both.grad-mode.@",
+          "g2.rank3-rank8.both.grad-mode.matmul",
+          "g2.rank8-rank3.both.grad-mode.@",
+          "g2.rank8-rank3.both.grad-mode.matmul",
+          "g2.rank8-vector.both.grad-mode.@",
+          "g2.rank8-vector.both.grad-mode.matmul",
+          "g2.singleton-left.a.grad-mode.@",
+          "g2.singleton-left.a.grad-mode.matmul",
+          "g2.singleton-left.b.grad-mode.@",
+          "g2.singleton-left.b.grad-mode.matmul",
+          "g2.singleton-left.both.grad-mode.@",
+          "g2.singleton-left.both.grad-mode.matmul",
+          "g2.singleton-right.a.grad-mode.@",
+          "g2.singleton-right.a.grad-mode.matmul",
+          "g2.singleton-right.b.grad-mode.@",
+          "g2.singleton-right.b.grad-mode.matmul",
+          "g2.singleton-right.both.grad-mode.@",
+          "g2.singleton-right.both.grad-mode.matmul",
+          "g2.transpose-matrix.a.grad-mode.@",
+          "g2.transpose-matrix.a.grad-mode.matmul",
+          "g2.transpose-matrix.b.grad-mode.@",
+          "g2.transpose-matrix.b.grad-mode.matmul",
+          "g2.transpose-matrix.both.grad-mode.@",
+          "g2.transpose-matrix.both.grad-mode.matmul",
+          "g2.unequal-rank.both.grad-mode.@",
+          "g2.unequal-rank.both.grad-mode.matmul",
+          "g2.vector-batch.a.grad-mode.@",
+          "g2.vector-batch.a.grad-mode.matmul",
+          "g2.vector-batch.b.grad-mode.@",
+          "g2.vector-batch.b.grad-mode.matmul",
+          "g2.vector-batch.both.grad-mode.@",
+          "g2.vector-batch.both.grad-mode.matmul",
+          "g2.vector-rank8.both.grad-mode.@",
+          "g2.vector-rank8.both.grad-mode.matmul",
+          "g2.zero-batch.both.grad-mode.@",
+          "g2.zero-batch.both.grad-mode.matmul"
+        ],
+        "reverse_second_order_cases": [
+          "g2.batch-matrix.both.grad-mode.@",
+          "g2.batch-matrix.both.grad-mode.matmul",
+          "g2.cross-broadcast.both.grad-mode.@",
+          "g2.cross-broadcast.both.grad-mode.matmul"
         ]
       }
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_or_none",
+      "autograd": "reverse_mse_finite_second_order_witnessed",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -3833,7 +5183,7 @@
       "out": "not_applicable",
       "ranks": {
         "max": 2,
-        "min": 2
+        "min": 0
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -3842,7 +5192,10 @@
       ],
       "schema": "aten::mse_loss.default",
       "shape_constraints": [
-        "unwitnessed"
+        "0x3",
+        "1x3",
+        "2x3",
+        "3"
       ],
       "status": "supported",
       "test_cases": [
@@ -3857,17 +5210,474 @@
         {
           "name": "loss.mse.mean",
           "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-none-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-none-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-none-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-none-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-none-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-none-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-mean-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-mean-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-mean-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-mean-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-mean-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-mean-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-sum-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-sum-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-sum-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-sum-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-sum-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.scalar-sum-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-none-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-none-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-none-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-none-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-none-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-none-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-mean-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-mean-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-mean-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-mean-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-mean-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-mean-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-sum-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-sum-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-sum-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-sum-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-sum-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.ordinary-sum-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-none-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-none-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-none-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-none-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-none-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-none-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-mean-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-mean-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-mean-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-mean-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-mean-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-mean-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-sum-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-sum-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-sum-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-sum-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-sum-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.empty-sum-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-none-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-none-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-none-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-none-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-none-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-none-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-mean-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-mean-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-mean-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-mean-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-mean-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-mean-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-sum-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-sum-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-sum-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-sum-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-sum-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.broadcast-sum-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-none-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-none-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-none-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-none-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-none-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-none-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-mean-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-mean-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-mean-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-mean-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-mean-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-mean-both.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-sum-input.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-sum-input.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-sum-target.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-sum-target.module",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-sum-both.functional",
+          "supported": true
+        },
+        {
+          "name": "mse-ad.expanded-upstream-sum-both.module",
+          "supported": true
+        },
+        {
+          "name": "loss.mse.rank1",
+          "supported": true
         }
       ],
       "tests": [
         "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_mse_autograd.py",
+        "tests/python/test_vulkan_mse_capability_evidence.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
         "cases": [
           "loss.mse.mean",
           "loss.mse.none",
-          "loss.mse.sum"
+          "loss.mse.rank1",
+          "loss.mse.sum",
+          "mse-ad.broadcast-mean-both.functional",
+          "mse-ad.broadcast-mean-both.module",
+          "mse-ad.broadcast-mean-input.functional",
+          "mse-ad.broadcast-mean-input.module",
+          "mse-ad.broadcast-mean-target.functional",
+          "mse-ad.broadcast-mean-target.module",
+          "mse-ad.broadcast-none-both.functional",
+          "mse-ad.broadcast-none-both.module",
+          "mse-ad.broadcast-none-input.functional",
+          "mse-ad.broadcast-none-input.module",
+          "mse-ad.broadcast-none-target.functional",
+          "mse-ad.broadcast-none-target.module",
+          "mse-ad.broadcast-sum-both.functional",
+          "mse-ad.broadcast-sum-both.module",
+          "mse-ad.broadcast-sum-input.functional",
+          "mse-ad.broadcast-sum-input.module",
+          "mse-ad.broadcast-sum-target.functional",
+          "mse-ad.broadcast-sum-target.module",
+          "mse-ad.empty-mean-both.functional",
+          "mse-ad.empty-mean-both.module",
+          "mse-ad.empty-mean-input.functional",
+          "mse-ad.empty-mean-input.module",
+          "mse-ad.empty-mean-target.functional",
+          "mse-ad.empty-mean-target.module",
+          "mse-ad.empty-none-both.functional",
+          "mse-ad.empty-none-both.module",
+          "mse-ad.empty-none-input.functional",
+          "mse-ad.empty-none-input.module",
+          "mse-ad.empty-none-target.functional",
+          "mse-ad.empty-none-target.module",
+          "mse-ad.empty-sum-both.functional",
+          "mse-ad.empty-sum-both.module",
+          "mse-ad.empty-sum-input.functional",
+          "mse-ad.empty-sum-input.module",
+          "mse-ad.empty-sum-target.functional",
+          "mse-ad.empty-sum-target.module",
+          "mse-ad.expanded-upstream-mean-both.functional",
+          "mse-ad.expanded-upstream-mean-both.module",
+          "mse-ad.expanded-upstream-mean-input.functional",
+          "mse-ad.expanded-upstream-mean-input.module",
+          "mse-ad.expanded-upstream-mean-target.functional",
+          "mse-ad.expanded-upstream-mean-target.module",
+          "mse-ad.expanded-upstream-none-both.functional",
+          "mse-ad.expanded-upstream-none-both.module",
+          "mse-ad.expanded-upstream-none-input.functional",
+          "mse-ad.expanded-upstream-none-input.module",
+          "mse-ad.expanded-upstream-none-target.functional",
+          "mse-ad.expanded-upstream-none-target.module",
+          "mse-ad.expanded-upstream-sum-both.functional",
+          "mse-ad.expanded-upstream-sum-both.module",
+          "mse-ad.expanded-upstream-sum-input.functional",
+          "mse-ad.expanded-upstream-sum-input.module",
+          "mse-ad.expanded-upstream-sum-target.functional",
+          "mse-ad.expanded-upstream-sum-target.module",
+          "mse-ad.ordinary-mean-both.functional",
+          "mse-ad.ordinary-mean-both.module",
+          "mse-ad.ordinary-mean-input.functional",
+          "mse-ad.ordinary-mean-input.module",
+          "mse-ad.ordinary-mean-target.functional",
+          "mse-ad.ordinary-mean-target.module",
+          "mse-ad.ordinary-none-both.functional",
+          "mse-ad.ordinary-none-both.module",
+          "mse-ad.ordinary-none-input.functional",
+          "mse-ad.ordinary-none-input.module",
+          "mse-ad.ordinary-none-target.functional",
+          "mse-ad.ordinary-none-target.module",
+          "mse-ad.ordinary-sum-both.functional",
+          "mse-ad.ordinary-sum-both.module",
+          "mse-ad.ordinary-sum-input.functional",
+          "mse-ad.ordinary-sum-input.module",
+          "mse-ad.ordinary-sum-target.functional",
+          "mse-ad.ordinary-sum-target.module",
+          "mse-ad.scalar-mean-both.functional",
+          "mse-ad.scalar-mean-both.module",
+          "mse-ad.scalar-mean-input.functional",
+          "mse-ad.scalar-mean-input.module",
+          "mse-ad.scalar-mean-target.functional",
+          "mse-ad.scalar-mean-target.module",
+          "mse-ad.scalar-none-both.functional",
+          "mse-ad.scalar-none-both.module",
+          "mse-ad.scalar-none-input.functional",
+          "mse-ad.scalar-none-input.module",
+          "mse-ad.scalar-none-target.functional",
+          "mse-ad.scalar-none-target.module",
+          "mse-ad.scalar-sum-both.functional",
+          "mse-ad.scalar-sum-both.module",
+          "mse-ad.scalar-sum-input.functional",
+          "mse-ad.scalar-sum-input.module",
+          "mse-ad.scalar-sum-target.functional",
+          "mse-ad.scalar-sum-target.module"
         ],
         "dtypes": [
           "float32"
@@ -3875,11 +5685,205 @@
         "pairs": [
           [
             "float32",
+            0
+          ],
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
             2
           ]
         ],
         "ranks": [
+          0,
+          1,
           2
+        ],
+        "reverse_first_order_graph_cases": [
+          "mse-ad.broadcast-mean-both.functional",
+          "mse-ad.broadcast-mean-both.module",
+          "mse-ad.broadcast-mean-input.functional",
+          "mse-ad.broadcast-mean-input.module",
+          "mse-ad.broadcast-mean-target.functional",
+          "mse-ad.broadcast-mean-target.module",
+          "mse-ad.broadcast-none-both.functional",
+          "mse-ad.broadcast-none-both.module",
+          "mse-ad.broadcast-none-input.functional",
+          "mse-ad.broadcast-none-input.module",
+          "mse-ad.broadcast-none-target.functional",
+          "mse-ad.broadcast-none-target.module",
+          "mse-ad.broadcast-sum-both.functional",
+          "mse-ad.broadcast-sum-both.module",
+          "mse-ad.broadcast-sum-input.functional",
+          "mse-ad.broadcast-sum-input.module",
+          "mse-ad.broadcast-sum-target.functional",
+          "mse-ad.broadcast-sum-target.module",
+          "mse-ad.empty-mean-both.functional",
+          "mse-ad.empty-mean-both.module",
+          "mse-ad.empty-mean-input.functional",
+          "mse-ad.empty-mean-input.module",
+          "mse-ad.empty-mean-target.functional",
+          "mse-ad.empty-mean-target.module",
+          "mse-ad.empty-none-both.functional",
+          "mse-ad.empty-none-both.module",
+          "mse-ad.empty-none-input.functional",
+          "mse-ad.empty-none-input.module",
+          "mse-ad.empty-none-target.functional",
+          "mse-ad.empty-none-target.module",
+          "mse-ad.empty-sum-both.functional",
+          "mse-ad.empty-sum-both.module",
+          "mse-ad.empty-sum-input.functional",
+          "mse-ad.empty-sum-input.module",
+          "mse-ad.empty-sum-target.functional",
+          "mse-ad.empty-sum-target.module",
+          "mse-ad.expanded-upstream-mean-both.functional",
+          "mse-ad.expanded-upstream-mean-both.module",
+          "mse-ad.expanded-upstream-mean-input.functional",
+          "mse-ad.expanded-upstream-mean-input.module",
+          "mse-ad.expanded-upstream-mean-target.functional",
+          "mse-ad.expanded-upstream-mean-target.module",
+          "mse-ad.expanded-upstream-none-both.functional",
+          "mse-ad.expanded-upstream-none-both.module",
+          "mse-ad.expanded-upstream-none-input.functional",
+          "mse-ad.expanded-upstream-none-input.module",
+          "mse-ad.expanded-upstream-none-target.functional",
+          "mse-ad.expanded-upstream-none-target.module",
+          "mse-ad.expanded-upstream-sum-both.functional",
+          "mse-ad.expanded-upstream-sum-both.module",
+          "mse-ad.expanded-upstream-sum-input.functional",
+          "mse-ad.expanded-upstream-sum-input.module",
+          "mse-ad.expanded-upstream-sum-target.functional",
+          "mse-ad.expanded-upstream-sum-target.module",
+          "mse-ad.ordinary-mean-both.functional",
+          "mse-ad.ordinary-mean-both.module",
+          "mse-ad.ordinary-mean-input.functional",
+          "mse-ad.ordinary-mean-input.module",
+          "mse-ad.ordinary-mean-target.functional",
+          "mse-ad.ordinary-mean-target.module",
+          "mse-ad.ordinary-none-both.functional",
+          "mse-ad.ordinary-none-both.module",
+          "mse-ad.ordinary-none-input.functional",
+          "mse-ad.ordinary-none-input.module",
+          "mse-ad.ordinary-none-target.functional",
+          "mse-ad.ordinary-none-target.module",
+          "mse-ad.ordinary-sum-both.functional",
+          "mse-ad.ordinary-sum-both.module",
+          "mse-ad.ordinary-sum-input.functional",
+          "mse-ad.ordinary-sum-input.module",
+          "mse-ad.ordinary-sum-target.functional",
+          "mse-ad.ordinary-sum-target.module",
+          "mse-ad.scalar-mean-both.functional",
+          "mse-ad.scalar-mean-both.module",
+          "mse-ad.scalar-mean-input.functional",
+          "mse-ad.scalar-mean-input.module",
+          "mse-ad.scalar-mean-target.functional",
+          "mse-ad.scalar-mean-target.module",
+          "mse-ad.scalar-none-both.functional",
+          "mse-ad.scalar-none-both.module",
+          "mse-ad.scalar-none-input.functional",
+          "mse-ad.scalar-none-input.module",
+          "mse-ad.scalar-none-target.functional",
+          "mse-ad.scalar-none-target.module",
+          "mse-ad.scalar-sum-both.functional",
+          "mse-ad.scalar-sum-both.module",
+          "mse-ad.scalar-sum-input.functional",
+          "mse-ad.scalar-sum-input.module",
+          "mse-ad.scalar-sum-target.functional",
+          "mse-ad.scalar-sum-target.module"
+        ],
+        "reverse_second_order_cases": [
+          "mse-ad.broadcast-mean-both.functional",
+          "mse-ad.broadcast-mean-both.module",
+          "mse-ad.broadcast-mean-input.functional",
+          "mse-ad.broadcast-mean-input.module",
+          "mse-ad.broadcast-mean-target.functional",
+          "mse-ad.broadcast-mean-target.module",
+          "mse-ad.broadcast-none-both.functional",
+          "mse-ad.broadcast-none-both.module",
+          "mse-ad.broadcast-none-input.functional",
+          "mse-ad.broadcast-none-input.module",
+          "mse-ad.broadcast-none-target.functional",
+          "mse-ad.broadcast-none-target.module",
+          "mse-ad.broadcast-sum-both.functional",
+          "mse-ad.broadcast-sum-both.module",
+          "mse-ad.broadcast-sum-input.functional",
+          "mse-ad.broadcast-sum-input.module",
+          "mse-ad.broadcast-sum-target.functional",
+          "mse-ad.broadcast-sum-target.module",
+          "mse-ad.empty-mean-both.functional",
+          "mse-ad.empty-mean-both.module",
+          "mse-ad.empty-mean-input.functional",
+          "mse-ad.empty-mean-input.module",
+          "mse-ad.empty-mean-target.functional",
+          "mse-ad.empty-mean-target.module",
+          "mse-ad.empty-none-both.functional",
+          "mse-ad.empty-none-both.module",
+          "mse-ad.empty-none-input.functional",
+          "mse-ad.empty-none-input.module",
+          "mse-ad.empty-none-target.functional",
+          "mse-ad.empty-none-target.module",
+          "mse-ad.empty-sum-both.functional",
+          "mse-ad.empty-sum-both.module",
+          "mse-ad.empty-sum-input.functional",
+          "mse-ad.empty-sum-input.module",
+          "mse-ad.empty-sum-target.functional",
+          "mse-ad.empty-sum-target.module",
+          "mse-ad.expanded-upstream-mean-both.functional",
+          "mse-ad.expanded-upstream-mean-both.module",
+          "mse-ad.expanded-upstream-mean-input.functional",
+          "mse-ad.expanded-upstream-mean-input.module",
+          "mse-ad.expanded-upstream-mean-target.functional",
+          "mse-ad.expanded-upstream-mean-target.module",
+          "mse-ad.expanded-upstream-none-both.functional",
+          "mse-ad.expanded-upstream-none-both.module",
+          "mse-ad.expanded-upstream-none-input.functional",
+          "mse-ad.expanded-upstream-none-input.module",
+          "mse-ad.expanded-upstream-none-target.functional",
+          "mse-ad.expanded-upstream-none-target.module",
+          "mse-ad.expanded-upstream-sum-both.functional",
+          "mse-ad.expanded-upstream-sum-both.module",
+          "mse-ad.expanded-upstream-sum-input.functional",
+          "mse-ad.expanded-upstream-sum-input.module",
+          "mse-ad.expanded-upstream-sum-target.functional",
+          "mse-ad.expanded-upstream-sum-target.module",
+          "mse-ad.ordinary-mean-both.functional",
+          "mse-ad.ordinary-mean-both.module",
+          "mse-ad.ordinary-mean-input.functional",
+          "mse-ad.ordinary-mean-input.module",
+          "mse-ad.ordinary-mean-target.functional",
+          "mse-ad.ordinary-mean-target.module",
+          "mse-ad.ordinary-none-both.functional",
+          "mse-ad.ordinary-none-both.module",
+          "mse-ad.ordinary-none-input.functional",
+          "mse-ad.ordinary-none-input.module",
+          "mse-ad.ordinary-none-target.functional",
+          "mse-ad.ordinary-none-target.module",
+          "mse-ad.ordinary-sum-both.functional",
+          "mse-ad.ordinary-sum-both.module",
+          "mse-ad.ordinary-sum-input.functional",
+          "mse-ad.ordinary-sum-input.module",
+          "mse-ad.ordinary-sum-target.functional",
+          "mse-ad.ordinary-sum-target.module",
+          "mse-ad.scalar-mean-both.functional",
+          "mse-ad.scalar-mean-both.module",
+          "mse-ad.scalar-mean-input.functional",
+          "mse-ad.scalar-mean-input.module",
+          "mse-ad.scalar-mean-target.functional",
+          "mse-ad.scalar-mean-target.module",
+          "mse-ad.scalar-none-both.functional",
+          "mse-ad.scalar-none-both.module",
+          "mse-ad.scalar-none-input.functional",
+          "mse-ad.scalar-none-input.module",
+          "mse-ad.scalar-none-target.functional",
+          "mse-ad.scalar-none-target.module",
+          "mse-ad.scalar-sum-both.functional",
+          "mse-ad.scalar-sum-both.module",
+          "mse-ad.scalar-sum-input.functional",
+          "mse-ad.scalar-sum-input.module",
+          "mse-ad.scalar-sum-target.functional",
+          "mse-ad.scalar-sum-target.module"
         ]
       }
     },

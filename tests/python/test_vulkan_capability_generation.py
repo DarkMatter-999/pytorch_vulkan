@@ -553,7 +553,7 @@ def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage()
         name: record for name, record in coverage.items()
         if record.get("reverse_autograd") == {"order": 2, "graph_preserved": True}
     }
-    legacy = {name: record for name, record in witnessed.items() if not name.startswith("g1.")}
+    legacy = {name: record for name, record in witnessed.items() if not name.startswith(("g1.", "g2.", "mse-ad."))}
     assert len(legacy) == 11
     for name, record in legacy.items():
         assert name.startswith(("arithmetic.autograd.", "view.", "cat."))
@@ -566,7 +566,12 @@ def test_reverse_second_order_witness_reproduction_uses_case_specific_coverage()
     finite_vector_mixed = {
         name for name, case in REQUIRED_CASES.items() if case["mixed"] is not None
     }
-    assert set(witnessed) == set(legacy) | finite_vector_mixed
+    from general_matmul_cases import GENERAL_MATMUL_CASES
+    finite_general_mixed = {case["id"] for case in GENERAL_MATMUL_CASES if case["mixed"]}
+    from mse_capability_evidence import REQUIRED_CASES as MSE_CASES, validate_mse_evidence
+    validate_mse_evidence(coverage, ROOT, require_complete=True)
+    assert len(MSE_CASES) == 90
+    assert set(witnessed) == set(legacy) | finite_vector_mixed | finite_general_mixed | set(MSE_CASES)
 
 
 def test_cat_tensor_list_evidence_validator_binds_aggregates_to_members():
@@ -867,9 +872,15 @@ def test_committed_manifest_matches_regenerated_output():
     coverage = _run_all_supported_cases()
     from stock_linear_route_evidence import capture_all_stock_linear_routes
     from vector_matmul_capability_evidence import capture_all_vector_matmul_cases
+    from general_matmul_capability_evidence import (
+        capture_all_general_matmul_cases, qualify_general_matmul_current_runtime,
+        validate_general_matmul_evidence,
+    )
 
     coverage.update(capture_all_stock_linear_routes("vk:0"))
     coverage.update(capture_all_vector_matmul_cases("vk:0"))
+    coverage.update(capture_all_general_matmul_cases("vk:0"))
+    qualify_general_matmul_current_runtime(coverage, ROOT)
     # Fresh captures qualify the live build/mode explicitly. Historical records
     # retain the original HEAD/path/artifact/mode as provenance after a human
     # commit, rebuild, or relocation; offline validation never probes the GPU.
@@ -879,6 +890,39 @@ def test_committed_manifest_matches_regenerated_output():
         committed_coverage, ROOT, require_complete=True
     )
     comparison_coverage = json.loads(json.dumps(coverage))
+    validate_general_matmul_evidence(committed_coverage, ROOT, require_complete=True)
+    mode = pytorch_vulkan._C.execution_mode()
+    mode_coverage = (committed_coverage if mode == "async" else json.loads(
+        (ROOT / "docs/vulkan_general_matmul_sync_coverage.json").read_text()))
+    validate_general_matmul_evidence(mode_coverage, ROOT, require_complete=True)
+    for name in coverage:
+        if name.startswith("g2."):
+            fresh = json.loads(json.dumps(coverage[name]))
+            expected = json.loads(json.dumps(mode_coverage[name]))
+            # Fresh runtime was independently live-qualified above. A rebuild of
+            # unrelated leaves changes the extension hash while G2's exact local
+            # semantic source binding and all numerical/route/mode facts remain
+            # unchanged. Compare these facts without rewriting either artifact's
+            # binary identity (only these disposable comparison copies).
+            fresh["general_matmul_evidence"]["runtime_identity"].pop("extension_sha256")
+            expected["general_matmul_evidence"]["runtime_identity"].pop("extension_sha256")
+            for key in ("checkout_head", "extension_path"):
+                fresh["general_matmul_evidence"]["runtime_identity"][key] = expected["general_matmul_evidence"]["runtime_identity"][key]
+            assert fresh == expected
+            comparison_coverage[name] = committed_coverage[name]
+    from mse_capability_evidence import qualify_mse_current_runtime, validate_mse_evidence
+    qualify_mse_current_runtime(coverage, ROOT)
+    mode_mse = committed_coverage if mode == "async" else json.loads(
+        (ROOT / "docs/vulkan_mse_sync_coverage.json").read_text())
+    validate_mse_evidence(mode_mse, ROOT, require_complete=True)
+    for name in coverage:
+        if name.startswith("mse-ad."):
+            fresh = json.loads(json.dumps(coverage[name]))
+            expected = mode_mse[name]
+            for key in ("checkout_head", "extension_path"):
+                fresh["mse_autograd_evidence"]["runtime_identity"][key] = expected["mse_autograd_evidence"]["runtime_identity"][key]
+            assert fresh == expected
+            comparison_coverage[name] = committed_coverage[name]
     for name in coverage:
         if name.startswith("g1."):
             comparison_coverage[name]["vector_matmul_evidence"]["runtime_identity"] = (

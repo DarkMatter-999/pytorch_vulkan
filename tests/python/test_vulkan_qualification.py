@@ -1,5 +1,14 @@
 import json
+import ctypes
+import inspect
+import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from tools import run_vulkan_qualification as qualification
 from tools.validate_vulkan_capabilities import load_manifest
@@ -61,6 +70,255 @@ SCALAR_OUT_QUALIFICATION_CASES = {
 }
 
 
+@pytest.fixture
+def owned_process_tree(tmp_path):
+    # Adopt orphaned fixture grandchildren so even a failing RED run leaves no
+    # zombies behind on hosts whose PID 1 does not promptly reap them.
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+    assert libc.prctl(36, 1, 0, 0, 0) == 0
+    record = tmp_path / "owned-pids.json"
+    try:
+        yield record
+    finally:
+        try:
+            if record.exists():
+                for pid in json.loads(record.read_text())["pids"]:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                deadline = time.monotonic() + 2
+                for pid in json.loads(record.read_text())["pids"]:
+                    while time.monotonic() < deadline:
+                        try:
+                            reaped, _ = os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            break
+                        if reaped:
+                            break
+                        time.sleep(0.01)
+                    assert not Path(f"/proc/{pid}").exists(), f"fixture process survived: {pid}"
+        finally:
+            assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+
+
+def _tree_command(record, *, ignore_term, parent_exits=False, exit_code=0):
+    grandchild = (
+        "import os, signal, time; "
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else "")
+        + "print('grandchild-ready', flush=True); time.sleep(30)"
+    )
+    parent = (
+        "import json, os, pathlib, subprocess, sys, time; "
+        f"child = subprocess.Popen([sys.executable, '-u', '-c', {grandchild!r}]); "
+        f"pathlib.Path({str(record)!r}).write_text(json.dumps("
+        "{'pids': [os.getpid(), child.pid], 'group': os.getpgrp()})); "
+        "print('parent-partial', flush=True); "
+        "print('stderr-partial', file=sys.stderr, flush=True); "
+        + (f"time.sleep(0.1); sys.exit({exit_code})" if parent_exits else "time.sleep(30)")
+    )
+    return [sys.executable, "-u", "-c", parent]
+
+
+def test_cleanup_handles_non_utf8_process_name(owned_process_tree):
+    # Keep an unrelated process alive during the runner's /proc scan. Linux comm
+    # may contain non-UTF-8 bytes, whitespace, and the stat delimiter itself.
+    name = b"odd) \xff (\tname)"
+    named = subprocess.Popen(
+        [sys.executable, "-u", "-c",
+         "import ctypes, time; "
+         f"assert ctypes.CDLL(None).prctl(15, {name!r}, 0, 0, 0) == 0; "
+         "print('named-ready', flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as ready:
+            named.communicate(timeout=0.2)
+        assert b"named-ready" in ready.value.stdout
+        stat = Path(f"/proc/{named.pid}/stat").read_bytes()
+        assert name in stat
+        fields = stat.rsplit(b") ", 1)[1].split()
+        assert int(fields[2]) == named.pid
+        result = qualification.run_command(
+            _tree_command(owned_process_tree, ignore_term=True),
+            owned_process_tree.parent, timeout_seconds=0.4,
+        )
+        assert result["exit_code"] == 124
+        assert "parent-partial" in result["stdout"]
+        assert "stderr-partial" in result["stderr"]
+        assert result["elapsed_seconds"] < 3
+        assert named.poll() is None
+        child, grandchild = json.loads(owned_process_tree.read_text())["pids"]
+        assert not Path(f"/proc/{child}").exists()
+        state = Path(f"/proc/{grandchild}/stat")
+        assert not state.exists() or state.read_bytes().rsplit(b") ", 1)[1].split()[0] == b"Z"
+    finally:
+        named.kill()
+        named.communicate(timeout=2)
+        assert not Path(f"/proc/{named.pid}").exists()
+
+
+@pytest.mark.parametrize("cleanup_error", [AssertionError, OSError])
+def test_owned_fixture_restores_subreaper_after_cleanup_error(tmp_path, monkeypatch, cleanup_error):
+    libc = ctypes.CDLL(None, use_errno=True)
+    original = ctypes.c_int()
+    assert libc.prctl(37, ctypes.byref(original), 0, 0, 0) == 0
+    child = None
+    fixture = None
+    try:
+        # Force a different scoped state so a skipped restoration cannot pass.
+        assert libc.prctl(36, 0, 0, 0, 0) == 0
+        fixture = owned_process_tree.__wrapped__(tmp_path)
+        record = next(fixture)
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        )
+        record.write_text(json.dumps({"pids": [child.pid], "group": child.pid}))
+        original_exists = Path.exists
+
+        def failing_probe(path):
+            if path == Path(f"/proc/{child.pid}"):
+                raise cleanup_error("injected cleanup check failure")
+            return original_exists(path)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "exists", failing_probe)
+            with pytest.raises(cleanup_error, match="injected cleanup check failure"):
+                fixture.close()
+        # The fault is after bounded kill/wait, so it must leave no owned PID.
+        assert not Path(f"/proc/{child.pid}").exists()
+        restored = ctypes.c_int()
+        assert libc.prctl(37, ctypes.byref(restored), 0, 0, 0) == 0
+        assert restored.value == 0, "fixture did not restore its original subreaper state"
+    finally:
+        if fixture is not None:
+            fixture.close()
+        if child is not None:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=2)
+        assert libc.prctl(36, original.value, 0, 0, 0) == 0
+
+
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_timeout_reaps_direct_child_and_terminates_pipe_holding_grandchild(
+    monkeypatch, owned_process_tree, ignore_term
+):
+    # Removing owned-group cleanup must leave a live grandchild and fail this.
+    command = _tree_command(owned_process_tree, ignore_term=ignore_term)
+    if "timeout_seconds" not in inspect.signature(qualification.run_command).parameters:
+        # Exercise the old implementation's lifetime bug at a tiny bound too.
+        original_run = subprocess.run
+
+        def short_run(*args, **kwargs):
+            kwargs["timeout"] = 0.4
+            return original_run(*args, **kwargs)
+
+        monkeypatch.setattr(qualification.subprocess, "run", short_run)
+        result = qualification.run_command(command, owned_process_tree.parent)
+    else:
+        result = qualification.run_command(
+            command, owned_process_tree.parent, timeout_seconds=0.4
+        )
+    assert result["exit_code"] == 124
+    assert "parent-partial" in result["stdout"]
+    assert "grandchild-ready" in result["stdout"]
+    assert "stderr-partial" in result["stderr"]
+    pids = json.loads(owned_process_tree.read_text())["pids"]
+    assert not Path(f"/proc/{pids[0]}").exists(), "direct child was not reaped"
+    state = Path(f"/proc/{pids[1]}/stat")
+    assert not state.exists() or state.read_text().split(") ")[1].split()[0] == "Z", (
+        "owned grandchild is still running after run_command returned"
+    )
+    assert result["timeout_seconds"] == 0.4
+    assert 0.4 <= result["elapsed_seconds"] < 3
+    assert json.loads(owned_process_tree.read_text())["group"] == pids[0]
+    assert pids[0] != os.getpgrp()
+    assert "after 0.4 seconds" in result["stderr"]
+    assert qualification.classify_result(result, device_dependent=True) == "fail"
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_completed_parent_cleans_up_pipe_holding_descendant(owned_process_tree, exit_code):
+    result = qualification.run_command(
+        _tree_command(owned_process_tree, ignore_term=True, parent_exits=True, exit_code=exit_code),
+        owned_process_tree.parent,
+        timeout_seconds=0.4,
+    )
+    assert result["exit_code"] == exit_code
+    assert "parent-partial" in result["stdout"]
+    assert "timed out" not in result["stderr"]
+    child, grandchild = json.loads(owned_process_tree.read_text())["pids"]
+    assert not Path(f"/proc/{child}").exists()
+    state = Path(f"/proc/{grandchild}/stat")
+    assert not state.exists() or state.read_text().split(") ")[1].split()[0] == "Z"
+    assert result["elapsed_seconds"] < 3
+
+
+def test_next_command_observes_cleanup_and_unrelated_process_survives(owned_process_tree):
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
+    try:
+        observer = (
+            "import json, pathlib; "
+            f"pids = json.loads(pathlib.Path({str(owned_process_tree)!r}).read_text())['pids']; "
+            "assert not pathlib.Path(f'/proc/{pids[0]}').exists(); "
+            "stat = pathlib.Path(f'/proc/{pids[1]}/stat'); "
+            "assert not stat.exists() or stat.read_text().split(') ')[1].split()[0] == 'Z'; "
+            "print('cleanup-before-next-command')"
+        )
+        gate = qualification._gate(
+            "lifecycle-fixture",
+            [_tree_command(owned_process_tree, ignore_term=True),
+             [sys.executable, "-c", observer]],
+            timeout_seconds=0.4,
+        )
+        assert gate["status"] == "fail"
+        assert gate["commands"][0]["exit_code"] == 124
+        assert gate["commands"][1]["exit_code"] == 0
+        assert gate["commands"][1]["stdout"] == "cleanup-before-next-command\n"
+        assert unrelated.poll() is None
+    finally:
+        unrelated.kill()
+        unrelated.wait(timeout=2)
+
+
+def test_only_complete_ctest_retains_600_second_budget(monkeypatch, tmp_path):
+    # A global budget raise or failure to forward the explicit gate budget fails.
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
+        return {"exit_code": 0, "stdout": "", "stderr": "",
+                "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
+    monkeypatch.setattr(qualification, "device_available", lambda *args: {
+        "status": "available", "reason": "fixture device"
+    })
+    summary = qualification.run_qualification(tmp_path / "report.json", run_build=False)
+    retained = json.loads((tmp_path / "report.json").read_text())
+    assert retained == summary
+    for gate in retained["gates"]:
+        for command in gate["commands"]:
+            assert command["timeout_seconds"] == (600 if gate["name"] == "ctest" else 300)
+    assert retained["repository"]["timeout_seconds"] == 300
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_real_command_retains_output_exit_and_budget(tmp_path, exit_code):
+    result = qualification.run_command(
+        [sys.executable, "-c", "import sys; print('out'); "
+         f"print('err', file=sys.stderr); sys.exit({exit_code})"],
+        tmp_path, timeout_seconds=2,
+    )
+    assert result["exit_code"] == exit_code
+    assert result["stdout"] == "out\n"
+    assert result["stderr"] == "err\n"
+    assert result["timeout_seconds"] == 2
+    assert 0 <= result["elapsed_seconds"] < 2
+
+
 def test_scalar_out_qualification_inventory_covers_every_promoted_schema():
     assert set(SCALAR_OUT_QUALIFICATION_CASES) == PROMOTED_SCALAR_OUT_SCHEMAS
     assert len(SCALAR_OUT_QUALIFICATION_CASES) == 11
@@ -95,10 +353,12 @@ def test_scalar_out_qualification_inventory_covers_every_promoted_schema():
 def test_run_command_preserves_nonzero_exit_code(monkeypatch):
     class Completed:
         returncode = 7
-        stdout = "out\n"
-        stderr = "err\n"
 
-    monkeypatch.setattr(qualification.subprocess, "run", lambda *args, **kwargs: Completed())
+        def communicate(self, timeout):
+            return "out\n", "err\n"
+
+    monkeypatch.setattr(qualification.subprocess, "Popen", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(qualification, "_finish_owned_group", lambda process: ("out\n", "err\n"))
 
     result = qualification.run_command(["example", "--check"], Path("/tmp"))
 
@@ -149,26 +409,37 @@ def test_qualification_artifact_schema_and_shape_consistency():
 
 
 def test_run_command_normalizes_bytes_timeout_output(monkeypatch):
-    def timeout(*args, **kwargs):
-        raise qualification.subprocess.TimeoutExpired(
-            args[0], 300, output=b"partial-out", stderr=b"partial-err"
-        )
+    class TimedOut:
+        returncode = -signal.SIGKILL
 
-    monkeypatch.setattr(qualification.subprocess, "run", timeout)
+        def communicate(self, timeout):
+            raise qualification.subprocess.TimeoutExpired(
+                ["example"], timeout, output=b"partial-out", stderr=b"partial-err"
+            )
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(qualification.subprocess, "Popen", lambda *args, **kwargs: TimedOut())
+    monkeypatch.setattr(
+        qualification, "_finish_owned_group", lambda process: (b"partial-out", b"partial-err")
+    )
 
     result = qualification.run_command(["example"], Path("/tmp"))
 
-    assert result == {
+    assert {key: result[key] for key in ("exit_code", "stdout", "stderr")} == {
         "exit_code": 124,
         "stdout": "partial-out",
         "stderr": "partial-err\ncommand timed out after 300 seconds\n",
     }
+    assert result["timeout_seconds"] == 300
+    assert result["elapsed_seconds"] >= 0
 
 
 def test_device_probe_validates_requested_device_and_preserves_evidence(monkeypatch):
     calls = []
 
-    def fake_run(command, cwd, env=None):
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
         calls.append((command, env))
         return {"exit_code": 77, "stdout": "", "stderr": "device unavailable"}
 
@@ -195,7 +466,7 @@ def test_invalid_device_is_explicitly_unavailable(monkeypatch):
 def test_gate_order_excludes_qualification_runner(monkeypatch, tmp_path):
     calls = []
 
-    def fake_run(command, cwd, env=None):
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
         calls.append(command)
         return {"exit_code": 0, "stdout": "ok\n", "stderr": ""}
 
@@ -212,6 +483,7 @@ def test_gate_order_excludes_qualification_runner(monkeypatch, tmp_path):
     assert names == [
         "manifest",
         "build",
+        "bootstrap_provenance",
         "ctest",
         "conformance",
         "shader_verification",
@@ -230,7 +502,7 @@ def test_additional_device_runs_qualification_commands_with_device_environment(
 ):
     calls = []
 
-    def fake_run(command, cwd, env=None):
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
         calls.append((command, env))
         return {"exit_code": 0, "stdout": "ok\n", "stderr": ""}
 
@@ -287,7 +559,7 @@ def test_report_retains_device_probe_evidence(monkeypatch, tmp_path):
 def test_python_and_artifact_paths_are_configurable(monkeypatch, tmp_path):
     commands = []
 
-    def fake_run(command, cwd, env=None):
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
         commands.append(command)
         return {"exit_code": 0, "stdout": "ok\n", "stderr": ""}
 
@@ -361,7 +633,7 @@ def test_report_contains_machine_readable_summary(monkeypatch, tmp_path):
 def test_workload_commands_are_executed_and_failures_propagate(monkeypatch, tmp_path):
     calls = []
 
-    def run(command, cwd, env=None):
+    def run(command, cwd, env=None, *, timeout_seconds=300):
         calls.append(command)
         failed = any("vulkan_workload_coverage.py" in str(part) for part in command)
         return {
@@ -424,7 +696,7 @@ def test_workload_commands_are_executed_and_failures_propagate(monkeypatch, tmp_
 def test_workload_nodes_are_limited_to_primary_vk_zero(monkeypatch, tmp_path):
     calls = []
 
-    def run(command, cwd, env=None):
+    def run(command, cwd, env=None, *, timeout_seconds=300):
         calls.append(command)
         return {"exit_code": 0, "stdout": "ok", "stderr": ""}
 

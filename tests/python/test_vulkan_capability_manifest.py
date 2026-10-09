@@ -524,15 +524,70 @@ def test_manifest_has_unique_schema_entries_and_required_contract_keys():
         assert REQUIRED_ENTRY_KEYS <= entry.keys()
 
 
-def _transposed_manifest_fixture(monkeypatch):
+def _make_transposed_manifest_factory():
     from test_vulkan_capability_generation import _complete_convolution_fixture
-
     from tools import generate_vulkan_capabilities as generator
 
-    coverage = _complete_convolution_fixture()
+    baseline = None
+
+    def fresh_copy():
+        nonlocal baseline
+        if baseline is None:
+            coverage = _complete_convolution_fixture()
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
+                data = generator.build_coverage_manifest(coverage)
+            baseline = copy.deepcopy((data, coverage))
+        data, coverage = baseline
+        return copy.deepcopy(data), copy.deepcopy(coverage)
+
+    return fresh_copy
+
+
+@pytest.fixture(scope="module")
+def transposed_manifest_factory():
+    return _make_transposed_manifest_factory()
+
+
+def _transposed_manifest_fixture(monkeypatch, factory):
+    data, coverage = factory()
     monkeypatch.setattr(capability_validator, "load_coverage_evidence", lambda _root: coverage)
-    data = generator.build_coverage_manifest(coverage)
     return data, coverage
+
+
+def test_transposed_manifest_factory_builds_once_and_isolates_both_payloads(monkeypatch):
+    from tools import generate_vulkan_capabilities as generator
+
+    original = generator.build_coverage_manifest
+    calls = []
+
+    def counted(coverage):
+        calls.append(coverage)
+        return original(coverage)
+
+    monkeypatch.setattr(generator, "build_coverage_manifest", counted)
+    factory = _make_transposed_manifest_factory()
+    first_data, first_coverage = factory()
+    expected_data, expected_coverage = copy.deepcopy((first_data, first_coverage))
+    first_data["entries"].clear()
+    first_coverage["convolution.transposed.backward.bias-present.mask-100"]["execution"]["compute_dispatches"] = 0
+    next_data, next_coverage = factory()
+    assert next_data == expected_data
+    assert next_coverage == expected_coverage
+    assert len(calls) == 1
+
+
+def test_transposed_manifest_factory_does_not_share_source_monkeypatches(monkeypatch):
+    from tools import generate_vulkan_capabilities as generator
+
+    with monkeypatch.context() as patch:
+        patch.setattr(generator, "build_coverage_manifest", lambda coverage: {"source": "patched"})
+        patched = _make_transposed_manifest_factory()
+        assert patched()[0] == {"source": "patched"}
+    fresh = _make_transposed_manifest_factory()
+    data, coverage = _transposed_manifest_fixture(monkeypatch, fresh)
+    assert "entries" in data
+    validate_manifest_data(data, ROOT)
 
 
 def _change_transposed_weight_and_aggregate_dtype(record):
@@ -546,8 +601,8 @@ def _rewrite_transposed_mask(record):
     record["schema_args"]["output_mask"] = mask
 
 
-def test_manifest_accepts_complete_transposed_convolution_runtime_fixture(monkeypatch):
-    data, _ = _transposed_manifest_fixture(monkeypatch)
+def test_manifest_accepts_complete_transposed_convolution_runtime_fixture(monkeypatch, transposed_manifest_factory):
+    data, _ = _transposed_manifest_fixture(monkeypatch, transposed_manifest_factory)
     validate_manifest_data(data, ROOT)
 
 
@@ -566,24 +621,24 @@ def test_manifest_accepts_complete_transposed_convolution_runtime_fixture(monkey
     (_rewrite_transposed_mask, "output_mask"),
     (lambda record: record["execution"].update(compute_dispatches=0), "dispatch"),
 ])
-def test_manifest_rejects_transposed_convolution_coverage_tampering(monkeypatch, mutation, match):
-    data, coverage = _transposed_manifest_fixture(monkeypatch)
+def test_manifest_rejects_transposed_convolution_coverage_tampering(monkeypatch, mutation, match, transposed_manifest_factory):
+    data, coverage = _transposed_manifest_fixture(monkeypatch, transposed_manifest_factory)
     target = "convolution.transposed.backward.bias-present.mask-100"
     mutation(coverage[target])
     with pytest.raises(ValueError, match=match):
         validate_manifest_data(data, ROOT)
 
 
-def test_manifest_rejects_transposed_mask000_allocation(monkeypatch):
-    data, coverage = _transposed_manifest_fixture(monkeypatch)
+def test_manifest_rejects_transposed_mask000_allocation(monkeypatch, transposed_manifest_factory):
+    data, coverage = _transposed_manifest_fixture(monkeypatch, transposed_manifest_factory)
     record = coverage["convolution.transposed.backward.bias-present.mask-000"]
     record["execution"]["live_allocations_delta"] = 1
     with pytest.raises(ValueError, match="mask 000"):
         validate_manifest_data(data, ROOT)
 
 
-def test_manifest_convolution_completeness_survives_joint_transposed_record_and_link_removal(monkeypatch):
-    data, coverage = _transposed_manifest_fixture(monkeypatch)
+def test_manifest_convolution_completeness_survives_joint_transposed_record_and_link_removal(monkeypatch, transposed_manifest_factory):
+    data, coverage = _transposed_manifest_fixture(monkeypatch, transposed_manifest_factory)
     for name in list(coverage):
         if name.startswith("convolution.transposed."):
             del coverage[name]
@@ -598,8 +653,8 @@ def test_manifest_convolution_completeness_survives_joint_transposed_record_and_
         validate_manifest_data(data, ROOT)
 
 
-def test_manifest_rejects_joint_transposed_direction_operation_slot_schema_rewrite(monkeypatch):
-    data, coverage = _transposed_manifest_fixture(monkeypatch)
+def test_manifest_rejects_joint_transposed_direction_operation_slot_schema_rewrite(monkeypatch, transposed_manifest_factory):
+    data, coverage = _transposed_manifest_fixture(monkeypatch, transposed_manifest_factory)
     record = coverage["convolution.transposed.backward.bias-present.mask-100"]
     record["schema"] = "aten::convolution.default"
     record["convolution_context"].update(
@@ -613,9 +668,9 @@ def test_manifest_rejects_joint_transposed_direction_operation_slot_schema_rewri
     ("inputs", "primary"), ("outputs", "output"),
 ])
 def test_manifest_rejects_record_and_manifest_joint_dtype_claim_rewrite(
-    monkeypatch, dtype_group, witness_field
+    monkeypatch, dtype_group, witness_field, transposed_manifest_factory
 ):
-    data, coverage = _transposed_manifest_fixture(monkeypatch)
+    data, coverage = _transposed_manifest_fixture(monkeypatch, transposed_manifest_factory)
     entry = next(item for item in data["entries"]
                  if item["schema"] == "aten::convolution_backward.default")
     record = coverage["convolution.transposed.backward.bias-present.mask-100"]

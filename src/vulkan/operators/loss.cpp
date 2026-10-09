@@ -1,6 +1,5 @@
 #include "loss.h"
 
-#include "autograd.h"
 #include "capability.h"
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
@@ -8,10 +7,8 @@
 #include "vulkan_layout.h"
 #include "vulkan_platform.h"
 
-#include <c10/core/GradMode.h>
 #include <c10/util/Exception.h>
 #include <limits>
-#include <torch/autograd.h>
 #include <torch/library.h>
 
 namespace pytorch_vulkan {
@@ -22,8 +19,8 @@ void validate_tensor(const at::Tensor &tensor, const char *name) {
                 "Vulkan mse_loss ", name, " requires vk:0");
     TORCH_CHECK(tensor.scalar_type() == at::kFloat && tensor.layout() == at::kStrided,
                 "Vulkan mse_loss ", name, " requires a strided float32 tensor");
-    TORCH_CHECK(tensor.is_contiguous(), "Vulkan mse_loss ", name,
-                " requires a contiguous tensor");
+    // Validate readable device geometry before any materialization/dispatch.
+    inspect_vulkan_tensor_layout(tensor, name);
 }
 
 uint32_t validate_common(const at::Tensor &input, const at::Tensor &target,
@@ -40,9 +37,12 @@ uint32_t validate_common(const at::Tensor &input, const at::Tensor &target,
     return static_cast<uint32_t>(input.numel());
 }
 
-at::Tensor dispatch_loss(const at::Tensor &input, const at::Tensor &target,
-                         int64_t reduction) {
-    const uint32_t elements = validate_common(input, target, reduction, "forward");
+at::Tensor dispatch_loss(const at::Tensor &input_view,
+                         const at::Tensor &target_view, int64_t reduction) {
+    const uint32_t elements =
+        validate_common(input_view, target_view, reduction, "forward");
+    const auto input = input_view.contiguous();
+    const auto target = target_view.contiguous();
     auto output =
         reduction == 0 ? at::empty_like(input) : at::empty({}, input.options());
     if (elements == 0) {
@@ -83,13 +83,45 @@ at::Tensor mse_loss(const at::Tensor &input, const at::Tensor &target,
     return dispatch_loss(input, target, reduction);
 }
 
-at::Tensor mse_loss_backward(const at::Tensor &grad_output, const at::Tensor &input,
-                             const at::Tensor &target, int64_t reduction) {
-    const uint32_t elements = validate_common(input, target, reduction, "backward");
-    validate_tensor(grad_output, "grad_output");
-    TORCH_CHECK(reduction == 0 ? grad_output.sizes().equals(input.sizes())
-                               : grad_output.dim() == 0,
-                "Vulkan mse_loss backward has an invalid grad_output shape");
+at::Tensor mse_loss_backward(const at::Tensor &grad_view,
+                             const at::Tensor &input_view,
+                             const at::Tensor &target_view, int64_t reduction) {
+    const uint32_t elements =
+        validate_common(input_view, target_view, reduction, "backward");
+    validate_tensor(grad_view, "grad_output");
+    TORCH_CHECK(grad_view.dim() <= input_view.dim(),
+                 "Vulkan mse_loss backward has an invalid grad_output shape");
+    for (int64_t i = 0; i < grad_view.dim(); ++i) {
+        const auto input_dim = input_view.dim() - grad_view.dim() + i;
+        TORCH_CHECK(grad_view.size(i) == 1 ||
+                        grad_view.size(i) == input_view.size(input_dim),
+                    "Vulkan mse_loss backward has an invalid grad_output shape");
+    }
+    if (grad_view.numel() == 1) {
+        const auto layout =
+            inspect_vulkan_tensor_layout(grad_view, "mse_loss scalar grad");
+        // Descriptors start at the allocation base. Zero is the dense sentinel;
+        // scalar addressing stores the allocation element offset plus one.
+        TORCH_CHECK(layout.storage_offset >= 0 &&
+                        static_cast<uint64_t>(layout.storage_offset) <
+                            std::numeric_limits<uint32_t>::max() &&
+                        layout.element_bytes == sizeof(float) &&
+                        layout.byte_offset ==
+                            static_cast<uint64_t>(layout.storage_offset) * sizeof(float) &&
+                        layout.byte_offset <= layout.allocation_bytes &&
+                        sizeof(float) <= layout.allocation_bytes - layout.byte_offset,
+                    "Vulkan mse_loss scalar grad exceeds addressing bounds");
+        validate_allocation(grad_view.storage().data_ptr(), layout.allocation_bytes,
+                            "mse_loss scalar grad");
+    }
+    // A one-element upstream is readable directly without an expanded copy.
+    // Stock second reverse also passes full-shaped p for mean/sum: retain every
+    // logical value there, independently of numerical reduction normalization.
+    const auto input = input_view.contiguous();
+    const auto target = target_view.contiguous();
+    const auto grad_output = grad_view.numel() == 1
+                                 ? grad_view
+                                 : grad_view.expand(input_view.sizes()).contiguous();
     auto result = at::empty_like(input);
     if (elements == 0)
         return result;
@@ -126,41 +158,8 @@ at::Tensor mse_loss_backward(const at::Tensor &grad_output, const at::Tensor &in
     return result;
 }
 
-class MSELossAutograd final : public torch::autograd::Function<MSELossAutograd> {
-  public:
-    static at::Tensor forward(torch::autograd::AutogradContext *ctx,
-                              const at::Tensor &input, const at::Tensor &target,
-                              int64_t reduction) {
-        at::AutoDispatchBelowAutograd guard;
-        auto output = pytorch_vulkan::mse_loss(input, target, reduction);
-        ctx->save_for_backward({input, target});
-        ctx->saved_data["reduction"] = reduction;
-        return output;
-    }
-    static torch::autograd::variable_list
-    backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
-        at::AutoDispatchBelowAutograd guard;
-        TORCH_CHECK(!c10::GradMode::is_enabled(),
-                    "Vulkan mse_loss does not support higher-order gradients");
-        if (!grads[0].defined())
-            return {at::Tensor(), at::Tensor(), at::Tensor()};
-        auto saved = ctx->get_saved_variables();
-        return {pytorch_vulkan::mse_loss_backward(grads[0], saved[0], saved[1],
-                                                  ctx->saved_data["reduction"].toInt()),
-                at::Tensor(), at::Tensor()};
-    }
-};
-
-at::Tensor autograd_mse_loss(const at::Tensor &input, const at::Tensor &target,
-                             int64_t reduction) {
-    return MSELossAutograd::apply(input, target, reduction);
-}
 } // namespace pytorch_vulkan
 
-TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
-    m.impl("mse_loss", &pytorch_vulkan::autograd_mse_loss);
-}
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("mse_loss", &pytorch_vulkan::mse_loss);
     m.impl("mse_loss_backward", &pytorch_vulkan::mse_loss_backward);

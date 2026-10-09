@@ -172,6 +172,7 @@ STOCK_MATMUL_ROUTE_CONTRACT = {
             "vector-vector -> dot",
             "matrix-vector -> mv",
             "vector-matrix -> unsqueeze/mm/squeeze",
+            "finite G2 batched/broadcasted/selection-dependent fold -> mv/mm/bmm",
         ],
     },
     "dependencies": [
@@ -181,13 +182,25 @@ STOCK_MATMUL_ROUTE_CONTRACT = {
          "vulkan_leaf": "aten::mv.default"},
         {"schema": "aten::mm.default", "dispatch": "direct_privateuse1",
          "vulkan_leaf": "aten::mm.default"},
+        {"schema": "aten::bmm.default", "dispatch": "direct_privateuse1",
+         "vulkan_leaf": "aten::bmm.default"},
     ],
     "evidence_cases": [
+        # G2's complete source-owned inventory is additionally mandatory in the
+        # generator and manifest validator, including selection/no-grad states.
         "g1.matmul.vv.torch-matmul", "g1.matmul.mv.torch-matmul",
         "g1.matmul.vm.torch-matmul", "g1.matmul.vv.at",
         "g1.matmul.mv.at", "g1.matmul.vm.at",
     ],
 }
+STOCK_MATMUL_ROUTE_CONTRACT["dependencies"].extend([
+    {"schema": "aten::as_strided.default", "dispatch": "direct_privateuse1",
+     "vulkan_leaf": "aten::as_strided.default"},
+    {"schema": "aten::_copy_from.default", "dispatch": "direct_privateuse1",
+     "vulkan_leaf": "aten::_copy_from.default"},
+    {"schema": "aten::sum.dim_IntList", "dispatch": "direct_privateuse1",
+     "vulkan_leaf": "aten::sum.dim_IntList"},
+])
 STOCK_COMPOSITE_ROUTES[STOCK_MATMUL_ROUTE_CONTRACT["schema"]] = deepcopy(
     STOCK_MATMUL_ROUTE_CONTRACT
 )
@@ -215,8 +228,8 @@ def _direct_declaration(*, rank_min: int, rank_max: int, empty: str,
 
 def _matmul_declaration() -> dict[str, object]:
     declaration = _direct_declaration(
-        rank_min=1, rank_max=2, empty="empty_output_supported",
-        autograd="reverse_first_order_graph_witnessed",
+        rank_min=1, rank_max=8, empty="empty_output_supported",
+        autograd="reverse_finite_second_order_witnessed",
     )
     declaration["reason"] = "supported_contract"
     return declaration
@@ -4236,7 +4249,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::mse_loss.default':     {
         "aliasing": "no_overlap",
-        "autograd": "first_order_or_none",
+        "autograd": "reverse_mse_finite_second_order_witnessed",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -4259,7 +4272,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 2,
-            "min": 2
+            "min": 0
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -6547,5 +6560,11 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "status": "supported"
     },
 }
+
+# Numerical Scalar leaf required by generated MSE mean double backward. The
+# finite public MSE graph contract is separate from arbitrary division AD.
+DECLARATIONS["aten::div_.Scalar"] = deepcopy(DECLARATIONS["aten::mul_.Scalar"])
+DECLARATIONS["aten::div_.Scalar"].update(
+    autograd="not_applicable", ranks={"min": 0, "max": 2})
 
 __all__ = ["DECLARATIONS"]

@@ -107,8 +107,9 @@ struct ReductionBackwardParams {
     uint32_t storage_offset;
 };
 struct LossParams {
-    uint32_t element_count, reduction, backward, padding;
+    uint32_t element_count, reduction, backward, auxiliary_scalar_offset;
 };
+static_assert(sizeof(LossParams) == 16, "loss push constants must occupy 16 bytes");
 
 struct IndexingParams {
     uint32_t rank, output_numel, reduce_dim, reduce_size;
@@ -1667,7 +1668,20 @@ void VulkanCompute::mse_loss(
     const VulkanBuffer *aux, const VulkanTensorLayout &aux_layout,
     const VulkanBuffer *output, const VulkanTensorLayout &output_layout,
     uint32_t element_count, uint32_t reduction, bool backward) const {
-    LossParams params{element_count, reduction, backward ? 1U : 0U, 0U};
+    uint32_t scalar_offset = 0;
+    if (backward && aux_layout.numel == 1) {
+        if (aux_layout.storage_offset < 0 ||
+            static_cast<uint64_t>(aux_layout.storage_offset) >=
+                std::numeric_limits<uint32_t>::max() ||
+            aux_layout.element_bytes != sizeof(float) ||
+            aux_layout.byte_offset !=
+                static_cast<uint64_t>(aux_layout.storage_offset) * sizeof(float) ||
+            aux_layout.byte_offset > aux_layout.allocation_bytes ||
+            sizeof(float) > aux_layout.allocation_bytes - aux_layout.byte_offset)
+            throw std::invalid_argument("Vulkan mse_loss scalar auxiliary exceeds addressing bounds");
+        scalar_offset = static_cast<uint32_t>(aux_layout.storage_offset) + 1U;
+    }
+    LossParams params{element_count, reduction, backward ? 1U : 0U, scalar_offset};
     const VulkanBuffer *inputs[] = {input, target, aux};
     const VulkanTensorLayout *layouts[] = {&input_layout, &target_layout, &aux_layout};
     const VulkanBuffer *outputs[] = {output};

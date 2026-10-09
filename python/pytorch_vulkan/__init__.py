@@ -188,3 +188,18 @@ torch.optim.Adam = _VulkanValidatedAdam
 
 __all__ = ["compiler_stats", "device_count", "formatter_double_supported", "is_available", "load",
            "save", "validate_compiler_tensor_metadata", "vulkan_backend"]
+
+
+def __getattr__(name):
+    if name.startswith('_'):
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        return getattr(torch, name)
+    except AttributeError:
+        raise AttributeError(
+            f"module {__name__!r} has no attribute {name!r}"
+        ) from None
+
+
+def __dir__():
+    return sorted(set(globals()) | {n for n in dir(torch) if not n.startswith('_')})

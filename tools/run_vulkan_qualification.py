@@ -7,44 +7,109 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+
+try:
+    from . import shader_toolchain
+except ImportError:  # Direct script invocation.
+    import shader_toolchain
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PYTHON = ROOT / ".venv" / "bin" / "python"
-def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
-    """Run one command without a shell and retain its exact result."""
+def _signal_owned_group(process: subprocess.Popen, sig: int) -> None:
+    # start_new_session makes this child's PID its private process-group ID.
     try:
-        completed = subprocess.run(
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def _finish_owned_group(process: subprocess.Popen) -> tuple[Any, Any]:
+    """Stop descendants, drain pipes with bounds, and reap the direct child."""
+    _signal_owned_group(process, signal.SIGTERM)
+    try:
+        output = process.communicate(timeout=0.2)
+    except subprocess.TimeoutExpired as error:
+        output = (error.stdout, error.stderr)
+    # Do this even when the leader exited or all pipe holders accepted TERM:
+    # a descendant can ignore TERM without retaining either output descriptor.
+    _signal_owned_group(process, signal.SIGKILL)
+    try:
+        output = process.communicate(timeout=1)
+    except subprocess.TimeoutExpired as error:
+        output = (error.stdout, error.stderr)
+        # Escaped pipe holders must not turn cleanup into an unbounded read.
+        process.stdout.close()
+        process.stderr.close()
+    process.wait(timeout=1)
+    # SIGKILL is asynchronous. On Linux, wait for owned group members to stop
+    # executing; orphan zombies belong to their adopter, not to this runner.
+    deadline = time.monotonic() + 1
+    while True:
+        running = False
+        for stat in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                # comm is arbitrary bytes and may itself contain ') ' or spaces.
+                fields = stat.read_bytes().rsplit(b") ", 1)[1].split()
+                if int(fields[2]) == process.pid and fields[0] not in {b"Z", b"X"}:
+                    running = True
+                    break
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+        if not running:
+            return output
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"owned process group {process.pid} survived cleanup")
+        time.sleep(0.01)
+
+
+def run_command(
+    command: list[str], cwd: Path, env: dict[str, str] | None = None,
+    *, timeout_seconds: float = 300,
+) -> dict[str, Any]:
+    """Run one command without a shell and retain its exact result."""
+    started = time.monotonic()
+    result = {"timeout_seconds": timeout_seconds}
+    try:
+        process = subprocess.Popen(
             command,
             cwd=cwd,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
-            timeout=300,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as error:
-        def as_text(value: Any) -> str:
-            if isinstance(value, bytes):
-                return value.decode(errors="replace")
-            return value or ""
-
-        return {
-            "exit_code": 124,
-            "stdout": as_text(error.stdout),
-            "stderr": as_text(error.stderr) + "\ncommand timed out after 300 seconds\n",
-        }
     except OSError as error:
-        return {"exit_code": 127, "stdout": "", "stderr": str(error)}
-    return {
-        "exit_code": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
-    }
+        result.update(exit_code=127, stdout="", stderr=str(error))
+    else:
+        timed_out = False
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            # A completed leader with an inherited open pipe retains its status.
+            timed_out = process.poll() is None
+        finally:
+            stdout, stderr = _finish_owned_group(process)
+
+        def as_text(value: Any) -> str:
+            return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+
+        result.update(
+            exit_code=124 if timed_out else process.returncode,
+            stdout=as_text(stdout),
+            stderr=as_text(stderr) + (
+                f"\ncommand timed out after {timeout_seconds} seconds\n" if timed_out else ""
+            ),
+        )
+    result["elapsed_seconds"] = time.monotonic() - started
+    return result
 
 
 def classify_result(result: dict[str, Any], *, device_dependent: bool) -> str:
@@ -69,6 +134,20 @@ def _environment_delta(environment: dict[str, str] | None) -> dict[str, str]:
     }
 
 
+def _shader_environment(environment: dict[str, str] | None = None) -> dict[str, str] | None:
+    base = environment if environment is not None else os.environ
+    profile = base.get(shader_toolchain.PROFILE_ENV)
+    if not profile:
+        return environment
+    expected = base.get(shader_toolchain.HASH_ENV)
+    if not expected:
+        raise ValueError("selected shader compiler profile requires its full profile hash")
+    selected = shader_toolchain.selected_environment(profile, expected)
+    if environment is not None:
+        selected.update({k: v for k, v in environment.items() if k != "PATH"})
+    return selected
+
+
 def device_available(
     build: Path, device: str, python_executable: Path | None = None
 ) -> dict[str, Any]:
@@ -76,7 +155,7 @@ def device_available(
     command = [
         python,
         "-c",
-        "import sys, torch, pytorch_vulkan\n"
+        "import pytorch_vulkan, sys, torch\n"
         "device = sys.argv[1]\n"
         "if not pytorch_vulkan.is_available(): raise SystemExit(77)\n"
         "try: torch.ones(1).to(device)\n"
@@ -99,6 +178,7 @@ def device_available(
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(build), environment.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
+    environment = _shader_environment(environment)
     probe = run_command(
         [
             *command,
@@ -116,8 +196,12 @@ def device_available(
     }
 
 
-def _command_result(command: list[str], *, environment: dict[str, str] | None = None) -> dict[str, Any]:
-    result = run_command(command, ROOT, environment)
+def _command_result(
+    command: list[str], *, environment: dict[str, str] | None = None,
+    timeout_seconds: float = 300,
+) -> dict[str, Any]:
+    environment = _shader_environment(environment)
+    result = run_command(command, ROOT, environment, timeout_seconds=timeout_seconds)
     return {"command": command, "environment": _environment_delta(environment), **result}
 
 
@@ -128,6 +212,7 @@ def _gate(
     device_dependent: bool = False,
     environment: dict[str, str] | None = None,
     skip_reason: str | None = None,
+    timeout_seconds: float = 300,
 ) -> dict[str, Any]:
     if skip_reason:
         return {
@@ -136,7 +221,10 @@ def _gate(
             "reason": skip_reason,
             "commands": [],
         }
-    results = [_command_result(command, environment=environment) for command in commands]
+    results = [
+        _command_result(command, environment=environment, timeout_seconds=timeout_seconds)
+        for command in commands
+    ]
     statuses = [classify_result(result, device_dependent=device_dependent) for result in results]
     status = "fail" if "fail" in statuses else "skip" if "skip" in statuses else "pass"
     return {"name": name, "status": status, "commands": results}
@@ -152,9 +240,20 @@ def run_qualification(
     python_executable: Path | None = None,
     artifacts: Path | None = None,
 ) -> dict[str, Any]:
+    # Validate before any device probe or gate; provenance is separate from
+    # historical shader manifests and does not rebind captured source hashes.
+    selected_environment = _shader_environment()
+    shader_provenance = None
+    if selected_environment is not None:
+        shader_provenance = shader_toolchain.profile_provenance(
+            selected_environment[shader_toolchain.PROFILE_ENV],
+            selected_environment[shader_toolchain.HASH_ENV])
     python = str(python_executable or os.environ.get("VULKAN_PYTHON", DEFAULT_PYTHON))
     artifacts = artifacts or report.parent / ".vulkan-qualification-artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
+    if shader_provenance:
+        (artifacts / "shader-toolchain.json").write_text(
+            json.dumps(shader_provenance, indent=2, sort_keys=True) + "\n")
     pythonpath = os.pathsep.join([str(build), str(ROOT)]).rstrip(os.pathsep)
     test_environment = os.environ.copy()
     test_environment["PYTHONPATH"] = pythonpath
@@ -171,6 +270,7 @@ def run_qualification(
             "manifest",
             [
                 [python, "tools/validate_vulkan_capabilities.py"],
+                [python, "tools/validate_vulkan_composed_matmul.py"],
                 [
                     python,
                     "tools/vulkan_workload_coverage.py",
@@ -187,22 +287,26 @@ def run_qualification(
             skip_reason=None if run_build else "build execution disabled",
         )
     )
+    gates.append(_gate(
+        "bootstrap_provenance",
+        [[python, "tools/validate_vulkan_bootstrap_provenance.py"]],
+    ))
     gates.append(
         _gate(
             "ctest",
             [["ctest", "--test-dir", str(build), "--output-on-failure"]],
+            timeout_seconds=600,
         )
     )
     device_skip = None if available else device_reason
     conformance_commands = [
-        [python, "-m", "pytest", "-q", "-rs", "tests/python/test_vulkan_conformance.py"]
+        [python, "tools/vulkan_wrapper_pytest.py", "-q", "-rs", "tests/python/test_vulkan_conformance.py"]
     ]
     if device == "vk:0":
         conformance_commands.append(
             [
                 python,
-                "-m",
-                "pytest",
+                "tools/vulkan_wrapper_pytest.py",
                 "-q",
                 "-rs",
                 "tests/python/test_vulkan_workload_conformance.py::test_stock_sgd_executes_three_steps_in_both_reset_modes",
@@ -212,8 +316,12 @@ def run_qualification(
             ]
         )
         conformance_commands.append([
-            python, "-m", "pytest", "-q", "-rs",
+            python, "tools/vulkan_wrapper_pytest.py", "-q", "-rs",
             "tests/python/test_vulkan_linear.py::test_stock_linear_each_declared_rank",
+        ])
+        conformance_commands.append([
+            python, "tools/vulkan_wrapper_pytest.py", "-q", "-rs",
+            "tests/python/test_vulkan_composed_matmul.py::test_composed_model",
         ])
     gates.append(
         _gate(
@@ -244,7 +352,7 @@ def run_qualification(
     gates.append(
         _gate(
             "stress",
-            [[python, "-m", "pytest", "-q", "-rs", "tests/python/test_vulkan_reliability.py"]],
+            [[python, "tools/vulkan_wrapper_pytest.py", "-q", "-rs", "tests/python/test_vulkan_reliability.py"]],
             device_dependent=True,
             environment=test_environment,
             skip_reason=device_skip,
@@ -292,12 +400,11 @@ def run_qualification(
         additional_commands = [
             ["cmake", "--build", str(build), "-j10"],
             [python, "tools/validate_vulkan_capabilities.py"],
-            [python, "-m", "pytest", "-q", "tests/python/test_vulkan_operator_capabilities.py"],
+            [python, "tools/vulkan_wrapper_pytest.py", "-q", "tests/python/test_vulkan_operator_capabilities.py"],
             *[[python, str(path.relative_to(ROOT))] for path in verifiers],
             [
                 python,
-                "-m",
-                "pytest",
+                "tools/vulkan_wrapper_pytest.py",
                 "-q",
                 "-rs",
                 "tests/python/test_vulkan_conformance.py",
@@ -317,6 +424,7 @@ def run_qualification(
 
     summary = {
         "schema_version": 1,
+        "entry_point": "wrapper-first",
         "device": device,
         "files": [
             "tools/run_vulkan_qualification.py",
@@ -347,6 +455,8 @@ def run_qualification(
             "Performance comparisons are timing evidence only and do not establish future CNN or transformer milestones.",
         ],
     }
+    if shader_provenance:
+        summary["shader_toolchain"] = shader_provenance
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return summary
@@ -362,7 +472,18 @@ def main() -> int:
     parser.add_argument("--additional-device")
     parser.add_argument("--python", type=Path)
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--shader-toolchain-profile", type=Path)
     args = parser.parse_args()
+    if args.shader_toolchain_profile:
+        # Re-enter with compiler-only PATH selection, not a global Python loader
+        # override. All existing API/gate environment deltas remain intact.
+        command = [sys.executable, str(Path(__file__).resolve()), "--device", args.device,
+                   "--build", str(args.build), "--output", str(args.output)]
+        for flag, value in (("--additional-device", args.additional_device),
+                            ("--python", args.python), ("--artifacts", args.artifacts)):
+            if value is not None:
+                command.extend([flag, str(value)])
+        return subprocess.call(command, env=shader_toolchain.selected_environment(args.shader_toolchain_profile))
     summary = run_qualification(
         args.output,
         device=args.device,

@@ -12,6 +12,24 @@ option(BUILD_PYTHON_EXTENSION "Build the minimal Python Vulkan extension" OFF)
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     find_package(Vulkan 1.1 REQUIRED)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(VULKAN_SHADER_TOOLCHAIN_PROFILE "$ENV{VULKAN_SHADER_TOOLCHAIN_PROFILE}"
+        CACHE FILEPATH "Explicit complete shaderc 2026.3 profile; empty selects system compiler")
+    set(VULKAN_SHADER_PYTHON ${Python3_EXECUTABLE})
+    if(VULKAN_SHADER_TOOLCHAIN_PROFILE)
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_toolchain.py
+                    inspect --profile ${VULKAN_SHADER_TOOLCHAIN_PROFILE}
+                    --provenance ${CMAKE_BINARY_DIR}/shader-toolchain.json
+            RESULT_VARIABLE shader_profile_result OUTPUT_QUIET ERROR_VARIABLE shader_profile_error)
+        if(NOT shader_profile_result EQUAL 0)
+            message(FATAL_ERROR "Shader compiler profile validation failed: ${shader_profile_error}")
+        endif()
+        file(SHA256 ${VULKAN_SHADER_TOOLCHAIN_PROFILE} shader_profile_hash)
+        set(VULKAN_SHADER_PYTHON ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_toolchain.py run
+            --profile ${VULKAN_SHADER_TOOLCHAIN_PROFILE}
+            --expected-profile-sha256 ${shader_profile_hash} -- ${Python3_EXECUTABLE})
+    endif()
 endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
@@ -56,118 +74,90 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                          src/vulkan/shaders/glsl/normalization.comp
                         src/vulkan/shaders/glsl/classification.comp)
         add_custom_target(vulkan_linear_relu_backward_shader_integrity
-                          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/linear_relu_backward.comp)
-        add_custom_command(
-          OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
-                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
-          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
+         add_custom_target(vulkan_linear_relu_backward_shader_generate
+           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/linear_relu_backward.comp
           VERBATIM)
-        add_custom_target(vulkan_linear_relu_backward_shader_generate DEPENDS
-                          ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.h
-                          ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/linear_relu_backward_spv.sha256)
-         add_dependencies(vulkan_platform vulkan_linear_relu_backward_shader_generate)
-         add_custom_command(
-           OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.h
-                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.sha256
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
+          add_custom_target(vulkan_rnn_sequence_shader_generate
+           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/rnn_sequence.comp
            VERBATIM)
-         add_custom_target(vulkan_rnn_sequence_shader_generate DEPENDS
-                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.h
-                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.sha256)
          add_custom_target(vulkan_rnn_sequence_shader_integrity
-                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py
+                            COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py
                            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rnn_sequence_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/rnn_sequence.comp
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.h
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/rnn_sequence_spv.sha256)
-         add_dependencies(vulkan_platform vulkan_rnn_sequence_shader_generate
-                           vulkan_rnn_sequence_shader_integrity)
-         add_custom_command(
-           OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
-                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
+          add_dependencies(vulkan_platform vulkan_rnn_sequence_shader_integrity)
+          add_custom_target(vulkan_loss_shader_generate
+            COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/loss.comp
            VERBATIM)
-         add_custom_target(vulkan_loss_shader_generate DEPENDS
-                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
-                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256)
          add_custom_target(vulkan_loss_shader_integrity
-                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_loss_spv.py
+                            COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_loss_spv.py
                            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loss_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_loss_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.h
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/loss_spv.sha256
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/loss.comp)
-          add_dependencies(vulkan_platform vulkan_loss_shader_generate
-                            vulkan_loss_shader_integrity)
-          add_custom_command(
-             OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
-                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
+           add_dependencies(vulkan_platform vulkan_loss_shader_integrity)
+           if(VULKAN_SHADER_TOOLCHAIN_PROFILE)
+             add_custom_target(vulkan_operator_shader_generate
+              COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
+                      --expected-header-sha256 dae7afa13029738e3b1d879a8d1c083562e37b9f5bc8bc8a53310c565e5bff78
+                      --expected-manifest-sha256 749d0fd5a26a3c2ad9201a52c0520243e9d808ed844dc780f5f54a060f01f71a
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp
             VERBATIM)
-          add_custom_target(vulkan_operator_shader_generate DEPENDS
-                             ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
-                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
-          add_dependencies(vulkan_platform vulkan_operator_shader_generate)
-         add_custom_command(
-           OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
-                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
+           else()
+             add_custom_target(vulkan_operator_shader_generate
+                 COMMAND ${CMAKE_COMMAND} -E echo "Operator generation requires an explicitly selected complete shader profile"
+                 COMMAND ${CMAKE_COMMAND} -E false)
+           endif()
+          add_custom_target(vulkan_gemm_shader_generate
+              COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/gemm.comp
            VERBATIM)
-         add_custom_target(vulkan_gemm_shader_generate DEPENDS
-                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
-                           ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
           add_custom_target(vulkan_gemm_shader_integrity
-                           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
+                            COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
                            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gemm_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/gemm.comp
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.h
                             ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/gemm_spv.sha256)
-          add_custom_command(
-            OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.h
-                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.sha256
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
+           add_custom_target(vulkan_cat_gather_shader_generate
+             COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/cat_gather.comp
             VERBATIM)
-          add_custom_target(vulkan_cat_gather_shader_generate DEPENDS
-                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.h
-                            ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.sha256)
           add_custom_target(vulkan_cat_gather_shader_integrity
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py
+             COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cat_gather_spv.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/cat_gather.comp
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.h
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/cat_gather_spv.sha256)
-          add_dependencies(vulkan_platform vulkan_cat_gather_shader_generate
-                           vulkan_cat_gather_shader_integrity)
-          add_dependencies(vulkan_platform vulkan_gemm_shader_generate
-                           vulkan_gemm_shader_integrity)
+           add_dependencies(vulkan_platform vulkan_cat_gather_shader_integrity)
+          add_dependencies(vulkan_platform vulkan_gemm_shader_integrity)
           if(BUILD_TESTING)
              add_test(NAME vulkan_gemm_shader_integrity
-                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
+                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_gemm_spv.py)
              add_test(NAME vulkan_cat_gather_shader_integrity
-                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py)
+                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_cat_gather_spv.py)
             add_test(NAME vulkan_rnn_sequence_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py)
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_rnn_sequence_spv.py)
           endif()
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -312,6 +302,7 @@ if(BUILD_PYTHON_EXTENSION)
         pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/autograd.cpp
         src/vulkan/operators/add.cpp
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
+        src/vulkan/operators/scalar_division.cpp
          src/vulkan/operators/autograd.h src/vulkan/operators/binary.h
           src/vulkan/operators/loss.cpp src/vulkan/operators/loss.h
          src/vulkan/operators/out.cpp src/vulkan/operators/optimizer.cpp
@@ -364,7 +355,7 @@ if(BUILD_PYTHON_EXTENSION)
         "${CMAKE_BINARY_DIR}/pytorch_vulkan/__init__.py"
         SYMBOLIC COPY_ON_ERROR)
     add_custom_target(vulkan_reduction_shader_integrity
-                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
                       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py
                               ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_reduction_indexing_spv.py
                               ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/reduction_indexing_spv.h
@@ -373,73 +364,85 @@ if(BUILD_PYTHON_EXTENSION)
                               ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/indexing.comp
                                ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/broadcast.comp)
       add_custom_target(vulkan_model_shader_integrity
-                       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py
+                        COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py
                        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py
                                ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_model_spv.py
                                ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/model_spv.h
                                ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/model_spv.sha256
                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/model.comp)
         add_custom_target(vulkan_masked_select_shader_integrity
-                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_masked_select_spv.py
+                          COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_masked_select_spv.py
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_masked_select_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/masked_select_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/masked_select_spv.sha256
                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/masked_select.comp)
        add_custom_target(vulkan_convolution_shader_integrity
-                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py
+                          COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_convolution_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/convolution_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/convolution_spv.sha256
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/convolution.comp)
-       add_custom_target(vulkan_pooling_shader_integrity
-                          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pooling_spv.py
-                          COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py
+        # Generation is an explicit opt-in, never a side effect of integrity.
+        add_custom_target(vulkan_pooling_shader_generate
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pooling_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pooling_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pooling.comp)
+        add_custom_target(vulkan_pooling_shader_integrity
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py
                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py
                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_pooling_spv.py
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pooling_spv.h
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pooling_spv.sha256
                      ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pooling.comp)
        add_custom_target(vulkan_formatter_double_shader_integrity
-                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
+                          COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_formatter_double_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/formatter_double_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/formatter_double_spv.sha256
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/formatter_double.comp)
        add_custom_target(vulkan_pointwise_shader_integrity
-                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py
+                          COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pointwise_spv.h
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pointwise_spv.sha256
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pointwise.comp)
        add_custom_target(vulkan_operator_shader_integrity
-                         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py
+                          COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
-                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
-      if(BUILD_TESTING)
+                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
+       # An ordinary extension build verifies existing qualified artifacts;
+       # generation is never an implicit repair for source/compiler drift.
+       add_dependencies(vulkan_platform
+           vulkan_linear_relu_backward_shader_integrity
+           vulkan_reduction_shader_integrity vulkan_model_shader_integrity
+           vulkan_masked_select_shader_integrity vulkan_convolution_shader_integrity
+           vulkan_pooling_shader_integrity vulkan_formatter_double_shader_integrity
+           vulkan_pointwise_shader_integrity vulkan_operator_shader_integrity)
+       if(BUILD_TESTING)
           add_test(NAME vulkan_reduction_shader_integrity
-                   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
+                    COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
           add_test(NAME vulkan_model_shader_integrity
-                   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py)
+                    COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_model_spv.py)
             add_test(NAME vulkan_masked_select_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_masked_select_spv.py)
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_masked_select_spv.py)
             add_test(NAME vulkan_convolution_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py)
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py)
            add_test(NAME vulkan_pooling_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
            add_test(NAME vulkan_formatter_double_shader_integrity
-                     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
              add_test(NAME vulkan_pointwise_shader_integrity
-                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
+                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pointwise_spv.py)
              add_test(NAME vulkan_operator_shader_integrity
-                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py)
+                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py)
              add_test(NAME vulkan_linear_relu_backward_shader_integrity
-                      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
+                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py)
         endif()
     # Symlinked for the same reason as __init__.py above: a configure-time copy
     # goes stale on any source edit that is not followed by a re-configure.
@@ -462,7 +465,12 @@ if(BUILD_PYTHON_EXTENSION)
                             ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_capabilities.py)
            set_tests_properties(vulkan_manifest_validation PROPERTIES
                                   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                  ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
+                                   ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
+           add_test(NAME vulkan_bootstrap_provenance_validation
+                    COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_vulkan_bootstrap_provenance.py)
+           set_tests_properties(vulkan_bootstrap_provenance_validation PROPERTIES
+                                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
            add_test(NAME vulkan_workload_coverage_validation
                     COMMAND ${Python3_EXECUTABLE}
                             ${CMAKE_CURRENT_SOURCE_DIR}/tools/vulkan_workload_coverage.py
@@ -472,24 +480,24 @@ if(BUILD_PYTHON_EXTENSION)
                                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
            add_test(NAME vulkan_supported_workload_validation
-                    COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
+                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/vulkan_wrapper_pytest.py -q -rs
                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_conformance.py)
           set_tests_properties(vulkan_supported_workload_validation PROPERTIES
                                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation")
+                                 ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python;VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation")
            add_test(NAME vulkan_runtime_foundation_validation
-                    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+                    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/vulkan_wrapper_pytest.py -q
                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_vulkan_reliability.py::test_mixed_workload_validation_layer_gate)
            set_tests_properties(vulkan_runtime_foundation_validation PROPERTIES
                                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
+                                 ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python;VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
                                 SKIP_RETURN_CODE 77)
           add_test(NAME vulkan_python_suite
-                  COMMAND ${Python3_EXECUTABLE} -m pytest -q -rs
+                  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/vulkan_wrapper_pytest.py -q -rs
                           ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)
          set_tests_properties(vulkan_python_suite PROPERTIES
                               WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                              ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}")
+                               ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${CMAKE_BINARY_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/tests/python")
      endif()
 
     add_executable(vulkan_allocator_test tests/cpp/vulkan_allocator_test.cpp)

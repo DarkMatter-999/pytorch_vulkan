@@ -100,6 +100,10 @@ def record_coverage(
     """Record what a case actually exercised using its runtime tensors."""
     if not COVERAGE_RECORDING:
         return
+    if case.name.startswith("mse-ad."):
+        from mse_capability_evidence import capture_mse_case
+        _COVERAGE[case.name] = capture_mse_case(case.name)
+        return
     schema = _MANIFEST_CASES[case.name][0]
     def walk(value, path):
         if isinstance(value, torch.Tensor):
@@ -1071,6 +1075,75 @@ def assert_no_vulkan_work() -> None:
 
 
 def assert_gradients(case: ConformanceCase, device: str = "vk:0") -> None:
+    if case.name.startswith("mse-ad."):
+        from mse_capability_evidence import REQUIRED_CASES
+        from mse_autograd_cases import make_mse_case, mse_reference
+        from composed_evidence_common import history_nodes
+        fixture = REQUIRED_CASES[case.name]
+        source_case = {k: v for k, v in fixture.items() if k != "api"}
+        reference = mse_reference(source_case, api=fixture["api"])
+        cpu_bases = case.inputs()
+        transferred = to_vulkan_inputs(cpu_bases, device)
+        bases = case.setup_inputs(transferred, device)
+        assert len(bases) == 3 and all(b.requires_grad for b in bases)
+        for original, base in zip(transferred, bases):
+            if original.device.type != "cpu":
+                assert base is original, "setup changed an original Vulkan gradient base"
+            else:
+                # Rank-0 actual operands transfer normally, preserving the CPU
+                # leaf in their ToCopy graph instead of detaching requested AD.
+                assert base.device == torch.device(device) and base.grad_fn is not None
+                todo, seen, connected = [base.grad_fn], set(), False
+                while todo:
+                    node = todo.pop()
+                    if node is None or node in seen:
+                        continue
+                    seen.add(node)
+                    connected |= getattr(node, "variable", None) is original
+                    todo.extend(n for n, _ in node.next_functions)
+                assert connected, "setup disconnected an original scalar gradient base"
+        context = make_mse_case(source_case)
+        probes = tuple(t.to(device) for t in context["probes"])
+        pytorch_vulkan._C.synchronize()
+        pytorch_vulkan._C.reset_execution_counters()
+        loss = case.operation(*bases)
+        upstream = bases[2]
+        if fixture["kind"] == "expanded-upstream" and fixture["reduction"] == "none":
+            upstream = upstream.expand_as(loss)
+        selected = reference["graph"]["selected"]
+        first = torch.autograd.grad(loss, tuple(bases[i] for i in selected), upstream, create_graph=True)
+        contraction = sum((g * probes[i]).sum() for i, g in zip(selected, first))
+        second = torch.autograd.grad(contraction, bases)
+        pytorch_vulkan._C.synchronize()
+        assert pytorch_vulkan._C.execution_counter_snapshot()[2:] == (0, 0)
+        for actual, expected in zip((*first, *second), (*reference["graph"]["first"], *reference["second"])):
+            assert actual.device == torch.device(device)
+            assert actual.requires_grad == expected.requires_grad
+            assert (None if actual.grad_fn is None else type(actual.grad_fn).__name__) == (
+                None if expected.grad_fn is None else type(expected.grad_fn).__name__)
+            assert set(history_nodes(expected)) <= set(history_nodes(actual))
+            torch.testing.assert_close(actual.cpu(), expected, rtol=case.rtol, atol=case.atol)
+        return
+    if case.name.startswith("g2."):
+        from general_matmul_cases import cpu_reference, GENERAL_MATMUL_CASES
+        fixture = next(c for c in GENERAL_MATMUL_CASES if c["id"] == case.name)
+        reference = cpu_reference(fixture)
+        cpu_inputs = case.setup_inputs(case.inputs(), "cpu")
+        vk_inputs = case.setup_inputs(to_vulkan_inputs(cpu_inputs, device), device)
+        result = case.operation(*vk_inputs)
+        seed = reference["seed"].to(device)
+        pytorch_vulkan._C.synchronize()
+        pytorch_vulkan._C.reset_execution_counters()
+        gradients = torch.autograd.grad(result, tuple(vk_inputs[i] for i in reference["targets"]),
+                                        seed, create_graph=True)
+        pytorch_vulkan._C.synchronize()
+        assert pytorch_vulkan._C.execution_counter_snapshot()[2:] == (0, 0)
+        for actual, expected in zip(gradients, reference["gradients"]):
+            assert actual.device == torch.device(device)
+            assert actual.requires_grad == expected.requires_grad
+            assert (actual.grad_fn is not None) == (expected.grad_fn is not None)
+            torch.testing.assert_close(actual.cpu(), expected, rtol=case.rtol, atol=case.atol)
+        return
     cpu_inputs = case.inputs()
     if case.setup_inputs is not None:
         cpu_inputs = case.setup_inputs(cpu_inputs, "cpu")
@@ -5142,4 +5215,86 @@ ALL_CASES += (_case(
 ),)
 
 
+def _general_matmul_conformance_cases():
+    from general_matmul_cases import GENERAL_MATMUL_CASES, make_cpu_bases, make_operands, call_matmul
+    cases = []
+    for fixture in GENERAL_MATMUL_CASES:
+        def inputs(*, requires_grad=False, fixture=fixture):
+            return make_cpu_bases(fixture)
+        def operation(*bases, fixture=fixture):
+            with torch.set_grad_enabled(not fixture["no_grad"]):
+                return call_matmul(fixture, *make_operands(fixture, bases))
+        def setup(bases, device):
+            return bases
+        _MANIFEST_CASES[fixture["id"]] = ("aten::matmul.default", True)
+        cases.append(ConformanceCase(
+            name=fixture["id"], family="general-matmul", declaration_id="aten::matmul.default",
+            operation=operation, cpu_reference=operation, input_factory=inputs,
+            setup_inputs=setup, expected_shape=fixture["output_shape"],
+            check_gradients=fixture["selection"] != "none" and not fixture["no_grad"],
+            declared_shapes=tuple("x".join(map(str, s)) for s in fixture["base_shapes"]),
+            execution_mode="metadata" if 0 in fixture["output_shape"] else "compute",
+            rtol=.003, atol=.003,
+        ))
+    return tuple(cases)
+
+
+ALL_CASES += _general_matmul_conformance_cases()
+
+
+def _mse_autograd_conformance_cases():
+    from mse_capability_evidence import REQUIRED_CASES
+    from mse_autograd_cases import make_mse_case, mse_forward
+    cases = []
+    for name, fixture in REQUIRED_CASES.items():
+        def inputs(*, requires_grad=False, fixture=fixture):
+            return make_mse_case(fixture)["bases"]
+        def operation(*bases, fixture=fixture):
+            return mse_forward(fixture, bases, fixture["api"])
+        def setup(bases, device):
+            # The broad harness leaves rank-0 tensor metadata on CPU. Here all
+            # three values are actual tensor operands, including scalar loss AD.
+            return tuple(t.to(device) if t.device != torch.device(device) else t for t in bases)
+        bases = make_mse_case(fixture)["bases"]
+        _MANIFEST_CASES[name] = ("aten::mse_loss.default", True)
+        cases.append(ConformanceCase(
+            name=name, family="mse-autograd", declaration_id="aten::mse_loss.default",
+            operation=operation, cpu_reference=operation, input_factory=inputs,
+            setup_inputs=setup, check_gradients=True,
+            expected_shape=tuple(mse_forward(fixture, bases, fixture["api"]).shape),
+            declared_shapes=tuple("x".join(map(str, t.shape)) for t in bases[:2] if t.ndim),
+            execution_mode="metadata" if fixture["kind"] == "empty" else "compute",
+            rtol=.003, atol=.003))
+    for rank, shape in enumerate(((), (3,), (2, 3))):
+        name = f"scalar-division.rank{rank}"
+        def inputs(*, requires_grad=False, shape=shape):
+            return (torch.randn(shape, generator=torch.Generator().manual_seed(1729)),)
+        def operation(x):
+            return torch.ops.aten.div_.Scalar(x, 2.)
+        def setup(bases, device):
+            return tuple(t.to(device) if t.device != torch.device(device) else t for t in bases)
+        _MANIFEST_CASES[name] = ("aten::div_.Scalar", True)
+        cases.append(ConformanceCase(
+            name=name, family="scalar-division", declaration_id="aten::div_.Scalar",
+            operation=operation, cpu_reference=operation, input_factory=inputs,
+            setup_inputs=setup,
+            expected_shape=shape, declared_shapes=("x".join(map(str, shape)),) if rank else (),
+            rtol=.003, atol=.003))
+    # A direct rank-1 first-reverse witness fills the manifest rank envelope;
+    # selected-second claims remain linked only to the 45 scalar/matrix recipes.
+    def vector_inputs(*, requires_grad=False):
+        return tuple(torch.randn((3,), generator=torch.Generator().manual_seed(seed))
+                     .requires_grad_(requires_grad) for seed in (101, 211))
+    name = "loss.mse.rank1"
+    _MANIFEST_CASES[name] = ("aten::mse_loss.default", True)
+    cases.append(ConformanceCase(
+        name=name, family="mse-autograd", declaration_id="aten::mse_loss.default",
+        operation=_mse_none, cpu_reference=_mse_none, input_factory=vector_inputs,
+        expected_shape=(3,), declared_shapes=("3",), check_gradients=True,
+        rtol=.003, atol=.003))
+    return tuple(cases)
+
+
+ALL_CASES += _mse_autograd_conformance_cases()
+MANIFEST_CASE_NAMES = frozenset(_MANIFEST_CASES)
 SUPPORTED_CASES = tuple(case for case in ALL_CASES if case.supported)

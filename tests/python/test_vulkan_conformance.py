@@ -66,6 +66,18 @@ def test_registry_names_are_unique():
     assert len(names) == len(set(names))
 
 
+@pytest.mark.parametrize("name", ["mse-ad.scalar-mean-both.functional", "mse-ad.ordinary-mean-both.functional"])
+def test_mse_setup_cannot_detach_requested_original_base_graph(vulkan_backend, name):
+    case = next(c for c in ALL_CASES if c.name == name)
+    def detached_setup(bases, device):
+        if device == "cpu":
+            return bases
+        return tuple(t.to(device).detach().requires_grad_(t.requires_grad) for t in bases)
+    forged = replace(case, setup_inputs=detached_setup)
+    with pytest.raises(AssertionError):
+        assert_gradients(forged, vulkan_backend)
+
+
 def test_registry_cases_are_typed_and_have_cpu_references():
     assert ALL_CASES
     assert all(isinstance(case, ConformanceCase) for case in ALL_CASES)
@@ -160,7 +172,27 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
                 assert execution["live_allocations_delta"] == 0
         else:
             assert pytorch_vulkan._C.compute_dispatch_count() > 0
-        if case.name not in {"linear.forward", "linear.forward.strided"}:
+        if case.name.startswith("g2."):
+            # Stock matmul legitimately materializes broadcast/fold/output
+            # layouts. Require its exact previously captured device copies.
+            import json
+            from pathlib import Path
+            root = Path(__file__).resolve().parents[2]
+            mode = pytorch_vulkan._C.execution_mode()
+            path = root / ("docs/vulkan_coverage.json" if mode == "async"
+                           else "docs/vulkan_general_matmul_sync_coverage.json")
+            captured = json.loads(path.read_text())[case.name]["general_matmul_evidence"]
+            from general_matmul_cases import GENERAL_MATMUL_CASES
+            fixture = next(c for c in GENERAL_MATMUL_CASES if c["id"] == case.name)
+            assert pytorch_vulkan._C.vulkan_copy_count() >= fixture["materialization_minimum"]
+            assert pytorch_vulkan._C.vulkan_copy_count() == captured["forward"]["counters"][1]
+        elif case.name.startswith("mse-ad."):
+            from mse_capability_evidence import REQUIRED_CASES
+            # Public target (1,3) expands to (2,3); source loss.cpp
+            # materializes that target exactly once before shader dispatch.
+            expected_copies = 1 if REQUIRED_CASES[case.name]["kind"] == "broadcast" else 0
+            assert pytorch_vulkan._C.vulkan_copy_count() == expected_copies
+        elif case.name not in {"linear.forward", "linear.forward.strided"}:
             assert pytorch_vulkan._C.vulkan_copy_count() == 0
     elif case.execution_mode == "copy":
         assert pytorch_vulkan._C.vulkan_copy_count() > 0
@@ -197,6 +229,26 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
         convolution_context=convolution_context,
         graph_autograd=(graph_context or {}).get("graph_autograd"),
     )
+
+
+def test_nonzero_ordinary_convolution_backward_rejects_device_copy_cpu_only(monkeypatch):
+    """Run the actual compute assertion block with CPU-only synthetic counters."""
+    import sys
+    module = sys.modules[__name__]
+    case = next(c for c in SUPPORTED_CASES
+                if c.name.startswith("convolution.backward.bias-") and any(c.args[-1]))
+    monkeypatch.setattr(module, "run_and_compare", lambda *a, **k: (None, None, ()))
+    monkeypatch.setattr(module, "assert_vulkan_result", lambda *a: None)
+    monkeypatch.setattr(vc, "assert_result_parity", lambda *a: None)
+    monkeypatch.setattr(vc, "mark_executed", lambda *a: None)
+    monkeypatch.setattr(module, "record_coverage", lambda *a, **k: None)
+    monkeypatch.setitem(vc._CASE_EXECUTION, case.name, {"vulkan_copies": 1})
+    monkeypatch.setattr(pytorch_vulkan._C, "compute_dispatch_count", lambda: sum(case.args[-1]))
+    monkeypatch.setattr(pytorch_vulkan._C, "vulkan_copy_count", lambda: 1)
+    monkeypatch.setattr(pytorch_vulkan._C, "explicit_transfer_count", lambda: 0)
+    monkeypatch.setattr(pytorch_vulkan._C, "fallback_count", lambda: 0)
+    with pytest.raises(AssertionError):
+        test_supported_case_matches_cpu_and_stays_vulkan("vk:0", case)
 
 
 def test_executed_cases_match_recorded_cases():

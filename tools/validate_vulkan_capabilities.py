@@ -55,11 +55,11 @@ KNOWN_LAYOUTS = frozenset(
     {"strided", "contiguous", "transposed-contiguous", "non-overlapping", "zero-offset"}
 )
 EMPTY_VALUES = frozenset({"empty_output_supported", "empty_rejected", "empty_deferred", "reduction_identity_or_nan", "zero_size_noop"})
-SHAPE_PATTERN = re.compile(r"(?:unwitnessed|[1-9][0-9]*(?:x[1-9][0-9]*)*)")
+SHAPE_PATTERN = re.compile(r"(?:unwitnessed|(?:0|[1-9][0-9]*)(?:x(?:0|[1-9][0-9]*))*)")
 ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
-AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "reverse_first_order_graph_witnessed", "reverse_finite_second_order_witnessed", "reverse_selected_third_order_witnessed", "not_applicable"})
+AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "reverse_first_order_graph_witnessed", "reverse_finite_second_order_witnessed", "reverse_mse_finite_second_order_witnessed", "reverse_selected_third_order_witnessed", "not_applicable"})
 EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "rejected_before_vulkan", "deferred_before_vulkan"})
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
@@ -92,6 +92,10 @@ TEST_VALUES = frozenset(
         "tests/python/test_vulkan_operator_capabilities.py",
         "tests/python/test_vulkan_linear.py",
         "tests/python/test_vulkan_vector_matmul_capability_evidence.py",
+        "tests/python/test_vulkan_general_matmul.py",
+        "tests/python/test_vulkan_general_matmul_capability_evidence.py",
+        "tests/python/test_vulkan_mse_autograd.py",
+        "tests/python/test_vulkan_mse_capability_evidence.py",
     }
 )
 
@@ -165,6 +169,39 @@ def qualify_vector_matmul_current_runtime(coverage: dict[str, Any], root: Path) 
             recorded = record["vector_matmul_evidence"]["runtime_identity"]
             if any(recorded[key] != current[key] for key in compared):
                 raise ValueError(f"{name}: capture does not qualify the current build/device/mode")
+
+
+def validate_general_matmul_evidence(coverage, root, *, require_complete=False):
+    import sys
+    tests_path = str(root / "tests/python")
+    if tests_path not in sys.path:
+        sys.path.insert(0, tests_path)
+    from general_matmul_capability_evidence import validate_general_matmul_evidence as validate
+    validate(coverage, root, require_complete=require_complete)
+
+
+def qualify_general_matmul_current_runtime(coverage, root):
+    import sys
+    tests_path = str(root / "tests/python")
+    if tests_path not in sys.path:
+        sys.path.insert(0, tests_path)
+    from general_matmul_capability_evidence import qualify_general_matmul_current_runtime as qualify
+    qualify(coverage, root)
+
+
+def validate_general_matmul_manifest_bindings(entries, coverage):
+    from general_matmul_capability_evidence import REQUIRED_CASES
+    entry = next((e for e in entries if e["schema"] == "aten::matmul.default"), None)
+    if entry is None:
+        raise ValueError("general matmul has no manifest entry")
+    names = [c["name"] for c in entry["test_cases"] if c["supported"]]
+    witnesses = entry["witnesses"]
+    if len(names) != len(set(names)) or not REQUIRED_CASES.keys() <= set(names) or not REQUIRED_CASES.keys() <= set(witnesses["cases"]):
+        raise ValueError("general matmul manifest is missing unique source-owned bindings")
+    first = {n for n in REQUIRED_CASES if coverage[n]["general_matmul_evidence"]["first"]}
+    mixed = {n for n in REQUIRED_CASES if coverage[n]["general_matmul_evidence"]["mixed"]}
+    if not first <= set(witnesses.get("reverse_first_order_graph_cases", [])) or not mixed <= set(witnesses.get("reverse_second_order_cases", [])):
+        raise ValueError("general matmul manifest is missing graph-direction bindings")
 
 
 def validate_vector_matmul_evidence(
@@ -1448,10 +1485,15 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
                 ):
                     raise ValueError(f"{path}.witnesses.reverse_second_order_cases: {name!r} lacks matching executed reverse evidence")
         autograd_contract = entry["autograd"] if isinstance(entry["autograd"], str) else None
+        if autograd_contract == "reverse_mse_finite_second_order_witnessed" and schema != "aten::mse_loss.default":
+            raise ValueError("finite MSE autograd vocabulary applies only to public MSE")
         allowed_link_keys = {
             "reverse_second_order_witnessed": {"reverse_second_order_cases"},
             "reverse_first_order_graph_witnessed": {"reverse_first_order_graph_cases"},
             "reverse_finite_second_order_witnessed": {
+                "reverse_first_order_graph_cases", "reverse_second_order_cases",
+            },
+            "reverse_mse_finite_second_order_witnessed": {
                 "reverse_first_order_graph_cases", "reverse_second_order_cases",
             },
             "reverse_selected_third_order_witnessed": {
@@ -1491,6 +1533,16 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
                 if not isinstance(record, dict) or record.get("schema") != schema or record.get("parity") is not True:
                     raise ValueError(f"{path}.witnesses.{link_key}: {name!r} lacks matching parity evidence")
                 if record.get("graph_autograd") is None:
+                    mse = record.get("mse_autograd_evidence")
+                    if mse is not None:
+                        if link_key in ("reverse_first_order_graph_cases", "reverse_second_order_cases"):
+                            continue  # Strict source/CPU replay validation below.
+                    general = record.get("general_matmul_evidence")
+                    if general is not None:
+                        if link_key == "reverse_first_order_graph_cases" and general.get("first"):
+                            continue
+                        if link_key == "reverse_second_order_cases" and general.get("mixed"):
+                            continue
                     vector_graph = record.get("vector_matmul_evidence", {}).get("graph")
                     vector_directions = vector_graph.get("directions", []) if isinstance(vector_graph, dict) else []
                     if (link_key == "reverse_first_order_graph_cases"
@@ -1517,7 +1569,7 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         graph_autograd = entry["autograd"]
         if graph_autograd == "reverse_first_order_graph_witnessed" and not witnesses.get("reverse_first_order_graph_cases"):
             raise ValueError(f"{path}.witnesses.reverse_first_order_graph_cases: required for first-order graph witness")
-        if graph_autograd == "reverse_finite_second_order_witnessed":
+        if graph_autograd in {"reverse_finite_second_order_witnessed", "reverse_mse_finite_second_order_witnessed"}:
             for link_key in ("reverse_first_order_graph_cases", "reverse_second_order_cases"):
                 if not witnesses.get(link_key):
                     raise ValueError(f"{path}.witnesses.{link_key}: required for finite second-order witness")
@@ -1622,11 +1674,22 @@ def validate_manifest_data(data: dict[str, Any], root: Path) -> None:
         for entry in entries
     )
     if has_vector_matmul_entry:
+        validate_general_matmul_evidence(coverage, root, require_complete=True)
+        validate_general_matmul_manifest_bindings(entries, coverage)
         validate_vector_matmul_evidence(coverage, root, require_complete=True)
         validate_vector_matmul_manifest_bindings(entries, coverage, root)
     validate_stock_composite_routes(
         STOCK_COMPOSITE_ROUTES, entries, coverage, source, explicit_rejected
     )
+    if any(e.get("schema") == "aten::mse_loss.default" for e in entries):
+        from mse_capability_evidence import validate_mse_evidence, validate_mse_manifest_bindings
+        validate_mse_evidence(coverage, root, require_complete=True)
+        validate_mse_manifest_bindings(entries, coverage)
+        sync_mse = json.loads((root / "docs/vulkan_mse_sync_coverage.json").read_text())
+        validate_mse_evidence(sync_mse, root, require_complete=True)
+        for name, record in sync_mse.items():
+            if name.startswith("mse-ad.") and record["mse_autograd_evidence"]["runtime_identity"]["execution_mode"] != "sync":
+                raise ValueError("MSE sync artifact contains wrong captured mode")
     if has_convolution_source:
         import sys
         tests_path = str(root / "tests/python")

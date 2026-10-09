@@ -111,7 +111,8 @@ def test_stock_composite_routes_are_an_explicit_source_owned_allowlist():
         "aten/src/ATen/native/LinearAlgebra.cpp::_matmul_impl"
     )
     assert {item["schema"] for item in matmul_route["dependencies"]} == {
-        "aten::dot.default", "aten::mv.default", "aten::mm.default"
+        "aten::dot.default", "aten::mv.default", "aten::mm.default", "aten::bmm.default",
+        "aten::as_strided.default", "aten::_copy_from.default", "aten::sum.dim_IntList",
     }
     assert reshape_route["reference"] == {
         "pytorch_version": "2.4.0",

@@ -68,6 +68,7 @@ ENTRY_ORDER = (
     'aten::convolution_backward.default',
     'aten::copy_.default',
     'aten::div.Tensor',
+    'aten::div_.Scalar',
     'aten::empty.memory_format',
     'aten::empty_strided.default',
     'aten::gelu.default',
@@ -272,10 +273,31 @@ def _case_index() -> dict[str, dict[str, object]]:
         for shape in case["shapes"]:
             if shape:
                 entry["shapes"].add("x".join(map(str, shape)))
+    from general_matmul_cases import GENERAL_MATMUL_CASES
+    from general_matmul_capability_evidence import validate_general_matmul_conformance_case
+    entry = index["aten::matmul.default"]
+    for case in GENERAL_MATMUL_CASES:
+        coincident = [c for c in ALL_CASES if c.name == case["id"]]
+        if len(coincident) != 1 or coincident[0].declaration_id != "aten::matmul.default" or coincident[0].expected_shape != case["output_shape"]:
+            raise ValueError(f"{case['id']}: conflicting conformance/evidence fixture")
+        expected_shapes = tuple("x".join(map(str, s)) for s in case["base_shapes"])
+        if coincident[0].declared_shapes != expected_shapes:
+            raise ValueError(f"{case['id']}: conflicting conformance/evidence shapes")
+        validate_general_matmul_conformance_case(coincident[0], case)
+        entry["tests"].update({"tests/python/test_vulkan_general_matmul.py",
+                               "tests/python/test_vulkan_general_matmul_capability_evidence.py"})
     linear_entry = index["aten::linear.default"]
     linear_entry["tests"].add("tests/python/test_vulkan_linear.py")
     for route_case in STOCK_LINEAR_ROUTE_CASES:
         linear_entry["test_cases"].append({"name": route_case["name"], "supported": True})
+    from mse_capability_evidence import REQUIRED_CASES as MSE_CASES, validate_mse_conformance_case
+    for name, fixture in MSE_CASES.items():
+        coincident = [c for c in ALL_CASES if c.name == name]
+        if len(coincident) != 1:
+            raise ValueError(name + ": conflicting conformance/evidence IDs")
+        validate_mse_conformance_case(coincident[0], fixture)
+    index["aten::mse_loss.default"]["tests"].update({
+        "tests/python/test_vulkan_mse_autograd.py", "tests/python/test_vulkan_mse_capability_evidence.py"})
     return index
 
 
@@ -331,6 +353,15 @@ def _witnesses_by_schema(coverage: dict[str, dict]) -> dict[str, dict[str, list]
             if any(direction.startswith("second_reverse") for direction in graph["directions"]):
                 bucket["reverse_second_order_cases"].add(name)
         vector_graph = record.get("vector_matmul_evidence", {}).get("graph")
+        general = record.get("general_matmul_evidence")
+        mse = record.get("mse_autograd_evidence")
+        if mse is not None:
+            bucket["reverse_first_order_graph_cases"].add(name)
+        if general is not None:
+            if general["first"]:
+                bucket["reverse_first_order_graph_cases"].add(name)
+            if general["mixed"]:
+                bucket["reverse_second_order_cases"].add(name)
         if vector_graph is not None:
             if ("first_reverse" in vector_graph.get("directions", [])
                     and DECLARATIONS[record["schema"]]["autograd"] in {
@@ -360,6 +391,10 @@ def build_coverage_manifest(coverage: dict[str, dict]) -> dict:
     validate_tensor_list_evidence(coverage, require_complete=True)
     validate_convolution_evidence(coverage, require_complete=True)
     validate_vector_matmul_evidence(coverage, ROOT, require_complete=True)
+    from general_matmul_capability_evidence import validate_general_matmul_evidence
+    validate_general_matmul_evidence(coverage, ROOT, require_complete=True)
+    from mse_capability_evidence import validate_mse_evidence
+    validate_mse_evidence(coverage, ROOT, require_complete=True)
     vc.validate_graph_autograd_evidence(coverage, _build_manifest()["entries"])
     manifest = _build_manifest()
     source, rejected = _source_registration_inventory(ROOT / "src")

@@ -9,7 +9,7 @@ layout(push_constant, std430) uniform Params {
   uint element_count;
   uint reduction;
   uint backward;
-  uint padding;
+  uint auxiliary_scalar_offset;
 } params;
 // mse_loss and mse_loss_backward share this deliberately narrow shader contract.
 
@@ -39,7 +39,11 @@ void main() {
   if (index >= params.element_count) return;
   if (params.backward != 0u) {
     float scale = params.reduction == 1u ? 1.0 / float(params.element_count) : 1.0;
-    float grad = params.reduction == 0u ? auxiliary_data[index] : auxiliary_data[0];
+    // Descriptors address allocation bases. Zero selects dense logical indexing;
+    // a one-element upstream encodes its allocation element offset plus one.
+    // Full-shaped second-reverse seeds stay per-element for all reductions.
+    float grad = auxiliary_data[params.auxiliary_scalar_offset != 0u
+        ? params.auxiliary_scalar_offset - 1u : index];
     output_data[index] = 2.0 * (input_data[index] - target_data[index]) * grad * scale;
     return;
   }

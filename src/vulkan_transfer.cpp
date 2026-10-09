@@ -479,8 +479,13 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     if (!vulkan_to_vulkan)
         platform.record_explicit_transfer();
 
-    const bool bulk_contiguous = source.scalar_type() == at::kFloat &&
-                                 destination.scalar_type() == at::kFloat &&
+    // VkBufferCopy offsets and sizes are bytes, with no four-byte alignment
+    // requirement (Vulkan 1.3 copy_buffer_common / buffer_copy_common).
+    // Copy exactly the logical Bool range: rounding would clobber adjacent views.
+    const bool bulk_dtype = source.scalar_type() == destination.scalar_type() &&
+                            (source.scalar_type() == at::kFloat ||
+                             source.scalar_type() == at::kBool);
+    const bool bulk_contiguous = bulk_dtype &&
                                  source.is_contiguous() && destination.is_contiguous();
     if (bulk_contiguous) {
         const VkDeviceSize source_offset = static_cast<VkDeviceSize>(
