@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import sys
@@ -70,7 +71,10 @@ def check_command(command, mode, root):
 
 def validate_document(data, root=ROOT, *, output_root=None):
     output_root = output_root or root
-    fields(data, {"schema_version", "entry_point", "source_identity", "extension", "outputs", "captures"}, "provenance")
+    keys = {"schema_version", "entry_point", "source_identity", "extension", "outputs", "captures"}
+    if "artifact_transition" in data:
+        keys.add("artifact_transition")
+    fields(data, keys, "provenance")
     if type(data["schema_version"]) is not int or data["schema_version"] != 1 or data["entry_point"] != "wrapper-first":
         raise ValueError("wrong provenance schema/entrypoint")
     if data["source_identity"] != identity(root):
@@ -87,6 +91,19 @@ def validate_document(data, root=ROOT, *, output_root=None):
         check_command(capture["command"], mode, root)
         if capture["mse_record_ids"] != mse_ids() or capture["model_record_ids"] != model_ids(mode):
             raise ValueError("missing/conflicting capture record sets")
+    if "artifact_transition" in data:
+        transition = data["artifact_transition"]
+        validate_transition_document(transition)
+        if (transition["new_extension"] != data["extension"]
+                or transition["capture_source_identity"] != data["source_identity"]):
+            raise ValueError("artifact transition differs from published provenance")
+        for mode, capture in data["captures"].items():
+            path = Path(capture["command"][-1])
+            receipt, _, _ = read_attempt(path, mode, root)
+            if (digest((path / "receipt.json").read_bytes()) != transition["receipt_sha256"][mode]
+                    or receipt["extension"] != data["extension"]
+                    or any(receipt[key] != capture[key] for key in capture)):
+                raise ValueError("artifact transition receipt differs from published provenance")
     return data
 
 
@@ -123,7 +140,7 @@ def check_runtime(runtime, mode, extension):
         raise ValueError("record runtime differs from capture provenance")
 
 
-def preserve_measurements(original, fresh):
+def preserve_measurements(original, fresh, *, extension_transition=None):
     """A startup recapture may change provenance, not historical measurements.
 
     Unexpected values/counters/routes/runtime hardware changes require human
@@ -136,7 +153,15 @@ def preserve_measurements(original, fresh):
         for key in ("checkout_head", "extension_path"):
             evidence["runtime_identity"].pop(key, None)
         return record
-    if measurements(original) != measurements(fresh):
+    old, new = measurements(original), measurements(fresh)
+    if extension_transition is not None:
+        old_runtime = old.get("mse_autograd_evidence", old)["runtime_identity"]
+        new_runtime = new.get("mse_autograd_evidence", new)["runtime_identity"]
+        if (old_runtime.get("extension_sha256"), new_runtime.get("extension_sha256")) != extension_transition:
+            raise ValueError("record artifact differs from approved extension transition")
+        # Only a separately authenticated old->new pair can change this one field.
+        new_runtime["extension_sha256"] = old_runtime["extension_sha256"]
+    if old != new:
         raise ValueError("recapture measurement changed beyond approved provenance")
 
 
@@ -284,18 +309,8 @@ def read_attempt(path, mode, root=ROOT):
     return receipt, mse, models
 
 
-def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT):
-    """CPU validation only; publish a complete two-mode candidate or nothing."""
-    root, authority = publication_root(root)
-    publication_paths(root, (*OUTPUT_PATHS, SIDECAR), authority)
-    sys.path.insert(0, str(root))
-    sys.path.insert(0, str(root / "tests/python"))
-    from mse_capability_evidence import validate_mse_evidence
-    from composed_matmul_evidence import validate_composed_evidence
-    from tools import generate_vulkan_capabilities as generator
-    from tools.validate_vulkan_capabilities import validate_manifest_data
-
-    archive = Path(archive).resolve()
+def read_archive(archive, root):
+    """Authenticate exact published baseline bytes and every archived record."""
     manifest = load(archive / "manifest.json")
     originals = {}
     for name in OUTPUT_PATHS:
@@ -314,6 +329,104 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT):
                   for key, record in records.items()}
         if hashes != entry["record_payload_sha256"]:
             raise ValueError("immutable archive record payload hash mismatch")
+    return originals
+
+
+def validate_transition_document(transition):
+    fields(transition, {"schema_version", "kind", "baseline_manifest_sha256", "old_extension_sha256",
+                        "new_extension", "source_delta", "receipt_sha256", "capture_source_identity"},
+           "artifact transition")
+    if (type(transition["schema_version"]) is not int or transition["schema_version"] != 1
+            or transition["kind"] != "contiguous-bool-transfer"):
+        raise ValueError("wrong artifact transition schema/kind")
+    fields(transition["new_extension"], {"path", "sha256"}, "transition extension")
+    fields(transition["source_delta"], {"src/vulkan_transfer.cpp"}, "approved transfer source delta")
+    delta = transition["source_delta"]["src/vulkan_transfer.cpp"]
+    fields(delta, {"before", "after"}, "transfer source delta")
+    fields(transition["receipt_sha256"], {"async", "sync"}, "transition receipts")
+    fields(transition["capture_source_identity"], set(IDENTITY_PATHS), "transition capture controls")
+    hashes = [transition["baseline_manifest_sha256"], transition["old_extension_sha256"],
+              transition["new_extension"]["sha256"], *delta.values(),
+              *transition["receipt_sha256"].values(), *transition["capture_source_identity"].values()]
+    if any(type(value) is not str or not re.fullmatch("[0-9a-f]{64}", value) for value in hashes):
+        raise ValueError("invalid artifact transition hash")
+    path = transition["new_extension"]["path"]
+    if (type(path) is not str or not Path(path).is_absolute() or delta["before"] == delta["after"]
+            or transition["old_extension_sha256"] == transition["new_extension"]["sha256"]):
+        raise ValueError("artifact transition must identify a real source/binary change")
+
+
+def validate_artifact_transition(transition, archive, originals, receipts, fresh, root):
+    """Explicit approval binds one transfer delta to an archive and two real receipts.
+
+    This CPU-only integrity gate does not manufacture GPU execution evidence.
+    Semantic validators still independently validate all fresh MSE/model records.
+    """
+    validate_transition_document(transition)
+    if digest((archive / "manifest.json").read_bytes()) != transition["baseline_manifest_sha256"]:
+        raise ValueError("artifact transition baseline manifest differs from approval")
+    # Recheck actual baseline, including unrelated records; never trust caller copies.
+    if json.dumps(read_archive(archive, root), sort_keys=True) != json.dumps(originals, sort_keys=True):
+        raise ValueError("artifact transition baseline records differ from archive")
+    if transition["capture_source_identity"] != identity(root):
+        raise ValueError("artifact transition capture controls are stale")
+    extension = transition["new_extension"]
+    if digest(Path(extension["path"]).read_bytes()) != extension["sha256"]:
+        raise ValueError("artifact transition current extension is stale")
+    pair = (transition["old_extension_sha256"], extension["sha256"])
+    observed_runtime, actual_sources = None, {}
+    for mode in ("async", "sync"):
+        receipt = receipts[mode]
+        if receipt["extension"] != extension:
+            raise ValueError("artifact transition capture modes used different extensions")
+        attempt = Path(receipt["command"][-1]).resolve()
+        actual_receipt, mse, models = read_attempt(attempt, mode, root)
+        if (digest((attempt / "receipt.json").read_bytes()) != transition["receipt_sha256"][mode]
+                or actual_receipt != receipt
+                or json.dumps((mse, models), sort_keys=True) != json.dumps(fresh[mode], sort_keys=True)):
+            raise ValueError("artifact transition receipt/payload differs from approval")
+        coverage_name = OUTPUT_PATHS[0 if mode == "async" else 1]
+        old_models = originals[OUTPUT_PATHS[2]]["records"]
+        if sorted(old_models) != sorted(model_ids("async") + model_ids("sync")):
+            raise ValueError("artifact transition baseline model inventory mismatch")
+        pairs = [(originals[coverage_name][key], mse[key]) for key in mse_ids()]
+        pairs += [(old_models[key], models["records"][key]) for key in model_ids(mode)]
+        for original, record in pairs:
+            old = original.get("mse_autograd_evidence", original)
+            new = record.get("mse_autograd_evidence", record)
+            old_sources, new_sources = old["source_identity"], new["source_identity"]
+            if old_sources.keys() != new_sources.keys():
+                raise ValueError("artifact transition semantic source inventory changed")
+            delta = {path: {"before": old_sources[path], "after": value}
+                     for path, value in new_sources.items() if old_sources[path] != value}
+            if delta != transition["source_delta"]:
+                raise ValueError("artifact transition semantic source delta is not the approved transfer change")
+            for path, value in new_sources.items():
+                if path not in actual_sources:
+                    actual_sources[path] = digest((root / path).read_bytes())
+                if actual_sources[path] != value:
+                    raise ValueError("artifact transition semantic source is stale")
+            runtime = {key: value for key, value in new["runtime_identity"].items() if key != "execution_mode"}
+            if observed_runtime is not None and observed_runtime != runtime:
+                raise ValueError("artifact transition inconsistent current runtime")
+            observed_runtime = runtime
+            preserve_measurements(original, record, extension_transition=pair)
+    return pair
+
+
+def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifact_transition=None):
+    """CPU validation only; publish a complete two-mode candidate or nothing."""
+    root, authority = publication_root(root)
+    publication_paths(root, (*OUTPUT_PATHS, SIDECAR), authority)
+    sys.path.insert(0, str(root))
+    sys.path.insert(0, str(root / "tests/python"))
+    from mse_capability_evidence import validate_mse_evidence
+    from composed_matmul_evidence import validate_composed_evidence
+    from tools import generate_vulkan_capabilities as generator
+    from tools.validate_vulkan_capabilities import validate_manifest_data
+
+    archive = Path(archive).resolve()
+    originals = read_archive(archive, root)
     receipts, fresh = {}, {}
     for mode, attempt in (("async", async_attempt), ("sync", sync_attempt)):
         receipt, mse, models = read_attempt(attempt, mode, root)
@@ -321,11 +434,18 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT):
         receipts[mode], fresh[mode] = receipt, (mse, models)
     if receipts["async"]["extension"] != receipts["sync"]["extension"]:
         raise ValueError("capture modes used different extensions")
+    transition, extension_transition = None, None
+    if artifact_transition is not None:
+        artifact_transition = Path(artifact_transition).resolve()
+        if not artifact_transition.is_relative_to(root / ".superpowers"):
+            raise ValueError("artifact transition must be retained excluded within checkout")
+        transition = load(artifact_transition)
+        extension_transition = validate_artifact_transition(transition, archive, originals, receipts, fresh, root)
     candidates = dict(originals)
     for mode, name in (("async", OUTPUT_PATHS[0]), ("sync", OUTPUT_PATHS[1])):
         candidates[name] = {**originals[name], **fresh[mode][0]}
         for key in mse_ids():
-            preserve_measurements(originals[name][key], fresh[mode][0][key])
+            preserve_measurements(originals[name][key], fresh[mode][0][key], extension_transition=extension_transition)
         if any(candidates[name][key] != value for key, value in originals[name].items() if key not in mse_ids()):
             raise ValueError("unaffected coverage payload changed")
         current = load(root / name)
@@ -335,7 +455,7 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT):
         **fresh["async"][1]["records"], **fresh["sync"][1]["records"]}}
     validate_composed_evidence(candidates[OUTPUT_PATHS[2]], root)
     for key, record in candidates[OUTPUT_PATHS[2]]["records"].items():
-        preserve_measurements(originals[OUTPUT_PATHS[2]]["records"][key], record)
+        preserve_measurements(originals[OUTPUT_PATHS[2]]["records"][key], record, extension_transition=extension_transition)
     capabilities = generator.build_coverage_manifest(candidates[OUTPUT_PATHS[0]])
     payloads = {name: (json.dumps(candidates[name], indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
                 for name in OUTPUT_PATHS[:3]}
@@ -349,7 +469,9 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT):
                "extension": receipts["async"]["extension"],
                "outputs": {name: digest(payload) for name, payload in payloads.items()},
                "captures": {mode: {key: receipt[key] for key in ("command", "mse_record_ids", "model_record_ids")}
-                            for mode, receipt in receipts.items()}}
+                             for mode, receipt in receipts.items()}}
+    if transition is not None:
+        sidecar["artifact_transition"] = transition
     payloads[SIDECAR] = (json.dumps(sidecar, indent=2, sort_keys=True) + "\n").encode()
     # Candidate view uses current source, not a copy or relabel of historical maps.
     with tempfile.TemporaryDirectory(prefix="composed-candidate-", dir=root / ".superpowers") as directory:
@@ -368,6 +490,10 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT):
             path.write_bytes(payload)
         # Command source paths refer to the actual checkout, not this temporary view.
         def validate():
+            if transition is not None:
+                if load(artifact_transition) != transition:
+                    raise ValueError("artifact transition approval changed before publication")
+                validate_artifact_transition(transition, archive, originals, receipts, fresh, root)
             validate_manifest_data(capabilities, candidate_root)
             validate_composed_evidence(candidates[OUTPUT_PATHS[2]], candidate_root)
             validate_file(candidate_root / SIDECAR, root, output_root=candidate_root)
@@ -390,6 +516,8 @@ def main():
     parser.add_argument("--async-attempt", type=Path)
     parser.add_argument("--sync-attempt", type=Path)
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--artifact-transition", type=Path,
+                        help="explicit approved transfer artifact transition, bound to archive and both receipts")
     args = parser.parse_args()
     try:
         if args.publish:
@@ -397,8 +525,11 @@ def main():
                 parser.error("--publish requires both attempts and immutable --archive")
             if args.provenance.resolve() != (ROOT / SIDECAR).resolve():
                 parser.error("--publish writes only the canonical provenance sidecar")
-            publish_attempts(args.async_attempt, args.sync_attempt, args.archive)
+            publish_attempts(args.async_attempt, args.sync_attempt, args.archive,
+                             artifact_transition=args.artifact_transition)
         else:
+            if args.artifact_transition is not None:
+                parser.error("--artifact-transition requires --publish")
             validate_file(args.provenance)
     except (ValueError, KeyError, TypeError, OSError) as error:
         print(f"bootstrap provenance failed: {error}", file=sys.stderr)

@@ -278,6 +278,311 @@ def test_preservation_rejects_numerical_changes_but_allows_only_new_source_prove
         validator.preserve_measurements(old, fresh)
 
 
+@pytest.fixture
+def artifact_transition_fixture(tmp_path):
+    """Synthetic CPU-only 198-record archive/receipts, never hardware evidence."""
+    validator = module('validate_vulkan_bootstrap_provenance')
+    root = tmp_path / 'root'
+    root.mkdir()
+    for name in validator.IDENTITY_PATHS:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'CPU-only control source')
+    old_transfer, new_transfer = b'old CPU-only transfer', b'new CPU-only transfer'
+    sources = {}
+    for name, payload in [('src/vulkan_transfer.cpp', new_transfer), ('src/unchanged.cpp', b'unchanged')]:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        sources[name] = validator.digest(payload)
+    old_sources = dict(sources, **{'src/vulkan_transfer.cpp': validator.digest(old_transfer)})
+    extension = root / 'build/CPU-only-extension.so'
+    extension.parent.mkdir()
+    extension.write_bytes(b'new CPU-only extension')
+    old_sha = validator.digest(b'old CPU-only extension')
+    new_extension = {'path': str(extension), 'sha256': validator.digest(extension.read_bytes())}
+    archive = root / '.superpowers/archive'
+    archive.mkdir(parents=True)
+
+    def record(mode, fresh=False, mse=False):
+        runtime = {'pytorch_version': '2.4.0+cpu', 'pytorch_git_revision': 'a' * 40,
+                   'checkout_head': 'b' * 40, 'extension_sha256': new_extension['sha256'] if fresh else old_sha,
+                   'extension_path': str(extension), 'device': 'vk:0', 'hardware': 'CPU-only GPU fixture',
+                   'driver': 'CPU-only driver fixture', 'vulkan_api_version': '1.4.354',
+                   'vulkan_instance_version': '1.4.363', 'execution_mode': mode}
+        evidence = {'runtime_identity': runtime, 'source_identity': copy.deepcopy(sources if fresh else old_sources),
+                    'cpu': [1.0], 'vulkan': [1.0], 'route': ['aten::mm'], 'counters': [1, 0, 0, 0]}
+        return {'mse_autograd_evidence': evidence} if mse else evidence
+
+    originals = {name: {'unaffected': {'cpu_only': True}} for name in validator.OUTPUT_PATHS}
+    for mode, name in [('async', validator.OUTPUT_PATHS[0]), ('sync', validator.OUTPUT_PATHS[1])]:
+        originals[name].update({key: record(mode, mse=True) for key in validator.mse_ids()})
+    originals[validator.OUTPUT_PATHS[2]] = {'schema_version': 1, 'records': {
+        key: record(mode) for mode in ('async', 'sync') for key in validator.model_ids(mode)}}
+    manifest = {'files': {}}
+    for name, data in originals.items():
+        payload = (json.dumps(data, sort_keys=True) + '\n').encode()
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(payload)
+        short = Path(name).name
+        (archive / short).write_bytes(payload)
+        records = data.get('records', data)
+        manifest['files'][short] = {'sha256': validator.digest(payload), 'size': len(payload),
+            'record_payload_sha256': {key: validator.digest(json.dumps(value, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode()) for key, value in records.items()}}
+    (archive / 'manifest.json').write_text(json.dumps(manifest))
+    receipts, fresh, attempts = {}, {}, {}
+    for mode in ('async', 'sync'):
+        attempt = root / '.superpowers' / mode
+        attempt.mkdir()
+        mse = {key: record(mode, fresh=True, mse=True) for key in validator.mse_ids()}
+        models = {'schema_version': 1, 'records': {key: record(mode, fresh=True) for key in validator.model_ids(mode)}}
+        for name, data in [('mse.json', mse), ('models.json', models)]:
+            (attempt / name).write_text(json.dumps(data))
+        receipt = {'schema_version': 1, 'entry_point': 'wrapper-first', 'mode': mode,
+            'command': ['/CPU-only/python', str(root / 'tools/capture_vulkan_composed_evidence.py'),
+                        '--mode', mode, '--device', 'vk:0', '--output', str(attempt)],
+            'source_identity': validator.identity(root), 'extension': dict(new_extension),
+            'outputs': {name: validator.digest((attempt / name).read_bytes()) for name in ('mse.json', 'models.json')},
+            'mse_record_ids': validator.mse_ids(), 'model_record_ids': validator.model_ids(mode)}
+        (attempt / 'receipt.json').write_text(json.dumps(receipt))
+        receipts[mode], fresh[mode], attempts[mode] = receipt, (mse, models), attempt
+    transition = {'schema_version': 1, 'kind': 'contiguous-bool-transfer',
+        'baseline_manifest_sha256': validator.digest((archive / 'manifest.json').read_bytes()),
+        'old_extension_sha256': old_sha, 'new_extension': new_extension,
+        'source_delta': {'src/vulkan_transfer.cpp': {'before': old_sources['src/vulkan_transfer.cpp'],
+                                                  'after': sources['src/vulkan_transfer.cpp']}},
+        'receipt_sha256': {mode: validator.digest((attempts[mode] / 'receipt.json').read_bytes())
+                           for mode in ('async', 'sync')},
+        'capture_source_identity': validator.identity(root)}
+    return SimpleNamespace(validator=validator, root=root, archive=archive, originals=originals,
+                           receipts=receipts, fresh=fresh, attempts=attempts, transition=transition)
+
+
+def check_artifact_transition(fixture):
+    check = getattr(fixture.validator, 'validate_artifact_transition', None)
+    assert callable(check), 'missing explicit baseline/receipt-bound artifact transition guard'
+    return check(fixture.transition, fixture.archive, fixture.originals,
+                 fixture.receipts, fixture.fresh, fixture.root)
+
+
+def test_artifact_transition_changed_extension_rejected_by_default(artifact_transition_fixture):
+    f = artifact_transition_fixture
+    key = f.validator.mse_ids()[0]
+    with pytest.raises(ValueError, match='measurement'):
+        f.validator.preserve_measurements(f.originals[f.validator.OUTPUT_PATHS[0]][key], f.fresh['async'][0][key])
+
+
+def test_artifact_transition_accepts_only_matching_explicit_guard_without_mutation(artifact_transition_fixture):
+    f = artifact_transition_fixture
+    before = json.dumps([f.originals, f.receipts, f.fresh, f.transition], sort_keys=True)
+    pair = check_artifact_transition(f)
+    assert pair == (f.transition['old_extension_sha256'], f.transition['new_extension']['sha256'])
+    key = f.validator.mse_ids()[0]
+    f.validator.preserve_measurements(f.originals[f.validator.OUTPUT_PATHS[0]][key],
+                                     f.fresh['async'][0][key], extension_transition=pair)
+    assert json.dumps([f.originals, f.receipts, f.fresh, f.transition], sort_keys=True) == before
+
+
+@pytest.mark.parametrize('mutation', [
+    'archive_digest', 'old_sha', 'new_sha', 'receipt_digest', 'raw_receipt', 'raw_output',
+    'source_before', 'source_after', 'extra_source', 'source_drift', 'actual_source',
+    'controls', 'mode_extension', 'driver', 'instance', 'hardware', 'api', 'reference',
+    'mode', 'measurement', 'route', 'counter', 'missing_mse', 'missing_model',
+    'old_model_sha', 'unrelated_record', 'extra_field', 'wrong_kind', 'actual_extension',
+    'baseline_bytes', 'current_baseline', 'stale_controls',
+])
+def test_artifact_transition_rejects_tampering(artifact_transition_fixture, mutation):
+    f = artifact_transition_fixture
+    t = f.transition
+    evidence = f.fresh['async'][0][f.validator.mse_ids()[0]]['mse_autograd_evidence']
+    if mutation == 'archive_digest': t['baseline_manifest_sha256'] = '0' * 64
+    elif mutation == 'old_sha': t['old_extension_sha256'] = '0' * 64
+    elif mutation == 'new_sha': t['new_extension']['sha256'] = '0' * 64
+    elif mutation == 'receipt_digest': t['receipt_sha256']['sync'] = '0' * 64
+    elif mutation == 'raw_receipt': (f.attempts['sync'] / 'receipt.json').write_text('{}')
+    elif mutation == 'raw_output': (f.attempts['sync'] / 'mse.json').write_text('{}')
+    elif mutation == 'source_before': t['source_delta']['src/vulkan_transfer.cpp']['before'] = '0' * 64
+    elif mutation == 'source_after': t['source_delta']['src/vulkan_transfer.cpp']['after'] = '0' * 64
+    elif mutation == 'extra_source': t['source_delta']['src/unchanged.cpp'] = {'before': '0' * 64, 'after': '1' * 64}
+    elif mutation == 'source_drift': evidence['source_identity']['src/unchanged.cpp'] = '0' * 64
+    elif mutation == 'actual_source': (f.root / 'src/unchanged.cpp').write_bytes(b'tampered')
+    elif mutation == 'controls': t['capture_source_identity'][f.validator.IDENTITY_PATHS[0]] = '0' * 64
+    elif mutation == 'mode_extension': f.receipts['sync']['extension']['sha256'] = '0' * 64
+    elif mutation in {'driver', 'instance', 'hardware', 'api', 'reference', 'mode'}:
+        key = {'instance': 'vulkan_instance_version', 'api': 'vulkan_api_version',
+               'reference': 'pytorch_git_revision', 'mode': 'execution_mode'}.get(mutation, mutation)
+        evidence['runtime_identity'][key] = 'tampered'
+    elif mutation == 'measurement': evidence['vulkan'][0] = 2.0
+    elif mutation == 'route': evidence['route'] = ['aten::dot']
+    elif mutation == 'counter': evidence['counters'][0] = 2
+    elif mutation == 'missing_mse': f.fresh['async'][0].pop(f.validator.mse_ids()[0])
+    elif mutation == 'missing_model': f.fresh['sync'][1]['records'].pop(f.validator.model_ids('sync')[0])
+    elif mutation == 'old_model_sha':
+        f.originals[f.validator.OUTPUT_PATHS[2]]['records'][f.validator.model_ids('async')[0]]['runtime_identity']['extension_sha256'] = '0' * 64
+    elif mutation == 'unrelated_record': f.originals[f.validator.OUTPUT_PATHS[0]]['unaffected']['cpu_only'] = False
+    elif mutation == 'extra_field': t['bypass'] = True
+    elif mutation == 'wrong_kind': t['kind'] = 'arbitrary-source-change'
+    elif mutation == 'actual_extension': Path(t['new_extension']['path']).write_bytes(b'tampered')
+    elif mutation == 'baseline_bytes': (f.archive / 'vulkan_coverage.json').write_text('{}')
+    elif mutation == 'current_baseline': (f.root / f.validator.OUTPUT_PATHS[0]).write_text('{}')
+    elif mutation == 'stale_controls': (f.root / f.validator.IDENTITY_PATHS[-1]).write_bytes(b'changed policy after capture')
+    # Rebind authentic-looking receipt/output hashes for semantic mutations, so
+    # rejection must come from inventory/source/runtime/measurement guards too.
+    if mutation in {'source_drift', 'driver', 'instance', 'hardware', 'api', 'reference',
+                    'mode', 'measurement', 'route', 'counter', 'missing_mse', 'missing_model'}:
+        for mode in ('async', 'sync'):
+            attempt = f.attempts[mode]
+            for name, data in zip(('mse.json', 'models.json'), f.fresh[mode]):
+                (attempt / name).write_text(json.dumps(data))
+            f.receipts[mode]['outputs'] = {name: f.validator.digest((attempt / name).read_bytes())
+                                          for name in ('mse.json', 'models.json')}
+            (attempt / 'receipt.json').write_text(json.dumps(f.receipts[mode]))
+            t['receipt_sha256'][mode] = f.validator.digest((attempt / 'receipt.json').read_bytes())
+    before = json.dumps([f.originals, f.receipts, f.fresh, f.transition], sort_keys=True)
+    with pytest.raises(ValueError):
+        check_artifact_transition(f)
+    assert json.dumps([f.originals, f.receipts, f.fresh, f.transition], sort_keys=True) == before
+
+
+def _cpu_old_artifact_publication_baseline(validator, source_documents):
+    """Private synthetic history, never a recapture or canonical evidence rewrite."""
+    originals = copy.deepcopy(source_documents)
+    old_extension = validator.digest(b'CPU-only previous extension fixture')
+    old_transfer = validator.digest(b'CPU-only previous transfer source fixture')
+    for name in validator.OUTPUT_PATHS[:3]:
+        records = originals[name].get('records', originals[name])
+        for key, record in records.items():
+            if key.startswith(('mse-ad.', 'g3.')):
+                evidence = record.get('mse_autograd_evidence', record)
+                evidence['runtime_identity']['extension_sha256'] = old_extension
+                evidence['source_identity']['src/vulkan_transfer.cpp'] = old_transfer
+    return originals
+
+
+@pytest.mark.parametrize('publication_state', ['pre-transition', 'post-transition'])
+def test_artifact_transition_publication_cpu_replay_fixture(tmp_path, publication_state):
+    """Exercise the real publisher/semantic validators on copied CPU fixtures.
+
+    These constructed attempts are NOT GPU receipts and never leave tmp_path.
+    Canonical history/source/binary files are read-only throughout this test.
+    """
+    validator = module('validate_vulkan_bootstrap_provenance')
+    source_documents = {name: json.loads((ROOT / name).read_bytes()) for name in validator.OUTPUT_PATHS}
+    if publication_state == 'pre-transition':
+        source_transfer = '705429bd82d3e5919ab28dc5db5efc263c14787a559b53e1f0e0f866b601face'
+        source_extension = '375f27fd56ca33c3e4aa1f190402d24c9806c395e8b3d92bf8973e775dae5e77'
+    else:
+        source_transfer = validator.digest((ROOT / 'src/vulkan_transfer.cpp').read_bytes())
+        source_extension = validator.digest((ROOT / 'build/pytorch_vulkan/_C.cpython-312-x86_64-linux-gnu.so').read_bytes())
+    for name in validator.OUTPUT_PATHS[:3]:
+        records = source_documents[name].get('records', source_documents[name])
+        for key, record in records.items():
+            if key.startswith(('mse-ad.', 'g3.')):
+                evidence = record.get('mse_autograd_evidence', record)
+                evidence['source_identity']['src/vulkan_transfer.cpp'] = source_transfer
+                evidence['runtime_identity']['extension_sha256'] = source_extension
+    source_before = json.dumps(source_documents, sort_keys=True)
+    originals = _cpu_old_artifact_publication_baseline(validator, source_documents)
+    assert json.dumps(source_documents, sort_keys=True) == source_before
+    root = tmp_path / 'CPU-only-publication'
+    root.mkdir()
+    for name in ('src', 'python', 'tests', 'tools'):
+        (root / name).symlink_to(ROOT / name, target_is_directory=True)
+    (root / 'CMakeLists.txt').symlink_to(ROOT / 'CMakeLists.txt')
+    (root / 'docs').mkdir()
+    archive = root / '.superpowers/archive'
+    archive.mkdir(parents=True)
+    manifest = {'files': {}}
+    for name in validator.OUTPUT_PATHS:
+        payload = (json.dumps(originals[name], allow_nan=False).encode()
+                   if name in validator.OUTPUT_PATHS[:3] else (ROOT / name).read_bytes())
+        (root / name).write_bytes(payload)
+        short = Path(name).name
+        (archive / short).write_bytes(payload)
+        data = json.loads(payload)
+        records = data.get('records', data)
+        if isinstance(records, list): records = {str(i): record for i, record in enumerate(records)}
+        manifest['files'][short] = {'sha256': validator.digest(payload), 'size': len(payload),
+            'record_payload_sha256': {key: validator.digest(json.dumps(value, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode()) for key, value in records.items()}}
+    (archive / 'manifest.json').write_text(json.dumps(manifest))
+    original_bytes = {name: (root / name).read_bytes() for name in validator.OUTPUT_PATHS}
+    extension_path = ROOT / 'build/pytorch_vulkan/_C.cpython-312-x86_64-linux-gnu.so'
+    extension = {'path': str(extension_path.resolve()), 'sha256': validator.digest(extension_path.read_bytes())}
+    first_old = originals[validator.OUTPUT_PATHS[0]][validator.mse_ids()[0]]['mse_autograd_evidence']
+    delta = {'before': first_old['source_identity']['src/vulkan_transfer.cpp'],
+             'after': validator.digest((ROOT / 'src/vulkan_transfer.cpp').read_bytes())}
+    assert first_old['runtime_identity']['extension_sha256'] != extension['sha256']
+    assert delta['before'] != delta['after']
+    attempts = {}
+    for mode, name in [('async', validator.OUTPUT_PATHS[0]), ('sync', validator.OUTPUT_PATHS[1])]:
+        attempt = root / '.superpowers' / mode
+        attempt.mkdir()
+        mse = {key: copy.deepcopy(originals[name][key]) for key in validator.mse_ids()}
+        models = {'schema_version': 1, 'records': {key: copy.deepcopy(originals[validator.OUTPUT_PATHS[2]]['records'][key])
+                                                  for key in validator.model_ids(mode)}}
+        for record in [*mse.values(), *models['records'].values()]:
+            evidence = record.get('mse_autograd_evidence', record)
+            evidence['source_identity']['src/vulkan_transfer.cpp'] = delta['after']
+            evidence['runtime_identity']['extension_sha256'] = extension['sha256']
+            evidence['runtime_identity']['extension_path'] = extension['path']
+        for filename, data in [('mse.json', mse), ('models.json', models)]:
+            (attempt / filename).write_text(json.dumps(data, allow_nan=False))
+        receipt = {'schema_version': 1, 'entry_point': 'wrapper-first', 'mode': mode,
+            'command': ['/CPU-only/python', str(root / 'tools/capture_vulkan_composed_evidence.py'),
+                        '--mode', mode, '--device', 'vk:0', '--output', str(attempt)],
+            'source_identity': validator.identity(root), 'extension': extension,
+            'outputs': {filename: validator.digest((attempt / filename).read_bytes()) for filename in ('mse.json', 'models.json')},
+            'mse_record_ids': validator.mse_ids(), 'model_record_ids': validator.model_ids(mode)}
+        (attempt / 'receipt.json').write_text(json.dumps(receipt))
+        attempts[mode] = attempt
+    transition = {'schema_version': 1, 'kind': 'contiguous-bool-transfer',
+        'baseline_manifest_sha256': validator.digest((archive / 'manifest.json').read_bytes()),
+        'old_extension_sha256': first_old['runtime_identity']['extension_sha256'],
+        'new_extension': extension, 'source_delta': {'src/vulkan_transfer.cpp': delta},
+        'receipt_sha256': {mode: validator.digest((attempt / 'receipt.json').read_bytes()) for mode, attempt in attempts.items()},
+        'capture_source_identity': validator.identity(root)}
+    approval = root / '.superpowers/CPU-only-transition.json'
+    approval.write_text(json.dumps(transition))
+    with pytest.raises(ValueError, match='measurement'):
+        validator.publish_attempts(attempts['async'], attempts['sync'], archive, root)
+    assert {name: (root / name).read_bytes() for name in original_bytes} == original_bytes
+    published = validator.publish_attempts(attempts['async'], attempts['sync'], archive, root,
+                                           artifact_transition=approval)
+    assert published['artifact_transition'] == transition
+    validator.validate_file(root / validator.SIDECAR, root)
+    assert {name: (archive / Path(name).name).read_bytes() for name in original_bytes} == original_bytes
+    updated = json.loads((root / validator.OUTPUT_PATHS[0]).read_text())
+    assert all(updated[key] == value for key, value in originals[validator.OUTPUT_PATHS[0]].items()
+               if key not in validator.mse_ids())
+    for name in validator.OUTPUT_PATHS[3:]:
+        assert (root / name).read_bytes() == original_bytes[name]
+    assert not list(root.glob('.composed-publication-*'))
+
+
+def test_artifact_transition_sidecar_cannot_rebind_receipt_to_another_extension(artifact_transition_fixture):
+    f = artifact_transition_fixture
+    receipt = f.receipts['sync']
+    receipt['extension']['sha256'] = '0' * 64
+    for record in [*f.fresh['sync'][0].values(), *f.fresh['sync'][1]['records'].values()]:
+        record.get('mse_autograd_evidence', record)['runtime_identity']['extension_sha256'] = '0' * 64
+    attempt = f.attempts['sync']
+    for name, data in zip(('mse.json', 'models.json'), f.fresh['sync']):
+        (attempt / name).write_text(json.dumps(data))
+    receipt['outputs'] = {name: f.validator.digest((attempt / name).read_bytes()) for name in ('mse.json', 'models.json')}
+    (attempt / 'receipt.json').write_text(json.dumps(receipt))
+    f.transition['receipt_sha256']['sync'] = f.validator.digest((attempt / 'receipt.json').read_bytes())
+    document = {'schema_version': 1, 'entry_point': 'wrapper-first',
+        'source_identity': f.validator.identity(f.root), 'extension': f.transition['new_extension'],
+        'outputs': {name: f.validator.digest((f.root / name).read_bytes()) for name in f.validator.OUTPUT_PATHS},
+        'captures': {mode: {key: f.receipts[mode][key] for key in ('command', 'mse_record_ids', 'model_record_ids')}
+                     for mode in ('async', 'sync')},
+        'artifact_transition': f.transition}
+    with pytest.raises(ValueError, match='receipt'):
+        f.validator.validate_document(document, f.root)
+
+
 def test_record_inventory_tampering_fails_even_if_output_hash_was_rebound(tmp_path):
     validator = module('validate_vulkan_bootstrap_provenance')
     document = cpu_provenance_fixture(tmp_path, validator)

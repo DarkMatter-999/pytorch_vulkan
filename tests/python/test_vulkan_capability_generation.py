@@ -866,6 +866,32 @@ def test_supported_entries_report_their_witness_count():
     assert thin, "expected some entries to rest on a single witness"
 
 
+def _assert_general_matmul_generation_matches(fresh_coverage, historical_coverage, root):
+    """Historical semantic reproduction and strict current qualification are distinct."""
+    from copy import deepcopy
+    from general_matmul_capability_evidence import (
+        qualify_general_matmul_current_runtime, validate_general_matmul_evidence,
+    )
+
+    # Validate unmodified history before qualifying the unmodified fresh collection.
+    validate_general_matmul_evidence(historical_coverage, root, require_complete=True)
+    qualify_general_matmul_current_runtime(fresh_coverage, root)
+    names = {name for name in fresh_coverage if name.startswith("g2.")}
+    assert names == {name for name in historical_coverage if name.startswith("g2.")}
+    for name in sorted(names):
+        fresh = deepcopy(fresh_coverage[name])
+        historical = deepcopy(historical_coverage[name])
+        for record in (fresh, historical):
+            runtime = record["general_matmul_evidence"]["runtime_identity"]
+            # These are capture provenance, not cross-generation semantic facts.
+            # Fresh binary/driver/instance already matched the actual current
+            # probe; HEAD/path retain their existing provenance exemptions.
+            for key in ("checkout_head", "extension_path", "extension_sha256",
+                        "driver", "vulkan_instance_version"):
+                runtime.pop(key)
+        assert fresh == historical, f"{name}: general matmul semantic drift"
+
+
 def test_committed_manifest_matches_regenerated_output():
     if not _vulkan_device_available():
         pytest.skip("no Vulkan device: coverage cannot be recorded without executing cases")
@@ -873,14 +899,13 @@ def test_committed_manifest_matches_regenerated_output():
     from stock_linear_route_evidence import capture_all_stock_linear_routes
     from vector_matmul_capability_evidence import capture_all_vector_matmul_cases
     from general_matmul_capability_evidence import (
-        capture_all_general_matmul_cases, qualify_general_matmul_current_runtime,
+        capture_all_general_matmul_cases,
         validate_general_matmul_evidence,
     )
 
     coverage.update(capture_all_stock_linear_routes("vk:0"))
     coverage.update(capture_all_vector_matmul_cases("vk:0"))
     coverage.update(capture_all_general_matmul_cases("vk:0"))
-    qualify_general_matmul_current_runtime(coverage, ROOT)
     # Fresh captures qualify the live build/mode explicitly. Historical records
     # retain the original HEAD/path/artifact/mode as provenance after a human
     # commit, rebuild, or relocation; offline validation never probes the GPU.
@@ -894,21 +919,9 @@ def test_committed_manifest_matches_regenerated_output():
     mode = pytorch_vulkan._C.execution_mode()
     mode_coverage = (committed_coverage if mode == "async" else json.loads(
         (ROOT / "docs/vulkan_general_matmul_sync_coverage.json").read_text()))
-    validate_general_matmul_evidence(mode_coverage, ROOT, require_complete=True)
+    _assert_general_matmul_generation_matches(coverage, mode_coverage, ROOT)
     for name in coverage:
         if name.startswith("g2."):
-            fresh = json.loads(json.dumps(coverage[name]))
-            expected = json.loads(json.dumps(mode_coverage[name]))
-            # Fresh runtime was independently live-qualified above. A rebuild of
-            # unrelated leaves changes the extension hash while G2's exact local
-            # semantic source binding and all numerical/route/mode facts remain
-            # unchanged. Compare these facts without rewriting either artifact's
-            # binary identity (only these disposable comparison copies).
-            fresh["general_matmul_evidence"]["runtime_identity"].pop("extension_sha256")
-            expected["general_matmul_evidence"]["runtime_identity"].pop("extension_sha256")
-            for key in ("checkout_head", "extension_path"):
-                fresh["general_matmul_evidence"]["runtime_identity"][key] = expected["general_matmul_evidence"]["runtime_identity"][key]
-            assert fresh == expected
             comparison_coverage[name] = committed_coverage[name]
     from mse_capability_evidence import qualify_mse_current_runtime, validate_mse_evidence
     qualify_mse_current_runtime(coverage, ROOT)
@@ -1083,3 +1096,127 @@ def test_nll_schema_declares_real_shapes():
         if schema == "aten::nll_loss_forward.default":
             expected.append("512x5")
         assert shapes == sorted(expected)
+
+
+@pytest.fixture
+def g2_generation_pair(monkeypatch):
+    """One complete real CPU-replay recipe; the runtime probe alone is mocked."""
+    import copy
+    import general_matmul_capability_evidence as helper
+
+    name = next(name for name, case in helper.REQUIRED_CASES.items() if case["mixed"])
+    monkeypatch.setattr(helper, "REQUIRED_CASES", {name: helper.REQUIRED_CASES[name]})
+    historical = {name: json.loads(COVERAGE_COMMITTED.read_text())[name]}
+    fresh = copy.deepcopy(historical)
+    runtime = fresh[name]["general_matmul_evidence"]["runtime_identity"]
+    runtime.update(driver="radv Mesa 26.2.4-arch1.1", vulkan_instance_version="1.4.363",
+                   extension_sha256="b" * 64, checkout_head="a" * 40,
+                   extension_path="/CPU-only/current-extension.so")
+    current = copy.deepcopy(runtime)
+    monkeypatch.setattr(helper, "runtime_identity", lambda root: copy.deepcopy(current))
+    return name, historical, fresh, current
+
+
+def _g2_generation_assertion():
+    assertion = globals().get("_assert_general_matmul_generation_matches")
+    assert callable(assertion), "missing guarded G2 semantic/live comparison"
+    return assertion
+
+
+def test_g2_generation_driver_evolution_preserves_both_inputs(g2_generation_pair):
+    _, historical, fresh, _ = g2_generation_pair
+    before = json.dumps([historical, fresh], sort_keys=True)
+    _g2_generation_assertion()(fresh, historical, ROOT)
+    assert json.dumps([historical, fresh], sort_keys=True) == before
+
+
+@pytest.mark.parametrize("field", [
+    "output", "first", "mixed", "fd", "route", "counter", "fixture", "source",
+    "capture_recipe", "gradients", "missing_case",
+])
+def test_g2_generation_semantic_drift_is_not_provenance(g2_generation_pair, field):
+    name, historical, fresh, _ = g2_generation_pair
+    record = fresh[name]
+    evidence = record["general_matmul_evidence"]
+    if field in {"output", "first", "mixed"}:
+        pair = evidence["output"] if field == "output" else evidence[field][0]
+        pair["cpu"][0] += 1
+        pair["vulkan"][0] += 1
+    elif field == "fd":
+        evidence["mixed"][0]["fd"] += 1
+    elif field == "route":
+        evidence["forward"]["vulkan_ops"] = ["aten::dot"]
+    elif field == "counter":
+        evidence["forward"]["counters"][3] = 1
+    elif field == "fixture":
+        evidence["fixture"]["seed"] += 1
+    elif field == "source":
+        evidence["source_identity"][next(iter(evidence["source_identity"]))] = "0" * 64
+    elif field == "capture_recipe":
+        evidence["capture_command"] = "false recipe"
+    elif field == "gradients":
+        record["gradients"] = not record["gradients"]
+    else:
+        fresh.pop(name)
+    before = json.dumps([historical, fresh], sort_keys=True)
+    with pytest.raises((ValueError, AssertionError)):
+        _g2_generation_assertion()(fresh, historical, ROOT)
+    assert json.dumps([historical, fresh], sort_keys=True) == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("driver", "radv Mesa 26.2.5"), ("vulkan_instance_version", "1.4.364"),
+    ("extension_sha256", "c" * 64), ("hardware", "different GPU"),
+    ("vulkan_api_version", "1.4.355"), ("device", "vk:1"),
+    ("pytorch_version", "2.5.0+cpu"), ("pytorch_git_revision", "c" * 40),
+    ("execution_mode", "sync"), ("unknown", "invented"), ("missing_driver", None),
+])
+def test_g2_generation_fresh_identity_must_match_actual_probe(g2_generation_pair, field, value):
+    name, historical, fresh, _ = g2_generation_pair
+    runtime = fresh[name]["general_matmul_evidence"]["runtime_identity"]
+    if field == "missing_driver":
+        runtime.pop("driver")
+    else:
+        runtime[field] = value
+    with pytest.raises(ValueError):
+        _g2_generation_assertion()(fresh, historical, ROOT)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("hardware", "different GPU"), ("vulkan_api_version", "1.4.355"),
+    ("execution_mode", "sync"),
+])
+def test_g2_generation_live_valid_identity_still_has_narrow_history_contract(
+        g2_generation_pair, field, value):
+    name, historical, fresh, current = g2_generation_pair
+    fresh[name]["general_matmul_evidence"]["runtime_identity"][field] = value
+    current[field] = value
+    with pytest.raises(AssertionError, match="semantic"):
+        _g2_generation_assertion()(fresh, historical, ROOT)
+
+
+def test_g2_generation_historical_driver_cannot_qualify_as_current(g2_generation_pair):
+    _, historical, _, _ = g2_generation_pair
+    with pytest.raises(ValueError, match="current build/device/mode"):
+        _g2_generation_assertion()(historical, historical, ROOT)
+
+
+def test_g2_generation_same_runtime_positive(g2_generation_pair):
+    _, _, fresh, _ = g2_generation_pair
+    _g2_generation_assertion()(fresh, fresh, ROOT)
+
+
+def test_g2_generation_even_parity_valid_numeric_drift_is_exact(g2_generation_pair):
+    name, historical, fresh, _ = g2_generation_pair
+    pair = fresh[name]["general_matmul_evidence"]["output"]
+    pair["vulkan"][0] += .000001
+    pair["max_abs_error"] = max(abs(a - b) for a, b in zip(pair["cpu"], pair["vulkan"]))
+    with pytest.raises(AssertionError, match="semantic drift"):
+        _g2_generation_assertion()(fresh, historical, ROOT)
+
+
+def test_g2_generation_malformed_history_is_not_projected_away(g2_generation_pair):
+    name, historical, fresh, _ = g2_generation_pair
+    historical[name]["general_matmul_evidence"]["runtime_identity"]["driver"] = ""
+    with pytest.raises(ValueError, match="runtime identity"):
+        _g2_generation_assertion()(fresh, historical, ROOT)

@@ -175,7 +175,17 @@ model node, retaining all previous gates, status policies and the 300s timeout.
 Fresh generation compares actual captures in both modes. General-matmul fresh
 generation separately live-qualifies its current binary and compares unchanged
 semantic arrays/routes/mode/source maps to history; unrelated loss changes do not
-require rewriting historical general-matmul binary SHA values. Capture and guarded
+require rewriting historical general-matmul binary SHA values. The general-matmul comparison
+validates unmodified historical evidence and strictly live-qualifies unmodified
+fresh evidence before comparing disposable semantic projections. Only capture
+HEAD/path, extension SHA, driver and instance version are omitted from that
+cross-generation comparison. Device, hardware, device API, PyTorch reference and
+mode, all source maps, numerical arrays, gradients, fixtures, routes and counters
+remain exact. The strict live probe still checks the fresh extension, driver and
+instance version; old-driver history cannot qualify a new-driver execution.
+This bounded comparison policy neither rewrites history nor proves portability.
+The final regenerated capability manifest must still match committed bytes.
+Capture and guarded
 publication procedures are documented in [bootstrap evidence policy](vulkan-bootstrap-evidence.md).
 
 ### Finite batched/broadcast general-matmul evidence
