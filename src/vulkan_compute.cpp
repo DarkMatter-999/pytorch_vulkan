@@ -2734,7 +2734,8 @@ void VulkanCompute::dispatch_multi_output(
     const void *params, uint32_t params_size, const void *metadata,
     VkDeviceSize metadata_size, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
     VkDescriptorSetLayout descriptor_layout, uint32_t invocation_count,
-    uint32_t input_count, uint32_t output_count, uint32_t descriptor_capacity) const {
+    uint32_t input_count, uint32_t output_count, uint32_t descriptor_capacity,
+    bool initialize_unused_bindings) const {
     if (inputs == nullptr || input_layouts == nullptr || outputs == nullptr ||
         output_layouts == nullptr || params == nullptr || params_size == 0 ||
         params_size > max_push_constants_size_ ||
@@ -2806,8 +2807,11 @@ void VulkanCompute::dispatch_multi_output(
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
-        const uint32_t descriptor_count =
+        const uint32_t logical_descriptor_count =
             input_count + output_count + (metadata ? 1u : 0u);
+        const uint32_t descriptor_count = initialize_unused_bindings
+            ? std::max(logical_descriptor_count, descriptor_capacity)
+            : logical_descriptor_count;
         const VkDescriptorSet set = acquire_descriptor_set(
             descriptor_layout, std::max(descriptor_count, descriptor_capacity));
         if (metadata)
@@ -2820,7 +2824,14 @@ void VulkanCompute::dispatch_multi_output(
                                       output_layouts[i]->allocation_bytes};
         if (metadata)
             infos[input_count + output_count] = {metadata_holder->buffer(), 0,
-                                                 metadata_size};
+                                                  metadata_size};
+        // Classification shares a shader across forward and backward modes.
+        // Its second output is statically used, even when the selected backward
+        // branch never accesses it. Refresh that binding on every set acquisition
+        // (including reuse) with an already validated, live output buffer. This
+        // is descriptor padding, not another logical output or shader write.
+        for (uint32_t i = logical_descriptor_count; i < descriptor_count; ++i)
+            infos[i] = infos[input_count];
         VkWriteDescriptorSet writes[descriptor_count]{};
         for (uint32_t i = 0; i < descriptor_count; ++i) {
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2871,7 +2882,7 @@ void VulkanCompute::compute_multi_output(
     dispatch_multi_output(inputs, input_layouts, outputs, output_layouts, params,
                           params_size, nullptr, 0, *pipeline, *pipeline_layout,
                           *descriptor_layout, invocation_count, input_count,
-                          output_count, classification ? 6 : 10);
+                          output_count, classification ? 6 : 10, classification);
 }
 
 uint32_t VulkanCompute::validate_dispatch_extra_limits(

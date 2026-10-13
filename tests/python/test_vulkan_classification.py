@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 
@@ -97,3 +99,52 @@ def test_nll_loss_backward_keeps_gradient_on_vulkan(vulkan_backend):
     )
     assert actual.device == torch.device(vulkan_backend)
     torch.testing.assert_close(actual.cpu(), expected)
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+def test_composed_cross_entropy_initializes_all_descriptors(
+    vulkan_backend, reduction, capfd
+):
+    generator = torch.Generator(device="cpu").manual_seed(12012)
+    with torch.random.fork_rng(devices=[]):
+        torch.set_rng_state(generator.get_state())
+        reference = torch.nn.Sequential(
+            torch.nn.Flatten(1),
+            torch.nn.Linear(784, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 3),
+        )
+    model = copy.deepcopy(reference).to(vulkan_backend)
+    cpu_input = torch.rand(
+        (2, 1, 28, 28),
+        generator=torch.Generator(device="cpu").manual_seed(12015),
+    )
+    cpu_labels = torch.tensor([0, 2], dtype=torch.int64)
+    loss_fn = torch.nn.CrossEntropyLoss(reduction=reduction)
+    expected = loss_fn(reference(cpu_input), cpu_labels)
+    expected.backward(torch.ones_like(expected))
+    inputs = cpu_input.to(vulkan_backend)
+    labels = cpu_labels.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+
+    actual = loss_fn(model(inputs), labels)
+    actual.backward(torch.ones_like(actual))
+    pytorch_vulkan._C.synchronize()
+    dispatches, vulkan_copies, transfers, fallbacks = (
+        pytorch_vulkan._C.execution_counter_snapshot()
+    )
+    assert dispatches > 0
+    assert vulkan_copies >= 0
+    assert (transfers, fallbacks) == (0, 0)
+    assert actual.device == torch.device(vulkan_backend)
+    torch.testing.assert_close(
+        actual.detach().cpu(), expected.detach(), rtol=2e-4, atol=2e-4
+    )
+    for parameter, cpu_parameter in zip(model.parameters(), reference.parameters()):
+        assert parameter.grad.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(
+            parameter.grad.cpu(), cpu_parameter.grad, rtol=2e-4, atol=2e-4
+        )
+    captured = capfd.readouterr()
+    assert "Validation Error:" not in captured.out + captured.err

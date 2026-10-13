@@ -311,7 +311,8 @@ class VulkanCompute final {
                                VkDescriptorSetLayout descriptor_layout,
                                uint32_t invocation_count, uint32_t input_count = 4,
                                uint32_t output_count = 3,
-                               uint32_t descriptor_capacity = 0) const;
+                                uint32_t descriptor_capacity = 0,
+                                bool initialize_unused_bindings = false) const;
     void dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer output,
                          VkBuffer counter, uint32_t element_count,
                          VkDeviceSize output_bytes, VkPipeline pipeline,
