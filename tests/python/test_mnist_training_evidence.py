@@ -595,7 +595,10 @@ def test_source_owned_inventory_covers_semantics_and_new_controls():
                 "src/vulkan/shaders/generated/operator_spv.h", "src/vulkan/shaders/generated/operator_spv.sha256",
                 "src/vulkan/descriptor_arena.cpp", "src/vulkan/pipeline_cache.cpp",
                 "python/pytorch_vulkan/compiler.py", "python/pytorch_vulkan/compiler_metadata.py",
-                "python/pytorch_vulkan/serialization.py"}
+                "python/pytorch_vulkan/serialization.py",
+                "tools/run_vulkan_qualification.py", "tools/qualification_process_supervisor.py",
+                "tests/python/test_qualification_process_supervisor.py",
+                "tests/python/test_vulkan_qualification.py"}
     assert required <= inventory
     assert all((evidence.ROOT / name).is_file() for name in inventory)
     assert not any(name.startswith((".superpowers/", "docs/")) for name in inventory)

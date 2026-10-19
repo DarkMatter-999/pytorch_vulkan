@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from test_qualification_process_supervisor import run_os_case, assert_tree_reaped
 from tools import run_vulkan_qualification as qualification
 from tools.validate_vulkan_capabilities import load_manifest
 from vulkan_conformance import (
@@ -68,6 +69,33 @@ SCALAR_OUT_QUALIFICATION_CASES = {
     }
     for schema, contract in SCALAR_OUT_CONTRACT_MATRIX.items()
 }
+
+
+@pytest.fixture(autouse=True)
+def explicit_qualification_wait_policy():
+    from tools.qualification_process_supervisor import caller_wait_scope
+    with caller_wait_scope(exclusive_wait=True):
+        yield
+
+
+@pytest.mark.parametrize("retain_pipes", [True, False])
+def test_nested_timeout_barrier(tmp_path, retain_pipes):
+    o = run_os_case(tmp_path, "nested-timeout", boundary="legacy",
+                    options={"retain_pipes": retain_pipes})
+    assert_tree_reaped(o)
+    assert o["result"]["exit_code"] == 124
+    assert o["observer_started"] is True
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+@pytest.mark.parametrize("topology", ["setsid", "double-fork"])
+def test_escaped_leader_exit_barrier(tmp_path, exit_code, topology):
+    o = run_os_case(tmp_path, "leader-exit", boundary="legacy",
+                    options={"exit_code": exit_code, "topology": topology,
+                             "retain_pipes": False})
+    assert_tree_reaped(o)
+    assert o["result"]["exit_code"] == exit_code
+    assert "timed out" not in o["result"]["stderr"]
 
 
 @pytest.fixture
@@ -351,20 +379,157 @@ def test_scalar_out_qualification_inventory_covers_every_promoted_schema():
 
 
 def test_run_command_preserves_nonzero_exit_code(monkeypatch):
-    class Completed:
-        returncode = 7
-
-        def communicate(self, timeout):
-            return "out\n", "err\n"
-
-    monkeypatch.setattr(qualification.subprocess, "Popen", lambda *args, **kwargs: Completed())
-    monkeypatch.setattr(qualification, "_finish_owned_group", lambda process: ("out\n", "err\n"))
+    monkeypatch.setattr(qualification, "run_command_core", lambda *a, **k: (
+        {"exit_code": 7, "stdout": "out\n", "stderr": "err\n",
+         "timeout_seconds": 300, "elapsed_seconds": 0.01}, None))
+    monkeypatch.setattr(qualification, "require_complete", lambda result, certificate: None)
 
     result = qualification.run_command(["example", "--check"], Path("/tmp"))
 
     assert result["exit_code"] == 7
     assert result["stdout"] == "out\n"
     assert result["stderr"] == "err\n"
+
+
+def test_wrapper_validates_certificate_and_returns_the_public_dict(monkeypatch):
+    seen = []
+    result = {"exit_code": 0, "stdout": "o", "stderr": "", "timeout_seconds": 5, "elapsed_seconds": 0.1}
+    monkeypatch.setattr(qualification, "run_command_core", lambda *a, **k: (result, "certificate"))
+    monkeypatch.setattr(qualification, "require_complete", lambda r, c: seen.append((r, c)))
+    actual = qualification.run_command(["example"], Path("/tmp"), timeout_seconds=5)
+    assert actual is result and seen == [(result, "certificate")]
+    assert set(actual) == {"exit_code", "stdout", "stderr", "timeout_seconds", "elapsed_seconds"}
+
+
+def test_unknown_cleanup_aborts_gate_comprehension(monkeypatch):
+    from tools.qualification_process_supervisor import ContainmentError
+    calls = []
+
+    def failing(command, *args, **kwargs):
+        calls.append(command)
+        raise ContainmentError("unknown", partial_result={"exit_code": 127,
+            "stdout": "partial", "stderr": "unknown", "timeout_seconds": 300,
+            "elapsed_seconds": 0.1}, invocation_id="a" * 32, certificate=None)
+
+    monkeypatch.setattr(qualification, "run_command", failing)
+    with pytest.raises(ContainmentError):
+        qualification._gate("fixture", [["first"], ["must-not-launch"]])
+    assert calls == [["first"]]
+
+
+def test_pending_cli_cancellation_wins_over_a_completed_wrapper_result(monkeypatch):
+    from tools.qualification_process_supervisor import ContainmentError, cli_cancellation_scope
+    result = {"exit_code": 0, "stdout": "", "stderr": "", "timeout_seconds": 5, "elapsed_seconds": 0.1}
+    monkeypatch.setattr(qualification, "run_command_core", lambda *a, **k: (result, None))
+    monkeypatch.setattr(qualification, "require_complete", lambda r, c: None)
+    with cli_cancellation_scope() as cancellation:
+        cancellation.request("SIGINT")
+        with pytest.raises(ContainmentError):
+            qualification.run_command(["example"], Path("/tmp"))
+
+
+def test_profile_reentry_returns_status_and_cancellation_terminates_the_child():
+    import threading
+    from tools.qualification_process_supervisor import ContainmentError, cli_cancellation_scope
+    environment = dict(os.environ)
+    assert qualification._profile_reentry([sys.executable, "-c", "import sys; sys.exit(3)"], environment) == 3
+    saved = signal.getsignal(signal.SIGTERM)
+    timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGTERM))
+    with cli_cancellation_scope():
+        timer.start()
+        with pytest.raises(ContainmentError):
+            qualification._profile_reentry(
+                [sys.executable, "-c", "import time; time.sleep(30)"], environment)
+    timer.join()
+    assert signal.getsignal(signal.SIGTERM) == saved
+
+
+def test_profile_reentry_pidfd_failure_keeps_the_unreaped_child_handle(monkeypatch):
+    import errno
+    from tools.qualification_process_supervisor import ContainmentError
+    monkeypatch.setattr(qualification, "_pidfd_open",
+                        lambda pid: (_ for _ in ()).throw(OSError(errno.EMFILE, "injected pidfd")))
+    with pytest.raises(ContainmentError) as raised:
+        qualification._profile_reentry([sys.executable, "-c", "import time; time.sleep(30)"], dict(os.environ))
+    authority = raised.value.authority
+    assert authority is not None and not authority.reaped  # Never raw-PID signalled by product code.
+    os.kill(authority.process.pid, signal.SIGKILL)  # Test-owned fixture child cleanup.
+    assert authority.observe_until(time.monotonic() + 2) is True
+    authority.close()
+
+
+_SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
+_TERM_IGNORING = [sys.executable, "-c",
+                  "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"]
+
+
+def _kill_fixture_child(authority):
+    os.kill(authority.process.pid, signal.SIGKILL)  # Test-owned fixture child cleanup.
+    assert authority.observe_until(time.monotonic() + 2) is True
+    authority.close()
+
+
+def test_profile_reentry_never_signals_after_failed_authentication(monkeypatch):
+    from tools.qualification_process_supervisor import ContainmentError
+    signalled = []
+    monkeypatch.setattr(qualification, "_pidfd_signal", lambda fd, sig: signalled.append(sig))
+    monkeypatch.setattr(qualification, "_waitid_child",
+                        lambda fd: (_ for _ in ()).throw(RuntimeError("injected waitability failure")))
+    with pytest.raises(ContainmentError) as raised:
+        qualification._profile_reentry(_SLEEPER, dict(os.environ))
+    assert signalled == []  # An unauthenticated pidfd is never a signalling identity.
+    authority = raised.value.authority  # The exact launch object is retained, uncertain.
+    assert authority is not None and not authority.reaped
+    assert isinstance(raised.value.original_error, RuntimeError)
+    _kill_fixture_child(authority)
+
+
+def test_profile_reentry_wait_failure_after_authentication_terminates_via_pidfd(monkeypatch):
+    from tools.qualification_process_supervisor import ContainmentError
+    signalled = []
+    real_signal, real_waitpid = qualification._pidfd_signal, os.waitpid
+    monkeypatch.setattr(qualification, "_pidfd_signal",
+                        lambda fd, sig: (signalled.append(sig), real_signal(fd, sig))[1])
+    state = {"failed": False}
+
+    def waitpid(pid, flags):
+        if not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("injected exact-child wait failure")
+        return real_waitpid(pid, flags)
+
+    monkeypatch.setattr(qualification.os, "waitpid", waitpid)
+    with pytest.raises(ContainmentError) as raised:
+        qualification._profile_reentry(_SLEEPER, dict(os.environ))
+    assert signalled == [signal.SIGTERM]
+    assert raised.value.authority is None  # Reaped, so nothing live remains.
+
+
+def test_profile_reentry_error_unwind_keeps_the_cancellation_bound(monkeypatch):
+    from tools.qualification_process_supervisor import ContainmentError, cli_cancellation_scope
+    real_waitpid = os.waitpid
+    started = time.monotonic()
+    state = {"failed": False}
+
+    def waitpid(pid, flags):
+        if not state["failed"] and time.monotonic() >= started + 1.2:
+            state["failed"] = True
+            raise RuntimeError("injected wait failure during an active cancellation")
+        return real_waitpid(pid, flags)
+
+    monkeypatch.setattr(qualification.os, "waitpid", waitpid)
+    import threading
+    with cli_cancellation_scope() as cancellation:
+        # Request after the child installed its TERM-ignoring handler; TERM then starts the bound.
+        timer = threading.Timer(0.5, lambda: cancellation.request("SIGINT"))
+        timer.start()
+        with pytest.raises(ContainmentError) as raised:
+            qualification._profile_reentry(_TERM_IGNORING, dict(os.environ))
+        timer.join()
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.9, elapsed  # A restarted bound would end near 3.4 s (1.2 s + 2.0 s).
+    assert raised.value.authority is not None and not raised.value.authority.reaped
+    _kill_fixture_child(raised.value.authority)
 
 
 def test_classify_unavailable_is_skip_not_pass():
@@ -409,21 +574,12 @@ def test_qualification_artifact_schema_and_shape_consistency():
 
 
 def test_run_command_normalizes_bytes_timeout_output(monkeypatch):
-    class TimedOut:
-        returncode = -signal.SIGKILL
-
-        def communicate(self, timeout):
-            raise qualification.subprocess.TimeoutExpired(
-                ["example"], timeout, output=b"partial-out", stderr=b"partial-err"
-            )
-
-        def poll(self):
-            return None
-
-    monkeypatch.setattr(qualification.subprocess, "Popen", lambda *args, **kwargs: TimedOut())
-    monkeypatch.setattr(
-        qualification, "_finish_owned_group", lambda process: (b"partial-out", b"partial-err")
-    )
+    from tools.qualification_process_supervisor import _decode_output
+    monkeypatch.setattr(qualification, "run_command_core", lambda *a, **k: (
+        {"exit_code": 124, "stdout": _decode_output(b"partial-out"),
+         "stderr": _decode_output(b"partial-err") + "\ncommand timed out after 300 seconds\n",
+         "timeout_seconds": 300, "elapsed_seconds": 0.01}, None))
+    monkeypatch.setattr(qualification, "require_complete", lambda result, certificate: None)
 
     result = qualification.run_command(["example"], Path("/tmp"))
 

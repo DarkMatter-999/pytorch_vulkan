@@ -74,12 +74,17 @@ from tools import run_vulkan_qualification as legacy
 root = qualification.ROOT
 reference = root / ".superpowers/sdd/2026-10-12-vulkan-mnist-cross-entropy-training/task-1-cpu-reference-fix1.json"
 qualification._preflight = lambda *a, **k: {"reference_sources": {"cpu_fixture": True}}
-def cpu_child(command, cwd, env=None, *, timeout_seconds=300):
+from tools import qualification_process_supervisor as containment
+def cpu_child(command, cwd, env, *, timeout_seconds=300):
     assert command[1] == "tools/probe_mnist_training_reference.py"
     shutil.copyfile(reference, Path(command[command.index("--output") + 1]))
-    return {"exit_code": 0, "stdout": "CPU reference fixture", "stderr": "",
-            "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}
-legacy.run_command = cpu_child
+    identity = containment._identity(list(command), str(Path(cwd).resolve()), dict(env))
+    certificate = containment.Certificate("a" * 32, identity, 1, 1, True, 2, 2, 0, None, "leader-exit",
+        1.0, 1.0, 3.0, "isolated-linux-subreaper", 0, 1, "complete-echild", (), 0, True, True, True)
+    return ({"exit_code": 0, "stdout": "CPU reference fixture", "stderr": "",
+             "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}, certificate)
+# CPU fixture of the single live launch seam: structurally valid, non-evidence.
+qualification._contained_command = cpu_child
 args = argparse.Namespace(mnist_root=root / "not-read-by-preflight", artifacts=Path(sys.argv[1]),
     shader_toolchain_profile=root / "not-read-by-preflight-profile", reference_source_root=root / "not-read-source",
     python=Path(sys.executable), build=root / "build")
@@ -293,7 +298,7 @@ def test_default_live_mode_stops_before_gpu_after_cpu_reference(tmp_path, monkey
     monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
     monkeypatch.setattr(qualification, "_run_reference", lambda *a, **k: _reference_stub())
     calls = []
-    monkeypatch.setattr(legacy, "run_command", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(qualification, "_contained_command", lambda *a, **k: calls.append(a))
     result = qualification.qualify(args)
     assert result["status"] == "blocked"
     assert "nested" in result["reason"].lower()
@@ -719,3 +724,177 @@ def test_cli_reports_blocked_as_nonzero(tmp_path, monkeypatch):
     monkeypatch.setattr(qualification, "parse_args", lambda argv=None: args)
     monkeypatch.setattr(qualification, "qualify", lambda *a, **k: {"status": "blocked"})
     assert qualification.main([]) != 0
+
+
+def _fixture_certificate(command, env):
+    from tools import qualification_process_supervisor as containment
+    identity = containment._identity(list(command), str(ROOT), dict(env))
+    return containment.Certificate("b" * 32, identity, 1, 1, True, 2, 2, 0, None, "leader-exit",
+        1.0, 1.0, 3.0, "isolated-linux-subreaper", 0, 1, "complete-echild", (), 0, True, True, True)
+
+
+def _ok_result():
+    return {"exit_code": 0, "stdout": "o", "stderr": "", "timeout_seconds": 5, "elapsed_seconds": 0.1}
+
+
+def test_contained_runner_keeps_the_certificate_beside_the_public_result(monkeypatch):
+    environment = {"PATH": "/usr/bin", "SECRET_TOKEN": "must-not-be-duplicated"}
+    monkeypatch.setattr(qualification, "_contained_command", lambda command, cwd, env, *, timeout_seconds: (
+        _ok_result(), _fixture_certificate(command, env)))
+    runner = qualification._ContainedRunner()
+    result = qualification._run_result(runner, ["example"], environment, 5, "label", owned=runner)
+    assert result["owned_process_state"] == "contained: certified empty tree and reaped worker"
+    certificate = result["containment_certificate"]
+    assert certificate["state"] == "complete-echild" and certificate["worker_reaped"] is True
+    assert "environment" not in certificate["identity"]
+    summary = {"commands": []}
+    qualification._record_command(summary, result, injected=False)
+    assert summary["owned_process_state"] == result["owned_process_state"]
+
+
+@pytest.mark.parametrize("fake", [None, {"state": "complete-echild"}, "complete"])
+def test_contained_runner_rejects_untrusted_certificates(monkeypatch, fake):
+    monkeypatch.setattr(qualification, "_contained_command",
+                        lambda *a, **k: (_ok_result(), fake))
+    runner = qualification._ContainedRunner()
+    result = qualification._run_result(runner, ["example"], {}, 5, "label", owned=runner)
+    assert result["exit_code"] == 127 and result["exception"]
+    assert result["owned_process_state"] == "unknown-after-containment-error"
+    assert result["containment_certificate"] is None
+
+
+def test_containment_error_retains_live_authority_and_never_reports_success(monkeypatch):
+    from tools import qualification_process_supervisor as containment
+    authority = object()
+    certificate = _fixture_certificate(["example"], {})
+
+    def failing(*args, **kwargs):
+        raise containment.ContainmentError("unknown", partial_result=_ok_result(), invocation_id="b" * 32,
+                                           certificate=certificate, authority=authority)
+
+    monkeypatch.setattr(qualification, "_contained_command", failing)
+    runner = qualification._ContainedRunner()
+    result = qualification._run_result(runner, ["example"], {}, 5, "label", owned=runner)
+    assert runner.retained_authorities == [authority]
+    assert result["exit_code"] == 127
+    assert result["owned_process_state"] == "unknown-after-containment-error"
+
+
+def test_injected_runner_cannot_supply_a_containment_certificate():
+    def runner(command, cwd, env=None, *, timeout_seconds=300):
+        return dict(_ok_result(), containment_certificate={"state": "complete-echild"})
+
+    result = qualification._run_result(runner, ["example"], {}, 5, "label")
+    assert "containment_certificate" not in result
+    assert result["owned_process_state"] == "helper-returned; no independent descendant-session certificate"
+    summary = {"commands": []}
+    qualification._record_command(summary, result, injected=True)
+    assert summary["owned_process_state"] == "injected CPU runner returned; no live ownership evidence"
+
+
+def test_real_cpu_adapter_returns_a_genuine_containment_certificate():
+    runner = qualification._ContainedRunner()
+    result = qualification._run_result(
+        runner, [sys.executable, "-c", "print('adapter-ok')"], dict(os.environ), 20, "adapter", owned=runner)
+    assert result["exit_code"] == 0 and "adapter-ok" in result["stdout"]
+    certificate = result["containment_certificate"]
+    assert certificate["state"] == "complete-echild" and certificate["terminal_received"] is True
+    assert certificate["worker_reaped"] is True and certificate["method"] == "isolated-linux-subreaper"
+    assert not runner.retained_authorities
+
+
+def test_only_the_internally_bound_runner_instance_is_trusted(monkeypatch):
+    class Laundering(qualification._ContainedRunner):
+        def __call__(self, command, cwd, env=None, *, timeout_seconds=300):
+            self._certificate = _fixture_certificate(command, env or {})
+            return _ok_result()
+
+    monkeypatch.setattr(qualification, "_contained_command", lambda command, cwd, env, *, timeout_seconds: (
+        _ok_result(), _fixture_certificate(command, env)))
+    internal = qualification._ContainedRunner()
+    other_exact = qualification._ContainedRunner()
+    cases = {
+        "subclass bound as owned elsewhere": (Laundering(), internal),
+        "different exact instance": (other_exact, internal),
+        "no internal runner (injected path)": (qualification._ContainedRunner(), None),
+    }
+    for name, (runner, owned) in cases.items():
+        result = qualification._run_result(runner, ["example"], {}, 5, "label", owned=owned)
+        assert "containment_certificate" not in result, name
+        assert result["owned_process_state"].startswith("helper-returned"), name
+    ok = qualification._run_result(internal, ["example"], {}, 5, "label", owned=internal)
+    assert ok["owned_process_state"].startswith("contained")
+
+
+@pytest.mark.parametrize("kind", ["subclass", "exact-instance"])
+def test_public_injection_of_adapter_types_stays_non_evidence(tmp_path, monkeypatch, kind):
+    class Laundering(qualification._ContainedRunner):
+        def __call__(self, command, cwd, env=None, *, timeout_seconds=300):
+            self._certificate = _fixture_certificate(command, env or {})
+            return _ok_result()
+
+    monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
+    monkeypatch.setattr(qualification, "_contained_command", lambda command, cwd, env, *, timeout_seconds: (
+        _ok_result(), _fixture_certificate(command, env)))
+    runner = Laundering() if kind == "subclass" else qualification._ContainedRunner()
+    result = qualification.qualify(_args(tmp_path), command_runner=runner)
+    command = result["commands"][0]
+    assert "containment_certificate" not in command
+    assert result["evidence_scope"] == "cpu-test-injection-non-evidence"
+
+
+def test_qualify_raises_the_original_error_when_live_authority_remains(tmp_path, monkeypatch):
+    from tools import qualification_process_supervisor as containment
+
+    class Pending:
+        reaped = False
+
+    partial = dict(_ok_result(), stdout="partial-out", stderr="partial-err", exit_code=0)
+
+    def failing(*args, **kwargs):
+        raise containment.ContainmentError("unknown", partial_result=partial, invocation_id="c" * 32,
+                                           certificate=None, authority=Pending())
+
+    args = _args(tmp_path)
+    monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
+    monkeypatch.setattr(qualification, "_contained_command", failing)
+    with pytest.raises(containment.ContainmentError) as raised:
+        qualification.qualify(args)
+    assert raised.value.authority is not None and raised.value.invocation_id == "c" * 32
+    saved = json.loads((args.artifacts / "summary.json").read_text())
+    command = saved["commands"][0]
+    assert command["exit_code"] == 127 and "partial-out" in command["stdout"]
+    assert "partial-err" in command["stderr"] and command["invocation_id"] == "c" * 32
+    assert saved["owned_process_state"] == "unknown-after-containment-error"
+
+
+class _AppInterrupt(BaseException):
+    """A catchable non-Exception interruption, like an application signal handler raises."""
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, _AppInterrupt])
+def test_interrupted_summary_write_still_raises_the_same_authority_bearing_error(
+        tmp_path, monkeypatch, interruption):
+    from tools import qualification_process_supervisor as containment
+
+    class Pending:
+        reaped = False
+
+    created = []
+
+    def failing(*args, **kwargs):
+        error = containment.ContainmentError("unknown", partial_result=_ok_result(),
+            invocation_id="d" * 32, certificate=None, authority=Pending())
+        created.append(error)
+        raise error
+
+    def interrupted(*args, **kwargs):
+        raise interruption("injected during summary persistence")
+
+    monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
+    monkeypatch.setattr(qualification, "_contained_command", failing)
+    monkeypatch.setattr(qualification, "_write_summary", interrupted)
+    with pytest.raises(containment.ContainmentError) as raised:
+        qualification.qualify(_args(tmp_path))
+    assert raised.value is created[0] and raised.value.authority is not None
+    assert isinstance(raised.value.__context__, interruption)

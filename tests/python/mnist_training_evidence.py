@@ -97,7 +97,10 @@ def source_paths(repo_root=None):
     if any((root / p).exists() for p in future):
         paths.update(future)
         paths.update(("tools/run_vulkan_qualification.py", "tools/shader_toolchain.py",
-                      "tools/shader-toolchain-bin/glslc"))
+                      "tools/shader-toolchain-bin/glslc",
+                      "tools/qualification_process_supervisor.py",
+                      "tests/python/test_qualification_process_supervisor.py",
+                      "tests/python/test_vulkan_qualification.py"))
     paths.update(("python/pytorch_vulkan/compiler.py", "python/pytorch_vulkan/compiler_metadata.py",
                   "python/pytorch_vulkan/serialization.py"))
     absent = sorted(p for p in paths if not (root / p).is_file())

@@ -16,12 +16,27 @@ from typing import Any
 
 try:
     from . import shader_toolchain
+    from .qualification_process_supervisor import (
+        AuthorityHandle, ContainmentError, TOTAL_CLEANUP_SECONDS, _BootstrapProcess,
+        _cancellation_error, _check_sigchld, _coordination_error, _current_cancellation,
+        _pidfd_open, _pidfd_signal, _waitid_child, caller_wait_scope,
+        check_cancellation, cli_cancellation_scope, require_complete, run_command_core,
+    )
 except ImportError:  # Direct script invocation.
     import shader_toolchain
+    from qualification_process_supervisor import (
+        AuthorityHandle, ContainmentError, TOTAL_CLEANUP_SECONDS, _BootstrapProcess,
+        _cancellation_error, _check_sigchld, _coordination_error, _current_cancellation,
+        _pidfd_open, _pidfd_signal, _waitid_child, caller_wait_scope,
+        check_cancellation, cli_cancellation_scope, require_complete, run_command_core,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PYTHON = ROOT / ".venv" / "bin" / "python"
+# Legacy process-group helpers, retained verbatim ONLY for the unrelated wrapper
+# test helper (tests/python/wrapper_subprocess.py). They never supervise a
+# qualification command and are not an ownership fallback for run_command.
 def _signal_owned_group(process: subprocess.Popen, sig: int) -> None:
     # start_new_session makes this child's PID its private process-group ID.
     try:
@@ -73,42 +88,15 @@ def run_command(
     command: list[str], cwd: Path, env: dict[str, str] | None = None,
     *, timeout_seconds: float = 300,
 ) -> dict[str, Any]:
-    """Run one command without a shell and retain its exact result."""
-    started = time.monotonic()
-    result = {"timeout_seconds": timeout_seconds}
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as error:
-        result.update(exit_code=127, stdout="", stderr=str(error))
-    else:
-        timed_out = False
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            # A completed leader with an inherited open pipe retains its status.
-            timed_out = process.poll() is None
-        finally:
-            stdout, stderr = _finish_owned_group(process)
+    """Run one command without a shell inside an isolated ownership worker.
 
-        def as_text(value: Any) -> str:
-            return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
-
-        result.update(
-            exit_code=124 if timed_out else process.returncode,
-            stdout=as_text(stdout),
-            stderr=as_text(stderr) + (
-                f"\ncommand timed out after {timeout_seconds} seconds\n" if timed_out else ""
-            ),
-        )
-    result["elapsed_seconds"] = time.monotonic() - started
+    A normal return means the invocation's whole process tree was reaped.
+    Unknown or cancelled ownership raises ContainmentError instead.
+    """
+    check_cancellation()
+    result, certificate = run_command_core(command, cwd, env, timeout_seconds=timeout_seconds)
+    require_complete(result, certificate)
+    check_cancellation(result=result, certificate=certificate)
     return result
 
 
@@ -462,7 +450,84 @@ def run_qualification(
     return summary
 
 
+def _profile_reentry(command: list[str], environment: dict[str, str]) -> int:
+    """Run the profile re-entry CLI as its sole exact-PID waiter.
+
+    It stays in the caller's process group on purpose. It coordinates one known
+    CLI child; the child's own scope and workers own any command trees. Every
+    uncertain exit keeps the exact launch object in ContainmentError.authority.
+    """
+    _check_sigchld()  # Same audited wait policy as the core; blocks before any spawn.
+    process = _BootstrapProcess.__new__(_BootstrapProcess)
+    pidfd = -1
+    authenticated = False  # Only an authenticated pidfd may ever signal the child.
+    terminated_at = None
+    try:
+        _BootstrapProcess.__init__(process, command, env=environment, close_fds=True)
+        pidfd = _pidfd_open(process.pid)
+        _waitid_child(pidfd)  # WNOWAIT: the pinned identity is waitable before we rely on it.
+        authenticated = True
+        while True:
+            pid, status = os.waitpid(process.pid, os.WNOHANG)
+            if pid:
+                process.returncode = os.waitstatus_to_exitcode(status)
+                check_cancellation()
+                return process.returncode
+            cancellation = _current_cancellation.get()
+            now = time.monotonic()
+            if cancellation is not None and cancellation.reason is not None:
+                if terminated_at is None:
+                    _pidfd_signal(pidfd, signal.SIGTERM)
+                    terminated_at = now
+                elif now >= terminated_at + TOTAL_CLEANUP_SECONDS:
+                    error = _cancellation_error(cancellation.reason, None, None)
+                    error.authority = AuthorityHandle(pidfd, process)
+                    pidfd = -1
+                    raise error
+            time.sleep(0.01)
+    except ContainmentError:
+        raise
+    except BaseException as caught:
+        if not getattr(process, "_child_created", False) or process.returncode is not None:
+            raise _coordination_error("profile re-entry failed", caught) from caught
+        authority = AuthorityHandle(pidfd, process)
+        pidfd = -1
+        now = time.monotonic()
+        # An existing cancellation bound is retained, never restarted.
+        deadline = (terminated_at if terminated_at is not None else now) + TOTAL_CLEANUP_SECONDS
+        try:
+            if authenticated and terminated_at is None:
+                _pidfd_signal(authority.pidfd, signal.SIGTERM)  # Identity-safe, never a raw PID.
+        except BaseException:
+            pass
+        while True:
+            try:
+                authority.observe_until(deadline)
+                break
+            except OSError:
+                break
+            except BaseException:
+                if time.monotonic() >= deadline:
+                    break
+        if authority.reaped:
+            authority.close()
+            authority = None
+        raise _coordination_error("profile re-entry failed", caught, authority) from caught
+    finally:
+        if pidfd >= 0:
+            os.close(pidfd)
+
+
 def main() -> int:
+    try:
+        with cli_cancellation_scope():
+            return _main()
+    except ContainmentError as error:
+        print(f"qualification containment failure: {error}", file=sys.stderr)
+        return 3
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="vk:0")
     parser.add_argument("--build", type=Path, default=ROOT / "build")
@@ -483,7 +548,7 @@ def main() -> int:
                             ("--python", args.python), ("--artifacts", args.artifacts)):
             if value is not None:
                 command.extend([flag, str(value)])
-        return subprocess.call(command, env=shader_toolchain.selected_environment(args.shader_toolchain_profile))
+        return _profile_reentry(command, shader_toolchain.selected_environment(args.shader_toolchain_profile))
     summary = run_qualification(
         args.output,
         device=args.device,
@@ -492,6 +557,7 @@ def main() -> int:
         python_executable=args.python,
         artifacts=args.artifacts,
     )
+    check_cancellation()
     print(json.dumps(summary["counts"], sort_keys=True))
     return 1 if summary["counts"]["fail"] else 0
 

@@ -50,6 +50,59 @@ OWNERSHIP_HOLD = (
 )
 
 
+def _contained_command(command, cwd, env, *, timeout_seconds):
+    """The only live launch seam: a real isolated worker and its local certificate."""
+    from tools import qualification_process_supervisor as containment
+    with containment.caller_wait_scope(exclusive_wait=True):
+        return containment.run_command_core(command, cwd, env, timeout_seconds=timeout_seconds)
+
+
+class _ContainedRunner:
+    """Default live runner. The certificate stays beside the public dict, never inside it."""
+
+    def __init__(self):
+        self._certificate = None
+        self.retained_authorities = []  # Unreaped worker authority is never dropped.
+        self.retained_errors = []  # The original errors that carry that authority.
+
+    def __call__(self, command, cwd, env=None, *, timeout_seconds=300):
+        from tools import qualification_process_supervisor as containment
+        self._certificate = None
+        try:
+            result, certificate = _contained_command(command, cwd, env, timeout_seconds=timeout_seconds)
+            if type(certificate) is not containment.Certificate:
+                raise QualificationFailure("untrusted containment certificate")
+            containment.require_complete(result, certificate)
+        except containment.ContainmentError as error:
+            if error.authority is not None:
+                self.retained_authorities.append(error.authority)
+                self.retained_errors.append(error)
+            self._certificate = error.certificate
+            raise
+        self._certificate = certificate
+        return result
+
+    def unreaped_error(self):
+        for error in self.retained_errors:
+            if not error.authority.reaped:
+                return error
+        return None
+
+    def take_certificate(self):
+        certificate, self._certificate = self._certificate, None
+        return certificate
+
+
+def _certificate_summary(certificate) -> dict | None:
+    if certificate is None:
+        return None
+    from tools import qualification_process_supervisor as containment
+    record = containment.certificate_record(certificate)
+    # The full environment is already retained once on the command record.
+    record["identity"] = {k: v for k, v in record["identity"].items() if k != "environment"}
+    return record
+
+
 class PreflightBlocked(RuntimeError):
     """A prerequisite or authorization boundary is unavailable."""
 
@@ -220,20 +273,40 @@ def _child_environment(base: dict[str, str], args, mode: str, *, real: bool) -> 
     return env
 
 
-def _run_result(command_runner, command, env, timeout, label):
+def _run_result(command_runner, command, env, timeout, label, *, owned=None):
+    # Authority belongs only to the exact adapter instance the live path created
+    # (`owned`); injected instances, subclasses and lookalikes never match it.
+    trusted = owned is not None and command_runner is owned
     began = time.monotonic()
     try:
         raw = command_runner(command, ROOT, env, timeout_seconds=timeout)
         if type(raw) is not dict or type(raw.get("exit_code")) is not int:
             raise QualificationFailure("command runner returned malformed result")
         result = dict(raw)
+        # A runner-supplied certificate is never authority; only our own adapter has one.
+        result.pop("containment_certificate", None)
         owned_state = "helper-returned; no independent descendant-session certificate"
+        if trusted:
+            certificate = command_runner.take_certificate()
+            result["containment_certificate"] = _certificate_summary(certificate)
+            owned_state = "contained: certified empty tree and reaped worker"
     except BaseException as error:
         # Keep cleanup/runtime errors, but do not claim the owned group was stopped.
         result = {"exit_code": 127, "stdout": "", "stderr": f"{type(error).__name__}: {error}",
                   "timeout_seconds": timeout, "elapsed_seconds": time.monotonic() - began,
                   "exception": {"type": type(error).__name__, "message": str(error)}}
         owned_state = "unknown-after-runner-exception"
+        partial = getattr(error, "partial_result", None)
+        if hasattr(error, "invocation_id") and type(partial) is dict:
+            # Preserve original partial evidence; the command is still a failure.
+            result["stdout"] = partial["stdout"] if type(partial.get("stdout")) is str else ""
+            result["stderr"] = (partial["stderr"] if type(partial.get("stderr")) is str else "") \
+                + f"\n{type(error).__name__}: {error}"
+            result["invocation_id"] = error.invocation_id
+        if trusted:
+            # Diagnostic only: a failure certificate never proves success.
+            result["containment_certificate"] = _certificate_summary(command_runner.take_certificate())
+            owned_state = "unknown-after-containment-error"
     result.update(label=label, argv=list(command), environment=dict(env),
                   timeout_seconds=timeout, elapsed_seconds=result.get("elapsed_seconds", time.monotonic() - began),
                   owned_process_state=owned_state)
@@ -243,7 +316,9 @@ def _run_result(command_runner, command, env, timeout, label):
 def _record_command(summary: dict, result: dict, *, injected: bool) -> None:
     summary["commands"].append(result)
     if result.get("exception"):
-        summary["owned_process_state"] = "unknown-after-runner-exception"
+        summary["owned_process_state"] = result["owned_process_state"]
+    elif result.get("containment_certificate"):
+        summary["owned_process_state"] = result["owned_process_state"]
     elif result.get("exit_code") == 124:
         summary["owned_process_state"] = "unknown-after-timeout"
     elif result.get("exit_code") == 127:
@@ -415,11 +490,11 @@ def _preflight(args, environment=None):
     return _validate_preflight(args, dict(os.environ if environment is None else environment))
 
 
-def _run_reference(args, artifacts: Path, env: dict[str, str], command_runner) -> dict:
+def _run_reference(args, artifacts: Path, env: dict[str, str], command_runner, *, owned=None) -> dict:
     output = artifacts / "cpu-reference.json"
     command = [str(args.python), "tools/probe_mnist_training_reference.py",
                "--source-root", str(Path(args.reference_source_root).resolve()), "--output", str(output)]
-    result = _run_result(command_runner, command, env, 600, "cpu-reference")
+    result = _run_result(command_runner, command, env, 600, "cpu-reference", owned=owned)
     if _failed_child(result):
         return {"result": result, "error": "CPU reference probe failed"}
     if not output.is_file() or output.is_symlink():
@@ -441,12 +516,31 @@ def _legacy_command(args, mode_dir: Path, mode: str) -> list[str]:
 
 
 def qualify(args, *, command_runner=None) -> dict:
-    """Qualify in strict order; injected runners are CPU-only non-evidence."""
+    """Qualify in strict order; injected runners are CPU-only non-evidence.
+
+    If a real command leaves unreaped worker authority, the summary is retained
+    and the original ContainmentError is raised so the caller keeps that handle.
+    """
+    owned = _ContainedRunner() if command_runner is None else None
+    try:
+        summary = _qualify(args, command_runner=command_runner, owned=owned)
+    except BaseException:
+        # Even an interrupted summary write must not replace live recovery authority.
+        error = owned.unreaped_error() if owned is not None else None
+        if error is not None:
+            raise error  # Raised inside the handler, so the interruption is chained context.
+        raise
+    if owned is not None:
+        error = owned.unreaped_error()
+        if error is not None:
+            raise error
+    return summary
+
+
+def _qualify(args, *, command_runner, owned) -> dict:
     injected = command_runner is not None
     if command_runner is None:
-        # Local import preserves the exact existing owned-process implementation.
-        from tools.run_vulkan_qualification import run_command
-        command_runner = run_command
+        command_runner = owned
     artifact_root = None
     summary: dict[str, Any] = {
         "schema_version": 1, "status": "blocked", "commands": [], "attempts": [],
@@ -465,7 +559,7 @@ def qualify(args, *, command_runner=None) -> dict:
         cpu_env = dict(env_base)
         cpu_env["PYTHONPATH"] = _canonical_pythonpath()
         cpu_env["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
-        reference = _run_reference(args, artifact_root, cpu_env, command_runner)
+        reference = _run_reference(args, artifact_root, cpu_env, command_runner, owned=owned)
         _record_command(summary, reference["result"], injected=injected)
         if reference.get("error"):
             raise QualificationFailure(reference["error"])
@@ -490,7 +584,7 @@ def qualify(args, *, command_runner=None) -> dict:
             if is_real:
                 command += ["--mnist-root", str(Path(args.mnist_root).resolve())]
             env = _child_environment(env_base, args, mode, real=is_real)
-            result = _run_result(command_runner, command, env, 600, f"{stage}/{mode}")
+            result = _run_result(command_runner, command, env, 600, f"{stage}/{mode}", owned=owned)
             _record_command(summary, result, injected=injected)
             attempt_state = {"stage": stage, "mode": mode, "path": str(attempt),
                              "receipt": str(attempt / "receipt.json"),
@@ -515,7 +609,7 @@ def qualify(args, *, command_runner=None) -> dict:
             mode_dir.mkdir(exist_ok=False)
             env = _child_environment(env_base, args, mode, real=True)
             result = _run_result(command_runner, _legacy_command(args, mode_dir, mode), env, 1800,
-                                 f"full/{mode}")
+                                 f"full/{mode}", owned=owned)
             _record_command(summary, result, injected=injected)
             report_path = mode_dir / "qualification.json"
             report_entry = {"mode": mode, "path": str(report_path),
