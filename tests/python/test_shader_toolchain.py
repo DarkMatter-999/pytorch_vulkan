@@ -520,7 +520,7 @@ def test_runner_propagates_known_profile_to_all_subprocesses(known_profile, monk
 
 def test_runner_cli_selects_profile_without_python_loader_override(known_profile, monkeypatch, tmp_path):
     from tools import run_vulkan_qualification as runner
-    _, profile, _ = known_profile
+    module, profile, _ = known_profile
     original = os.environ.copy()
     monkeypatch.setattr(sys, "argv", [str(ROOT / "tools/run_vulkan_qualification.py"),
                                      "--output", str(tmp_path / "report.json"),
@@ -529,12 +529,23 @@ def test_runner_cli_selects_profile_without_python_loader_override(known_profile
     def reenter(command, env):
         calls.append((command, env))
         return 7
-    monkeypatch.setattr(runner.subprocess, "call", reenter)
+    # The CLI re-enters through _profile_reentry/_BootstrapProcess, not subprocess.call.
+    monkeypatch.setattr(runner, "_profile_reentry", reenter)
+    def unexpected(*args, **kwargs):
+        pytest.fail("profile re-entry must not probe a device or run qualification")
+    monkeypatch.setattr(runner, "device_available", unexpected)
+    monkeypatch.setattr(runner, "run_qualification", unexpected)
     assert runner.main() == 7
+    assert len(calls) == 1
     command, env = calls[0]
+    assert command == [sys.executable, str(Path(runner.__file__).resolve()),
+                       "--device", "vk:0", "--build", str(ROOT / "build"),
+                       "--output", str(tmp_path / "report.json")]
     assert "--shader-toolchain-profile" not in command
     assert env["VULKAN_SHADER_TOOLCHAIN_PROFILE"] == str(profile)
     assert env["VULKAN_SHADER_TOOLCHAIN_PROFILE_SHA256"] == digest(profile.read_bytes())
+    assert env["PATH"].split(os.pathsep)[0] == str(module.WRAPPERS)
+    assert env.get("PYTHONPATH") == original.get("PYTHONPATH")
     assert env.get("LD_LIBRARY_PATH") == original.get("LD_LIBRARY_PATH")
     assert os.environ == original
 

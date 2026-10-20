@@ -2,6 +2,7 @@ import json
 import ctypes
 import inspect
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -329,7 +330,8 @@ def test_only_complete_ctest_retains_600_second_budget(monkeypatch, tmp_path):
     assert retained == summary
     for gate in retained["gates"]:
         for command in gate["commands"]:
-            assert command["timeout_seconds"] == (600 if gate["name"] == "ctest" else 300)
+            assert command["timeout_seconds"] == (
+                600 if gate["name"] in {"ctest", "python_suite"} else 300)
     assert retained["repository"]["timeout_seconds"] == 300
 
 
@@ -641,6 +643,7 @@ def test_gate_order_excludes_qualification_runner(monkeypatch, tmp_path):
         "build",
         "bootstrap_provenance",
         "ctest",
+        "python_suite",
         "conformance",
         "shader_verification",
         "validation_layer",
@@ -744,6 +747,159 @@ def test_validation_ctest_registration_sets_validation_layer():
 
     assert "vulkan_supported_workload_validation" in text
     assert "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation" in text
+
+
+# Every CMake add_test registration whose COMMAND is a script invocation rather
+# than a native C++ build target. The unsplit ctest gate used to run all of
+# them; each must remain covered by an explicit qualification gate instead.
+PYTHON_CTEST_COVERAGE = {
+    "vulkan_gemm_shader_integrity": ("tools/verify_gemm_spv.py",),
+    "vulkan_cat_gather_shader_integrity": ("tools/verify_cat_gather_spv.py",),
+    "vulkan_rnn_sequence_shader_integrity": ("tools/verify_rnn_sequence_spv.py",),
+    "vulkan_reduction_shader_integrity": ("tools/verify_reduction_indexing_spv.py",),
+    "vulkan_model_shader_integrity": ("tools/verify_model_spv.py",),
+    "vulkan_masked_select_shader_integrity": ("tools/verify_masked_select_spv.py",),
+    "vulkan_convolution_shader_integrity": ("tools/verify_convolution_spv.py",),
+    "vulkan_pooling_shader_integrity": ("tools/verify_pooling_spv.py",),
+    "vulkan_formatter_double_shader_integrity": ("tools/verify_formatter_double_spv.py",),
+    "vulkan_pointwise_shader_integrity": ("tools/verify_pointwise_spv.py",),
+    "vulkan_operator_shader_integrity": ("tools/verify_operator_spv.py",),
+    "vulkan_linear_relu_backward_shader_integrity": ("tools/verify_linear_relu_backward_spv.py",),
+    "vulkan_manifest_validation": ("tools/validate_vulkan_capabilities.py",),
+    "vulkan_bootstrap_provenance_validation": ("tools/validate_vulkan_bootstrap_provenance.py",),
+    "vulkan_workload_coverage_validation": ("tools/vulkan_workload_coverage.py",),
+    "vulkan_supported_workload_validation": (
+        "tools/vulkan_wrapper_pytest.py", "tests/python/test_vulkan_conformance.py",
+    ),
+    "vulkan_runtime_foundation_validation": ("tests/python/test_vulkan_reliability.py",),
+    "vulkan_python_suite": ("tests/python",),
+}
+
+_CMAKE_ADD_TEST_NAME = re.compile(r"add_test\(\s*NAME\s+(\S+)\s+COMMAND\s")
+_CMAKE_ADD_TEST_NATIVE = re.compile(r"add_test\(\s*NAME\s+(\S+)\s+COMMAND\s+([^\s${(]+)")
+
+
+def test_native_ctest_selection_covers_all_native_cmake_registrations_and_zero_python():
+    cmake = (Path(__file__).resolve().parents[2] / "CMakeLists.txt").read_text()
+    all_names = _CMAKE_ADD_TEST_NAME.findall(cmake)
+    native_names = {name for name, _ in _CMAKE_ADD_TEST_NATIVE.findall(cmake)}
+
+    assert len(qualification.NATIVE_CTEST_TESTS) == 12
+    assert native_names == set(qualification.NATIVE_CTEST_TESTS)
+    assert set(all_names) - native_names == set(PYTHON_CTEST_COVERAGE)
+    assert len(all_names) == 30
+
+    # The -R selection is a single anchored regex over exactly those names.
+    assert qualification.NATIVE_CTEST_REGEX == "^(%s)$" % "|".join(qualification.NATIVE_CTEST_TESTS)
+    assert " " not in qualification.NATIVE_CTEST_REGEX
+    assert "\n" not in qualification.NATIVE_CTEST_REGEX
+    for name in qualification.NATIVE_CTEST_TESTS:
+        assert re.fullmatch(qualification.NATIVE_CTEST_REGEX, name), name
+    for name in all_names:
+        if name not in native_names:
+            assert re.fullmatch(qualification.NATIVE_CTEST_REGEX, name) is None, name
+    assert "vulkan_python_suite" not in qualification.NATIVE_CTEST_REGEX
+
+
+def _captured_gate_commands(monkeypatch, tmp_path, **kwargs):
+    calls = []
+
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
+        calls.append((command, env, timeout_seconds))
+        return {"exit_code": 0, "stdout": "ok\n", "stderr": "",
+                "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
+    monkeypatch.setattr(
+        qualification,
+        "device_available",
+        lambda *args, **kwargs: {"status": "available", "reason": "available"},
+    )
+    summary = qualification.run_qualification(tmp_path / "report.json", run_build=False, **kwargs)
+    return summary, [command for command, _, _ in calls]
+
+
+def test_ctest_gate_selects_the_native_only_anchored_registration_set(monkeypatch, tmp_path):
+    summary, commands = _captured_gate_commands(monkeypatch, tmp_path)
+
+    ctest = next(gate for gate in summary["gates"] if gate["name"] == "ctest")
+    assert [command["command"] for command in ctest["commands"]] == [
+        qualification.native_ctest_command(qualification.ROOT / "build")]
+    command = ctest["commands"][0]["command"]
+    assert command[0] == "ctest"
+    assert command[-2:] == ["-R", qualification.NATIVE_CTEST_REGEX]
+    assert "--output-on-failure" in command
+    # A substituted or unsplit selection is rejected by this contract.
+    assert command != ["ctest", "--test-dir", str(qualification.ROOT / "build"),
+                       "--output-on-failure"]
+
+
+def test_removed_python_ctest_entries_are_covered_by_explicit_gate_commands(monkeypatch, tmp_path):
+    summary, commands = _captured_gate_commands(monkeypatch, tmp_path)
+
+    # Every non-native CMake registration maps to an executed gate argument.
+    parts = [str(part) for command in commands for part in command]
+    for registration, tokens in PYTHON_CTEST_COVERAGE.items():
+        for token in tokens:
+            assert any(token == part or token in part for part in parts), registration
+
+    # Exactly one gate invokes the whole directory suite, and it is python_suite.
+    python_suite = next(gate for gate in summary["gates"] if gate["name"] == "python_suite")
+    full_suite_commands = [
+        command for command in commands if "tests/python" in [str(part) for part in command]
+    ]
+    assert len(full_suite_commands) == 1
+    assert full_suite_commands[0] == python_suite["commands"][0]["command"]
+    assert not any(part == "vulkan_python_suite" for command in commands for part in command)
+
+
+def test_python_suite_gate_is_wrapper_first_exactly_once_with_budget_and_no_concurrency(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("PYTORCH_VULKAN_DEVICE", raising=False)
+    monkeypatch.delenv("VULKAN_DEVICE", raising=False)
+    summary, commands = _captured_gate_commands(
+        monkeypatch, tmp_path, python_executable=Path("/custom/python"))
+
+    names = [gate["name"] for gate in summary["gates"]]
+    assert names.index("ctest") < names.index("python_suite") < names.index("conformance")
+    python_suite = summary["gates"][names.index("python_suite")]
+
+    assert python_suite["status"] == "pass"
+    assert len(python_suite["commands"]) == 1
+    command = python_suite["commands"][0]
+    assert command["command"] == [
+        "/custom/python", "tools/vulkan_wrapper_pytest.py", "-q", "-rs",
+        "--durations=30", "tests/python",
+    ]
+    assert command["timeout_seconds"] == 600
+    assert sum(1 for item in commands if item == command["command"]) == 1
+    assert command["environment"]["PYTORCH_VULKAN_DEVICE"] == "vk:0"
+    assert command["environment"]["VULKAN_DEVICE"] == "vk:0"
+    assert not any(
+        part in {"-n", "--numprocesses", "--dist"} or str(part).startswith("--numprocesses=")
+        or str(part).startswith("--dist=")
+        for part in command["command"]
+    )
+
+
+def test_python_suite_gate_skips_with_device_reason_when_device_is_unavailable(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(qualification, "run_command", lambda *args, **kwargs: {
+        "exit_code": 0, "stdout": "ok\n", "stderr": ""})
+    monkeypatch.setattr(
+        qualification, "device_available", lambda *args, **kwargs: {
+            "status": "unavailable", "reason": "requested device is unavailable"},
+    )
+    summary = qualification.run_qualification(tmp_path / "report.json", run_build=False)
+
+    python_suite = next(gate for gate in summary["gates"] if gate["name"] == "python_suite")
+    assert python_suite["status"] == "skip"
+    assert python_suite["reason"] == "requested device is unavailable"
+    assert python_suite["commands"] == []
+    # The gate stays scheduled; it is never dropped from the gate inventory.
+    assert "python_suite" in [gate["name"] for gate in summary["gates"]]
 
 
 def test_command_records_effective_environment_deltas(monkeypatch, tmp_path):

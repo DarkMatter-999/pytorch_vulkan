@@ -146,3 +146,40 @@ unlike offline CPU replay. Then run complete async qualification and, only on
 success, sync qualification. Use the authenticated complete shader profile from
 [shader-toolchain.md](shader-toolchain.md); profile identity does not relabel old
 capture hashes or establish GPU execution.
+
+### Fresh baseline epoch
+
+Use a `fresh-baseline-epoch` only when multiple semantic source changes are
+present or historical measurement preservation has not been demonstrated. This
+is an explicit new epoch with `measurement_policy: not-preserved-new-epoch`;
+the predecessor remains byte-exact and visible, but no equality with its values
+or counters is claimed. It is not a counter waiver: new captures must still pass
+CPU/Vulkan parity, layouts, routes, gradients, finite-difference checks and all
+existing counter minima. It cannot be combined with `--artifact-transition`.
+
+First create a new immutable CPU archive of the current published outputs and
+sidecar. The destination must be absolute, new, git-ignored and under
+`.superpowers`; do not reuse or modify an older archive:
+
+```sh
+PYTHONPATH=.:build:tests/python .venv/bin/python tools/validate_vulkan_bootstrap_provenance.py --archive-baseline "$ARCHIVE"
+```
+
+After tooling review and capture authorization, capture both modes using the
+standard commands above (async first; sync only after async succeeds). Retain
+the approved migration JSON and attempts under `.superpowers`. It binds the
+exact predecessor sidecar/manifest/output/source identities, all six approved
+semantic source deltas, the exact approved control deltas, current extension,
+and both actual receipt hashes. Do not fill receipt hashes until capture
+completes. Publish only with the explicit input:
+
+```sh
+PYTHONPATH=.:build:tests/python .venv/bin/python tools/validate_vulkan_bootstrap_provenance.py --publish --async-attempt "$ASYNC_ATTEMPT" --sync-attempt "$SYNC_ATTEMPT" --archive "$ARCHIVE" --baseline-migration "$APPROVED_MIGRATION"
+```
+
+This intentionally replaces the source-bound MSE and connected-model records
+with fresh attempts without calling historical measurement preservation. The
+new epoch still runs every ordinary semantic validator, retains unaffected
+coverage exactly, authenticates both receipts and record inventories, and
+rechecks the migration guard before staging. The old archive and sidecar remain
+untouched; publication is separate and requires its own approval.

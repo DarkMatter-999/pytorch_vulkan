@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -29,6 +30,14 @@ OUTPUT_PATHS = (
     "docs/vulkan_coverage.json", "docs/vulkan_mse_sync_coverage.json",
     "docs/vulkan_composed_matmul_coverage.json", "docs/vulkan_capabilities.json",
     "docs/vulkan_general_matmul_sync_coverage.json", "docs/vulkan_workload_coverage.json",
+)
+BASELINE_SOURCE_PATHS = (
+    "src/vulkan_compute.cpp", "src/vulkan_compute.h", "src/vulkan/shaders/glsl/broadcast.comp",
+    "src/vulkan/shaders/generated/reduction_indexing_spv.h",
+    "src/vulkan/shaders/generated/reduction_indexing_spv.sha256", "src/vulkan_transfer.cpp",
+)
+BASELINE_CONTROL_PATHS = (
+    "tools/run_vulkan_qualification.py", "tools/validate_vulkan_bootstrap_provenance.py",
 )
 
 
@@ -71,9 +80,13 @@ def check_command(command, mode, root):
 
 def validate_document(data, root=ROOT, *, output_root=None):
     output_root = output_root or root
+    if "artifact_transition" in data and "baseline_migration" in data:
+        raise ValueError("artifact transition and baseline migration are mutually exclusive")
     keys = {"schema_version", "entry_point", "source_identity", "extension", "outputs", "captures"}
     if "artifact_transition" in data:
         keys.add("artifact_transition")
+    if "baseline_migration" in data:
+        keys.add("baseline_migration")
     fields(data, keys, "provenance")
     if type(data["schema_version"]) is not int or data["schema_version"] != 1 or data["entry_point"] != "wrapper-first":
         raise ValueError("wrong provenance schema/entrypoint")
@@ -104,6 +117,19 @@ def validate_document(data, root=ROOT, *, output_root=None):
                     or receipt["extension"] != data["extension"]
                     or any(receipt[key] != capture[key] for key in capture)):
                 raise ValueError("artifact transition receipt differs from published provenance")
+    if "baseline_migration" in data:
+        migration = data["baseline_migration"]
+        validate_baseline_migration_document(migration)
+        if (migration["new_extension"] != data["extension"]
+                or migration["capture_source_identity"] != data["source_identity"]):
+            raise ValueError("baseline migration differs from published provenance")
+        for mode, capture in data["captures"].items():
+            path = Path(capture["command"][-1])
+            receipt, _, _ = read_attempt(path, mode, root)
+            if (digest((path / "receipt.json").read_bytes()) != migration["receipt_sha256"][mode]
+                    or receipt["extension"] != data["extension"]
+                    or any(receipt[key] != capture[key] for key in capture)):
+                raise ValueError("baseline migration receipt differs from published provenance")
     return data
 
 
@@ -332,6 +358,67 @@ def read_archive(archive, root):
     return originals
 
 
+def validate_baseline_live_matches(archive, originals, root):
+    """Recheck every live predecessor output against its authenticated archive."""
+    if json.dumps(read_archive(archive, root), sort_keys=True) != json.dumps(originals, sort_keys=True):
+        raise ValueError("baseline migration live published documents differ from immutable archive")
+
+
+def archive_baseline(destination, root=ROOT):
+    """Create an exclusive byte-exact archive of the current published epoch."""
+    root = Path(root).resolve(strict=True)
+    destination = Path(destination)
+    if (not destination.is_absolute() or destination.exists()
+            or not destination.is_relative_to(root / ".superpowers")):
+        raise ValueError("baseline archive must be a new absolute path under .superpowers")
+    relative = destination.relative_to(root).as_posix()
+    ignored = subprocess.run(["git", "check-ignore", "--no-index", "-q", relative], cwd=root,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if ignored.returncode != 0:
+        raise ValueError("baseline archive destination is not git-ignored")
+    sidecar_bytes = (root / SIDECAR).read_bytes()
+    sidecar = json.loads(sidecar_bytes)
+    if (sidecar.get("outputs") != {name: digest((root / name).read_bytes()) for name in OUTPUT_PATHS}):
+        raise ValueError("current published outputs differ from predecessor sidecar")
+    extension = sidecar.get("extension")
+    if type(extension) is not dict or set(extension) != {"path", "sha256"}:
+        raise ValueError("invalid predecessor extension identity")
+    for doc, mode in ((OUTPUT_PATHS[0], "async"), (OUTPUT_PATHS[1], "sync")):
+        coverage = json.loads((root / doc).read_bytes())
+        if sorted(key for key in coverage if key.startswith("mse-ad.")) != mse_ids():
+            raise ValueError("predecessor MSE inventory mismatch")
+        for key in mse_ids():
+            check_runtime(coverage[key]["mse_autograd_evidence"]["runtime_identity"], mode, extension)
+    models = json.loads((root / OUTPUT_PATHS[2]).read_bytes())["records"]
+    if sorted(models) != sorted(model_ids("async") + model_ids("sync")):
+        raise ValueError("predecessor model inventory mismatch")
+    for mode in ("async", "sync"):
+        for key in model_ids(mode):
+            check_runtime(models[key]["runtime_identity"], mode, extension)
+    files = {}
+    payloads = {Path(name).name: (root / name).read_bytes() for name in OUTPUT_PATHS}
+    payloads[Path(SIDECAR).name] = sidecar_bytes
+    for name, payload in payloads.items():
+        records_doc = json.loads(payload) if name != Path(SIDECAR).name else None
+        records = records_doc.get("records", records_doc) if records_doc is not None else {}
+        if isinstance(records, list):
+            records = {str(index): record for index, record in enumerate(records)}
+        hashes = {str(key): digest(json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode())
+                  for key, record in records.items()} if isinstance(records, dict) else {}
+        files[name] = {"sha256": digest(payload), "size": len(payload),
+                       "record_payload_sha256": hashes}
+    manifest = {"authority": str(destination), "files": files,
+                "predecessor": {"sidecar_sha256": digest(sidecar_bytes),
+                                "extension": extension,
+                                "source_identity": sidecar["source_identity"],
+                                "outputs": sidecar["outputs"]}}
+    destination.mkdir(parents=True)
+    for name, payload in payloads.items():
+        (destination / name).write_bytes(payload)
+    (destination / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
 def validate_transition_document(transition):
     fields(transition, {"schema_version", "kind", "baseline_manifest_sha256", "old_extension_sha256",
                         "new_extension", "source_delta", "receipt_sha256", "capture_source_identity"},
@@ -354,6 +441,140 @@ def validate_transition_document(transition):
     if (type(path) is not str or not Path(path).is_absolute() or delta["before"] == delta["after"]
             or transition["old_extension_sha256"] == transition["new_extension"]["sha256"]):
         raise ValueError("artifact transition must identify a real source/binary change")
+
+
+def validate_baseline_migration_document(migration):
+    fields(migration, {"schema_version", "kind", "measurement_policy", "predecessor", "new_extension",
+                       "source_delta", "control_delta", "receipt_sha256", "capture_source_identity"},
+           "baseline migration")
+    if (type(migration["schema_version"]) is not int or migration["schema_version"] != 1
+            or migration["kind"] != "fresh-baseline-epoch"
+            or migration["measurement_policy"] != "not-preserved-new-epoch"):
+        raise ValueError("wrong baseline migration schema/kind/policy")
+    predecessor = migration["predecessor"]
+    fields(predecessor, {"sidecar_sha256", "manifest_sha256", "extension_sha256", "source_identity", "outputs"},
+           "baseline predecessor")
+    fields(predecessor["source_identity"], set(IDENTITY_PATHS), "predecessor controls")
+    fields(predecessor["outputs"], set(OUTPUT_PATHS), "predecessor outputs")
+    fields(migration["new_extension"], {"path", "sha256"}, "new baseline extension")
+    fields(migration["source_delta"], set(BASELINE_SOURCE_PATHS), "baseline source delta")
+    fields(migration["control_delta"], set(BASELINE_CONTROL_PATHS), "baseline control delta")
+    fields(migration["receipt_sha256"], {"async", "sync"}, "baseline receipts")
+    fields(migration["capture_source_identity"], set(IDENTITY_PATHS), "baseline capture controls")
+    hashes = [predecessor["sidecar_sha256"], predecessor["manifest_sha256"], predecessor["extension_sha256"],
+              *predecessor["source_identity"].values(), *predecessor["outputs"].values(),
+              migration["new_extension"]["sha256"], *migration["receipt_sha256"].values(),
+              *migration["capture_source_identity"].values()]
+    for section in ("source_delta", "control_delta"):
+        for delta in migration[section].values():
+            fields(delta, {"before", "after"}, section + " entry")
+            hashes.extend(delta.values())
+    if any(type(value) is not str or not re.fullmatch("[0-9a-f]{64}", value) for value in hashes):
+        raise ValueError("invalid baseline migration hash")
+    path = migration["new_extension"]["path"]
+    if (type(path) is not str or not Path(path).is_absolute()
+            or predecessor["extension_sha256"] == migration["new_extension"]["sha256"]
+            or any(item["before"] == item["after"] for section in ("source_delta", "control_delta")
+                   for item in migration[section].values())):
+        raise ValueError("baseline migration must name absolute artifact and changed inputs")
+
+
+def validate_baseline_migration(migration, archive, originals, receipts, fresh, root):
+    """Authenticate a new epoch against its exact predecessor and fresh receipts."""
+    validate_baseline_migration_document(migration)
+    manifest_bytes = (archive / "manifest.json").read_bytes()
+    if digest(manifest_bytes) != migration["predecessor"]["manifest_sha256"]:
+        raise ValueError("baseline migration manifest differs from approval")
+    manifest = json.loads(manifest_bytes)
+    predecessor = migration["predecessor"]
+    if (type(manifest) is not dict or manifest.get("authority") != str(archive.resolve())
+            or manifest.keys() != {"authority", "files", "predecessor"}
+            or manifest["files"].keys() != {Path(name).name for name in OUTPUT_PATHS} | {Path(SIDECAR).name}):
+        raise ValueError("baseline migration archive manifest identity differs")
+    archived_sidecar = (archive / Path(SIDECAR).name).read_bytes()
+    if digest(archived_sidecar) != predecessor["sidecar_sha256"]:
+        raise ValueError("baseline migration predecessor sidecar differs")
+    old = json.loads(archived_sidecar)
+    if (old["extension"]["sha256"] != predecessor["extension_sha256"]
+            or old["source_identity"] != predecessor["source_identity"]
+            or old["outputs"] != predecessor["outputs"]):
+        raise ValueError("baseline migration predecessor identities differ")
+    if manifest["predecessor"] != {"sidecar_sha256": predecessor["sidecar_sha256"],
+                                   "extension": old["extension"],
+                                   "source_identity": predecessor["source_identity"],
+                                   "outputs": predecessor["outputs"]}:
+        raise ValueError("baseline migration archive predecessor identities differ")
+    sidecar_entry = manifest["files"][Path(SIDECAR).name]
+    if (digest(archived_sidecar) != sidecar_entry["sha256"]
+            or len(archived_sidecar) != sidecar_entry["size"]):
+        raise ValueError("baseline migration archived sidecar file hash mismatch")
+    if manifest.get("predecessor", {}).get("sidecar_sha256") != predecessor["sidecar_sha256"]:
+        raise ValueError("baseline migration archive predecessor differs")
+    for name in OUTPUT_PATHS:
+        short = Path(name).name
+        payload = (archive / short).read_bytes()
+        entry = manifest["files"][short]
+        if digest(payload) != entry["sha256"] or len(payload) != entry["size"]:
+            raise ValueError("baseline migration archive file hash mismatch")
+        if digest(payload) != predecessor["outputs"][name]:
+            raise ValueError("baseline migration archived output differs")
+        records = originals[name].get("records", originals[name])
+        if isinstance(records, list):
+            records = {str(index): record for index, record in enumerate(records)}
+        hashes = {str(key): digest(json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode())
+                  for key, record in records.items()}
+        if hashes != entry["record_payload_sha256"]:
+            raise ValueError("baseline migration archived record payload mismatch")
+    for mode, doc_name in (("async", OUTPUT_PATHS[0]), ("sync", OUTPUT_PATHS[1])):
+        for key in mse_ids():
+            check_runtime(originals[doc_name][key]["mse_autograd_evidence"]["runtime_identity"],
+                          mode, old["extension"])
+    for mode in ("async", "sync"):
+        for key in model_ids(mode):
+            check_runtime(originals[OUTPUT_PATHS[2]]["records"][key]["runtime_identity"], mode, old["extension"])
+    if migration["capture_source_identity"] != identity(root):
+        raise ValueError("baseline migration capture controls are stale")
+    control_delta = {path: {"before": predecessor["source_identity"][path], "after": value}
+                     for path, value in identity(root).items()
+                     if predecessor["source_identity"][path] != value}
+    if control_delta != migration["control_delta"]:
+        raise ValueError("baseline migration control delta is not exact")
+    extension = migration["new_extension"]
+    extension_path = Path(extension["path"])
+    if not extension_path.is_file() or digest(extension_path.read_bytes()) != extension["sha256"]:
+        raise ValueError("baseline migration current extension is stale")
+    prior_models = originals[OUTPUT_PATHS[2]]["records"]
+    observed_runtime = None
+    for mode in ("async", "sync"):
+        receipt = receipts[mode]
+        attempt = Path(receipt["command"][-1]).resolve()
+        actual_receipt, mse, models = read_attempt(attempt, mode, root)
+        if (receipt["extension"] != extension
+                or digest((attempt / "receipt.json").read_bytes()) != migration["receipt_sha256"][mode]
+                or actual_receipt != receipt
+                or json.dumps((mse, models), sort_keys=True) != json.dumps(fresh[mode], sort_keys=True)):
+            raise ValueError("baseline migration receipt/payload differs from approval")
+        previous_mse = originals[OUTPUT_PATHS[0 if mode == "async" else 1]]
+        pairs = [(previous_mse[key], mse[key]) for key in mse_ids()]
+        pairs += [(prior_models[key], models["records"][key]) for key in model_ids(mode)]
+        for previous, current in pairs:
+            old_record = previous.get("mse_autograd_evidence", previous)
+            new_record = current.get("mse_autograd_evidence", current)
+            old_sources, new_sources = old_record["source_identity"], new_record["source_identity"]
+            if old_sources.keys() != new_sources.keys():
+                raise ValueError("baseline migration source inventory changed")
+            delta = {path: {"before": old_sources[path], "after": value}
+                     for path, value in new_sources.items() if old_sources[path] != value}
+            if delta != migration["source_delta"]:
+                raise ValueError("baseline migration semantic source delta is not exact")
+            for path, value in new_sources.items():
+                if digest((root / path).read_bytes()) != value:
+                    raise ValueError("baseline migration record source is stale")
+            runtime = {key: value for key, value in new_record["runtime_identity"].items()
+                       if key != "execution_mode"}
+            if observed_runtime is not None and runtime != observed_runtime:
+                raise ValueError("baseline migration capture runtimes differ")
+            observed_runtime = runtime
 
 
 def validate_artifact_transition(transition, archive, originals, receipts, fresh, root):
@@ -414,7 +635,8 @@ def validate_artifact_transition(transition, archive, originals, receipts, fresh
     return pair
 
 
-def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifact_transition=None):
+def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifact_transition=None,
+                     baseline_migration=None):
     """CPU validation only; publish a complete two-mode candidate or nothing."""
     root, authority = publication_root(root)
     publication_paths(root, (*OUTPUT_PATHS, SIDECAR), authority)
@@ -434,18 +656,27 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifac
         receipts[mode], fresh[mode] = receipt, (mse, models)
     if receipts["async"]["extension"] != receipts["sync"]["extension"]:
         raise ValueError("capture modes used different extensions")
-    transition, extension_transition = None, None
+    if artifact_transition is not None and baseline_migration is not None:
+        raise ValueError("artifact transition and baseline migration are mutually exclusive")
+    transition, migration, extension_transition = None, None, None
     if artifact_transition is not None:
         artifact_transition = Path(artifact_transition).resolve()
         if not artifact_transition.is_relative_to(root / ".superpowers"):
             raise ValueError("artifact transition must be retained excluded within checkout")
         transition = load(artifact_transition)
         extension_transition = validate_artifact_transition(transition, archive, originals, receipts, fresh, root)
+    if baseline_migration is not None:
+        baseline_migration = Path(baseline_migration).resolve()
+        if not baseline_migration.is_relative_to(root / ".superpowers"):
+            raise ValueError("baseline migration must be retained excluded within checkout")
+        migration = load(baseline_migration)
+        validate_baseline_migration(migration, archive, originals, receipts, fresh, root)
     candidates = dict(originals)
     for mode, name in (("async", OUTPUT_PATHS[0]), ("sync", OUTPUT_PATHS[1])):
         candidates[name] = {**originals[name], **fresh[mode][0]}
         for key in mse_ids():
-            preserve_measurements(originals[name][key], fresh[mode][0][key], extension_transition=extension_transition)
+            if migration is None:
+                preserve_measurements(originals[name][key], fresh[mode][0][key], extension_transition=extension_transition)
         if any(candidates[name][key] != value for key, value in originals[name].items() if key not in mse_ids()):
             raise ValueError("unaffected coverage payload changed")
         current = load(root / name)
@@ -455,7 +686,9 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifac
         **fresh["async"][1]["records"], **fresh["sync"][1]["records"]}}
     validate_composed_evidence(candidates[OUTPUT_PATHS[2]], root)
     for key, record in candidates[OUTPUT_PATHS[2]]["records"].items():
-        preserve_measurements(originals[OUTPUT_PATHS[2]]["records"][key], record, extension_transition=extension_transition)
+        if migration is None:
+            preserve_measurements(originals[OUTPUT_PATHS[2]]["records"][key], record,
+                                  extension_transition=extension_transition)
     capabilities = generator.build_coverage_manifest(candidates[OUTPUT_PATHS[0]])
     payloads = {name: (json.dumps(candidates[name], indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
                 for name in OUTPUT_PATHS[:3]}
@@ -472,6 +705,8 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifac
                              for mode, receipt in receipts.items()}}
     if transition is not None:
         sidecar["artifact_transition"] = transition
+    if migration is not None:
+        sidecar["baseline_migration"] = migration
     payloads[SIDECAR] = (json.dumps(sidecar, indent=2, sort_keys=True) + "\n").encode()
     # Candidate view uses current source, not a copy or relabel of historical maps.
     with tempfile.TemporaryDirectory(prefix="composed-candidate-", dir=root / ".superpowers") as directory:
@@ -494,6 +729,10 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifac
                 if load(artifact_transition) != transition:
                     raise ValueError("artifact transition approval changed before publication")
                 validate_artifact_transition(transition, archive, originals, receipts, fresh, root)
+            if migration is not None:
+                if load(baseline_migration) != migration:
+                    raise ValueError("baseline migration approval changed before publication")
+                validate_baseline_migration(migration, archive, originals, receipts, fresh, root)
             validate_manifest_data(capabilities, candidate_root)
             validate_composed_evidence(candidates[OUTPUT_PATHS[2]], candidate_root)
             validate_file(candidate_root / SIDECAR, root, output_root=candidate_root)
@@ -505,6 +744,8 @@ def publish_attempts(async_attempt, sync_attempt, archive, root=ROOT, *, artifac
             extension = Path(sidecar["extension"]["path"])
             if digest(extension.read_bytes()) != sidecar["extension"]["sha256"]:
                 raise ValueError("extension changed before publication")
+            if migration is not None:
+                validate_baseline_live_matches(archive, originals, root)
         publish_bytes(root, payloads, validate)
     return sidecar
 
@@ -518,18 +759,31 @@ def main():
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--artifact-transition", type=Path,
                         help="explicit approved transfer artifact transition, bound to archive and both receipts")
+    parser.add_argument("--archive-baseline", type=Path,
+                        help="create an exclusive byte-exact archive of the current published baseline")
+    parser.add_argument("--baseline-migration", type=Path,
+                        help="explicit approved fresh baseline epoch, bound to archive and both receipts")
     args = parser.parse_args()
     try:
+        if args.archive_baseline is not None:
+            if args.publish or args.artifact_transition is not None or args.baseline_migration is not None:
+                parser.error("--archive-baseline cannot be combined with publication or transitions")
+            archive_baseline(args.archive_baseline)
+            print("current bootstrap baseline archived")
+            return 0
         if args.publish:
             if not all((args.async_attempt, args.sync_attempt, args.archive)):
                 parser.error("--publish requires both attempts and immutable --archive")
             if args.provenance.resolve() != (ROOT / SIDECAR).resolve():
                 parser.error("--publish writes only the canonical provenance sidecar")
+            if args.artifact_transition is not None and args.baseline_migration is not None:
+                parser.error("--artifact-transition and --baseline-migration are mutually exclusive")
             publish_attempts(args.async_attempt, args.sync_attempt, args.archive,
-                             artifact_transition=args.artifact_transition)
+                             artifact_transition=args.artifact_transition,
+                             baseline_migration=args.baseline_migration)
         else:
-            if args.artifact_transition is not None:
-                parser.error("--artifact-transition requires --publish")
+            if args.artifact_transition is not None or args.baseline_migration is not None:
+                parser.error("transition/migration inputs require --publish")
             validate_file(args.provenance)
     except (ValueError, KeyError, TypeError, OSError) as error:
         print(f"bootstrap provenance failed: {error}", file=sys.stderr)

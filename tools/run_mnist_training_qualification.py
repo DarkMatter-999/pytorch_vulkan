@@ -29,9 +29,9 @@ for _import_path in reversed(_IMPORT_PATHS):
 
 DEFAULT_PYTHON = ROOT / ".venv" / "bin" / "python"
 GATES = (
-    "manifest", "build", "bootstrap_provenance", "ctest", "conformance",
-    "shader_verification", "validation_layer", "stress", "timing", "benchmark",
-    "environment", "additional_implementation",
+    "manifest", "build", "bootstrap_provenance", "ctest", "python_suite",
+    "conformance", "shader_verification", "validation_layer", "stress",
+    "timing", "benchmark", "environment", "additional_implementation",
 )
 CONFORMANCE_CASES = (
     ("tests/python/test_vulkan_conformance.py",),
@@ -384,6 +384,36 @@ def _conformance_commands(python: str | Path) -> list[list[str]]:
     return [prefix + list(targets) for targets in CONFORMANCE_CASES]
 
 
+def _validate_split_gate_commands(gate: dict, python: str | Path) -> None:
+    """Authenticate the report's split ctest/python_suite lanes; nothing else passes.
+
+    The old unsplit ctest invocation and any substituted invocation (plain
+    pytest module, missing/orphaned duration flag, reordered argv, or a CTest
+    run of the suite) are rejected, as is a lost named gate budget.
+    """
+    from tools import run_vulkan_qualification as legacy
+
+    name = gate["name"]
+    commands = gate["commands"]
+    if len(commands) != 1:
+        raise QualificationFailure(f"legacy gate {name} must contain exactly one invocation")
+    command = commands[0]
+    if name == "ctest":
+        expected = legacy.native_ctest_command((ROOT / "build").resolve())
+        if command.get("command") != expected:
+            raise QualificationFailure(
+                "ctest gate is not the anchored native-only CMake C++ selection")
+        budget_context = "named native CTest"
+    else:
+        expected = legacy.python_suite_command(python)
+        if command.get("command") != expected:
+            raise QualificationFailure(
+                "python_suite gate is not the wrapper-first full Python suite")
+        budget_context = "former combined CTest"
+    if command.get("timeout_seconds") != 600:
+        raise QualificationFailure(f"{name} gate lost the 600 second {budget_context} budget")
+
+
 def _validate_conformance_skip(commands: list[dict], python: str | Path) -> None:
     expected = _conformance_commands(python)
     if len(commands) != len(expected) or [command.get("command") for command in commands] != expected:
@@ -446,6 +476,8 @@ def validate_legacy_report(report: dict, exit_code: int, *, python: str | Path) 
             if (type(command) is not dict or type(command.get("exit_code")) is not int
                     or command.get("exit_code") != 0 or not command.get("command")):
                 raise QualificationFailure(f"legacy gate {gate['name']} contains failed command")
+        if gate["name"] in {"ctest", "python_suite"}:
+            _validate_split_gate_commands(gate, python)
         reason = gate.get("reason")
         if status == "pass":
             if reason is not None:

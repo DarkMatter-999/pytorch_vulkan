@@ -99,12 +99,111 @@ def cpu_provenance_fixture(tmp_path, validator):
     return document
 
 
+def test_baseline_archive_copies_exact_current_publication_and_records_payload_hashes(tmp_path, monkeypatch):
+    validator = module('validate_vulkan_bootstrap_provenance')
+    root = tmp_path / 'checkout'
+    root.mkdir()
+    document = cpu_provenance_fixture(root, validator)
+    extension = document['extension']
+    runtime = lambda mode: {'execution_mode': mode, 'extension_sha256': extension['sha256'],
+                            'extension_path': extension['path']}
+    outputs = {}
+    for name in validator.OUTPUT_PATHS:
+        if name == validator.OUTPUT_PATHS[0]:
+            payload = {key: {'mse_autograd_evidence': {'runtime_identity': runtime('async')}}
+                       for key in validator.mse_ids()}
+        elif name == validator.OUTPUT_PATHS[1]:
+            payload = {key: {'mse_autograd_evidence': {'runtime_identity': runtime('sync')}}
+                       for key in validator.mse_ids()}
+        elif name == validator.OUTPUT_PATHS[2]:
+            payload = {'records': {key: {'runtime_identity': runtime(mode)}
+                                   for mode in ('async', 'sync')
+                                   for key in validator.model_ids(mode)}}
+        else:
+            payload = {'cpu_fixture': name}
+        data = (json.dumps(payload, sort_keys=True) + '\n').encode()
+        (root / name).write_bytes(data)
+        outputs[name] = validator.digest(data)
+    document['outputs'] = outputs
+    sidecar = root / validator.SIDECAR
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_bytes = (json.dumps(document, sort_keys=True) + '\n').encode()
+    sidecar.write_bytes(sidecar_bytes)
+    archive = root / '.superpowers/task-7-bootstrap-baseline-epoch-v1/predecessor'
+    monkeypatch.setattr(validator.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0))
+    manifest = validator.archive_baseline(archive, root)
+    assert (archive / Path(validator.SIDECAR).name).read_bytes() == sidecar_bytes
+    for name in validator.OUTPUT_PATHS:
+        assert (archive / Path(name).name).read_bytes() == (root / name).read_bytes()
+        payload = json.loads((root / name).read_bytes())
+        records = payload.get('records', payload)
+        expected = {str(key): validator.digest(json.dumps(record, sort_keys=True, separators=(',', ':'),
+                                                           allow_nan=False).encode())
+                    for key, record in records.items()}
+        assert manifest['files'][Path(name).name]['record_payload_sha256'] == expected
+
+
+def test_baseline_migration_document_rejects_unknown_fields_and_wrong_policy():
+    validator = module('validate_vulkan_bootstrap_provenance')
+    migration = {
+        'schema_version': 1, 'kind': 'fresh-baseline-epoch',
+        'measurement_policy': 'not-preserved-new-epoch',
+        'predecessor': {'sidecar_sha256': 'a' * 64, 'manifest_sha256': 'b' * 64,
+                        'extension_sha256': 'c' * 64,
+                        'source_identity': {path: '6' * 64 for path in validator.IDENTITY_PATHS},
+                        'outputs': {path: '7' * 64 for path in validator.OUTPUT_PATHS}},
+        'new_extension': {'path': '/CPU-only/new.so', 'sha256': 'd' * 64},
+        'source_delta': {path: {'before': 'e' * 64, 'after': 'f' * 64}
+                         for path in validator.BASELINE_SOURCE_PATHS},
+        'control_delta': {path: {'before': '1' * 64, 'after': '2' * 64}
+                          for path in validator.BASELINE_CONTROL_PATHS},
+        'receipt_sha256': {'async': '3' * 64, 'sync': '4' * 64},
+        'capture_source_identity': {path: '5' * 64 for path in validator.IDENTITY_PATHS},
+    }
+    validator.validate_baseline_migration_document(migration)
+    unknown = copy.deepcopy(migration)
+    unknown['counter_allowlist'] = ['anything']
+    with pytest.raises(ValueError, match='wrong fields'):
+        validator.validate_baseline_migration_document(unknown)
+    wrong_policy = copy.deepcopy(migration)
+    wrong_policy['measurement_policy'] = 'preserve'
+    with pytest.raises(ValueError, match='kind/policy'):
+        validator.validate_baseline_migration_document(wrong_policy)
+    wrong_delta = copy.deepcopy(migration)
+    wrong_delta['source_delta'].pop(next(iter(wrong_delta['source_delta'])))
+    with pytest.raises(ValueError, match='source delta: wrong fields'):
+        validator.validate_baseline_migration_document(wrong_delta)
+
+
+def test_baseline_archive_refuses_existing_or_outside_destinations(tmp_path):
+    validator = module('validate_vulkan_bootstrap_provenance')
+    root = tmp_path / 'checkout'
+    root.mkdir()
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    with pytest.raises(ValueError, match='absolute path under .superpowers'):
+        validator.archive_baseline(outside / 'archive', root)
+    existing = root / '.superpowers/existing'
+    existing.mkdir(parents=True)
+    with pytest.raises(ValueError, match='absolute path under .superpowers'):
+        validator.archive_baseline(existing, root)
+
+
 def test_provenance_missing_is_failure_and_validator_never_imports_wrapper(tmp_path):
     validator = module('validate_vulkan_bootstrap_provenance')
     with pytest.raises(ValueError, match='missing'):
         validator.validate_file(tmp_path / 'missing.json', tmp_path)
     source = (ROOT / 'tools/validate_vulkan_bootstrap_provenance.py').read_text()
     assert 'import pytorch_vulkan' not in source
+
+
+def test_provenance_rejects_both_transition_contracts(tmp_path):
+    validator = module('validate_vulkan_bootstrap_provenance')
+    document = cpu_provenance_fixture(tmp_path, validator)
+    document['artifact_transition'] = {}
+    document['baseline_migration'] = {}
+    with pytest.raises(ValueError, match='mutually exclusive'):
+        validator.validate_document(document, tmp_path)
 
 
 @pytest.mark.parametrize('mutation', ['entrypoint', 'source', 'output', 'ids', 'mode', 'command', 'extension', 'extra'])
@@ -196,8 +295,11 @@ def test_semantic_generation_path_and_durable_operational_docs():
     guide = (ROOT / 'docs/vulkan-bootstrap-evidence.md').read_text()
     commands = [shlex.split(line) for line in guide.splitlines()
                 if line.startswith('PYTHONPATH=') and '--publish' in line]
-    assert len(commands) == 1
-    assert commands[0][0] == 'PYTHONPATH=.:build:tests/python'
+    assert len(commands) == 2
+    assert commands[0][0] == commands[1][0] == 'PYTHONPATH=.:build:tests/python'
+    assert '--baseline-migration' not in commands[0]
+    assert commands[1][-2] == '--baseline-migration'
+    assert commands[0].index('--publish') < commands[0].index('--archive')
     assert guide.count('tools/capture_vulkan_composed_evidence.py --mode') == 2
     assert 'pending' not in guide.lower()
     import re
@@ -445,6 +547,18 @@ def test_artifact_transition_rejects_tampering(artifact_transition_fixture, muta
     assert json.dumps([f.originals, f.receipts, f.fresh, f.transition], sort_keys=True) == before
 
 
+def test_baseline_migration_final_guard_rejects_live_predecessor_drift(artifact_transition_fixture):
+    f = artifact_transition_fixture
+    name = f.validator.OUTPUT_PATHS[0]
+    original = (f.root / name).read_bytes()
+    try:
+        (f.root / name).write_bytes(original + b' drift after initial archive read')
+        with pytest.raises(ValueError, match='published baseline changed'):
+            f.validator.validate_baseline_live_matches(f.archive, f.originals, f.root)
+    finally:
+        (f.root / name).write_bytes(original)
+
+
 def _cpu_old_artifact_publication_baseline(validator, source_documents):
     """Private synthetic history, never a recapture or canonical evidence rewrite."""
     originals = copy.deepcopy(source_documents)
@@ -480,6 +594,12 @@ def test_artifact_transition_publication_cpu_replay_fixture(tmp_path, publicatio
         for key, record in records.items():
             if key.startswith(('mse-ad.', 'g3.')):
                 evidence = record.get('mse_autograd_evidence', record)
+                # This is a synthetic replay baseline: bind every unchanged path
+                # to current fixture bytes so the intentional transfer-only
+                # delta reaches the Bool transition's measurement assertion.
+                for path in evidence['source_identity']:
+                    if path != 'src/vulkan_transfer.cpp':
+                        evidence['source_identity'][path] = validator.digest((ROOT / path).read_bytes())
                 evidence['source_identity']['src/vulkan_transfer.cpp'] = source_transfer
                 evidence['runtime_identity']['extension_sha256'] = source_extension
     source_before = json.dumps(source_documents, sort_keys=True)
@@ -559,6 +679,172 @@ def test_artifact_transition_publication_cpu_replay_fixture(tmp_path, publicatio
     for name in validator.OUTPUT_PATHS[3:]:
         assert (root / name).read_bytes() == original_bytes[name]
     assert not list(root.glob('.composed-publication-*'))
+
+
+def test_fresh_baseline_epoch_publishes_cpu_fixture_with_new_measurements(tmp_path, monkeypatch):
+    """Exercise epoch publication on copies only; this is not GPU evidence."""
+    validator = module('validate_vulkan_bootstrap_provenance')
+    source_documents = {name: json.loads((ROOT / name).read_bytes()) for name in validator.OUTPUT_PATHS}
+    original_sidecar = json.loads((ROOT / validator.SIDECAR).read_bytes())
+    root = tmp_path / 'CPU-only-epoch-publication'
+    root.mkdir()
+    for name in ('src', 'python', 'tests', 'tools'):
+        (root / name).symlink_to(ROOT / name, target_is_directory=True)
+    (root / 'CMakeLists.txt').symlink_to(ROOT / 'CMakeLists.txt')
+    (root / 'docs').mkdir()
+    archive = root / '.superpowers/epoch-archive'
+    archive.mkdir(parents=True)
+
+    baseline_bytes, manifest_files = {}, {}
+    originals = {}
+    for name in validator.OUTPUT_PATHS:
+        payload = ((json.dumps(source_documents[name], allow_nan=False, sort_keys=True) + '\n').encode()
+                   if name in validator.OUTPUT_PATHS[:3] else (ROOT / name).read_bytes())
+        (root / name).write_bytes(payload)
+        (archive / Path(name).name).write_bytes(payload)
+        baseline_bytes[name] = payload
+        originals[name] = json.loads(payload)
+        records = originals[name].get('records', originals[name])
+        if isinstance(records, list): records = {str(i): record for i, record in enumerate(records)}
+        manifest_files[Path(name).name] = {
+            'sha256': validator.digest(payload), 'size': len(payload),
+            'record_payload_sha256': {str(key): validator.digest(json.dumps(
+                value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode())
+                for key, value in records.items()}}
+
+    predecessor_sidecar = {**original_sidecar,
+        'outputs': {name: validator.digest(payload) for name, payload in baseline_bytes.items()}}
+    predecessor_bytes = (json.dumps(predecessor_sidecar, sort_keys=True) + '\n').encode()
+    (archive / Path(validator.SIDECAR).name).write_bytes(predecessor_bytes)
+    manifest_files[Path(validator.SIDECAR).name] = {
+        'sha256': validator.digest(predecessor_bytes), 'size': len(predecessor_bytes),
+        'record_payload_sha256': {}}
+    manifest = {'authority': str(archive.resolve()), 'files': manifest_files,
+        'predecessor': {'sidecar_sha256': validator.digest(predecessor_bytes),
+                        'extension': predecessor_sidecar['extension'],
+                        'source_identity': predecessor_sidecar['source_identity'],
+                        'outputs': predecessor_sidecar['outputs']}}
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode()
+    (archive / 'manifest.json').write_bytes(manifest_bytes)
+
+    extension_path = ROOT / 'build/pytorch_vulkan/_C.cpython-312-x86_64-linux-gnu.so'
+    extension = {'path': str(extension_path.resolve()),
+                 'sha256': validator.digest(extension_path.read_bytes())}
+    attempts, receipts, fresh = {}, {}, {}
+    for mode, name in (('async', validator.OUTPUT_PATHS[0]), ('sync', validator.OUTPUT_PATHS[1])):
+        attempt = root / '.superpowers' / ('epoch-' + mode)
+        attempt.mkdir()
+        mse = {key: copy.deepcopy(originals[name][key]) for key in validator.mse_ids()}
+        models = {'schema_version': 1, 'records': {
+            key: copy.deepcopy(originals[validator.OUTPUT_PATHS[2]]['records'][key])
+            for key in validator.model_ids(mode)}}
+        for record in [*mse.values(), *models['records'].values()]:
+            evidence = record.get('mse_autograd_evidence', record)
+            for source_path in validator.BASELINE_SOURCE_PATHS:
+                evidence['source_identity'][source_path] = validator.digest((ROOT / source_path).read_bytes())
+            evidence['runtime_identity']['extension_sha256'] = extension['sha256']
+            evidence['runtime_identity']['extension_path'] = extension['path']
+            evidence['counters'][0] += 1
+        for filename, data in (('mse.json', mse), ('models.json', models)):
+            (attempt / filename).write_text(json.dumps(data, allow_nan=False))
+        receipt = {'schema_version': 1, 'entry_point': 'wrapper-first', 'mode': mode,
+            'command': ['/CPU-only/python', str(root / 'tools/capture_vulkan_composed_evidence.py'),
+                        '--mode', mode, '--device', 'vk:0', '--output', str(attempt)],
+            'source_identity': validator.identity(root), 'extension': extension,
+            'outputs': {filename: validator.digest((attempt / filename).read_bytes())
+                        for filename in ('mse.json', 'models.json')},
+            'mse_record_ids': validator.mse_ids(), 'model_record_ids': validator.model_ids(mode)}
+        (attempt / 'receipt.json').write_text(json.dumps(receipt))
+        attempts[mode], receipts[mode], fresh[mode] = attempt, receipt, (mse, models)
+
+    source_delta = {}
+    first_old = originals[validator.OUTPUT_PATHS[0]][validator.mse_ids()[0]]['mse_autograd_evidence']['source_identity']
+    for path in validator.BASELINE_SOURCE_PATHS:
+        source_delta[path] = {'before': first_old[path],
+                              'after': validator.digest((ROOT / path).read_bytes())}
+    current_identity = validator.identity(root)
+    control_delta = {path: {'before': predecessor_sidecar['source_identity'][path],
+                            'after': current_identity[path]}
+                     for path in validator.BASELINE_CONTROL_PATHS}
+    migration = {'schema_version': 1, 'kind': 'fresh-baseline-epoch',
+        'measurement_policy': 'not-preserved-new-epoch',
+        'predecessor': {'sidecar_sha256': validator.digest(predecessor_bytes),
+                        'manifest_sha256': validator.digest(manifest_bytes),
+                        'extension_sha256': predecessor_sidecar['extension']['sha256'],
+                        'source_identity': predecessor_sidecar['source_identity'],
+                        'outputs': predecessor_sidecar['outputs']},
+        'new_extension': extension, 'source_delta': source_delta,
+        'control_delta': control_delta,
+        'receipt_sha256': {mode: validator.digest((attempts[mode] / 'receipt.json').read_bytes())
+                           for mode in ('async', 'sync')},
+        'capture_source_identity': current_identity}
+    migration_path = root / '.superpowers/approved-CPU-only-migration.json'
+    migration_path.write_text(json.dumps(migration))
+
+    invalid = copy.deepcopy(migration)
+    invalid['source_delta'][validator.BASELINE_SOURCE_PATHS[0]]['after'] = '0' * 64
+    with pytest.raises(ValueError):
+        validator.validate_baseline_migration(invalid, archive, originals, receipts, fresh, root)
+    invalid = copy.deepcopy(migration)
+    invalid['control_delta'][validator.BASELINE_CONTROL_PATHS[0]]['after'] = '0' * 64
+    with pytest.raises(ValueError):
+        validator.validate_baseline_migration(invalid, archive, originals, receipts, fresh, root)
+    invalid = copy.deepcopy(migration)
+    invalid['new_extension']['sha256'] = '0' * 64
+    with pytest.raises(ValueError):
+        validator.validate_baseline_migration(invalid, archive, originals, receipts, fresh, root)
+    invalid = copy.deepcopy(migration)
+    invalid['receipt_sha256']['async'] = '0' * 64
+    with pytest.raises(ValueError):
+        validator.validate_baseline_migration(invalid, archive, originals, receipts, fresh, root)
+    invalid = copy.deepcopy(migration)
+    invalid['predecessor']['manifest_sha256'] = '0' * 64
+    with pytest.raises(ValueError):
+        validator.validate_baseline_migration(invalid, archive, originals, receipts, fresh, root)
+    archived_doc = archive / Path(validator.OUTPUT_PATHS[0]).name
+    archived_bytes = archived_doc.read_bytes()
+    try:
+        archived_doc.write_bytes(archived_bytes + b' tampered archive')
+        with pytest.raises(ValueError):
+            validator.validate_baseline_migration(migration, archive, originals, receipts, fresh, root)
+    finally:
+        archived_doc.write_bytes(archived_bytes)
+    live_doc = root / validator.OUTPUT_PATHS[0]
+    live_bytes = live_doc.read_bytes()
+    try:
+        live_doc.write_bytes(live_bytes + b' changed live predecessor')
+        with pytest.raises(ValueError, match='published baseline changed'):
+            validator.validate_baseline_live_matches(archive, originals, root)
+    finally:
+        live_doc.write_bytes(live_bytes)
+
+    monkeypatch.setattr(validator, 'preserve_measurements',
+                        lambda *a, **kw: pytest.fail('fresh epoch must not preserve historical measurements'))
+    replace = validator.os.replace
+    replace_calls = []
+    def fail_second_replacement(source, destination):
+        replace_calls.append(destination)
+        if len(replace_calls) == 2:
+            raise OSError('injected CPU-only fresh epoch publication failure')
+        return replace(source, destination)
+    monkeypatch.setattr(validator.os, 'replace', fail_second_replacement)
+    with pytest.raises(OSError, match='fresh epoch publication failure'):
+        validator.publish_attempts(attempts['async'], attempts['sync'], archive, root,
+                                   baseline_migration=migration_path)
+    monkeypatch.setattr(validator.os, 'replace', replace)
+    assert len(replace_calls) >= 3  # The first replacement was rolled back.
+    assert {name: (root / name).read_bytes() for name in validator.OUTPUT_PATHS} == baseline_bytes
+    assert not (root / validator.SIDECAR).exists()
+    sidecar = validator.publish_attempts(attempts['async'], attempts['sync'], archive, root,
+                                         baseline_migration=migration_path)
+    assert sidecar['baseline_migration'] == migration
+    for mode, name in (('async', validator.OUTPUT_PATHS[0]), ('sync', validator.OUTPUT_PATHS[1])):
+        published = json.loads((root / name).read_bytes())
+        for key in validator.mse_ids():
+            assert published[key]['mse_autograd_evidence']['counters'][0] == \
+                   originals[name][key]['mse_autograd_evidence']['counters'][0] + 1
+    assert {name: (root / name).read_bytes() for name in validator.OUTPUT_PATHS[4:]} == \
+           {name: baseline_bytes[name] for name in validator.OUTPUT_PATHS[4:]}
 
 
 def test_artifact_transition_sidecar_cannot_rebind_receipt_to_another_extension(artifact_transition_fixture):
@@ -813,7 +1099,8 @@ def test_publication_rollback_removes_only_its_new_regular_leaf(tmp_path, monkey
 def test_documented_publication_environment_reaches_archive_after_real_runtime_bootstrap(tmp_path):
     from tools.run_vulkan_qualification import run_command
     documented, = [line for line in (ROOT / 'docs/vulkan-bootstrap-evidence.md').read_text().splitlines()
-                   if line.startswith('PYTHONPATH=') and ' --publish ' in line]
+                   if line.startswith('PYTHONPATH=') and ' --publish ' in line
+                   and '--baseline-migration' not in line]
     tokens = shlex.split(documented)
     pythonpath = tokens[0].split('=', 1)[1]
     fixture_root = tmp_path / 'trusted-fixture-root'
@@ -856,9 +1143,11 @@ assert not list((root / 'docs').iterdir())
 print(json.dumps({'boundary': 'runtime-bootstrap-before-missing-archive', 'events': events,
                   'reverse_calls': reverse, 'loaded_extension': wrapper._C.__file__}))
 '''
-    result = run_command([sys.executable, '-c', script, str(fixture_root), str(archive)], ROOT,
-                         os.environ | {'PYTHONPATH': pythonpath, 'TMPDIR': '/tmp/opencode'},
-                         timeout_seconds=30)
+    from tools.qualification_process_supervisor import caller_wait_scope
+    with caller_wait_scope(exclusive_wait=True):
+        result = run_command([sys.executable, '-c', script, str(fixture_root), str(archive)], ROOT,
+                             os.environ | {'PYTHONPATH': pythonpath, 'TMPDIR': '/tmp/opencode'},
+                             timeout_seconds=30)
     assert result['exit_code'] == 0, result['stderr']
     observation = json.loads(result['stdout'])
     assert observation['boundary'] == 'runtime-bootstrap-before-missing-archive'
@@ -879,9 +1168,11 @@ assert 'pytorch_vulkan' not in sys.modules and 'torch' not in sys.modules
 print(json.dumps({'exit_code': code, 'wrapper_imported': False, 'upstream_imported': False}))
 raise SystemExit(code)
 '''
-    result = run_command([sys.executable, '-c', script, str(missing)], ROOT,
-                         os.environ | {'PYTHONPATH': '.:tests/python', 'TMPDIR': '/tmp/opencode'},
-                         timeout_seconds=30)
+    from tools.qualification_process_supervisor import caller_wait_scope
+    with caller_wait_scope(exclusive_wait=True):
+        result = run_command([sys.executable, '-c', script, str(missing)], ROOT,
+                             os.environ | {'PYTHONPATH': '.:tests/python', 'TMPDIR': '/tmp/opencode'},
+                             timeout_seconds=30)
     assert result['exit_code'] == 1
     assert 'missing/invalid provenance input' in result['stderr']
     assert 'ModuleNotFoundError' not in result['stderr']

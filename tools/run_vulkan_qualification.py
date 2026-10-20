@@ -34,6 +34,42 @@ except ImportError:  # Direct script invocation.
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PYTHON = ROOT / ".venv" / "bin" / "python"
+
+# The CTest registrations whose COMMAND is a native C++ build target (a bare
+# executable name, never a ${...} script invocation). The named ctest gate
+# selects exactly these twelve; every other build/CMake registration is a
+# Python or shell script covered by an explicit gate below
+# (manifest/bootstrap_provenance/conformance/shader_verification/stress/
+# python_suite), so the old unsplit CTest run no longer hides the Python lane.
+NATIVE_CTEST_TESTS = (
+    "vulkan_allocator_test",
+    "vulkan_cat_test",
+    "vulkan_descriptor_arena_test",
+    "vulkan_device_probe",
+    "vulkan_dtype_test",
+    "vulkan_execution_test",
+    "vulkan_multi_output_backward_test",
+    "vulkan_pipeline_cache_test",
+    "vulkan_serialization_probe",
+    "vulkan_shader_registry_test",
+    "vulkan_transfer_tensor_test",
+    "vulkan_transfer_test",
+)
+NATIVE_CTEST_REGEX = "^(%s)$" % "|".join(NATIVE_CTEST_TESTS)
+CTEST_NAMED_BUDGET_SECONDS = 600
+
+
+def native_ctest_command(build: Path | str) -> list[str]:
+    """Standalone native-only CTest invocation: exactly the 12 CMake C++ registrations."""
+    return ["ctest", "--test-dir", str(build), "--output-on-failure",
+            "-R", NATIVE_CTEST_REGEX]
+
+
+def python_suite_command(python_executable: str | os.PathLike) -> list[str]:
+    """Standalone wrapper-first full Python suite invocation (former unsplit CTest lane)."""
+    return [str(python_executable), "tools/vulkan_wrapper_pytest.py", "-q", "-rs",
+            "--durations=30", "tests/python"]
+
 # Legacy process-group helpers, retained verbatim ONLY for the unrelated wrapper
 # test helper (tests/python/wrapper_subprocess.py). They never supervise a
 # qualification command and are not an ownership fallback for run_command.
@@ -279,14 +315,29 @@ def run_qualification(
         "bootstrap_provenance",
         [[python, "tools/validate_vulkan_bootstrap_provenance.py"]],
     ))
+    device_skip = None if available else device_reason
     gates.append(
         _gate(
             "ctest",
-            [["ctest", "--test-dir", str(build), "--output-on-failure"]],
-            timeout_seconds=600,
+            [native_ctest_command(build)],
+            timeout_seconds=CTEST_NAMED_BUDGET_SECONDS,
         )
     )
-    device_skip = None if available else device_reason
+    # Distinct Python lane, scheduled sequentially after the native lane. It
+    # replaces the duplicate `vulkan_python_suite` CTest entry and runs the
+    # wrapper-first whole-directory suite with per-test-phase duration
+    # reporting and no xdist/concurrency. It is never dropped: without a
+    # device it is an explicit recorded skip.
+    gates.append(
+        _gate(
+            "python_suite",
+            [python_suite_command(python)],
+            device_dependent=True,
+            environment=test_environment,
+            skip_reason=device_skip,
+            timeout_seconds=CTEST_NAMED_BUDGET_SECONDS,
+        )
+    )
     conformance_commands = [
         [python, "tools/vulkan_wrapper_pytest.py", "-q", "-rs", "tests/python/test_vulkan_conformance.py"]
     ]

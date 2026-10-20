@@ -723,6 +723,16 @@ def _legacy_report_fixture(python="/fixture/python", *, skip_line=None, summary=
         if name == "additional_implementation":
             gates.append({"name": name, "status": "skip", "reason":
                           "no additional Vulkan implementation was requested", "commands": []})
+        elif name == "ctest":
+            commands = [{"command": legacy.native_ctest_command((ROOT / "build").resolve()),
+                         "exit_code": 0, "stdout": "100% tests passed", "stderr": "",
+                         "timeout_seconds": 600}]
+            gates.append({"name": name, "status": "pass", "commands": commands})
+        elif name == "python_suite":
+            commands = [{"command": legacy.python_suite_command(python),
+                         "exit_code": 0, "stdout": "2331 passed in 478.88s", "stderr": "",
+                         "timeout_seconds": 600}]
+            gates.append({"name": name, "status": "pass", "commands": commands})
         elif name == "conformance":
             commands = []
             # Literal argv fixture independently locks the historical runner contract.
@@ -748,7 +758,7 @@ def _legacy_report_fixture(python="/fixture/python", *, skip_line=None, summary=
             }]})
     return {"schema_version": 1, "device": "vk:0",
             "device_probe": {"status": "available", "exit_code": 0},
-            "gates": gates, "counts": {"pass": 10, "skip": 2, "fail": 0}}
+            "gates": gates, "counts": {"pass": 11, "skip": 2, "fail": 0}}
 
 
 def test_legacy_report_requires_inventory_before_later_report_fields():
@@ -778,7 +788,7 @@ def test_legacy_report_rejects_malformed_gate_status_after_valid_probe():
 
 def test_legacy_report_rejects_missing_conformance_command():
     report = _legacy_report_fixture()
-    report["gates"][4]["commands"].pop()
+    report["gates"][5]["commands"].pop()
     with pytest.raises(qualification.QualificationFailure, match="conformance command inventory"):
         qualification.validate_legacy_report(report, 0, python="/fixture/python")
 
@@ -786,11 +796,95 @@ def test_legacy_report_rejects_missing_conformance_command():
 def test_actual_legacy_report_contract_accepts_only_documented_skips():
     report = _legacy_report_fixture()
     accepted = qualification.validate_legacy_report(report, 0, python="/fixture/python")
-    assert accepted["gates"] == {"pass": 10, "skip": 2, "fail": 0}
+    assert accepted["gates"] == {"pass": 11, "skip": 2, "fail": 0}
     report["gates"][0] = {"name": "manifest", "status": "skip", "reason": "not run", "commands": [{
         "command": ["python", "gate.py"], "exit_code": 0,
     }]}
-    report["counts"] = {"pass": 9, "skip": 3, "fail": 0}
+    report["counts"] = {"pass": 10, "skip": 3, "fail": 0}
+    with pytest.raises(qualification.QualificationFailure, match="unexpected skipped required gate"):
+        qualification.validate_legacy_report(report, 0, python="/fixture/python")
+
+
+def test_gate_inventory_schedules_python_suite_between_ctest_and_conformance():
+    assert qualification.GATES == (
+        "manifest", "build", "bootstrap_provenance", "ctest", "python_suite",
+        "conformance", "shader_verification", "validation_layer", "stress",
+        "timing", "benchmark", "environment", "additional_implementation",
+    )
+
+
+def test_legacy_report_rejects_missing_python_suite_gate():
+    report = _legacy_report_fixture()
+    report["gates"].pop(qualification.GATES.index("python_suite"))
+    with pytest.raises(qualification.QualificationFailure, match="gate inventory/order"):
+        qualification.validate_legacy_report(report, 0, python="/fixture/python")
+
+
+@pytest.mark.parametrize("unsplit", ["partial", "regex-subset"])
+def test_legacy_report_rejects_old_unsplit_ctest_selection(unsplit):
+    report = _legacy_report_fixture()
+    index = qualification.GATES.index("ctest")
+    argv = ["ctest", "--test-dir", str((ROOT / "build").resolve()), "--output-on-failure"]
+    if unsplit == "regex-subset":
+        # An unanchored or nonnative CTest filter is still not the split contract.
+        argv = argv + ["-R", "vulkan"]
+    report["gates"][index]["commands"][0]["command"] = argv
+    with pytest.raises(qualification.QualificationFailure, match="native-only"):
+        qualification.validate_legacy_report(report, 0, python="/fixture/python")
+
+
+@pytest.mark.parametrize("substitution", [
+    "plain-pytest-module", "missing-durations", "unsplit-ctest-suite",
+    "reordered-arguments", "wrong-suite-target",
+])
+def test_legacy_report_rejects_substituted_python_suite_invocation(substitution):
+    report = _legacy_report_fixture()
+    index = qualification.GATES.index("python_suite")
+    command = report["gates"][index]["commands"][0]
+    if substitution == "plain-pytest-module":
+        command["command"] = ["/fixture/python", "-m", "pytest", "-q", "-rs",
+                              "--durations=30", "tests/python"]
+    elif substitution == "missing-durations":
+        command["command"] = ["/fixture/python", "tools/vulkan_wrapper_pytest.py",
+                              "-q", "-rs", "tests/python"]
+    elif substitution == "unsplit-ctest-suite":
+        command["command"] = ["ctest", "--test-dir", str((ROOT / "build").resolve()),
+                              "--output-on-failure"]
+    elif substitution == "reordered-arguments":
+        command["command"] = ["/fixture/python", "tools/vulkan_wrapper_pytest.py",
+                              "tests/python", "-q", "-rs", "--durations=30"]
+    else:
+        command["command"] = ["/fixture/python", "tools/vulkan_wrapper_pytest.py",
+                              "-q", "-rs", "--durations=30", "tests/python/test_vulkan_conformance.py"]
+    with pytest.raises(qualification.QualificationFailure, match="python_suite gate"):
+        qualification.validate_legacy_report(report, 0, python="/fixture/python")
+
+
+def test_legacy_report_rejects_python_suite_gate_with_two_invocations():
+    report = _legacy_report_fixture()
+    index = qualification.GATES.index("python_suite")
+    surplus = dict(report["gates"][index]["commands"][0])
+    report["gates"][index]["commands"].append(surplus)
+    with pytest.raises(qualification.QualificationFailure, match="exactly one"):
+        qualification.validate_legacy_report(report, 0, python="/fixture/python")
+
+
+@pytest.mark.parametrize("gate", ["ctest", "python_suite"])
+def test_legacy_report_rejects_split_gates_without_the_600_second_budget(gate):
+    report = _legacy_report_fixture()
+    report["gates"][qualification.GATES.index(gate)]["commands"][0]["timeout_seconds"] = 300
+    with pytest.raises(qualification.QualificationFailure, match="600"):
+        qualification.validate_legacy_report(report, 0, python="/fixture/python")
+
+
+def test_legacy_report_rejects_skipped_python_suite_gate():
+    report = _legacy_report_fixture()
+    index = qualification.GATES.index("python_suite")
+    report["gates"][index] = {"name": "python_suite", "status": "skip",
+                              "reason": "registered skip", "commands": [{
+        "command": legacy.python_suite_command("/fixture/python"),
+        "exit_code": 0, "stdout": "", "stderr": "", "timeout_seconds": 600}]}
+    report["counts"] = {"pass": 10, "skip": 3, "fail": 0}
     with pytest.raises(qualification.QualificationFailure, match="unexpected skipped required gate"):
         qualification.validate_legacy_report(report, 0, python="/fixture/python")
 
@@ -804,7 +898,7 @@ def test_legacy_report_rejects_exit_77_even_if_outer_exit_is_zero():
 
 def test_legacy_conformance_rejects_any_undocumented_skip_reason():
     report = _legacy_report_fixture()
-    report["gates"][4]["commands"][0]["stdout"] += (
+    report["gates"][5]["commands"][0]["stdout"] += (
         "SKIPPED [1] tests/python/test_vulkan_conformance.py:20: environment unavailable\n"
     )
     with pytest.raises(qualification.QualificationFailure, match="undocumented skip"):
