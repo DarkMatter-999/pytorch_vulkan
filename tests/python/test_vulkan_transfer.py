@@ -176,6 +176,96 @@ def test_non_contiguous_stock_reshape_copy_records_one_vulkan_copy_operation(vul
     assert copy_commands == submissions
 
 
+def test_training_noncontiguous_clone_copy_uses_gather_in_single_scope(vulkan_backend):
+    cpu_source = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    source = cpu_source.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        result = source.transpose(1, 2).reshape(-1)
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+
+    recorded_counters = pytorch_vulkan._C.execution_counter_snapshot()
+    recorded_copies = pytorch_vulkan._C.vulkan_copy_count()
+    recorded_copy_commands = pytorch_vulkan._C.copy_command_count()
+    recorded_operations = pytorch_vulkan._C.transfer_operation_count()
+    recorded_transfer_submissions = pytorch_vulkan._C.transfer_submission_count()
+    recorded_compute_submissions = pytorch_vulkan._C.compute_submitted_count()
+    recorded_compute_completions = pytorch_vulkan._C.compute_completed_count()
+    actual = result.cpu()
+    pytorch_vulkan._C.synchronize()
+    expected = cpu_source.transpose(1, 2).reshape(-1)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert result.is_contiguous()
+    assert recorded_counters == (1, 1, 0, 0)
+    assert recorded_copies == 1
+    assert recorded_copy_commands == 0
+    assert recorded_operations == 1
+    assert recorded_transfer_submissions == 0
+    assert recorded_compute_submissions == 1
+    assert recorded_compute_completions == 1
+
+
+def test_training_noncontiguous_clone_copy_preserves_float32_bits(vulkan_backend):
+    unsigned_patterns = [
+        0x00000000, 0x80000000, 0x00000001, 0x80000001,
+        0x007FFFFF, 0x807FFFFF, 0x00800000, 0x80800000,
+        0x7FC12345, 0xFFC54321, 0x7F812345, 0xFF854321,
+        0x7F800000, 0xFF800000, 0x3F800000, 0xBF800000,
+        0x40200000, 0xC0200000, 0x00800001, 0x807FFFFE,
+        0x7FC00001, 0x7FA00001, 0x7F7FFFFF, 0xFF7FFFFF,
+    ]
+    signed_patterns = [
+        value if value < 0x80000000 else value - 0x100000000
+        for value in unsigned_patterns
+    ]
+    source_bits = torch.tensor(signed_patterns, dtype=torch.int32).reshape(2, 3, 4)
+    source_cpu = source_bits.view(torch.float32)
+    expected_bits = (
+        source_cpu.transpose(1, 2).reshape(-1).view(torch.int32).tolist()
+    )
+
+    source_vk = source_cpu.to(vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    baseline_bits = source_vk.cpu().view(torch.int32).reshape(-1).tolist()
+    pytorch_vulkan._C.synchronize()
+    assert baseline_bits == source_bits.reshape(-1).tolist()
+
+    pytorch_vulkan._C.reset_execution_counters()
+    pytorch_vulkan._C.begin_training_step()
+    try:
+        result = source_vk.transpose(1, 2).reshape(-1)
+    except BaseException:
+        pytorch_vulkan._C.cancel_training_step()
+        raise
+    pytorch_vulkan._C.end_training_step()
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    copy_commands = pytorch_vulkan._C.copy_command_count()
+    transfer_submissions = pytorch_vulkan._C.transfer_submission_count()
+    compute_submissions = pytorch_vulkan._C.compute_submitted_count()
+    compute_completions = pytorch_vulkan._C.compute_completed_count()
+
+    pytorch_vulkan._C.synchronize()
+    observed_bits = result.cpu().view(torch.int32).reshape(-1).tolist()
+    pytorch_vulkan._C.synchronize()
+    differences = [
+        (index, expected, observed)
+        for index, (expected, observed) in enumerate(zip(expected_bits, observed_bits))
+        if expected != observed
+    ]
+    assert not differences, f"float32 copy changed raw bits: {differences}"
+    assert counters == (1, 1, 0, 0)
+    assert copy_commands == 0
+    assert transfer_submissions == 0
+    assert compute_submissions == 1
+    assert compute_completions == 1
+
+
 def test_zero_sized_vulkan_to_vulkan_copy_is_a_counter_free_noop(vulkan_backend):
     source = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)
     destination = torch.empty((0, 3), dtype=torch.float32, device=vulkan_backend)

@@ -531,6 +531,33 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     if (vulkan_to_vulkan && platform.execution_context().recording()) {
         const auto &source_buffer = allocation_buffer(source.storage().data_ptr());
         auto &destination_buffer = allocation_buffer(destination.storage().data_ptr());
+        const bool gather_candidate =
+            source.scalar_type() == at::kFloat && !source.is_contiguous() &&
+            destination.is_contiguous() &&
+            destination_layout.vulkan_layout.storage_offset == 0 &&
+            source_layout.sizes.size() == destination_layout.sizes.size() &&
+            source_layout.sizes.size() <= 8 && source_layout.numel > 0 &&
+            source_layout.numel <= std::numeric_limits<uint32_t>::max();
+        bool gather_preflight_succeeded = gather_candidate;
+        if (gather_preflight_succeeded) {
+            try {
+                platform.compute().validate_broadcast_preflight(
+                    source_layout.vulkan_layout, destination_layout.vulkan_layout,
+                    static_cast<uint32_t>(source_layout.numel));
+            } catch (const std::invalid_argument &) {
+                // This copy path has broader layout/dispatch support. If the
+                // gather cannot represent this particular copy, retain it.
+                gather_preflight_succeeded = false;
+            }
+        }
+        if (gather_preflight_succeeded) {
+            platform.compute().broadcast(
+                source_buffer.buffer(), source_layout.vulkan_layout,
+                destination_buffer.buffer(), destination_layout.vulkan_layout,
+                static_cast<uint32_t>(source_layout.numel), 1.0f);
+            mark_label_copy();
+            return destination;
+        }
         std::vector<VkBufferCopy> regions;
         regions.reserve(static_cast<std::size_t>(destination_layout.numel));
         for (int64_t index = 0; index < destination_layout.numel; ++index) {
