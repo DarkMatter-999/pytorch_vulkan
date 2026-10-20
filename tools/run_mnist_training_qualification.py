@@ -119,6 +119,8 @@ def parse_args(argv=None):
     parser.add_argument("--reference-source-root", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=DEFAULT_PYTHON)
     parser.add_argument("--build", type=Path, default=ROOT / "build")
+    parser.add_argument("--capture-only", action="store_true",
+                        help="run and validate the four MNIST captures, then stop before full qualification")
     return parser.parse_args(argv)
 
 
@@ -545,7 +547,7 @@ def _qualify(args, *, command_runner, owned) -> dict:
     summary: dict[str, Any] = {
         "schema_version": 1, "status": "blocked", "commands": [], "attempts": [],
         "legacy_reports": [], "evidence_scope": "cpu-test-injection-non-evidence" if injected else "live",
-        "owned_process_state": "not-started",
+        "owned_process_state": "not-started", "capture_only": bool(getattr(args, "capture_only", False)),
     }
     try:
         artifact_root = _safe_artifacts(Path(args.artifacts))
@@ -567,7 +569,7 @@ def _qualify(args, *, command_runner, owned) -> dict:
         summary["reference_receipt_validation"] = "passed CPU validator; not GPU evidence"
 
         # No authorization/bypass exists for unresolved outer/inner process ownership.
-        if not injected:
+        if not injected and not summary["capture_only"]:
             summary.update(status="blocked", reason=OWNERSHIP_HOLD,
                            gpu_execution_state="not-started; live ownership hold before GPU/full child")
             _write_summary(artifact_root, summary)
@@ -603,6 +605,16 @@ def _qualify(args, *, command_runner, owned) -> dict:
         _validate_current(document, attempts)
         summary["capture_matrix"] = {"records": len(document["records"]), "current": True,
                                      "publishing": False}
+
+        if summary["capture_only"]:
+            reason = "capture-only matrix validated; full qualification and publication remain held"
+            if injected:
+                reason += "; injected command_runner output is CPU-test-only non-evidence"
+            summary.update(status="blocked", reason=reason,
+                           qualification_state="blocked; full qualification not run",
+                           publication_state="held; no publication attempted")
+            _write_summary(artifact_root, summary)
+            return summary
 
         for mode in ("async", "sync"):
             mode_dir = artifact_root / f"full-{mode}"

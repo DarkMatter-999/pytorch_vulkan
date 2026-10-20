@@ -118,6 +118,7 @@ def test_direct_cli_help_imports_without_inherited_pythonpath():
                             cwd=ROOT, env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert "--shader-toolchain-profile" in result.stdout
+    assert "--capture-only" in result.stdout
 
 
 def test_reference_source_root_is_required_without_argparse_filesystem_validation(tmp_path):
@@ -303,6 +304,114 @@ def test_default_live_mode_stops_before_gpu_after_cpu_reference(tmp_path, monkey
     assert result["status"] == "blocked"
     assert "nested" in result["reason"].lower()
     assert not calls
+
+
+def test_capture_only_live_owned_runner_stops_after_validated_16_record_matrix(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    args.capture_only = True
+    monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
+    monkeypatch.setattr(qualification, "_validate_reference_receipt", lambda *a, **k: {"fixture": True})
+    monkeypatch.setattr(qualification, "_validate_completed_receipt", lambda *a, **k: None)
+    monkeypatch.setattr(qualification, "_validate_capture_matrix", lambda *a, **k: {"records": [None] * 16})
+    monkeypatch.setattr(qualification, "_validate_current", lambda *a, **k: None)
+    calls = []
+
+    def contained(command, cwd, env, *, timeout_seconds):
+        calls.append((command, env, timeout_seconds))
+        if "probe_mnist_training_reference.py" in command[1]:
+            Path(command[command.index("--output") + 1]).write_text("{}")
+        elif "capture" in command:
+            Path(command[command.index("--output") + 1]).mkdir()
+        else:
+            pytest.fail("capture-only must stop before the full legacy runner")
+        certificate = _fixture_certificate(command, env or {})
+        return _ok_result(), certificate
+
+    monkeypatch.setattr(qualification, "_contained_command", contained)
+    result = qualification.qualify(args)
+    assert result["status"] == "blocked"
+    assert result["capture_only"] is True
+    assert result["capture_matrix"] == {"records": 16, "current": True, "publishing": False}
+    assert result["reason"] == "capture-only matrix validated; full qualification and publication remain held"
+    assert [item["label"] for item in result["commands"]] == [
+        "cpu-reference", "synthetic/async", "synthetic/sync", "real/async", "real/sync"]
+    assert [item[2] for item in calls] == [600] * 5
+    assert [item["timeout_seconds"] for item in result["commands"]] == [600] * 5
+    expected_captures = []
+    for stage, mode in (("synthetic", "async"), ("synthetic", "sync"),
+                        ("real", "async"), ("real", "sync")):
+        attempt = args.artifacts / f"{stage}-{mode}"
+        command = [str(args.python), "tools/mnist_training_coverage.py", "capture",
+                   "--stage", stage, "--mode", mode, "--output", str(attempt),
+                   "--reference-receipt", str(args.artifacts / "cpu-reference.json")]
+        if stage == "real":
+            command += ["--mnist-root", str(args.mnist_root.resolve())]
+        expected_captures.append(command)
+    assert [item["argv"] for item in result["commands"][1:]] == expected_captures
+    assert all(item["containment_certificate"]["state"] == "complete-echild"
+               for item in result["commands"])
+    assert result["legacy_reports"] == []
+    saved = json.loads((args.artifacts / "summary.json").read_text())
+    assert saved["status"] == "blocked" and len(saved["commands"]) == 5
+
+
+def test_capture_only_injected_runner_remains_non_evidence_and_stops_before_full(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    args.capture_only = True
+    monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
+    monkeypatch.setattr(qualification, "_validate_reference_receipt", lambda *a, **k: {"fixture": True})
+    monkeypatch.setattr(qualification, "_validate_completed_receipt", lambda *a, **k: None)
+    monkeypatch.setattr(qualification, "_validate_capture_matrix", lambda *a, **k: {"records": [None] * 16})
+    monkeypatch.setattr(qualification, "_validate_current", lambda *a, **k: None)
+    calls = []
+
+    def runner(command, cwd, env, *, timeout_seconds):
+        calls.append((command, timeout_seconds))
+        if "probe_mnist_training_reference.py" in command[1]:
+            Path(command[command.index("--output") + 1]).write_text("{}")
+        elif "capture" in command:
+            Path(command[command.index("--output") + 1]).mkdir()
+        else:
+            pytest.fail("capture-only must not launch legacy runner")
+        return _ok_result()
+
+    result = qualification.qualify(args, command_runner=runner)
+    assert result["status"] == "blocked"
+    assert result["evidence_scope"] == "cpu-test-injection-non-evidence"
+    assert result["capture_matrix"]["records"] == 16
+    assert len(calls) == 5 and [item[1] for item in calls] == [600] * 5
+    assert all("containment_certificate" not in item for item in result["commands"])
+    assert result["legacy_reports"] == []
+
+
+def test_capture_only_current_validation_failure_stops_and_does_not_publish(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    args.capture_only = True
+    monkeypatch.setattr(qualification, "_preflight", lambda *a, **k: _preflight_stub())
+    monkeypatch.setattr(qualification, "_validate_reference_receipt", lambda *a, **k: {"fixture": True})
+    monkeypatch.setattr(qualification, "_validate_completed_receipt", lambda *a, **k: None)
+    monkeypatch.setattr(qualification, "_validate_capture_matrix", lambda *a, **k: {"records": [None] * 16})
+    monkeypatch.setattr(qualification, "_validate_current", lambda *a, **k:
+                        (_ for _ in ()).throw(ValueError("fixture current validation rejected")))
+    calls = []
+
+    def runner(command, cwd, env, *, timeout_seconds):
+        calls.append(command)
+        if "probe_mnist_training_reference.py" in command[1]:
+            Path(command[command.index("--output") + 1]).write_text("{}")
+        elif "capture" in command:
+            Path(command[command.index("--output") + 1]).mkdir()
+        else:
+            pytest.fail("current-validation failure must stop before full runner")
+        return _ok_result()
+
+    result = qualification.qualify(args, command_runner=runner)
+    assert result["status"] == "fail"
+    assert "current validation rejected" in result["reason"]
+    assert len(calls) == 5
+    assert result["legacy_reports"] == []
+    assert result.get("capture_matrix") is None
+    assert not (args.artifacts / "publication.json").exists()
 
 
 def test_injected_cpu_runner_uses_exact_order_and_is_non_evidence(tmp_path, monkeypatch):
