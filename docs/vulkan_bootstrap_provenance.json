@@ -1,32 +1,4 @@
 {
-  "artifact_transition": {
-    "baseline_manifest_sha256": "cb7da29752370792abea42f04799023d84f5945542159809baca337db504746c",
-    "capture_source_identity": {
-      "CMakeLists.txt": "e9c8eb1a88f0e7defa47d54f37ee198bea331fbe612935718a37954ef442990c",
-      "python/pytorch_vulkan/__init__.py": "a70e439758e580e616ab21a41010341ab967a04f22286a6f090491b44b903c15",
-      "tools/capture_vulkan_composed_evidence.py": "6b49af08aee7f3e850dcccd2deb4a71a9d518a2f1fce0b1b72aa79f8cc4ba7a1",
-      "tools/run_vulkan_qualification.py": "06f0a0ddaea7149c6ed3d2d39576d4a7826fb53f48ae419eb7037c43b006509d",
-      "tools/validate_vulkan_bootstrap_provenance.py": "e1c1b56e7a0fef9299f1f3b56c38c8748cc555b5e0bfed61302c1d60491f97e8",
-      "tools/vulkan_wrapper_pytest.py": "944aecc63c52234e7bfbebe06d0b0ee65be921b673378c0ff9856ba28dbd831e"
-    },
-    "kind": "contiguous-bool-transfer",
-    "new_extension": {
-      "path": "/home/matter/projects/pytorch_vulkan/build/pytorch_vulkan/_C.cpython-312-x86_64-linux-gnu.so",
-      "sha256": "0485b6fd2271ec1bed717683ced543c171b5b43c3ba55541fea08f1ae5625648"
-    },
-    "old_extension_sha256": "375f27fd56ca33c3e4aa1f190402d24c9806c395e8b3d92bf8973e775dae5e77",
-    "receipt_sha256": {
-      "async": "4a4d6fa5640059ccfd5272305225348d412d379661f3f76908437da6b4b97ba0",
-      "sync": "ce7bdf4d10112ec4a37b1db0e66e8ea579ee9e3538933e64e007e869195a9496"
-    },
-    "schema_version": 1,
-    "source_delta": {
-      "src/vulkan_transfer.cpp": {
-        "after": "f5515ea937da249b2d89635ad91ffca4912bef2c5c9a5618fbee250fa20f8dc3",
-        "before": "705429bd82d3e5919ab28dc5db5efc263c14787a559b53e1f0e0f866b601face"
-      }
-    }
-  },
   "captures": {
     "async": {
       "command": [
@@ -37,7 +9,7 @@
         "--device",
         "vk:0",
         "--output",
-        "/home/matter/projects/pytorch_vulkan/.superpowers/sdd/2026-10-08-vulkan-wrapper-entrypoint/post-transfer-blocker-qualification-artifacts/capture-async"
+        "/home/matter/projects/pytorch_vulkan/.superpowers/sdd/2026-10-12-vulkan-mnist-cross-entropy-training/task-7-final-controls-refresh-v2/async-attempt"
       ],
       "model_record_ids": [
         "g3.mixed-down-up.async",
@@ -152,7 +124,7 @@
         "--device",
         "vk:0",
         "--output",
-        "/home/matter/projects/pytorch_vulkan/.superpowers/sdd/2026-10-08-vulkan-wrapper-entrypoint/post-transfer-blocker-qualification-artifacts/capture-sync"
+        "/home/matter/projects/pytorch_vulkan/.superpowers/sdd/2026-10-12-vulkan-mnist-cross-entropy-training/task-7-final-controls-refresh-v2/sync-attempt"
       ],
       "model_record_ids": [
         "g3.mixed-down-up.sync",
@@ -262,14 +234,14 @@
   "entry_point": "wrapper-first",
   "extension": {
     "path": "/home/matter/projects/pytorch_vulkan/build/pytorch_vulkan/_C.cpython-312-x86_64-linux-gnu.so",
-    "sha256": "0485b6fd2271ec1bed717683ced543c171b5b43c3ba55541fea08f1ae5625648"
+    "sha256": "703a1aaa7e739995b50494bf57c66243f3963e5c1ea203c53f4d0b883336cbfe"
   },
   "outputs": {
     "docs/vulkan_capabilities.json": "78f19cf2467f6144b9e65a83f51fde960b14233ce6e4484230f2b9b51187aa28",
-    "docs/vulkan_composed_matmul_coverage.json": "934ae4e5a776d94d2a3ced5bfd8dea029fa75003dde958c2f8edb89611815228",
-    "docs/vulkan_coverage.json": "7a359e76c8374d9d12ee1e9c269a1e0c28aabd0bf05be83307a45bd5aa95bda0",
+    "docs/vulkan_composed_matmul_coverage.json": "9cb50bdf4c5d1dfea82c62f9f43044329d109b068c08ab351141cd54f11920a7",
+    "docs/vulkan_coverage.json": "dbf9a8febd395a02a40f5709e846bd845e5c210784032668f5ab757b0f82d9b1",
     "docs/vulkan_general_matmul_sync_coverage.json": "40db0dbcb0f9f25532abd6795feeb8b17cc26d607a4f3241dd122183611ce905",
-    "docs/vulkan_mse_sync_coverage.json": "588af90f3adf0c0e30b83a706a82a140ded678ebf7164407764e80ad32c35831",
+    "docs/vulkan_mse_sync_coverage.json": "57fc2e7c01d0fa6f03a564e6547a1ddaac0f6759fabe78c7a1c9a68cf2accbfd",
     "docs/vulkan_workload_coverage.json": "3880d7e3929d7dba2f5f8c84b9737abd6512cb811a59cb86264743a8144f31bf"
   },
   "schema_version": 1,
@@ -277,8 +249,8 @@
     "CMakeLists.txt": "e9c8eb1a88f0e7defa47d54f37ee198bea331fbe612935718a37954ef442990c",
     "python/pytorch_vulkan/__init__.py": "a70e439758e580e616ab21a41010341ab967a04f22286a6f090491b44b903c15",
     "tools/capture_vulkan_composed_evidence.py": "6b49af08aee7f3e850dcccd2deb4a71a9d518a2f1fce0b1b72aa79f8cc4ba7a1",
-    "tools/run_vulkan_qualification.py": "06f0a0ddaea7149c6ed3d2d39576d4a7826fb53f48ae419eb7037c43b006509d",
-    "tools/validate_vulkan_bootstrap_provenance.py": "e1c1b56e7a0fef9299f1f3b56c38c8748cc555b5e0bfed61302c1d60491f97e8",
+    "tools/run_vulkan_qualification.py": "fa857f026c77d1d3674b776cad792515451fc96f774b83478ba42bf015d07f90",
+    "tools/validate_vulkan_bootstrap_provenance.py": "61467b6f5b731ce1d6954bc2a80c44142b83afb27792ae97a7f2cd830e898cca",
     "tools/vulkan_wrapper_pytest.py": "944aecc63c52234e7bfbebe06d0b0ee65be921b673378c0ff9856ba28dbd831e"
   }
 }

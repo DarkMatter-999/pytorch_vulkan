@@ -686,6 +686,21 @@ def test_fresh_baseline_epoch_publishes_cpu_fixture_with_new_measurements(tmp_pa
     validator = module('validate_vulkan_bootstrap_provenance')
     source_documents = {name: json.loads((ROOT / name).read_bytes()) for name in validator.OUTPUT_PATHS}
     original_sidecar = json.loads((ROOT / validator.SIDECAR).read_bytes())
+    old_extension_sha = validator.digest(b'CPU-only synthetic predecessor extension')
+    old_sources = {path: validator.digest(('CPU-only predecessor:' + path).encode())
+                   for path in validator.BASELINE_SOURCE_PATHS}
+    old_controls = {path: validator.digest(('CPU-only predecessor control:' + path).encode())
+                    for path in validator.BASELINE_CONTROL_PATHS}
+    for name in validator.OUTPUT_PATHS[:3]:
+        records = source_documents[name].get('records', source_documents[name])
+        for record in records.values():
+            evidence = record.get('mse_autograd_evidence', record)
+            if 'source_identity' not in evidence:
+                continue
+            for path, value in old_sources.items():
+                evidence['source_identity'][path] = value
+            if 'runtime_identity' in evidence:
+                evidence['runtime_identity']['extension_sha256'] = old_extension_sha
     root = tmp_path / 'CPU-only-epoch-publication'
     root.mkdir()
     for name in ('src', 'python', 'tests', 'tools'):
@@ -712,7 +727,13 @@ def test_fresh_baseline_epoch_publishes_cpu_fixture_with_new_measurements(tmp_pa
                 value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode())
                 for key, value in records.items()}}
 
+    predecessor_identity = dict(original_sidecar['source_identity'])
+    predecessor_identity.update(old_controls)
+    predecessor_extension = dict(original_sidecar['extension'])
+    predecessor_extension['sha256'] = old_extension_sha
     predecessor_sidecar = {**original_sidecar,
+        'source_identity': predecessor_identity,
+        'extension': predecessor_extension,
         'outputs': {name: validator.digest(payload) for name, payload in baseline_bytes.items()}}
     predecessor_bytes = (json.dumps(predecessor_sidecar, sort_keys=True) + '\n').encode()
     (archive / Path(validator.SIDECAR).name).write_bytes(predecessor_bytes)

@@ -883,11 +883,56 @@ def test_python_suite_gate_is_wrapper_first_exactly_once_with_budget_and_no_conc
     )
 
 
+def test_python_suite_mixed_passed_and_skipped_results_pass_without_changing_conformance(
+    monkeypatch, tmp_path
+):
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
+        output = "1 passed, 3 skipped in 0.12s\n"
+        return {"exit_code": 0, "stdout": output, "stderr": "",
+                "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
+    monkeypatch.setattr(qualification, "device_available", lambda *args, **kwargs: {
+        "status": "available", "reason": "fixture device"})
+
+    summary = qualification.run_qualification(tmp_path / "report.json", run_build=False)
+
+    gates = {gate["name"]: gate for gate in summary["gates"]}
+    assert gates["python_suite"]["status"] == "pass"
+    assert gates["conformance"]["status"] == "skip"
+
+
+@pytest.mark.parametrize("exit_code", [7, 77])
+def test_python_suite_nonzero_exit_fails_when_device_probe_is_available(
+    monkeypatch, tmp_path, exit_code
+):
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
+        output = "1 passed, 3 skipped in 0.12s\n"
+        return {"exit_code": exit_code, "stdout": output, "stderr": "",
+                "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
+    monkeypatch.setattr(qualification, "device_available", lambda *args, **kwargs: {
+        "status": "available", "reason": "fixture device"})
+
+    summary = qualification.run_qualification(tmp_path / "report.json", run_build=False)
+
+    python_suite = next(gate for gate in summary["gates"] if gate["name"] == "python_suite")
+    assert python_suite["status"] == "fail"
+
+
 def test_python_suite_gate_skips_with_device_reason_when_device_is_unavailable(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(qualification, "run_command", lambda *args, **kwargs: {
-        "exit_code": 0, "stdout": "ok\n", "stderr": ""})
+    calls = []
+
+    def fake_run(command, *args, **kwargs):
+        calls.append(command)
+        return {
+            "exit_code": 0, "stdout": "ok\n", "stderr": ""
+        }
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
     monkeypatch.setattr(
         qualification, "device_available", lambda *args, **kwargs: {
             "status": "unavailable", "reason": "requested device is unavailable"},
@@ -898,12 +943,42 @@ def test_python_suite_gate_skips_with_device_reason_when_device_is_unavailable(
     assert python_suite["status"] == "skip"
     assert python_suite["reason"] == "requested device is unavailable"
     assert python_suite["commands"] == []
+    assert not any("tests/python" in command for command in calls)
     # The gate stays scheduled; it is never dropped from the gate inventory.
     assert "python_suite" in [gate["name"] for gate in summary["gates"]]
 
 
+def test_python_suite_environment_imports_shared_helper_in_real_child(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(command, cwd, env=None, *, timeout_seconds=300):
+        calls.append((command, env))
+        return {"exit_code": 0, "stdout": "ok\n", "stderr": "",
+                "timeout_seconds": timeout_seconds, "elapsed_seconds": 0.01}
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
+    monkeypatch.setattr(qualification, "device_available", lambda *args, **kwargs: {
+        "status": "available", "reason": "CPU fixture"})
+
+    qualification.run_qualification(tmp_path / "report.json", run_build=False)
+    _, lane_environment = next(
+        (command, env) for command, env in calls if "tests/python" in command
+    )
+    child_environment = os.environ.copy()
+    child_environment.update(lane_environment)
+    child = subprocess.run(
+        [sys.executable, "-c",
+         "import composed_evidence_common; print(composed_evidence_common.__file__)"],
+        cwd=qualification.ROOT, env=child_environment, capture_output=True, text=True,
+        timeout=10,
+    )
+    assert child.returncode == 0, child.stderr
+    assert str(Path("tests/python/composed_evidence_common.py")) in child.stdout
+
+
 def test_command_records_effective_environment_deltas(monkeypatch, tmp_path):
     monkeypatch.delenv("VK_INSTANCE_LAYERS", raising=False)
+    monkeypatch.setenv("VULKAN_DEVICE", "vk:0")
     monkeypatch.setattr(
         qualification,
         "device_available",
@@ -920,8 +995,10 @@ def test_command_records_effective_environment_deltas(monkeypatch, tmp_path):
     environment = validation["commands"][0]["environment"]
 
     assert environment["VK_INSTANCE_LAYERS"] == "VK_LAYER_KHRONOS_validation"
-    assert environment["VULKAN_DEVICE"] == "vk:0"
-    assert environment["PYTORCH_VULKAN_DEVICE"] == "vk:0"
+    effective_environment = os.environ.copy()
+    effective_environment.update(environment)
+    assert effective_environment["VULKAN_DEVICE"] == "vk:0"
+    assert effective_environment["PYTORCH_VULKAN_DEVICE"] == "vk:0"
 
 
 def test_report_contains_machine_readable_summary(monkeypatch, tmp_path):

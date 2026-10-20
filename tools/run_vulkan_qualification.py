@@ -278,7 +278,9 @@ def run_qualification(
     if shader_provenance:
         (artifacts / "shader-toolchain.json").write_text(
             json.dumps(shader_provenance, indent=2, sort_keys=True) + "\n")
-    pythonpath = os.pathsep.join([str(build), str(ROOT)]).rstrip(os.pathsep)
+    pythonpath = os.pathsep.join(
+        [str(build), str(ROOT), str(ROOT / "tests/python")]
+    ).rstrip(os.pathsep)
     test_environment = os.environ.copy()
     test_environment["PYTHONPATH"] = pythonpath
     test_environment["PYTORCH_VULKAN_DEVICE"] = device
@@ -332,7 +334,6 @@ def run_qualification(
         _gate(
             "python_suite",
             [python_suite_command(python)],
-            device_dependent=True,
             environment=test_environment,
             skip_reason=device_skip,
             timeout_seconds=CTEST_NAMED_BUDGET_SECONDS,
