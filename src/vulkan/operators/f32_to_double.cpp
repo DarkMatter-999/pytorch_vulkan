@@ -17,13 +17,31 @@ namespace {
 at::Tensor allocate_vulkan_transfer_output(
     const at::Tensor &input, const at::TensorOptions &options,
     c10::optional<at::MemoryFormat> memory_format) {
-    const bool preserve_channels_last =
-        input.dim() == 4 && input.suggest_memory_format() == at::MemoryFormat::ChannelsLast &&
-        (!memory_format || *memory_format == at::MemoryFormat::Preserve);
-    if ((memory_format && *memory_format == at::MemoryFormat::ChannelsLast) ||
-        preserve_channels_last)
-        return at::empty(input.sizes(), options, at::MemoryFormat::ChannelsLast);
-    return at::empty(input.sizes(), options);
+    const auto requested = memory_format.value_or(at::MemoryFormat::Preserve);
+    if (input.scalar_type() != at::kFloat) {
+        const bool preserve_channels_last =
+            input.dim() == 4 &&
+            input.suggest_memory_format() == at::MemoryFormat::ChannelsLast &&
+            (!memory_format || *memory_format == at::MemoryFormat::Preserve);
+        if (requested == at::MemoryFormat::ChannelsLast || preserve_channels_last)
+            return at::empty(input.sizes(), options, at::MemoryFormat::ChannelsLast);
+        return at::empty(input.sizes(), options);
+    }
+    if (requested == at::MemoryFormat::Preserve)
+        return at::empty_like(input, options, at::MemoryFormat::Preserve);
+    if (requested == at::MemoryFormat::ChannelsLast) {
+        TORCH_CHECK(input.dim() == 4,
+                    "channels_last memory format requires a 4D tensor");
+        return at::empty(input.sizes(), options, requested);
+    }
+    if (requested == at::MemoryFormat::ChannelsLast3d) {
+        TORCH_CHECK(input.dim() == 5,
+                    "channels_last_3d memory format requires a 5D tensor");
+        return at::empty(input.sizes(), options, requested);
+    }
+    if (requested == at::MemoryFormat::Contiguous)
+        return at::empty(input.sizes(), options, at::MemoryFormat::Contiguous);
+    TORCH_CHECK(false, "Vulkan _to_copy received an unsupported memory format");
 }
 
 void validate_cpu_nll_labels(const at::Tensor &input) {
@@ -50,8 +68,22 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan formatter Double payload readback to CPU is unsupported");
         TORCH_CHECK(requested_dtype == input.scalar_type(),
                     "Vulkan _to_copy requested dtype does not match source dtype");
-        auto output = at::empty(
-            input.sizes(), input.options().dtype(requested_dtype).device(output_device));
+        at::Tensor output;
+        if (requested_dtype == at::kFloat) {
+            TORCH_CHECK(!layout || *layout == at::kStrided,
+                        "Vulkan _to_copy requires strided tensors");
+            TORCH_CHECK(!pin_memory || !*pin_memory,
+                        "Vulkan _to_copy does not support pinned CPU output");
+            TORCH_CHECK(!non_blocking,
+                        "Vulkan copy does not support non_blocking=True");
+            output = allocate_vulkan_transfer_output(
+                input, input.options().dtype(requested_dtype).device(output_device),
+                memory_format);
+        } else {
+            output = at::empty(input.sizes(), input.options()
+                                                  .dtype(requested_dtype)
+                                                  .device(output_device));
+        }
         pytorch_vulkan::copy_tensor(output, input, non_blocking);
         return output;
     }
@@ -61,6 +93,14 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan Double");
         TORCH_CHECK(requested_dtype == input.scalar_type(),
                     "Vulkan _to_copy requested dtype does not match source dtype");
+        if (requested_dtype == at::kFloat) {
+            TORCH_CHECK(!layout || *layout == at::kStrided,
+                        "Vulkan _to_copy requires strided tensors");
+            TORCH_CHECK(!pin_memory || !*pin_memory,
+                        "Vulkan _to_copy does not support pinned memory");
+            TORCH_CHECK(!non_blocking,
+                        "Vulkan copy does not support non_blocking=True");
+        }
         TORCH_CHECK(
             requested_dtype == at::kFloat || requested_dtype == at::kBool ||
                 requested_dtype == at::kLong || requested_dtype == at::kHalf,
@@ -87,8 +127,6 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan _to_copy requires strided tensors");
         TORCH_CHECK(!pin_memory || !*pin_memory,
                     "Vulkan _to_copy does not support pinned memory");
-        TORCH_CHECK(!memory_format || *memory_format == at::MemoryFormat::Contiguous,
-                    "Vulkan _to_copy requires contiguous output");
         TORCH_CHECK(!non_blocking,
                     "Vulkan _to_copy does not support non_blocking=True");
         TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
@@ -96,7 +134,8 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan _to_copy requires a Vulkan device index 0 input");
         TORCH_CHECK(output_device == input.device(),
                     "Vulkan _to_copy requires the same Vulkan device");
-        auto output = at::empty(input.sizes(), input.options().dtype(requested_dtype));
+        auto output = allocate_vulkan_transfer_output(
+            input, input.options().dtype(requested_dtype), memory_format);
         pytorch_vulkan::copy_tensor(output, input, false);
         return output;
     }

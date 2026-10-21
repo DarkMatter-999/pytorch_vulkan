@@ -35,6 +35,8 @@
 
 namespace {
 
+using CallbackDrainOnExit = VulkanCallbackDrainOnExit;
+
 struct OperatorParams {
     uint32_t mode;
     uint32_t batch;
@@ -2093,6 +2095,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         c == VK_NULL_HANDLE ? output_layout : c_layout;
     const VulkanTensorLayout &effective_bias =
         bias == VK_NULL_HANDLE ? output_layout : bias_layout;
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     try {
         VulkanExecutionContext &context = platform_.execution_context();
@@ -2183,6 +2186,7 @@ void VulkanCompute::rnn_sequence(
         input_dimension == 0 || hidden_dimension == 0)
         throw std::invalid_argument("Vulkan RNN sequence has an invalid range");
     validate_rnn_sequence(batch, sequence, input_dimension, hidden_dimension);
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     try {
         const uint64_t output_region_elements =
@@ -2249,6 +2253,7 @@ void VulkanCompute::rnn_sequence_backward(
         if (buffer == VK_NULL_HANDLE)
             throw std::invalid_argument("Vulkan RNN backward has an invalid buffer");
     validate_rnn_sequence_backward(batch, sequence, input_dimension, hidden_dimension);
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     try {
         const auto checked_region_size = [](uint64_t elements) {
@@ -2681,6 +2686,7 @@ void VulkanCompute::dispatch_model(
     if (metadata == nullptr || metadata_size == 0 ||
         metadata_size > max_storage_buffer_range_)
         throw std::invalid_argument("Vulkan model compute has invalid metadata");
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
@@ -2784,6 +2790,7 @@ void VulkanCompute::dispatch_multi_output(
         throw std::invalid_argument(
             "Vulkan multi-output backward dispatch count overflows");
 
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     std::shared_ptr<VulkanBuffer> metadata_holder;
     const auto dispatch_start = std::chrono::steady_clock::now();
@@ -2919,6 +2926,7 @@ void VulkanCompute::dispatch_extra(
         one_workgroup_per_output);
     if ((metadata == nullptr) != (metadata_size == 0))
         throw std::invalid_argument("Vulkan compute metadata is invalid");
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
@@ -2976,6 +2984,7 @@ void VulkanCompute::cat_gather(VkBuffer input, VkDeviceSize input_range,
         std::min<uint64_t>(max_compute_workgroup_count_x_, UINT32_MAX / 256)));
     if (!input || !output || groups == 0)
         throw std::invalid_argument("Vulkan cat gather has invalid buffers or grid");
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     std::shared_ptr<VulkanBuffer> metadata_buffer;
     try {
@@ -3042,6 +3051,7 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
         output_bytes > max_storage_buffer_range_ || output_numel > max_elements)
         throw std::invalid_argument(
             "Vulkan formatter Double compute has an invalid range");
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -3050,8 +3060,8 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
             vkDestroyDescriptorPool(device_, pool, nullptr);
     };
     try {
-        flush_recording();
-        platform_.execution_context().begin();
+        flush_recording_locked();
+        platform_.execution_context().begin_locked();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
         const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
         VkDescriptorPoolCreateInfo pool_info{
@@ -3094,8 +3104,8 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
                                 1, 1);
         platform_.execution_context().retain(pool);
         pool = VK_NULL_HANDLE;
-        platform_.execution_context().submit();
-        platform_.execution_context().wait();
+        platform_.execution_context().submit_locked();
+        platform_.execution_context().wait_device_locked();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
         cleanup();
@@ -3126,6 +3136,7 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         output_bytes > max_storage_buffer_range_ || output_bytes == 0 ||
         static_cast<uint64_t>(element_count) > max_elements)
         throw std::invalid_argument("Vulkan masked-select has an invalid range");
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -3134,8 +3145,8 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
             vkDestroyDescriptorPool(device_, pool, nullptr);
     };
     try {
-        flush_recording();
-        platform_.execution_context().begin();
+        flush_recording_locked();
+        platform_.execution_context().begin_locked();
         VkCommandBuffer cmd = platform_.execution_context().command_buffer();
         VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                        descriptor_count};
@@ -3178,8 +3189,8 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         record_dispatch_command(cmd, 1, 1, 1);
         platform_.execution_context().retain(pool);
         pool = VK_NULL_HANDLE;
-        platform_.execution_context().submit();
-        platform_.execution_context().wait();
+        platform_.execution_context().submit_locked();
+        platform_.execution_context().wait_device_locked();
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
         cleanup();
@@ -3249,6 +3260,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
     if (groups > max_compute_workgroup_count_x_)
         throw std::invalid_argument("Vulkan compute pointwise exceeds workgroup limit");
 
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     std::shared_ptr<VulkanBuffer> metadata_holder;
@@ -3372,6 +3384,7 @@ void VulkanCompute::dispatch_compound(
     if (groups > max_compute_workgroup_count_x_)
         throw std::invalid_argument("Vulkan compute compound exceeds workgroup limit");
 
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     auto metadata_holder = std::make_shared<VulkanBuffer>(
         platform_, sizeof(metadata),
@@ -3416,11 +3429,12 @@ void VulkanCompute::dispatch_compound(
 }
 
 void VulkanCompute::begin_training_step() const {
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (training_step_)
         throw std::logic_error("Vulkan training step is already recording");
-    flush_recording();
-    platform_.execution_context().begin("training");
+    flush_recording_locked();
+    platform_.execution_context().begin_locked("training");
     const VkMemoryBarrier barrier{
         VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
         VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
@@ -3432,6 +3446,7 @@ void VulkanCompute::begin_training_step() const {
 }
 
 void VulkanCompute::end_training_step() const {
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!training_step_)
         throw std::logic_error("Vulkan training step is not recording");
@@ -3447,8 +3462,8 @@ void VulkanCompute::end_training_step() const {
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
                              nullptr, 0, nullptr);
-        platform_.execution_context().submit();
-        platform_.execution_context().wait();
+        platform_.execution_context().submit_locked();
+        platform_.execution_context().wait_device_locked();
         submission_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (...) {
         training_step_ = false;
@@ -3459,6 +3474,7 @@ void VulkanCompute::end_training_step() const {
 }
 
 void VulkanCompute::cancel_training_step() const {
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!training_step_)
         return;
@@ -3476,10 +3492,10 @@ void VulkanCompute::record_dispatch(const char *scope) const {
     platform_.throw_if_device_lost();
     if (!training_step_ && platform_.async_execution_enabled() && context.recording() &&
         (eager_dispatches_ >= 16 || context.timestamp_region_capacity_exhausted()))
-        flush_recording();
+        flush_recording_locked();
     if (!context.recording()) {
         eager_dispatches_ = 0;
-        context.begin(scope);
+        context.begin_locked(scope);
         current_dispatch_setup_ = true;
         return;
     }
@@ -3503,7 +3519,7 @@ void VulkanCompute::record_dispatch_command(VkCommandBuffer command_buffer,
 void VulkanCompute::cancel_recording() const {
     VulkanExecutionContext &context = platform_.execution_context();
     if (context.recording())
-        context.cancel();
+        context.cancel_locked();
 }
 
 void VulkanCompute::throw_if_pending_batch_failure() const {
@@ -3518,7 +3534,7 @@ void VulkanCompute::throw_if_pending_batch_failure() const {
                                  !current_dispatch_recorded_ && eager_dispatches_ > 0;
     if (preserve_prefix) {
         try {
-            flush_recording();
+            flush_recording_locked();
         } catch (const std::exception &submission_error) {
             const auto failure = recording_failure(
                 operation, submission_error, true);
@@ -3550,6 +3566,7 @@ void VulkanCompute::throw_if_pending_batch_failure() const {
 }
 
 void VulkanCompute::test_inject_recording_failure() const {
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!platform_.async_execution_enabled())
         throw std::logic_error("recording failure injection requires async mode");
@@ -3570,6 +3587,7 @@ void VulkanCompute::test_inject_recording_failure() const {
 }
 
 void VulkanCompute::test_inject_pre_dispatch_failure() const {
+    CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!platform_.async_execution_enabled())
         throw std::logic_error("pre-dispatch failure injection requires async mode");
@@ -3591,13 +3609,13 @@ void VulkanCompute::finish_dispatch() const {
     if (platform_.async_execution_enabled()) {
         ++eager_dispatches_;
         if (eager_dispatches_ >= 16)
-            flush_recording();
+            flush_recording_locked();
         current_dispatch_setup_ = false;
         current_dispatch_recorded_ = false;
         return;
     }
-    context.submit();
-    context.wait();
+    context.submit_locked();
+    context.wait_device_locked();
     eager_dispatches_ = 0;
     submission_count_.fetch_add(1, std::memory_order_relaxed);
     current_dispatch_setup_ = false;
@@ -3605,13 +3623,17 @@ void VulkanCompute::finish_dispatch() const {
 }
 
 void VulkanCompute::flush_recording() const {
+    (void)platform_.execution_context().query_with_flush([&] { flush_recording_locked(); });
+}
+
+void VulkanCompute::flush_recording_locked() const {
     throw_if_pending_batch_failure();
     VulkanExecutionContext &context = platform_.execution_context();
     if (!context.recording()) {
         eager_dispatches_ = 0;
         return;
     }
-    context.submit();
+    context.submit_locked();
     eager_dispatches_ = 0;
     submission_count_.fetch_add(1, std::memory_order_relaxed);
 }

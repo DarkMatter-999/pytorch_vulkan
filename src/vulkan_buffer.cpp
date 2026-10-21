@@ -59,6 +59,7 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
     try {
         VkMemoryRequirements requirements{};
         vkGetBufferMemoryRequirements(device_, buffer_, &requirements);
+        allocation_size_ = requirements.size;
         VkMemoryAllocateInfo allocation_info{};
         allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocation_info.allocationSize = requirements.size;
@@ -130,6 +131,29 @@ VkDeviceMemory VulkanBuffer::memory() const { return memory_; }
 
 VkDeviceSize VulkanBuffer::size() const { return size_; }
 
+VulkanMappedMemoryRange VulkanBuffer::mapped_range(
+    VkDeviceSize offset, VkDeviceSize size, VkDeviceSize allocation_size,
+    VkDeviceSize atom_size) {
+    if (atom_size == 0 || offset > allocation_size ||
+        size > allocation_size - offset)
+        throw std::out_of_range("Invalid Vulkan mapped memory range");
+    if (size == 0)
+        return {offset, 0};
+    const VkDeviceSize aligned_offset = (offset / atom_size) * atom_size;
+    const VkDeviceSize requested_end = offset + size;
+    const VkDeviceSize remainder = requested_end % atom_size;
+    VkDeviceSize aligned_end = requested_end;
+    if (remainder != 0) {
+        const VkDeviceSize increment = atom_size - remainder;
+        aligned_end = increment > allocation_size - requested_end
+                          ? allocation_size
+                          : requested_end + increment;
+    }
+    return {aligned_offset, aligned_end == allocation_size
+                                ? VK_WHOLE_SIZE
+                                : aligned_end - aligned_offset};
+}
+
 VkMemoryPropertyFlags VulkanBuffer::memory_properties() const {
     return memory_properties_;
 }
@@ -141,19 +165,26 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
     if (data == nullptr || offset > size_ || size > size_ - offset) {
         throw std::out_of_range("Vulkan buffer write is outside the buffer");
     }
+    if (size == 0)
+        return;
 
     const auto map_start = std::chrono::steady_clock::now();
     void *mapped = nullptr;
-    if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
+    if (vkMapMemory(device_, memory_, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
         throw std::runtime_error("Could not map Vulkan buffer memory for writing");
     }
-    std::memcpy(mapped, data, static_cast<size_t>(size));
+    auto *bytes = static_cast<unsigned char *>(mapped) + offset;
+    std::memcpy(bytes, data, static_cast<size_t>(size));
     if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(platform_->physical_device(), &properties);
+        const auto mapped_range = VulkanBuffer::mapped_range(
+            offset, size, allocation_size_, properties.limits.nonCoherentAtomSize);
         VkMappedMemoryRange range{};
         range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range.memory = memory_;
-        range.offset = 0;
-        range.size = VK_WHOLE_SIZE;
+        range.offset = mapped_range.offset;
+        range.size = mapped_range.size;
         if (vkFlushMappedMemoryRanges(device_, 1, &range) != VK_SUCCESS) {
             vkUnmapMemory(device_, memory_);
             throw std::runtime_error("Could not flush Vulkan buffer memory");
@@ -173,24 +204,31 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
     if (data == nullptr || offset > size_ || size > size_ - offset) {
         throw std::out_of_range("Vulkan buffer read is outside the buffer");
     }
+    if (size == 0)
+        return;
 
     const auto map_start = std::chrono::steady_clock::now();
     void *mapped = nullptr;
-    if (vkMapMemory(device_, memory_, offset, size, 0, &mapped) != VK_SUCCESS) {
+    if (vkMapMemory(device_, memory_, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
         throw std::runtime_error("Could not map Vulkan buffer memory for reading");
     }
     if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(platform_->physical_device(), &properties);
+        const auto mapped_range = VulkanBuffer::mapped_range(
+            offset, size, allocation_size_, properties.limits.nonCoherentAtomSize);
         VkMappedMemoryRange range{};
         range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range.memory = memory_;
-        range.offset = 0;
-        range.size = VK_WHOLE_SIZE;
+        range.offset = mapped_range.offset;
+        range.size = mapped_range.size;
         if (vkInvalidateMappedMemoryRanges(device_, 1, &range) != VK_SUCCESS) {
             vkUnmapMemory(device_, memory_);
             throw std::runtime_error("Could not invalidate Vulkan buffer memory");
         }
     }
-    std::memcpy(data, mapped, static_cast<size_t>(size));
+    const auto *bytes = static_cast<const unsigned char *>(mapped) + offset;
+    std::memcpy(data, bytes, static_cast<size_t>(size));
     vkUnmapMemory(device_, memory_);
     platform_->record_timing(
         VulkanTimingCategory::BufferMapRead,

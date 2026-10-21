@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vulkan_execution.h"
+
 #include <vulkan/vulkan.h>
 
 #include <atomic>
@@ -27,6 +29,13 @@ class VulkanPipelineCache;
 struct PipelineCacheSnapshot;
 class VulkanBuffer;
 struct VulkanTimestampSample;
+
+// Internal: an exclusive staging buffer bound to one granted transfer slot. Pass
+// `staging` as an owner to defer_transfer so it lives until publication/quarantine.
+struct VulkanStagingTransfer {
+    VulkanTransferReservation reservation;
+    std::shared_ptr<VulkanBuffer> staging;
+};
 
 struct VulkanDeviceInfo {
     std::string name;
@@ -135,7 +144,13 @@ enum class VulkanTimingCategory {
 
 class VulkanPlatform {
   public:
-    explicit VulkanPlatform(bool enable_validation = false);
+    // The second parameter is a narrow per-instance fixture seam (production
+    // default zero): it fails the given number of exclusive staging allocation
+    // attempts with std::bad_alloc after the transfer slot was granted and before
+    // any Vulkan allocation, so the wrapper's reserve-then-allocate unwind can be
+    // exercised without an invalid driver allocation.
+    explicit VulkanPlatform(bool enable_validation = false,
+                            unsigned injected_staging_allocation_failures = 0);
     ~VulkanPlatform() noexcept;
 
     static bool is_available() noexcept;
@@ -197,6 +212,10 @@ class VulkanPlatform {
                           uint32_t data) const;
     void copy_buffer(VkBuffer source, VkBuffer destination, VkDeviceSize size) const;
     VulkanBuffer &staging_buffer(VkDeviceSize size) const;
+    // Reserves a transfer slot (flushing an open recording and waiting under capacity
+    // pressure), THEN allocates exclusive host-visible staging. Call with no queue,
+    // transfer or execution lock held. Never aliases staging_buffer().
+    VulkanStagingTransfer reserve_transfer(VkDeviceSize bytes) const;
     VulkanTimingSnapshot timing_snapshot() const;
     void reset_timing() const;
     void record_timing(VulkanTimingCategory category, double seconds) const;
@@ -205,6 +224,8 @@ class VulkanPlatform {
     bool supports_bool_pointwise() const;
     bool supports_formatter_double() const;
     VulkanExecutionContext &execution_context() const;
+    bool query_execution() const;
+    void synchronize_execution() const;
     VulkanShaderRegistry &shader_registry() const;
     VulkanPipelineCache &pipeline_cache() const;
     PipelineCacheSnapshot pipeline_cache_snapshot() const;
@@ -264,6 +285,9 @@ class VulkanPlatform {
     mutable std::atomic<std::size_t> compute_wait_count_{0};
     mutable std::atomic<int> device_loss_result_{static_cast<int>(VK_SUCCESS)};
     mutable std::atomic<std::size_t> live_allocation_count_{0};
+    // Remaining injected exclusive-staging allocation failures (fixture seam, zero
+    // in production). Each wrapper reserve consumes at most one unit.
+    mutable std::atomic<unsigned> staging_allocation_failures_{0};
     mutable std::unique_ptr<VulkanBuffer> staging_buffer_;
     mutable VulkanTimingCounters timing_;
 };

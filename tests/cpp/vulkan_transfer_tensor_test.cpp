@@ -247,9 +247,9 @@ void test_formatter_presentation_copy_rejects_malformed_sources() {
     auto result = at::empty({2}, source.options());
 
     auto noncontiguous = at::as_strided(input, {2, 2}, {1, 2});
-    auto strided_result = at::empty({4}, source.options());
+    auto strided_result = at::empty({2, 2}, source.options());
     pytorch_vulkan::formatter_presentation_copy(strided_result, noncontiguous);
-    expect(strided_result.equal(at::ones({4}, source.options())),
+    expect(strided_result.equal(at::ones({2, 2}, source.options())),
            "strided presentation copy changed values");
 
     auto out_of_range = input;
@@ -275,7 +275,7 @@ void test_validation_boundaries() {
                  "only float32");
     auto wrong_size = at::ones({3}, at::TensorOptions().dtype(at::kFloat));
     expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, wrong_size, false); },
-                 "matching sizes");
+                 "expanded size");
 }
 
 void test_formatter_double_storage_and_conversion() {
@@ -448,8 +448,24 @@ void test_strided_copy_reads_and_writes_logical_indices() {
     expect(result.equal(source), "strided Vulkan copy changed logical values");
 }
 
+void test_copy_broadcasts_cpu_source_into_strided_vulkan_destination() {
+    auto source = at::arange(3, at::TensorOptions().dtype(at::kFloat));
+    auto base = at::full({3, 2}, -7.0F,
+                        at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto destination = at::transpose(base, 0, 1);
+    pytorch_vulkan::copy_tensor(destination, source, false);
+    auto result = at::empty({2, 3}, source.options());
+    pytorch_vulkan::copy_tensor(result, destination, false);
+    expect(result.equal(source.expand({2, 3})),
+           "broadcast copy into strided Vulkan destination changed values");
+    auto base_result = at::empty({3, 2}, source.options());
+    pytorch_vulkan::copy_tensor(base_result, base, false);
+    expect(base_result.equal(source.expand({2, 3}).t()),
+           "broadcast copy failed to update transposed destination storage");
+}
+
 void test_strided_copy_rejects_unsafe_overlap() {
-    auto source = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto source = at::empty({2, 2}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
     auto destination =
         at::empty_strided({2, 2}, {0, 1}, source.options().device(kDevice));
     const auto platform = pytorch_vulkan::platform();
@@ -1352,6 +1368,7 @@ int main() {
         test_nonzero_storage_offset_is_supported();
         test_zero_tensor_copy_is_noop();
         test_strided_copy_reads_and_writes_logical_indices();
+        test_copy_broadcasts_cpu_source_into_strided_vulkan_destination();
         test_strided_copy_rejects_unsafe_overlap();
         test_identical_vulkan_copy_is_a_noop();
         test_strided_copy_zero_elements_is_noop();

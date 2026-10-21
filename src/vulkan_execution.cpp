@@ -5,22 +5,99 @@
 #include <array>
 #include <chrono>
 #include <exception>
+#include <new>
 #include <stdexcept>
 #include <string>
 
+struct VulkanTransferReservationState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::size_t occupied = 0;
+    uint64_t generation = 0;
+    bool closing = false;
+    bool poisoned = false;
+};
+
+struct VulkanTransferSlotLease {
+    explicit VulkanTransferSlotLease(std::shared_ptr<VulkanTransferReservationState> state)
+        : state(std::move(state)) {}
+    ~VulkanTransferSlotLease() {
+        if (!state) return;
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->occupied) --state->occupied;
+        ++state->generation;
+        state->cv.notify_all();
+    }
+    std::shared_ptr<VulkanTransferReservationState> state;
+};
+
 namespace {
 constexpr uint32_t kQueriesPerSlot = 10;
-struct QuarantinedExecution {
-    bool occupied = false;
-    std::array<VkCommandBuffer, 2> command_buffers{};
-    std::array<VkFence, 2> fences{};
-    std::array<VkSemaphore, 2> signal_semaphores{};
-    VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
-    std::vector<std::function<void()>> callbacks;
-};
+
+VkResult real_allocate(void *, VkDevice d, const VkCommandBufferAllocateInfo *i,
+                       VkCommandBuffer *b) { return vkAllocateCommandBuffers(d, i, b); }
+void real_free(void *, VkDevice d, VkCommandPool p, uint32_t n,
+               const VkCommandBuffer *b) { vkFreeCommandBuffers(d, p, n, b); }
+VkResult real_create_fence(void *, VkDevice d, const VkFenceCreateInfo *i,
+                           const VkAllocationCallbacks *a, VkFence *f) {
+    return vkCreateFence(d, i, a, f);
+}
+void real_destroy_fence(void *, VkDevice d, VkFence f, const VkAllocationCallbacks *a) {
+    vkDestroyFence(d, f, a);
+}
+VkResult real_create_semaphore(void *, VkDevice d, const VkSemaphoreCreateInfo *i,
+                               const VkAllocationCallbacks *a, VkSemaphore *s) {
+    return vkCreateSemaphore(d, i, a, s);
+}
+void real_destroy_semaphore(void *, VkDevice d, VkSemaphore s,
+                            const VkAllocationCallbacks *a) {
+    vkDestroySemaphore(d, s, a);
+}
+VkResult real_begin(void *, VkCommandBuffer b, const VkCommandBufferBeginInfo *i) {
+    return vkBeginCommandBuffer(b, i);
+}
+VkResult real_end(void *, VkCommandBuffer b) { return vkEndCommandBuffer(b); }
+VkResult real_reset_command(void *, VkCommandBuffer b, VkCommandBufferResetFlags f) {
+    return vkResetCommandBuffer(b, f);
+}
+VkResult real_reset_fences(void *, VkDevice d, uint32_t n, const VkFence *f) {
+    return vkResetFences(d, n, f);
+}
+VkResult real_submit(void *, VkQueue q, uint32_t n, const VkSubmitInfo *i, VkFence f) {
+    return vkQueueSubmit(q, n, i, f);
+}
+VkResult real_fence_status(void *, VkDevice d, VkFence f) {
+    return vkGetFenceStatus(d, f);
+}
+VkResult real_wait_fences(void *, VkDevice d, uint32_t n, const VkFence *f,
+                          VkBool32 all, uint64_t timeout) {
+    return vkWaitForFences(d, n, f, all, timeout);
+}
+VkResult real_queue_idle(void *, VkQueue q) { return vkQueueWaitIdle(q); }
+
+VulkanExecutionOps real_execution_ops() {
+    return {nullptr, real_allocate, real_free, real_create_fence, real_destroy_fence,
+            real_create_semaphore, real_destroy_semaphore, real_begin, real_end,
+            real_reset_command, real_reset_fences, real_submit, real_fence_status,
+            real_wait_fences, real_queue_idle};
+}
+
 constexpr std::size_t kQuarantineCapacity = 16;
 std::mutex quarantine_mutex;
-std::array<QuarantinedExecution, kQuarantineCapacity> quarantined;
+// Intentionally never destroyed: uncertain device ownership outlives process static teardown.
+std::array<VulkanExecutionQuarantine *, kQuarantineCapacity> quarantined{};
+
+void retain_production_quarantine(void *, VulkanExecutionQuarantine *payload) noexcept {
+    std::lock_guard<std::mutex> lock(quarantine_mutex);
+    for (auto &slot : quarantined) {
+        if (slot == nullptr) {
+            slot = payload;
+            return;
+        }
+    }
+    // Full bounded diagnostics table: leak the ENTIRE payload, including capture owners.
+}
+VulkanExecutionQuarantineSink production_quarantine{nullptr, retain_production_quarantine};
 
 void check_result(VkResult result, const char *operation) {
     if (result != VK_SUCCESS)
@@ -35,7 +112,7 @@ void check_result(VkResult result, const char *operation) {
 }
 
 std::exception_ptr
-execute_callbacks(std::vector<std::function<void()>> &callbacks) noexcept {
+execute_callbacks(VulkanExecutionCallbacks &callbacks) noexcept {
     std::exception_ptr error;
     for (auto &callback : callbacks) {
         try {
@@ -50,9 +127,15 @@ execute_callbacks(std::vector<std::function<void()>> &callbacks) noexcept {
 }
 } // namespace
 
+VulkanCallbackDrainOnExit::~VulkanCallbackDrainOnExit() noexcept {
+    context_.drain_ready_cleanup();
+}
+
 VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
                                                VkCommandPool command_pool)
-    : device_(device), queue_(queue), command_pool_(command_pool) {
+    : device_(device), queue_(queue), command_pool_(command_pool),
+      ops_(real_execution_ops()), quarantine_sink_(&production_quarantine),
+      reservation_state_(std::make_shared<VulkanTransferReservationState>()) {
     if (device_ == VK_NULL_HANDLE || queue_ == VK_NULL_HANDLE ||
         command_pool_ == VK_NULL_HANDLE)
         throw std::invalid_argument("Vulkan execution context requires valid handles");
@@ -63,26 +146,26 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
     allocation.commandBufferCount = kRingSize;
     VkCommandBuffer buffers[kRingSize]{};
     try {
-        check_result(vkAllocateCommandBuffers(device_, &allocation, buffers),
+        check_result(ops_.allocate_command_buffers(ops_.cookie, device_, &allocation, buffers),
                      "Could not allocate Vulkan execution command buffers");
         for (std::size_t i = 0; i < kRingSize; ++i)
             ring_[i].command_buffer = buffers[i];
         for (std::size_t i = 0; i < kRingSize; ++i) {
             VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-            check_result(vkCreateFence(device_, &fence_info, nullptr, &ring_[i].fence),
+            check_result(ops_.create_fence(ops_.cookie, device_, &fence_info, nullptr, &ring_[i].fence),
                          "Could not create Vulkan execution fence");
             VkSemaphoreCreateInfo semaphore_info{
                 VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-            check_result(vkCreateSemaphore(device_, &semaphore_info, nullptr,
+            check_result(ops_.create_semaphore(ops_.cookie, device_, &semaphore_info, nullptr,
                                            &ring_[i].signal_semaphore),
                          "Could not create Vulkan execution semaphore");
         }
     } catch (...) {
         for (auto &record : ring_) {
             if (record.fence != VK_NULL_HANDLE)
-                vkDestroyFence(device_, record.fence, nullptr);
+                ops_.destroy_fence(ops_.cookie, device_, record.fence, nullptr);
             if (record.signal_semaphore != VK_NULL_HANDLE)
-                vkDestroySemaphore(device_, record.signal_semaphore, nullptr);
+                ops_.destroy_semaphore(ops_.cookie, device_, record.signal_semaphore, nullptr);
         }
         VkCommandBuffer allocated[kRingSize]{};
         std::size_t count = 0;
@@ -91,7 +174,53 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
                 allocated[count++] = record.command_buffer;
         }
         if (count)
-            vkFreeCommandBuffers(device_, command_pool_, count, allocated);
+            ops_.free_command_buffers(ops_.cookie, device_, command_pool_, count, allocated);
+        throw;
+    }
+}
+
+VulkanExecutionContext::VulkanExecutionContext(
+    VkDevice device, VkQueue queue, VkCommandPool command_pool,
+    const VulkanExecutionOps &ops, VulkanExecutionQuarantineSink &quarantine,
+    std::mutex &shared_queue_mutex)
+    : device_(device), queue_(queue), command_pool_(command_pool), ops_(ops),
+      quarantine_sink_(&quarantine), queue_mutex_(&shared_queue_mutex),
+      reservation_state_(std::make_shared<VulkanTransferReservationState>()) {
+    if (device_ == VK_NULL_HANDLE || queue_ == VK_NULL_HANDLE ||
+        command_pool_ == VK_NULL_HANDLE || !ops_.allocate_command_buffers ||
+        !ops_.free_command_buffers || !ops_.create_fence || !ops_.destroy_fence ||
+        !ops_.create_semaphore || !ops_.destroy_semaphore || !ops_.begin_command_buffer ||
+        !ops_.end_command_buffer || !ops_.reset_command_buffer || !ops_.reset_fences ||
+        !ops_.queue_submit || !ops_.get_fence_status || !ops_.wait_for_fences ||
+        !ops_.queue_wait_idle || !quarantine.retain)
+        throw std::invalid_argument("Invalid Vulkan execution test ops or handles");
+    VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocation.commandPool = command_pool_;
+    allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocation.commandBufferCount = kRingSize;
+    VkCommandBuffer buffers[kRingSize]{};
+    check_result(ops_.allocate_command_buffers(ops_.cookie, device_, &allocation, buffers),
+                 "Could not allocate Vulkan execution command buffers");
+    for (std::size_t i = 0; i < kRingSize; ++i)
+        ring_[i].command_buffer = buffers[i];
+    try {
+        for (std::size_t i = 0; i < kRingSize; ++i) {
+            VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            check_result(ops_.create_fence(ops_.cookie, device_, &fence_info, nullptr,
+                                           &ring_[i].fence),
+                         "Could not create Vulkan execution fence");
+            VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            check_result(ops_.create_semaphore(ops_.cookie, device_, &semaphore_info,
+                                               nullptr, &ring_[i].signal_semaphore),
+                         "Could not create Vulkan execution semaphore");
+        }
+    } catch (...) {
+        for (auto &record : ring_) {
+            if (record.fence) ops_.destroy_fence(ops_.cookie, device_, record.fence, nullptr);
+            if (record.signal_semaphore)
+                ops_.destroy_semaphore(ops_.cookie, device_, record.signal_semaphore, nullptr);
+        }
+        ops_.free_command_buffers(ops_.cookie, device_, command_pool_, kRingSize, buffers);
         throw;
     }
 }
@@ -101,76 +230,178 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
                                                VulkanPlatform *platform)
     : VulkanExecutionContext(device, queue, command_pool) {
     platform_ = platform;
+    if (platform_ != nullptr)
+        queue_mutex_ = &platform_->queue_mutex();
     initialize_timestamp_queries();
 }
 
 VulkanExecutionContext::~VulkanExecutionContext() noexcept {
-    std::unique_lock<std::mutex> lock(mutex_);
-    if (device_ == VK_NULL_HANDLE)
-        return;
-    if (vkQueueWaitIdle(queue_) != VK_SUCCESS) {
-        std::scoped_lock quarantine_lock(quarantine_mutex);
-        for (auto &slot : quarantined) {
-            if (slot.occupied)
-                continue;
-            slot.occupied = true;
-            for (std::size_t i = 0; i < kRingSize; ++i) {
-                slot.command_buffers[i] = ring_[i].command_buffer;
-                slot.fences[i] = ring_[i].fence;
-                slot.signal_semaphores[i] = ring_[i].signal_semaphore;
-            }
-            slot.timestamp_query_pool = timestamp_query_pool_;
-            slot.callbacks = std::move(deferred_callbacks_);
-            for (auto &record : ring_) {
-                for (auto &callback : record.callbacks)
-                    slot.callbacks.push_back(std::move(callback));
-                record.callbacks.clear();
-            }
-            for (auto &callback : completion_callbacks_)
-                slot.callbacks.push_back(std::move(callback));
-            completion_callbacks_.clear();
-            for (auto &record : ring_) {
-                record.command_buffer = VK_NULL_HANDLE;
-                record.fence = VK_NULL_HANDLE;
-                record.signal_semaphore = VK_NULL_HANDLE;
-            }
-            latest_signal_semaphore_ = VK_NULL_HANDLE;
-            timestamp_query_pool_ = VK_NULL_HANDLE;
-            return;
-        }
-        // Completion is unknown and no allocation-free owner remains: leak safely.
+    try {
+        if (!teardown_with_services({})) return;
+    } catch (...) {
+        // Never release possibly referenced owners on an uncertain teardown path.
+        std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!invalidated_) invalidate(VK_ERROR_UNKNOWN, lock);
         return;
     }
-    std::vector<std::function<void()>> callbacks;
-    for (auto &record : ring_) {
-        for (auto &callback : record.callbacks)
-            callbacks.push_back(std::move(callback));
-        record.callbacks.clear();
-    }
-    for (auto &callback : deferred_callbacks_)
-        callbacks.push_back(std::move(callback));
-    deferred_callbacks_.clear();
-    for (auto &callback : completion_callbacks_)
-        callbacks.push_back(std::move(callback));
-    completion_callbacks_.clear();
-    lock.unlock();
-    execute_callbacks(callbacks);
-    lock.lock();
+    std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (device_ == VK_NULL_HANDLE) return;
     for (auto &record : ring_) {
         if (record.fence != VK_NULL_HANDLE)
-            vkDestroyFence(device_, record.fence, nullptr);
+            ops_.destroy_fence(ops_.cookie, device_, record.fence, nullptr);
         if (record.signal_semaphore != VK_NULL_HANDLE)
-            vkDestroySemaphore(device_, record.signal_semaphore, nullptr);
+            ops_.destroy_semaphore(ops_.cookie, device_, record.signal_semaphore, nullptr);
         if (record.command_buffer != VK_NULL_HANDLE)
-            vkFreeCommandBuffers(device_, command_pool_, 1, &record.command_buffer);
+            ops_.free_command_buffers(ops_.cookie, device_, command_pool_, 1,
+                                      &record.command_buffer);
     }
     if (timestamp_query_pool_ != VK_NULL_HANDLE)
         vkDestroyQueryPool(device_, timestamp_query_pool_, nullptr);
 }
 
 void VulkanExecutionContext::begin(const char *scope) {
+    VulkanCallbackDrainOnExit drain(*this);
+    std::unique_lock<std::mutex> queue_lock(*queue_mutex_);
+    begin_locked(scope);
+    queue_lock.unlock();
+    drain_ready_callbacks(false);
+}
+
+VulkanTransferReservation VulkanExecutionContext::reserve_transfer(
+    const std::function<void()> &flush_locked) {
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> slots(reservation_state_->mutex);
+            if (reservation_state_->closing || reservation_state_->poisoned)
+                throw std::logic_error("Vulkan transfer reservations are unavailable");
+            if (reservation_state_->occupied < 2) {
+                if (ops_.fail_reservation_allocation &&
+                    ops_.fail_reservation_allocation(ops_.cookie))
+                    throw std::bad_alloc();
+                auto lease = std::make_shared<VulkanTransferSlotLease>(reservation_state_);
+                ++reservation_state_->occupied;
+                return VulkanTransferReservation(std::move(lease));
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+                throw std::logic_error("completion callback cannot reserve a transfer slot");
+            if (invalidated_ || closing_)
+                throw std::logic_error("Vulkan transfer reservations are unavailable");
+        }
+        // Retire only the oldest submitted transfer; this boundary owns queue serialization.
+        // No slot/context lock is held while taking the queue lock or pumping.
+        wait_oldest_transfer(flush_locked);
+        std::unique_lock<std::mutex> slots(reservation_state_->mutex);
+        if (reservation_state_->occupied >= 2 && ops_.reservation_wait_begin) {
+            slots.unlock();
+            ops_.reservation_wait_begin(ops_.cookie);
+            slots.lock();
+        }
+        const uint64_t generation = reservation_state_->generation;
+        reservation_state_->cv.wait(slots, [&] {
+            return reservation_state_->occupied < 2 || reservation_state_->closing ||
+                   reservation_state_->poisoned ||
+                   reservation_state_->generation != generation;
+        });
+    }
+}
+
+void VulkanExecutionContext::notify_reservation_change() noexcept {
+    std::lock_guard<std::mutex> lock(reservation_state_->mutex);
+    ++reservation_state_->generation;
+    reservation_state_->cv.notify_all();
+}
+
+void VulkanExecutionContext::wait_oldest_transfer(
+    const std::function<void()> &flush_locked) {
+    std::exception_ptr error;
+    {
+        std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+        try {
+            // An open recording can hold slots that no fence will ever free; submit it first.
+            bool flush = false;
+            {
+                std::lock_guard<std::mutex> state(mutex_);
+                if (recording_)
+                    for (const auto &transfer : transfer_records_)
+                        flush |= transfer->state == TransferRecord::State::Recording;
+            }
+            if (flush) {
+                if (flush_locked) flush_locked();
+                else submit_locked();
+            }
+        } catch (...) {
+            error = std::current_exception();
+        }
+        std::unique_lock<std::mutex> lock(mutex_);
+        try {
+            throw_if_invalidated(lock);
+            std::shared_ptr<TransferRecord> oldest;
+            for (const auto &transfer : transfer_records_) {
+                if (transfer->state != TransferRecord::State::Pending &&
+                    transfer->state != TransferRecord::State::Ready &&
+                    transfer->state != TransferRecord::State::Failed &&
+                    transfer->state != TransferRecord::State::Cancelled) continue;
+                if (!oldest || transfer->submission_id < oldest->submission_id ||
+                    (transfer->submission_id == oldest->submission_id &&
+                     transfer->operation_id < oldest->operation_id))
+                    oldest = transfer;
+            }
+            if (oldest && oldest->state == TransferRecord::State::Pending &&
+                !callbacks_active_) {
+                for (auto &record : ring_) {
+                    if (record.submitted && record.submission_id == oldest->submission_id) {
+                        wait_and_retire(record, lock);
+                        break;
+                    }
+                }
+            }
+        } catch (...) {
+            error = std::current_exception();
+        }
+    }
+    try { drain_ready_callbacks(false); }
+    catch (...) { if (!error) error = std::current_exception(); }
+    if (error) std::rethrow_exception(error);
+}
+
+VulkanCompletionId VulkanExecutionContext::defer_transfer(
+    VulkanTransferReservation &&reservation, std::vector<std::shared_ptr<void>> &&owners,
+    std::function<void()> &&publish_success) {
+    if (!reservation.lease_)
+        throw std::invalid_argument("Vulkan transfer requires a live reservation");
+    // Everything that can throw is done before the caller's objects are moved from.
+    auto transfer = std::make_shared<TransferRecord>();
     std::unique_lock<std::mutex> lock(mutex_);
     throw_if_invalidated(lock);
+    if (closing_ || !recording_)
+        throw std::logic_error("Vulkan transfer attachment requires active recording");
+    if (reservation.lease_->state != reservation_state_)
+        throw std::invalid_argument("Vulkan transfer reservation belongs to another context");
+    if (ops_.fail_transfer_attachment && ops_.fail_transfer_attachment(ops_.cookie))
+        throw std::bad_alloc();
+    transfer_records_.push_back(transfer);
+    // Nothrow commit: moves of vectors/functions/shared_ptrs.
+    transfer->operation_id = ++next_operation_id_;
+    transfer->state = TransferRecord::State::Recording;
+    transfer->owners = std::move(owners);
+    transfer->publish_success = std::move(publish_success);
+    transfer->lease = std::move(reservation.lease_);
+    const auto operation_id = transfer->operation_id;
+    lock.unlock();
+    notify_reservation_change();
+    return operation_id;
+}
+
+void VulkanExecutionContext::begin_locked(const char *scope) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
+    if (closing_)
+        throw std::logic_error("Vulkan execution context is closing");
     if (recording_)
         throw std::logic_error("Vulkan execution context is already recording");
     active_slot_ = (active_slot_ + 1) % kRingSize;
@@ -182,7 +413,8 @@ void VulkanExecutionContext::begin(const char *scope) {
     reset_reusable_resources(ring_[active_slot_]);
     VkCommandBufferBeginInfo info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    check_result(vkBeginCommandBuffer(ring_[active_slot_].command_buffer, &info),
+    check_result(ops_.begin_command_buffer(ops_.cookie,
+                                           ring_[active_slot_].command_buffer, &info),
                  "Could not begin Vulkan execution command buffer");
     ring_[active_slot_].timestamp_scope = scope == nullptr ? "operator" : scope;
     ring_[active_slot_].timestamp_recorded = false;
@@ -256,10 +488,21 @@ VkCommandBuffer VulkanExecutionContext::command_buffer() const {
 }
 
 void VulkanExecutionContext::submit() {
+    VulkanCallbackDrainOnExit drain(*this);
+    std::unique_lock<std::mutex> queue_lock(*queue_mutex_);
+    submit_locked();
+    queue_lock.unlock();
+    drain_ready_callbacks(false);
+}
+
+void VulkanExecutionContext::submit_locked() {
     std::unique_lock<std::mutex> lock(mutex_);
     throw_if_invalidated(lock);
+    if (closing_)
+        throw std::logic_error("Vulkan execution context is closing");
     if (!recording_)
         throw std::logic_error("Vulkan execution context is not recording");
+    bool submit_attempted = false;
     try {
         const auto recording_start = std::chrono::steady_clock::now();
         if (ring_[active_slot_].timestamp_recorded)
@@ -267,7 +510,8 @@ void VulkanExecutionContext::submit() {
                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                 timestamp_query_pool_,
                                 ring_[active_slot_].timestamp_end);
-        check_result(vkEndCommandBuffer(ring_[active_slot_].command_buffer),
+        check_result(ops_.end_command_buffer(ops_.cookie,
+                                             ring_[active_slot_].command_buffer),
                      "Could not end Vulkan execution command buffer");
         if (platform_)
             platform_->record_timing(
@@ -288,8 +532,10 @@ void VulkanExecutionContext::submit() {
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &ring_[active_slot_].signal_semaphore;
         const auto submit_start = std::chrono::steady_clock::now();
+        submit_attempted = true;
         const VkResult submit_result =
-            vkQueueSubmit(queue_, 1, &submit, ring_[active_slot_].fence);
+            ops_.queue_submit(ops_.cookie, queue_, 1, &submit,
+                              ring_[active_slot_].fence);
         if (submit_result == VK_ERROR_DEVICE_LOST) {
             invalidate(submit_result, lock);
             throw_device_lost(submit_result);
@@ -303,19 +549,48 @@ void VulkanExecutionContext::submit() {
                                               submit_start)
                     .count());
         }
-        ring_[active_slot_].callbacks = std::move(deferred_callbacks_);
+        ring_[active_slot_].callbacks.splice(ring_[active_slot_].callbacks.end(),
+                                             deferred_callbacks_);
         ring_[active_slot_].submission_id = ++next_submission_id_;
+        for (auto &transfer : transfer_records_)
+            if (transfer->state == TransferRecord::State::Recording) {
+                transfer->submission_id = ring_[active_slot_].submission_id;
+                transfer->state = TransferRecord::State::Pending;
+            }
+        notify_reservation_change();
         ring_[active_slot_].submitted = true;
         latest_signal_semaphore_ = ring_[active_slot_].signal_semaphore;
         recording_ = false;
     } catch (...) {
         if (invalidated_)
             throw;
-        abandon_recording(std::current_exception(), lock);
+        const auto original = std::current_exception();
+        bool has_recording_transfer = false;
+        for (const auto &transfer : transfer_records_)
+            has_recording_transfer |= transfer->state == TransferRecord::State::Recording;
+        if (submit_attempted && has_recording_transfer) {
+            const VkResult recovery = ops_.queue_wait_idle(ops_.cookie, queue_);
+            if (recovery != VK_SUCCESS) {
+                invalidate(recovery, lock);
+                std::rethrow_exception(original);
+            }
+        }
+        if (has_recording_transfer) {
+            if (!callback_error_) callback_error_ = original;
+            for (auto &transfer : transfer_records_)
+                if (transfer->state == TransferRecord::State::Recording)
+                    transfer->state = TransferRecord::State::Failed;
+            notify_reservation_change();
+        }
+        abandon_recording(original, lock);
     }
 }
 
 void VulkanExecutionContext::wait() {
+    synchronize_with_flush({});
+}
+
+void VulkanExecutionContext::wait_device_locked() {
     std::unique_lock<std::mutex> lock(mutex_);
     throw_if_invalidated(lock);
     if (recording_)
@@ -332,7 +607,110 @@ void VulkanExecutionContext::wait() {
 
 void VulkanExecutionContext::synchronize() { wait(); }
 
+bool VulkanExecutionContext::query_with_flush(const std::function<void()> &flush_locked) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (callbacks_active_) return false;
+    }
+    VulkanCallbackDrainOnExit drain(*this);
+    std::exception_ptr error;
+    {
+        std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+        try {
+            if (!closing_ && flush_locked) flush_locked();
+        } catch (...) { error = std::current_exception(); }
+        try {
+            if (!recording()) poll_device_locked();
+        } catch (...) {
+            if (!error) error = std::current_exception();
+        }
+    }
+    try { drain_ready_callbacks(false); } catch (...) {
+        if (!error) error = std::current_exception();
+    }
+    if (error) std::rethrow_exception(error);
+    std::unique_lock<std::mutex> lock(mutex_);
+    throw_if_invalidated(lock);
+    if (callback_error_) std::rethrow_exception(callback_error_);
+    if (recording_ || callbacks_active_ || !ready_callbacks_.empty() ||
+        !transfer_records_.empty()) return false;
+    for (const auto &record : ring_)
+        if (record.submitted) return false;
+    return true;
+}
+
+void VulkanExecutionContext::synchronize_with_flush(const std::function<void()> &flush_locked) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+            throw std::logic_error("completion callback cannot wait for itself");
+    }
+    VulkanCallbackDrainOnExit drain(*this);
+    std::exception_ptr error;
+    {
+        std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+        try {
+            if (!closing_ && flush_locked) flush_locked();
+        } catch (...) { error = std::current_exception(); }
+        try { wait_device_locked(); } catch (...) {
+            if (!error) error = std::current_exception();
+        }
+    }
+    try { drain_ready_callbacks(true); } catch (...) {
+        if (!error) error = std::current_exception();
+    }
+    if (error) std::rethrow_exception(error);
+}
+
+bool VulkanExecutionContext::teardown_with_services(const std::function<void()> &destroy_services) {
+    {
+        std::lock_guard<std::mutex> slots(reservation_state_->mutex);
+        reservation_state_->closing = true;
+        ++reservation_state_->generation;
+        reservation_state_->cv.notify_all();
+    }
+    {
+        std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        closing_ = true;
+        if (invalidated_) return false;
+        const VkResult result = ops_.queue_wait_idle(ops_.cookie, queue_);
+        if (result != VK_SUCCESS) {
+            invalidate(result, lock);
+            return false;
+        }
+        recording_ = false;
+        for (auto &transfer : transfer_records_)
+            if (transfer->state == TransferRecord::State::Recording)
+                transfer->state = TransferRecord::State::Cancelled;
+        notify_reservation_change();
+        for (auto &record : ring_) {
+            if (record.submitted) {
+                resolve_timestamp(record);
+                // Queue idle proves release safety only, never successful completion.
+                retire(record, lock, false);
+            }
+        }
+        ready_callbacks_.splice(ready_callbacks_.end(), deferred_callbacks_);
+    }
+    try { drain_ready_callbacks(true); } catch (...) {
+        // Safe cleanup continues; the callback exception is already persistent.
+    }
+    std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+    if (invalidated()) return false;
+    if (destroy_services) destroy_services();
+    return true;
+}
+
 void VulkanExecutionContext::retire_completed() {
+    VulkanCallbackDrainOnExit drain(*this);
+    std::unique_lock<std::mutex> queue_lock(*queue_mutex_);
+    poll_device_locked();
+    queue_lock.unlock();
+    drain_ready_callbacks(false);
+}
+
+void VulkanExecutionContext::poll_device_locked() {
     std::unique_lock<std::mutex> lock(mutex_);
     throw_if_invalidated(lock);
     if (recording_)
@@ -341,26 +719,14 @@ void VulkanExecutionContext::retire_completed() {
 }
 
 bool VulkanExecutionContext::query_complete() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    throw_if_invalidated(lock);
-    if (recording_)
-        return false;
-    poll_completed(lock);
-    throw_if_invalidated(lock);
-    if (recording_)
-        return false;
-    for (const auto &record : ring_) {
-        if (record.submitted)
-            return false;
-    }
-    return true;
+    return query_with_flush({});
 }
 
 void VulkanExecutionContext::poll_completed(std::unique_lock<std::mutex> &lock) {
     for (auto &record : ring_) {
         if (!record.submitted)
             continue;
-        const VkResult status = vkGetFenceStatus(device_, record.fence);
+        const VkResult status = ops_.get_fence_status(ops_.cookie, device_, record.fence);
         if (status == VK_ERROR_DEVICE_LOST) {
             invalidate(status, lock);
             throw_device_lost(status);
@@ -371,12 +737,37 @@ void VulkanExecutionContext::poll_completed(std::unique_lock<std::mutex> &lock) 
             resolve_timestamp(record);
             retire(record, lock);
             throw_if_invalidated(lock);
-        } else if (status != VK_NOT_READY)
-            check_result(status, "Could not query Vulkan execution fence");
+        } else if (status != VK_NOT_READY) {
+            const VkResult recovery = ops_.queue_wait_idle(ops_.cookie, queue_);
+            if (recovery != VK_SUCCESS) {
+                invalidate(recovery, lock);
+                check_result(recovery, "Could not confirm Vulkan execution completion");
+            }
+            if (!callback_error_) {
+                try {
+                    check_result(status, "Could not query Vulkan execution fence");
+                } catch (...) {
+                    callback_error_ = std::current_exception();
+                }
+            }
+            for (auto &pending : ring_) {
+                if (!pending.submitted) continue;
+                resolve_timestamp(pending);
+                retire(pending, lock, false);
+            }
+            std::rethrow_exception(callback_error_);
+        }
     }
 }
 
 void VulkanExecutionContext::cancel() {
+    std::unique_lock<std::mutex> queue_lock(*queue_mutex_);
+    cancel_locked();
+    queue_lock.unlock();
+    drain_ready_callbacks(false);
+}
+
+void VulkanExecutionContext::cancel_locked() {
     std::unique_lock<std::mutex> lock(mutex_);
     if (invalidated_) {
         recording_ = false;
@@ -385,11 +776,21 @@ void VulkanExecutionContext::cancel() {
     if (!recording_)
         return;
     recording_ = false;
-    std::vector<std::function<void()>> callbacks;
-    callbacks.swap(deferred_callbacks_);
-    lock.unlock();
-    execute_callbacks(callbacks);
-    lock.lock();
+    bool has_recording_transfer = false;
+    for (const auto &transfer : transfer_records_)
+        has_recording_transfer |= transfer->state == TransferRecord::State::Recording;
+    if (has_recording_transfer) {
+        if (!callback_error_)
+            callback_error_ = std::make_exception_ptr(
+                std::runtime_error("Vulkan transfer recording was cancelled"));
+        for (auto &transfer : transfer_records_)
+            if (transfer->state == TransferRecord::State::Recording)
+                transfer->state = TransferRecord::State::Cancelled;
+        notify_reservation_change();
+    }
+    ready_callbacks_.splice(ready_callbacks_.end(), deferred_callbacks_);
+    if (!ready_callbacks_.empty())
+        callback_cv_.notify_all();
     try {
         reset_reusable_resources(ring_[active_slot_]);
     } catch (...) {
@@ -455,6 +856,9 @@ std::size_t VulkanExecutionContext::pending_count() const {
         count += record.submitted ? 1 : 0;
     if (recording_)
         ++count;
+    count += ready_callbacks_.size();
+    count += callbacks_active_ ? 1 : 0;
+    count += transfer_records_.size();
     return count;
 }
 
@@ -502,45 +906,44 @@ bool VulkanExecutionContext::timestamp_query_quarantined() const {
 }
 
 void VulkanExecutionContext::retire(InFlightRecord &record,
-                                    std::unique_lock<std::mutex> &lock) {
-    std::vector<std::function<void()>> callbacks;
-    callbacks.swap(record.callbacks);
+                                    std::unique_lock<std::mutex> &lock,
+                                    bool allow_success_publication) {
     record.submitted = false;
+    for (auto &transfer : transfer_records_)
+        if (transfer->state == TransferRecord::State::Pending &&
+            transfer->submission_id == record.submission_id)
+            transfer->state = allow_success_publication ? TransferRecord::State::Ready
+                                                        : TransferRecord::State::Failed;
+    notify_reservation_change();
     bool submitted = false;
     for (const auto &pending : ring_)
         submitted |= pending.submitted;
     if (submitted) {
-        for (auto &callback : callbacks)
-            completion_callbacks_.push_back(std::move(callback));
-        callbacks.clear();
+        completion_callbacks_.splice(completion_callbacks_.end(), record.callbacks);
         return;
     }
-    for (auto &callback : completion_callbacks_)
-        callbacks.push_back(std::move(callback));
-    completion_callbacks_.clear();
-    lock.unlock();
-    std::exception_ptr error = execute_callbacks(callbacks);
-    lock.lock();
-    if (error)
-        std::rethrow_exception(error);
+    ready_callbacks_.splice(ready_callbacks_.end(), record.callbacks);
+    ready_callbacks_.splice(ready_callbacks_.end(), completion_callbacks_);
+    (void)lock;
 }
 
 void VulkanExecutionContext::recreate_signal_semaphore(InFlightRecord &record) {
     if (record.signal_semaphore == VK_NULL_HANDLE)
         return;
-    vkDestroySemaphore(device_, record.signal_semaphore, nullptr);
+    ops_.destroy_semaphore(ops_.cookie, device_, record.signal_semaphore, nullptr);
     record.signal_semaphore = VK_NULL_HANDLE;
     latest_signal_semaphore_ = VK_NULL_HANDLE;
     VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     check_result(
-        vkCreateSemaphore(device_, &semaphore_info, nullptr, &record.signal_semaphore),
+        ops_.create_semaphore(ops_.cookie, device_, &semaphore_info, nullptr,
+                              &record.signal_semaphore),
         "Could not recreate Vulkan execution semaphore");
 }
 
 void VulkanExecutionContext::reset_reusable_resources(InFlightRecord &record) {
-    check_result(vkResetCommandBuffer(record.command_buffer, 0),
+    check_result(ops_.reset_command_buffer(ops_.cookie, record.command_buffer, 0),
                  "Could not reset Vulkan execution command buffer");
-    check_result(vkResetFences(device_, 1, &record.fence),
+    check_result(ops_.reset_fences(ops_.cookie, device_, 1, &record.fence),
                  "Could not reset Vulkan execution fence");
 }
 
@@ -616,19 +1019,35 @@ void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
                                              std::unique_lock<std::mutex> &lock) {
     const auto wait_start = std::chrono::steady_clock::now();
     const VkResult result =
-        vkWaitForFences(device_, 1, &record.fence, VK_TRUE, UINT64_MAX);
+        ops_.wait_for_fences(ops_.cookie, device_, 1, &record.fence, VK_TRUE,
+                             UINT64_MAX);
     if (result == VK_ERROR_DEVICE_LOST) {
         invalidate(result, lock);
         throw_device_lost(result);
     }
     if (result != VK_SUCCESS) {
-        const VkResult recovery_result = vkQueueWaitIdle(queue_);
+        const VkResult recovery_result = ops_.queue_wait_idle(ops_.cookie, queue_);
         if (recovery_result == VK_ERROR_DEVICE_LOST) {
             invalidate(recovery_result, lock);
             throw_device_lost(recovery_result);
         }
-        check_result(recovery_result, "Could not confirm Vulkan execution completion");
-        check_result(result, "Could not wait for Vulkan execution fence");
+        if (recovery_result != VK_SUCCESS) {
+            invalidate(recovery_result, lock);
+            check_result(recovery_result, "Could not confirm Vulkan execution completion");
+        }
+        for (auto &pending : ring_) {
+            if (!pending.submitted) continue;
+            resolve_timestamp(pending);
+            retire(pending, lock, false);
+        }
+        if (!callback_error_) {
+            try {
+                check_result(result, "Could not wait for Vulkan execution fence");
+            } catch (...) {
+                callback_error_ = std::current_exception();
+            }
+        }
+        std::rethrow_exception(callback_error_);
     }
     const double wait_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - wait_start)
@@ -646,11 +1065,7 @@ void VulkanExecutionContext::wait_and_retire(InFlightRecord &record,
 VulkanExecutionContext::abandon_recording(std::exception_ptr original,
                                           std::unique_lock<std::mutex> &lock) {
     recording_ = false;
-    std::vector<std::function<void()>> callbacks;
-    callbacks.swap(deferred_callbacks_);
-    lock.unlock();
-    execute_callbacks(callbacks);
-    lock.lock();
+    ready_callbacks_.splice(ready_callbacks_.end(), deferred_callbacks_);
     if (!invalidated_) {
         try {
             reset_reusable_resources(ring_[active_slot_]);
@@ -658,6 +1073,145 @@ VulkanExecutionContext::abandon_recording(std::exception_ptr original,
         }
     }
     std::rethrow_exception(original);
+}
+
+void VulkanExecutionContext::drain_ready_callbacks(bool wait_for_foreign_pump) {
+    std::exception_ptr error;
+    try { drain_ready_transfers(wait_for_foreign_pump); } catch (...) {
+        error = std::current_exception();
+    }
+    VulkanExecutionCallbacks callbacks;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (callbacks_active_) {
+            if (callback_owner_ == std::this_thread::get_id()) {
+                if (wait_for_foreign_pump)
+                    throw std::logic_error("completion callback cannot wait for itself");
+                return;
+            }
+            if (!wait_for_foreign_pump)
+                return;
+            if (ops_.callback_wait_begin) ops_.callback_wait_begin(ops_.cookie);
+            callback_cv_.wait(lock, [&] { return !callbacks_active_; });
+        }
+        if (!ready_callbacks_.empty()) {
+            callbacks.swap(ready_callbacks_);
+            callbacks_active_ = true;
+            callback_owner_ = std::this_thread::get_id();
+        }
+    }
+    if (!callbacks.empty()) {
+        const std::exception_ptr error = execute_callbacks(callbacks);
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (error && !callback_error_)
+            callback_error_ = error;
+        callbacks_active_ = false;
+        callback_owner_ = {};
+        callback_cv_.notify_all();
+        notify_reservation_change();
+    }
+    {
+        std::scoped_lock lock(mutex_);
+        if (!error) error = callback_error_;
+    }
+    if (error)
+        std::rethrow_exception(error);
+}
+
+void VulkanExecutionContext::drain_ready_transfers(bool wait_for_foreign_pump) {
+    for (;;) {
+        std::shared_ptr<TransferRecord> transfer;
+        bool publish = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (callbacks_active_) {
+                bool ready_transfer = false;
+                for (const auto &candidate : transfer_records_)
+                    ready_transfer |= candidate->state == TransferRecord::State::Ready ||
+                                      candidate->state == TransferRecord::State::Failed ||
+                                      candidate->state == TransferRecord::State::Cancelled;
+                if (!ready_transfer) return;
+                if (callback_owner_ == std::this_thread::get_id()) {
+                    if (wait_for_foreign_pump)
+                        throw std::logic_error("completion callback cannot wait for itself");
+                    return;
+                }
+                if (!wait_for_foreign_pump) return;
+                callback_cv_.wait(lock, [&] { return !callbacks_active_; });
+            }
+            std::shared_ptr<TransferRecord> earliest_submitted;
+            for (const auto &candidate : transfer_records_) {
+                if (candidate->submission_id == 0 ||
+                    (candidate->state != TransferRecord::State::Ready &&
+                     candidate->state != TransferRecord::State::Pending)) continue;
+                if (!earliest_submitted ||
+                    candidate->submission_id < earliest_submitted->submission_id ||
+                    (candidate->submission_id == earliest_submitted->submission_id &&
+                     candidate->operation_id < earliest_submitted->operation_id))
+                    earliest_submitted = candidate;
+            }
+            if (earliest_submitted && earliest_submitted->state == TransferRecord::State::Ready)
+                transfer = earliest_submitted;
+            if (!transfer) {
+                for (const auto &candidate : transfer_records_)
+                    if ((candidate->state == TransferRecord::State::Failed ||
+                         candidate->state == TransferRecord::State::Cancelled) &&
+                        (!transfer || candidate->operation_id < transfer->operation_id))
+                        transfer = candidate;
+            }
+            if (!transfer) break;
+            if (transfer->state == TransferRecord::State::Ready) {
+                transfer->state = TransferRecord::State::Publishing;
+                publish = true;
+            }
+            callbacks_active_ = true;
+            callback_owner_ = std::this_thread::get_id();
+        }
+
+        std::exception_ptr error;
+        if (publish && transfer->publish_success) {
+            try { transfer->publish_success(); } catch (...) { error = std::current_exception(); }
+        }
+        bool quarantined = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            quarantined = transfer->state == TransferRecord::State::Quarantined;
+            if (!quarantined) {
+                if (error && !callback_error_) callback_error_ = error;
+                if (publish)
+                    transfer->state = error ? TransferRecord::State::Failed
+                                            : TransferRecord::State::Published;
+            }
+        }
+        if (!quarantined) {
+            // Capture release is part of visible pump activity and happens unlocked.
+            transfer->owners.clear();
+            transfer->publish_success = {};
+            transfer->lease.reset();
+        }
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (!quarantined) transfer_records_.remove(transfer);
+            callbacks_active_ = false;
+            callback_owner_ = {};
+            callback_cv_.notify_all();
+            notify_reservation_change();
+        }
+    }
+    std::exception_ptr error;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        error = callback_error_;
+    }
+    if (error) std::rethrow_exception(error);
+}
+
+void VulkanExecutionContext::drain_ready_cleanup() noexcept {
+    try {
+        drain_ready_callbacks(false);
+    } catch (...) {
+        // drain_ready_callbacks persists the first callback exception before throwing.
+    }
 }
 
 void VulkanExecutionContext::throw_if_invalidated(std::unique_lock<std::mutex> &lock) {
@@ -677,47 +1231,50 @@ void VulkanExecutionContext::invalidate(VkResult result,
     invalidated_ = true;
     invalidation_result_ = result;
     recording_ = false;
+    {
+        std::lock_guard<std::mutex> slots(reservation_state_->mutex);
+        reservation_state_->closing = true;
+        reservation_state_->poisoned = true;
+        ++reservation_state_->generation;
+        reservation_state_->cv.notify_all();
+    }
     if (platform_)
         platform_->mark_device_lost(result);
 
-    std::scoped_lock quarantine_lock(quarantine_mutex);
-    for (auto &slot : quarantined) {
-        if (slot.occupied)
-            continue;
-        slot.occupied = true;
-        for (std::size_t i = 0; i < kRingSize; ++i) {
-            slot.command_buffers[i] = ring_[i].command_buffer;
-            slot.fences[i] = ring_[i].fence;
-            slot.signal_semaphores[i] = ring_[i].signal_semaphore;
-        }
-        slot.callbacks = std::move(deferred_callbacks_);
-        slot.timestamp_query_pool = timestamp_query_pool_;
-        for (auto &record : ring_) {
-            for (auto &callback : record.callbacks)
-                slot.callbacks.push_back(std::move(callback));
-            record.callbacks.clear();
-            record.command_buffer = VK_NULL_HANDLE;
-            record.fence = VK_NULL_HANDLE;
-            record.signal_semaphore = VK_NULL_HANDLE;
-            record.submitted = false;
-        }
-        for (auto &callback : completion_callbacks_)
-            slot.callbacks.push_back(std::move(callback));
-        completion_callbacks_.clear();
-        latest_signal_semaphore_ = VK_NULL_HANDLE;
-        timestamp_query_pool_ = VK_NULL_HANDLE;
-        timestamp_query_quarantined_ = true;
-        device_ = VK_NULL_HANDLE;
-        queue_ = VK_NULL_HANDLE;
-        command_pool_ = VK_NULL_HANDLE;
-        (void)lock;
-        return;
-    }
-    for (auto &record : ring_)
+    auto &payload = *quarantine_payload_;
+    for (std::size_t i = 0; i < kRingSize; ++i) {
+        auto &record = ring_[i];
+        payload.command_buffers[i] = record.command_buffer;
+        payload.fences[i] = record.fence;
+        payload.signal_semaphores[i] = record.signal_semaphore;
+        payload.record_callbacks[i].splice(payload.record_callbacks[i].end(), record.callbacks);
+        record.command_buffer = VK_NULL_HANDLE;
+        record.fence = VK_NULL_HANDLE;
+        record.signal_semaphore = VK_NULL_HANDLE;
         record.submitted = false;
-    // The quarantine table is bounded. If it is full, leak the handles rather
-    // than letting the destructor attempt to use an invalid device.
+    }
+    payload.timestamp_query_pool = timestamp_query_pool_;
+    payload.deferred_callbacks.splice(payload.deferred_callbacks.end(), deferred_callbacks_);
+    payload.completion_callbacks.splice(payload.completion_callbacks.end(), completion_callbacks_);
+    payload.ready_callbacks.splice(payload.ready_callbacks.end(), ready_callbacks_);
+    for (auto it = transfer_records_.begin(); it != transfer_records_.end();) {
+        auto current = it++;
+        const auto state = (*current)->state;
+        if (state != TransferRecord::State::Published &&
+            state != TransferRecord::State::Failed &&
+            state != TransferRecord::State::Cancelled) {
+            (*current)->state = TransferRecord::State::Quarantined;
+            payload.transfer_records.splice(payload.transfer_records.end(),
+                                             transfer_records_, current);
+        }
+    }
+    latest_signal_semaphore_ = VK_NULL_HANDLE;
+    timestamp_query_pool_ = VK_NULL_HANDLE;
+    timestamp_query_quarantined_ = true;
     device_ = VK_NULL_HANDLE;
     queue_ = VK_NULL_HANDLE;
     command_pool_ = VK_NULL_HANDLE;
+    quarantine_sink_->retain(quarantine_sink_->cookie, quarantine_payload_.release());
+    callback_cv_.notify_all();
+    (void)lock;
 }

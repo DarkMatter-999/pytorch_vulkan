@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <new>
 #if defined(__unix__) || defined(__APPLE__)
 #include <pthread.h>
 #endif
@@ -379,8 +380,11 @@ std::atomic<std::size_t> availability_probes{0};
 
 } // namespace pytorch_vulkan
 
-VulkanPlatform::VulkanPlatform(bool enable_validation)
-    : validation_enabled_(enable_validation), async_execution_enabled_([] {
+VulkanPlatform::VulkanPlatform(bool enable_validation,
+                               unsigned injected_staging_allocation_failures)
+    : validation_enabled_(enable_validation),
+      staging_allocation_failures_(injected_staging_allocation_failures),
+      async_execution_enabled_([] {
           // Async is the default. PYTORCH_VULKAN_ASYNC_EXECUTION=0 selects the
           // legacy synchronous execution mode; any other value, including
           // unset, leaves async enabled.
@@ -654,7 +658,7 @@ void VulkanPlatform::cleanup() noexcept {
         pipeline_cache_.release();
         return;
     }
-    std::scoped_lock lock(queue_mutex_);
+    std::unique_lock lock(queue_mutex_);
     if (device_ != VK_NULL_HANDLE) {
         if (device_lost() || vkDeviceWaitIdle(device_) != VK_SUCCESS) {
             std::scoped_lock quarantine_lock(quarantine_mutex);
@@ -692,10 +696,36 @@ void VulkanPlatform::cleanup() noexcept {
         }
     }
     // Compute owns device objects; wait for all queue work before destroying them.
-    compute_.reset();
-    pipeline_cache_.reset();
-    shader_registry_.reset();
+    const auto destroy_services = [&] {
+        compute_.reset();
+        pipeline_cache_.reset();
+        shader_registry_.reset();
+    };
+    if (execution_) {
+        lock.unlock();
+        const bool safe = execution_->teardown_with_services(destroy_services);
+        lock.lock();
+        if (!safe) {
+            // The platform device/pool must outlive quarantined execution resources.
+            compute_.release();
+            pipeline_cache_.release();
+            shader_registry_.release();
+            execution_.release();
+            staging_buffer_.release();
+            device_ = VK_NULL_HANDLE;
+            instance_ = VK_NULL_HANDLE;
+            command_pool_ = VK_NULL_HANDLE;
+            compute_queue_ = VK_NULL_HANDLE;
+            return;
+        }
+    } else {
+        destroy_services();
+    }
+    // Execution teardown drains legacy captures, which may reenter public
+    // completion APIs. It must not inherit the platform queue lock.
+    lock.unlock();
     execution_.reset();
+    lock.lock();
     staging_buffer_.reset();
     for (const PendingTransferResources &resources : pending_transfer_resources_) {
         if (resources.fence != VK_NULL_HANDLE) {
@@ -788,6 +818,16 @@ VkCommandPool VulkanPlatform::command_pool() const { return command_pool_; }
 
 VulkanExecutionContext &VulkanPlatform::execution_context() const {
     return *execution_;
+}
+
+bool VulkanPlatform::query_execution() const {
+    throw_if_device_lost();
+    return execution_->query_with_flush([&] { compute_->flush_recording_locked(); });
+}
+
+void VulkanPlatform::synchronize_execution() const {
+    throw_if_device_lost();
+    execution_->synchronize_with_flush([&] { compute_->flush_recording_locked(); });
 }
 
 VulkanShaderRegistry &VulkanPlatform::shader_registry() const {
@@ -1022,7 +1062,7 @@ bool VulkanPlatform::record_copy_in_training_step(
         return false;
     VulkanExecutionContext &context = execution_context();
     if (!context.recording())
-        context.begin("training");
+        context.begin_locked("training");
 
     const auto recording_start = std::chrono::steady_clock::now();
     const VkMemoryBarrier before_copy{
@@ -1077,7 +1117,7 @@ void VulkanPlatform::copy_buffers_sync(
     throw_if_device_lost();
     if (record_copy_in_training_step(copies))
         return;
-    compute_->flush_recording();
+    compute_->flush_recording_locked();
     const auto total_start = std::chrono::steady_clock::now();
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -1237,7 +1277,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
     if (record_copy_in_training_step(
             {{source, destination, source_offset, destination_offset, size}}))
         return;
-    compute_->flush_recording();
+    compute_->flush_recording_locked();
 
     const auto total_start = std::chrono::steady_clock::now();
     VkCommandBufferAllocateInfo allocation_info{};
@@ -1418,7 +1458,7 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
-    compute_->flush_recording();
+    compute_->flush_recording_locked();
     VkCommandBufferAllocateInfo allocation_info{};
     allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocation_info.commandPool = command_pool_;
@@ -1506,7 +1546,7 @@ std::unique_lock<std::mutex> VulkanPlatform::acquire_host_transfer_lock() const 
     std::unique_lock<std::mutex> lock(queue_mutex_);
     throw_if_device_lost();
     if (compute_ != nullptr)
-        compute_->flush_recording();
+        compute_->flush_recording_locked();
     const VkResult result = vkQueueWaitIdle(compute_queue_);
     transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
     if (result == VK_ERROR_DEVICE_LOST) {
@@ -1542,6 +1582,38 @@ VulkanBuffer &VulkanPlatform::staging_buffer(VkDeviceSize size) const {
     timing_.allocation.fetch_add(std::chrono::duration<double>(end - start).count(),
                                  std::memory_order_relaxed);
     return *staging_buffer_;
+}
+
+VulkanStagingTransfer VulkanPlatform::reserve_transfer(VkDeviceSize bytes) const {
+    if (bytes == 0)
+        throw std::invalid_argument(
+            "Vulkan exclusive staging size must be greater than zero");
+    throw_if_device_lost();
+    VulkanStagingTransfer transfer;
+    // The callback runs inside the context's single queue phase; it keeps compute
+    // submission counters correct, unlike the context's raw default submit.
+    transfer.reservation = execution_->reserve_transfer(
+        [this] { compute_->flush_recording_locked(); });
+    // Optional per-instance fixture seam (zero in production): the allocator
+    // dependency throws after a slot was granted and before any Vulkan
+    // allocation. Unwinding destroys the local transaction, whose reservation
+    // lease releases only its slot state (no driver call, no context access).
+    unsigned remaining = staging_allocation_failures_.load(std::memory_order_relaxed);
+    while (remaining != 0 && !staging_allocation_failures_.compare_exchange_weak(
+                                 remaining, remaining - 1,
+                                 std::memory_order_relaxed,
+                                 std::memory_order_relaxed)) {}
+    if (remaining != 0)
+        throw std::bad_alloc();
+    const auto start = std::chrono::steady_clock::now();
+    // On throw, `transfer.reservation` releases its slot with no driver call.
+    transfer.staging = std::make_shared<VulkanBuffer>(
+        *this, bytes,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    timing_.allocation.fetch_add(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+        std::memory_order_relaxed);
+    return transfer;
 }
 
 VulkanTimingSnapshot VulkanPlatform::timing_snapshot() const {

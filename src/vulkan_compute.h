@@ -259,6 +259,8 @@ class VulkanCompute final {
     void cancel_training_step() const;
     bool training_step_active() const;
     void flush_recording() const;
+    // Caller owns VulkanPlatform::queue_mutex(); device phase only.
+    void flush_recording_locked() const;
     void test_inject_recording_failure() const;
     void test_inject_pre_dispatch_failure() const;
 

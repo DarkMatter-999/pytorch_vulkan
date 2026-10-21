@@ -165,7 +165,11 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
     const bool destination_cpu = destination.device().is_cpu();
     const bool source_cpu = source.device().is_cpu();
     if (destination_cpu) {
-        TORCH_CHECK(at::has_internal_overlap(destination) == at::MemOverlap::No,
+        TORCH_CHECK(at::has_internal_overlap(destination) != at::MemOverlap::Yes,
+                    "Vulkan copy destination has internal overlap");
+    } else {
+        TORCH_CHECK(destination_layout.vulkan_layout.internal_overlap ==
+                        pytorch_vulkan::VulkanOverlap::No,
                     "Vulkan copy destination has internal overlap");
     }
     TORCH_CHECK(
@@ -189,9 +193,6 @@ void validate(const at::Tensor &destination, const at::Tensor &source,
     if (!destination_cpu && !source_cpu) {
         TORCH_CHECK(destination.device() == source.device(),
                     "Vulkan copy requires tensors on the same Vulkan device");
-        TORCH_CHECK(destination_layout.vulkan_layout.internal_overlap ==
-                        pytorch_vulkan::VulkanOverlap::No,
-                    "Vulkan copy destination has internal overlap");
         if (same_allocation(destination, source)) {
             const auto &dl = destination_layout.vulkan_layout;
             const auto &sl = source_layout.vulkan_layout;
@@ -409,6 +410,14 @@ at::Tensor vulkan_stack_copy(at::TensorList tensors, int64_t dim) {
 
 at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
                         bool non_blocking) {
+    if (destination.scalar_type() == at::kFloat &&
+        source.scalar_type() == at::kFloat &&
+        destination.sizes() != source.sizes()) {
+        // Match Tensor.copy_'s destination-shaped broadcast contract. Keep the
+        // expanded view alive through the recursive leaf invocation.
+        const at::Tensor expanded_source = source.expand(destination.sizes());
+        return copy_tensor(destination, expanded_source, non_blocking);
+    }
     if (destination.device().is_cpu() && !source.device().is_cpu() &&
         source.scalar_type() == at::kFloat &&
         destination.scalar_type() == source.scalar_type() &&
@@ -618,6 +627,12 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
 
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                                         const at::Tensor &source) {
+    if (destination.scalar_type() == at::kFloat &&
+        source.scalar_type() == at::kFloat &&
+        destination.sizes() != source.sizes()) {
+        const at::Tensor expanded_source = source.expand(destination.sizes());
+        return formatter_presentation_copy(destination, expanded_source);
+    }
     TORCH_CHECK(
         destination.device().is_cpu() && !source.device().is_cpu(),
         "Vulkan formatter presentation requires Vulkan source and CPU destination");

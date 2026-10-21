@@ -294,7 +294,7 @@ def test_vulkan_to_vulkan_to_copy_is_synchronous_and_allocates_new_storage(
 
 
 def test_non_contiguous_cpu_destination_copy_is_supported(vulkan_backend):
-    source = torch.empty((2, 3), dtype=torch.float32, device=vulkan_backend)
+    source = torch.arange(6, dtype=torch.float32).reshape(2, 3).to(vulkan_backend)
     destination = torch.empty((3, 2), dtype=torch.float32).t()
     assert not destination.is_contiguous()
     destination.copy_(source)
@@ -423,7 +423,7 @@ def test_mismatched_sizes_are_rejected(vulkan_backend):
         source = torch.ones((3,), dtype=torch.float32)
         destination.copy_(source)
 
-    _assert_transfer_rejected(transfer, "matching sizes")
+    _assert_transfer_rejected(transfer, "expanded size")
 
 
 def test_second_vulkan_device_is_rejected(vulkan_backend):

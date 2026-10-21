@@ -120,20 +120,14 @@ bool VulkanDeviceGuard::queryStream(const c10::Stream &stream) const {
     check_device(stream.device());
     const auto owner = platform();
     owner->throw_if_device_lost();
-    std::scoped_lock lock(owner->queue_mutex());
-    owner->throw_if_device_lost();
-    owner->compute().flush_recording();
-    return owner->execution_context().query_complete();
+    return owner->query_execution();
 }
 
 void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
     check_device(stream.device());
     const auto owner = platform();
     owner->throw_if_device_lost();
-    std::scoped_lock lock(owner->queue_mutex());
-    owner->throw_if_device_lost();
-    owner->compute().flush_recording();
-    owner->execution_context().synchronize();
+    owner->synchronize_execution();
 }
 
 c10::Device current_device() { return current; }

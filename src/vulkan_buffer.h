@@ -2,6 +2,11 @@
 
 #include "vulkan_platform.h"
 
+struct VulkanMappedMemoryRange {
+    VkDeviceSize offset;
+    VkDeviceSize size;
+};
+
 class VulkanBuffer {
   public:
     VulkanBuffer(
@@ -19,6 +24,10 @@ class VulkanBuffer {
     VkMemoryPropertyFlags memory_properties() const;
     void write(const void *data, VkDeviceSize size, VkDeviceSize offset = 0);
     void read(void *data, VkDeviceSize size, VkDeviceSize offset = 0) const;
+    static VulkanMappedMemoryRange mapped_range(VkDeviceSize offset,
+                                                VkDeviceSize size,
+                                                VkDeviceSize allocation_size,
+                                                VkDeviceSize atom_size);
 
   private:
     const VulkanPlatform *platform_ = nullptr;
@@ -26,5 +35,6 @@ class VulkanBuffer {
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkDeviceSize size_ = 0;
+    VkDeviceSize allocation_size_ = 0;
     VkMemoryPropertyFlags memory_properties_ = 0;
 };
