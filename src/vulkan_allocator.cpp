@@ -8,11 +8,14 @@
 
 #include <ATen/ATen.h>
 #include <ATen/EmptyTensor.h>
+#include <ATen/native/ResizeCommon.h>
+#include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <c10/core/Device.h>
 #include <c10/util/Exception.h>
 #include <torch/library.h>
 
 #include <limits>
+#include <algorithm>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -313,12 +316,90 @@ at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destinat
     return result;
 }
 
+const at::Tensor &vulkan_resize_(
+    const at::Tensor &self, c10::SymIntArrayRef size,
+    c10::optional<at::MemoryFormat> memory_format) {
+    TORCH_CHECK(self.layout() == at::kStrided,
+                "Vulkan resize_ supports only strided tensors");
+    TORCH_CHECK(self.scalar_type() == at::kFloat,
+                "Vulkan resize_ currently supports only float32 tensors");
+    auto *impl = self.unsafeGetTensorImpl();
+    std::vector<int64_t> concrete_size;
+    concrete_size.reserve(size.size());
+    for (const auto &dim : size) {
+        const auto value = dim.expect_int();
+        TORCH_CHECK(value >= 0, "Trying to create tensor with negative dimension ", value);
+        concrete_size.push_back(value);
+    }
+
+    // Match ResizeCommon.h's pinned named route: same-shape, no-format is a
+    // no-op; named shape changes and explicit formats reject before mutation.
+    if (self.has_names())
+        return at::native::resize_named_tensor_(self, concrete_size, memory_format);
+
+    const auto old_sizes = impl->sym_sizes();
+    if (old_sizes.equals(size) && !memory_format.has_value())
+        return self;
+
+    TORCH_CHECK(!memory_format || *memory_format != at::MemoryFormat::Preserve,
+                "Unsupported memory format", *memory_format);
+    if (memory_format == at::MemoryFormat::ChannelsLast)
+        TORCH_CHECK(size.size() == 4,
+                    "channels_last memory format requires a 4D tensor");
+    if (memory_format == at::MemoryFormat::ChannelsLast3d)
+        TORCH_CHECK(size.size() == 5,
+                    "channels_last_3d memory format requires a 5D tensor");
+
+    const auto storage_offset = impl->sym_storage_offset().expect_int();
+    TORCH_CHECK(storage_offset >= 0,
+                "Storage size calculation overflowed with sizes=", concrete_size);
+    const auto target_bytes = at::detail::computeStorageNbytesContiguous(
+        concrete_size, self.itemsize(), static_cast<size_t>(storage_offset));
+    const auto old_storage_nbytes = impl->unsafe_storage()
+        ? impl->unsafe_storage().sym_nbytes().maybe_as_int().value_or(-1)
+        : 0;
+
+    // The stock CPU implementation explicitly handles CPU and Meta, and asserts
+    // for PrivateUse1. Keep its metadata/byte-count rules, but route byte growth
+    // through the registered PrivateUse1 storage hook before touching metadata.
+    const bool new_shape_is_empty = std::any_of(
+        concrete_size.begin(), concrete_size.end(), [](int64_t dim) { return dim == 0; });
+    if (!new_shape_is_empty &&
+        static_cast<uint64_t>(target_bytes) > self.storage().nbytes()) {
+        at::GetPrivateUse1HooksInterface()->resizePrivateUse1Bytes(
+            self.storage(), static_cast<size_t>(target_bytes));
+    }
+
+    impl->set_sizes_contiguous(concrete_size);
+    if (memory_format.has_value())
+        impl->empty_tensor_restride(*memory_format);
+
+    if (C10_UNLIKELY(at::globalContext().deterministicAlgorithms() &&
+                     at::globalContext().deterministicFillUninitializedMemory() &&
+                     old_storage_nbytes >= 0)) {
+        const int64_t itemsize = static_cast<int64_t>(self.itemsize());
+        const int64_t old_storage_numel = old_storage_nbytes / itemsize;
+        const int64_t new_storage_numel = self.storage().nbytes() / itemsize;
+        if (new_storage_numel > old_storage_numel) {
+            auto tail = self.as_strided(
+                {new_storage_numel - old_storage_numel}, {1}, old_storage_numel);
+            at::native::fill_empty_deterministic_(tail);
+        }
+    }
+    return self;
+}
+
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("empty.memory_format", &vulkan_empty);
     m.impl("empty_strided", &vulkan_empty_strided);
     m.impl("_copy_from", &vulkan_copy_from);
+    // PyTorch's autograd wrapper and CompositeExplicitAutograd callers remain
+    // in use; PrivateUse1 needs its own leaf because the pinned native resize
+    // implementation asserts for non-CPU/non-Meta storage. Byte growth itself
+    // is delegated to PrivateUse1HooksInterface.
+    m.impl("resize_", TORCH_FN(vulkan_resize_));
 }
 
 REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &allocator);

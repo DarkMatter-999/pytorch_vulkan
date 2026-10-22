@@ -168,6 +168,8 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
     if (size == 0)
         return;
 
+    if (before_map_for_testing_)
+        before_map_for_testing_();
     const auto map_start = std::chrono::steady_clock::now();
     void *mapped = nullptr;
     if (vkMapMemory(device_, memory_, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
@@ -207,6 +209,8 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
     if (size == 0)
         return;
 
+    if (before_map_for_testing_)
+        before_map_for_testing_();
     const auto map_start = std::chrono::steady_clock::now();
     void *mapped = nullptr;
     if (vkMapMemory(device_, memory_, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {

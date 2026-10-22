@@ -1,9 +1,11 @@
 #include "vulkan_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_device_guard.h"
+#include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
 
+#include <ATen/ATen.h>
 #include <c10/core/Allocator.h>
 
 #include <cstdlib>
@@ -107,6 +109,45 @@ void test_release_after_submission(c10::Allocator &allocator) {
            "submitted allocation was not retired after synchronization");
 }
 
+void test_resize_retains_old_allocation_during_training_recording() {
+    auto &platform = *pytorch_vulkan::platform();
+    platform.synchronize_execution();
+    auto tensor = at::empty({6}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto storage = tensor.storage();
+    auto *storage_impl = storage.unsafeGetStorageImpl();
+    const auto baseline = platform.live_resource_snapshot().allocations;
+    platform.compute().begin_training_step();
+    try {
+        auto &old_buffer = pytorch_vulkan::allocation_buffer(storage.data_ptr());
+        vkCmdFillBuffer(platform.execution_context().command_buffer(),
+                        old_buffer.buffer(), 0, 6 * sizeof(float), 0x3f800000U);
+        tensor.resize_({12});
+        expect(tensor.storage().unsafeGetStorageImpl() == storage_impl &&
+                   storage.unsafeGetStorageImpl() == storage_impl,
+               "resize replaced StorageImpl instead of preserving aliases");
+        expect(platform.live_resource_snapshot().allocations == baseline + 1,
+               "old resize allocation was released before recorded commands completed");
+        platform.compute().end_training_step();
+    } catch (...) {
+        platform.compute().cancel_training_step();
+        throw;
+    }
+
+    expect(platform.live_resource_snapshot().allocations == baseline,
+           "old resize allocation was not retired after training completion");
+    auto &new_buffer = pytorch_vulkan::allocation_buffer(storage.data_ptr());
+    VulkanBuffer host(platform,
+                      6 * sizeof(float),
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    platform.copy_buffer_sync(new_buffer.buffer(), host.buffer(), 6 * sizeof(float));
+    float result[6]{};
+    host.read(result, sizeof(result));
+    for (float value : result)
+        expect(value == 1.0f,
+               "resize prefix copy did not consume the queued old-allocation write");
+}
+
 void test_bounded_reuse_after_submission(c10::Allocator &allocator) {
     auto &platform = *pytorch_vulkan::platform();
     auto &context = platform.execution_context();
@@ -190,6 +231,7 @@ int main() {
         test_oversized_allocation_rejected(*allocator);
         test_copy_rejected(*allocator);
         test_release_after_submission(*allocator);
+        test_resize_retains_old_allocation_during_training_recording();
         test_bounded_reuse_after_submission(*allocator);
         test_bounded_allocator_transition_stress(*allocator);
         test_explicit_shutdown_preserves_live_allocation(*allocator);

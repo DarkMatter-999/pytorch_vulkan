@@ -5,6 +5,7 @@
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_layout.h"
+#include "vulkan_synchronization.h"
 
 #include <ATen/MemoryOverlap.h>
 #include <c10/util/Exception.h>
@@ -211,42 +212,22 @@ void record_vulkan_copy(const VulkanPlatform &platform, VkBuffer source,
                         VkBuffer destination, VkDeviceSize size,
                         VkDeviceSize source_offset, VkDeviceSize destination_offset) {
     VkCommandBuffer command_buffer = platform.execution_context().command_buffer();
-    const VkMemoryBarrier before_copy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
-                                      VK_ACCESS_SHADER_WRITE_BIT,
-                                      VK_ACCESS_TRANSFER_READ_BIT};
-    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0, nullptr,
-                         0, nullptr);
+    vulkan_record_memory_barrier(command_buffer, vulkan_transfer_ready_spec());
     const VkBufferCopy copy_region{source_offset, destination_offset, size};
     vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
     platform.record_copy_command();
-    const VkMemoryBarrier after_copy{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
-                         nullptr, 0, nullptr);
+    vulkan_record_memory_barrier(command_buffer, vulkan_compute_ready_spec());
 }
 
 void record_vulkan_copies(const VulkanPlatform &platform, VkBuffer source,
                           VkBuffer destination,
                           const std::vector<VkBufferCopy> &regions) {
     VkCommandBuffer command_buffer = platform.execution_context().command_buffer();
-    const VkMemoryBarrier before_copy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
-                                      VK_ACCESS_SHADER_WRITE_BIT,
-                                      VK_ACCESS_TRANSFER_READ_BIT};
-    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0, nullptr,
-                         0, nullptr);
+    vulkan_record_memory_barrier(command_buffer, vulkan_transfer_ready_spec());
     vkCmdCopyBuffer(command_buffer, source, destination,
                     static_cast<uint32_t>(regions.size()), regions.data());
     platform.record_copy_command();
-    const VkMemoryBarrier after_copy{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
-                         nullptr, 0, nullptr);
+    vulkan_record_memory_barrier(command_buffer, vulkan_compute_ready_spec());
 }
 
 } // namespace
@@ -666,7 +647,10 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
     platform.record_explicit_transfer();
 
     if ((buffer.memory_properties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
-        platform.wait_for_transfer();
+        // Host read of a live device-visible Vulkan buffer holds the host-map
+        // guard THROUGH read/map/unmap (lock order transfer→queue→execution
+        // preserved; no transfer_mutex is taken after the queue acquisition).
+        auto host_access_lock = platform.acquire_host_transfer_lock();
         buffer.read(destination.data_ptr(), size, offset);
         return destination;
     }

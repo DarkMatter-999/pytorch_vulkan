@@ -5,6 +5,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
+#include "vulkan_synchronization.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1065,15 +1066,8 @@ bool VulkanPlatform::record_copy_in_training_step(
         context.begin_locked("training");
 
     const auto recording_start = std::chrono::steady_clock::now();
-    const VkMemoryBarrier before_copy{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
-        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
-    const VkPipelineStageFlags source_stages =
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
-    vkCmdPipelineBarrier(context.command_buffer(), source_stages,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before_copy, 0, nullptr,
-                         0, nullptr);
+    vulkan_record_memory_barrier(context.command_buffer(),
+                                 vulkan_transfer_ready_spec());
 
     for (std::size_t index = 0; index < copies.size();) {
         const auto source = copies[index].source;
@@ -1089,12 +1083,8 @@ bool VulkanPlatform::record_copy_in_training_step(
         copy_command_count_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    const VkMemoryBarrier after_copy{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(context.command_buffer(), VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
-                         nullptr, 0, nullptr);
+    vulkan_record_memory_barrier(context.command_buffer(),
+                                 vulkan_compute_ready_spec());
     timing_.recording.fetch_add(std::chrono::duration<double>(
                                     std::chrono::steady_clock::now() - recording_start)
                                     .count(),
@@ -1167,9 +1157,15 @@ void VulkanPlatform::copy_buffers_sync(
                 regions.push_back(
                     {copy.source_offset, copy.destination_offset, copy.size});
             }
+            // Standalone submissions bypass the execution semaphore chain, so the
+            // queue order and fence success alone are not the memory dependency;
+            // the shared transfer/consumer barriers are recorded here explicitly.
+            vulkan_record_memory_barrier(command_buffer, vulkan_transfer_ready_spec());
             vkCmdCopyBuffer(command_buffer, source, destination,
                             static_cast<uint32_t>(regions.size()), regions.data());
             copy_command_count_.fetch_add(1, std::memory_order_relaxed);
+            vulkan_record_memory_barrier(command_buffer, vulkan_compute_ready_spec());
+            vulkan_record_memory_barrier(command_buffer, vulkan_host_read_spec());
         }
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan bulk-copy command buffer");
@@ -1330,8 +1326,13 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         copy_region.srcOffset = source_offset;
         copy_region.dstOffset = destination_offset;
         copy_region.size = size;
+        // Standalone submission bypasses the execution semaphore chain: record the
+        // shared transfer barrier before the copy and consumer visibility after.
+        vulkan_record_memory_barrier(command_buffer, vulkan_transfer_ready_spec());
         vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy_region);
         copy_command_count_.fetch_add(1, std::memory_order_relaxed);
+        vulkan_record_memory_barrier(command_buffer, vulkan_compute_ready_spec());
+        vulkan_record_memory_barrier(command_buffer, vulkan_host_read_spec());
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan command buffer");
         timing_.recording.fetch_add(
@@ -1481,7 +1482,12 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check_result(vkBeginCommandBuffer(command_buffer, &begin_info),
                      "Could not begin Vulkan fill command buffer");
+        // Standalone submission bypasses the execution semaphore chain: record the
+        // shared transfer barrier before the fill and consumer visibility after.
+        vulkan_record_memory_barrier(command_buffer, vulkan_transfer_ready_spec());
         vkCmdFillBuffer(command_buffer, buffer, offset, size, data);
+        vulkan_record_memory_barrier(command_buffer, vulkan_compute_ready_spec());
+        vulkan_record_memory_barrier(command_buffer, vulkan_host_read_spec());
         check_result(vkEndCommandBuffer(command_buffer),
                      "Could not end Vulkan fill command buffer");
         VkSubmitInfo submit_info{};
@@ -1543,22 +1549,31 @@ void VulkanPlatform::wait_for_transfer() const {
 
 std::unique_lock<std::mutex> VulkanPlatform::acquire_host_transfer_lock() const {
     throw_if_device_lost();
+    const auto flush_locked = [&] {
+        throw_if_device_lost();
+        if (compute_ != nullptr)
+            compute_->flush_recording_locked();
+    };
+    const auto wait_idle_locked = [&] {
+        const VkResult result = vkQueueWaitIdle(compute_queue_);
+        transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
+        if (result == VK_ERROR_DEVICE_LOST) {
+            mark_device_lost(result);
+            throw VulkanDeviceLost(
+                "Vulkan device lost; execution state invalidated (VkResult -4)");
+        }
+        if (result != VK_SUCCESS) {
+            throw std::runtime_error(
+                "Could not wait for Vulkan transfer queue with VkResult " +
+                std::to_string(static_cast<int>(result)));
+        }
+    };
+    if (execution_ != nullptr)
+        return execution_->acquire_host_access(flush_locked, wait_idle_locked);
+
     std::unique_lock<std::mutex> lock(queue_mutex_);
-    throw_if_device_lost();
-    if (compute_ != nullptr)
-        compute_->flush_recording_locked();
-    const VkResult result = vkQueueWaitIdle(compute_queue_);
-    transfer_wait_count_.fetch_add(1, std::memory_order_relaxed);
-    if (result == VK_ERROR_DEVICE_LOST) {
-        mark_device_lost(result);
-        throw VulkanDeviceLost(
-            "Vulkan device lost; execution state invalidated (VkResult -4)");
-    }
-    if (result != VK_SUCCESS) {
-        throw std::runtime_error(
-            "Could not wait for Vulkan transfer queue with VkResult " +
-            std::to_string(static_cast<int>(result)));
-    }
+    flush_locked();
+    wait_idle_locked();
     return lock;
 }
 

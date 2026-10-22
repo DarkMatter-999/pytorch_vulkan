@@ -1,6 +1,7 @@
 #include "vulkan_execution.h"
 
 #include "vulkan_platform.h"
+#include "vulkan_synchronization.h"
 
 #include <array>
 #include <chrono>
@@ -521,7 +522,7 @@ void VulkanExecutionContext::submit_locked() {
                     .count());
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         const VkSemaphore wait_semaphore = latest_signal_semaphore_;
-        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        const VkPipelineStageFlags wait_stage = vulkan_execution_wait_stages();
         if (wait_semaphore != VK_NULL_HANDLE) {
             submit.waitSemaphoreCount = 1;
             submit.pWaitSemaphores = &wait_semaphore;
@@ -1211,6 +1212,65 @@ void VulkanExecutionContext::drain_ready_cleanup() noexcept {
         drain_ready_callbacks(false);
     } catch (...) {
         // drain_ready_callbacks persists the first callback exception before throwing.
+    }
+}
+
+std::unique_lock<std::mutex> VulkanExecutionContext::acquire_host_access(
+    const std::function<void()> &flush_locked,
+    const std::function<void()> &wait_idle_locked) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+            throw std::logic_error(
+                "completion callback cannot acquire host access while publishing");
+    }
+
+    for (;;) {
+        std::unique_lock<std::mutex> queue_lock(*queue_mutex_);
+        try {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                throw_if_invalidated(lock);
+                if (closing_)
+                    throw std::logic_error("Vulkan execution context is closing");
+            }
+            if (flush_locked) flush_locked();
+            if (wait_idle_locked) wait_idle_locked();
+            // Poll, retire, reset and any error recovery all remain serialized
+            // with every other use of the shared Vulkan queue/command pool.
+            poll_device_locked();
+        } catch (...) {
+            const std::exception_ptr original = std::current_exception();
+            queue_lock.unlock();
+            try { drain_ready_callbacks(true); } catch (...) {}
+            std::rethrow_exception(original);
+        }
+
+        queue_lock.unlock();
+        // This waits for a foreign publisher and its final capture release.
+        // Reentrant self-wait is rejected by drain_ready_callbacks(true).
+        drain_ready_callbacks(true);
+
+        queue_lock.lock();
+        bool repeat = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            throw_if_invalidated(lock);
+            if (closing_)
+                throw std::logic_error("Vulkan execution context is closing");
+            repeat = recording_ || callbacks_active_ || !ready_callbacks_.empty() ||
+                     !deferred_callbacks_.empty() || !completion_callbacks_.empty();
+            for (const auto &record : ring_)
+                repeat = repeat || record.submitted;
+            for (const auto &transfer : transfer_records_)
+                repeat = repeat || transfer->state == TransferRecord::State::Ready ||
+                         transfer->state == TransferRecord::State::Failed ||
+                         transfer->state == TransferRecord::State::Cancelled ||
+                         transfer->state == TransferRecord::State::Publishing;
+        }
+        if (!repeat)
+            return queue_lock;
+        queue_lock.unlock();
     }
 }
 

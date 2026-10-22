@@ -3,6 +3,7 @@
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
 #include "vulkan/descriptor_arena.h"
+#include "vulkan_synchronization.h"
 #include "vulkan_tensor_layout.h"
 
 #include <cstdint>
@@ -26,11 +27,16 @@
 namespace {
 
 struct FakeExecution {
+    struct WaitCapture {
+        VkSemaphore wait = VK_NULL_HANDLE;
+        VkPipelineStageFlags wait_stage = 0;
+    };
     std::mutex mutex;
     std::condition_variable cv;
     std::unordered_map<VkFence, bool> fences;
     std::unordered_map<VkFence, VkResult> fence_overrides;
     std::vector<VkFence> submitted_fences;
+    std::vector<WaitCapture> wait_captures;
     std::deque<VkResult> statuses;
     VkResult end_result = VK_SUCCESS;
     VkResult submit_result = VK_SUCCESS;
@@ -38,6 +44,7 @@ struct FakeExecution {
     VkResult wait_result = VK_SUCCESS;
     std::function<void()> status_hook;
     std::function<void()> wait_hook;
+    std::function<void()> idle_hook;
     bool block_wait = false;
     bool release_wait = false;
     unsigned status_calls = 0;
@@ -125,11 +132,18 @@ VkResult fake_reset_fences(void *cookie, VkDevice, uint32_t count, const VkFence
     for (uint32_t i = 0; i < count; ++i) fake.fences[fences[i]] = false;
     return VK_SUCCESS;
 }
-VkResult fake_submit(void *cookie, VkQueue, uint32_t, const VkSubmitInfo *, VkFence fence) {
+VkResult fake_submit(void *cookie, VkQueue, uint32_t, const VkSubmitInfo *submit,
+                     VkFence fence) {
     auto &fake = *static_cast<FakeExecution *>(cookie);
     std::lock_guard<std::mutex> lock(fake.mutex);
     ++fake.submit_calls;
     fake.submitted_fences.push_back(fence);
+    FakeExecution::WaitCapture capture;
+    if (submit->waitSemaphoreCount >= 1) {
+        capture.wait = submit->pWaitSemaphores[0];
+        capture.wait_stage = submit->pWaitDstStageMask[0];
+    }
+    fake.wait_captures.push_back(capture);
     return fake.submit_result;
 }
 VkResult fake_fence_status(void *cookie, VkDevice, VkFence fence) {
@@ -169,11 +183,18 @@ VkResult fake_wait_fences(void *cookie, VkDevice, uint32_t count, const VkFence 
 }
 VkResult fake_queue_idle(void *cookie, VkQueue) {
     auto &fake = *static_cast<FakeExecution *>(cookie);
-    std::lock_guard<std::mutex> lock(fake.mutex);
-    ++fake.idle_calls;
-    if (fake.idle_result == VK_SUCCESS)
-        for (auto &fence : fake.fences) fence.second = true;
-    return fake.idle_result;
+    std::function<void()> hook;
+    VkResult result;
+    {
+        std::lock_guard<std::mutex> lock(fake.mutex);
+        ++fake.idle_calls;
+        if (fake.idle_result == VK_SUCCESS)
+            for (auto &fence : fake.fences) fence.second = true;
+        hook = fake.idle_hook;
+        result = fake.idle_result;
+    }
+    if (hook) hook();
+    return result;
 }
 void fake_quarantine(void *cookie, VulkanExecutionQuarantine *payload) noexcept {
     auto &fake = *static_cast<FakeExecution *>(cookie);
@@ -242,6 +263,8 @@ void expect(bool condition, const char *message) {
         throw std::runtime_error(message);
     }
 }
+
+bool other_thread_can_lock(std::mutex &mutex);
 
 template <typename Function>
 void expect_rejected(Function &&function, const char *message) {
@@ -448,6 +471,38 @@ void test_fake_transfer_record_success_only_publication() {
            "confirmed transfer did not publish once then release its owner");
     expect(released_during_publication == 0,
            "transfer owner was released before publication completed");
+}
+
+void test_fake_host_access_publishes_work_completed_by_own_flush() {
+    FakeExecution fake;
+    auto ops = fake_ops(fake);
+    auto sink = fake_sink(fake);
+    std::mutex queue_mutex;
+    std::mutex transfer_mutex;
+    VulkanExecutionContext context(fake_handle<VkDevice>(21), fake_handle<VkQueue>(22),
+                                   fake_handle<VkCommandPool>(23), ops, sink, queue_mutex);
+    fake.status_hook = [&] {
+        expect(!other_thread_can_lock(queue_mutex),
+               "host-access completion poll escaped shared queue serialization");
+    };
+    std::atomic<int> owner_released{0};
+    std::atomic<int> publications{0};
+    auto owner = std::shared_ptr<void>(new int(1), [&](void *value) {
+        delete static_cast<int *>(value);
+        ++owner_released;
+    });
+    auto reservation = context.reserve_transfer();
+    context.begin();
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        context.defer_transfer(std::move(reservation), {owner}, [&] { ++publications; });
+    }
+    owner.reset();
+    auto guard = context.acquire_host_access(
+        [&] { context.submit_locked(); }, [&] { expect(!other_thread_can_lock(queue_mutex), "host wait not serialized"); fake.signal_all(); });
+    expect(guard.owns_lock() && publications == 1 && owner_released == 1,
+           "host guard returned before its flush publication and owner release");
+    expect(other_thread_can_lock(transfer_mutex), "host publication retained transfer lock");
 }
 
 void test_fake_transfer_cancel_and_failed_submit_never_publish() {
@@ -898,6 +953,171 @@ class JoinedFakeWorkers final {
     std::exception_ptr error_;
     std::vector<std::thread> threads_;
 };
+
+void test_fake_host_access_waits_for_foreign_publication_and_capture_release() {
+    for (const bool pause_capture : {false, true}) {
+        ControlledGate gate;
+        FakeExecution fake;
+        auto ops = fake_ops(fake);
+        auto sink = fake_sink(fake);
+        std::mutex queue_mutex;
+        std::mutex transfer_mutex;
+        VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                       fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+        JoinedFakeWorkers workers(gate, fake);
+        std::atomic<bool> locks_available{false};
+        std::atomic<bool> acquired{false};
+        std::atomic<int> destroyed{0};
+        auto pause = [&] {
+            locks_available = other_thread_can_lock(queue_mutex) &&
+                              other_thread_can_lock(transfer_mutex);
+            gate.pause();
+        };
+        std::shared_ptr<void> owner(new int(1), [&](void *value) {
+            delete static_cast<int *>(value);
+            ++destroyed;
+            if (pause_capture) pause();
+        });
+        context.begin();
+        context.defer_destruction([&, owner] {
+            if (!pause_capture) pause();
+        });
+        owner.reset();
+        context.submit();
+        fake.signal_all();
+        workers.spawn([&] { context.retire_completed(); });
+        gate.wait_entered();
+        workers.spawn([&] {
+            auto guard = context.acquire_host_access([] {}, [&] { fake.signal_all(); });
+            acquired = guard.owns_lock();
+        });
+        {
+            std::unique_lock<std::mutex> lock(fake.mutex);
+            fake.cv.wait(lock, [&] { return fake.pump_waits != 0 || fake.worker_failed; });
+            expect(!fake.worker_failed, "host access failed before foreign-pump wait");
+        }
+        expect(!acquired, "host access returned while foreign publication/capture release was paused");
+        expect(locks_available, "foreign publication/capture release retained a backend lock");
+        gate.open();
+        workers.join();
+        expect(acquired && destroyed == 1,
+               "host access did not wait through last capture release");
+    }
+}
+
+void test_fake_host_access_rechecks_intervening_producer() {
+    FakeExecution fake;
+    auto ops = fake_ops(fake);
+    auto sink = fake_sink(fake);
+    std::mutex queue_mutex;
+    VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                   fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+    int flushes = 0;
+    context.begin();
+    context.defer_destruction([&] {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        context.begin_locked();
+    });
+    auto guard = context.acquire_host_access(
+        [&] {
+            ++flushes;
+            if (context.recording()) context.submit_locked();
+        }, [&] { fake.signal_all(); });
+    expect(guard.owns_lock() && flushes == 2 && !context.recording(),
+           "host access returned after a publication-admitted producer without rechecking it");
+}
+
+void test_fake_host_access_error_recovery_keeps_queue_serialized() {
+    FakeExecution fake;
+    auto ops = fake_ops(fake);
+    auto sink = fake_sink(fake);
+    std::mutex queue_mutex;
+    VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                   fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+    context.begin();
+    context.submit();
+    fake.statuses = {VK_ERROR_OUT_OF_HOST_MEMORY};
+    std::atomic<bool> recovery_queue_held{false};
+    fake.idle_hook = [&] { recovery_queue_held = !other_thread_can_lock(queue_mutex); };
+    bool failed = false;
+    try {
+        (void)context.acquire_host_access([] {}, [&] { fake.signal_all(); });
+    } catch (const std::runtime_error &) {
+        failed = true;
+    }
+    expect(failed && recovery_queue_held,
+           "fence-error recovery was not serialized by the shared queue mutex");
+}
+
+void test_fake_host_access_reentry_and_sticky_callback_error() {
+    {
+        FakeExecution fake;
+        auto ops = fake_ops(fake);
+        auto sink = fake_sink(fake);
+        std::mutex queue_mutex;
+        VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                       fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+        int reentry_rejected = 0;
+        context.begin();
+        context.defer_destruction([&] {
+            try {
+                (void)context.acquire_host_access([] {}, [] {});
+            } catch (const std::logic_error &) {
+                ++reentry_rejected;
+            }
+        });
+        auto guard = context.acquire_host_access(
+            [&] { context.submit_locked(); }, [&] { fake.signal_all(); });
+        expect(guard.owns_lock() && reentry_rejected == 1,
+               "same-thread host-access reentry did not reject without deadlocking");
+    }
+    {
+        FakeExecution fake;
+        auto ops = fake_ops(fake);
+        auto sink = fake_sink(fake);
+        std::mutex queue_mutex;
+        VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                       fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+        int calls = 0;
+        context.begin();
+        context.defer_destruction([&] {
+            ++calls;
+            throw std::runtime_error("sticky host publication error");
+        });
+        const auto acquire = [&] {
+            return context.acquire_host_access(
+                [&] { if (context.recording()) context.submit_locked(); },
+                [&] { fake.signal_all(); });
+        };
+        bool first_failed = false;
+        try { (void)acquire(); }
+        catch (const std::runtime_error &) { first_failed = true; }
+        bool repeated_failed = false;
+        try { (void)acquire(); }
+        catch (const std::runtime_error &) { repeated_failed = true; }
+        expect(first_failed && repeated_failed && calls == 1 &&
+                   other_thread_can_lock(queue_mutex),
+               "host access lost sticky callback error or retained queue on failure");
+    }
+    {
+        FakeExecution fake;
+        auto ops = fake_ops(fake);
+        auto sink = fake_sink(fake);
+        std::mutex queue_mutex;
+        VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                       fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+        context.teardown_with_services([] {});
+        int callbacks = 0;
+        bool closing_rejected = false;
+        try {
+            (void)context.acquire_host_access([&] { ++callbacks; }, [&] { ++callbacks; });
+        } catch (const std::logic_error &) {
+            closing_rejected = true;
+        }
+        expect(closing_rejected && callbacks == 0,
+               "host access did not explicitly reject a closing execution context");
+    }
+}
 
 void test_fake_transfer_reservation_capacity_and_shutdown_lifetime() {
     FakeExecution fake;
@@ -1510,6 +1730,87 @@ void test_fake_flush_failure_preserves_error_and_safe_cleanup() {
     }
 }
 
+// The execution-context submission semaphore must wait at every device stage
+// that can consume a prior submission on this queue: compute and transfer.
+// HOST is deliberately absent; host completion is ordered by the fence wait and
+// the host-access exclusion, never by the submit wait mask.
+void test_fake_submit_waits_for_compute_and_transfer() {
+    FakeExecution fake;
+    auto ops = fake_ops(fake);
+    auto sink = fake_sink(fake);
+    std::mutex queue_mutex;
+    VulkanExecutionContext context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                                   fake_handle<VkCommandPool>(3), ops, sink, queue_mutex);
+    context.begin();
+    context.submit();
+    context.begin();
+    context.submit();
+    expect(fake.wait_captures.size() == 2, "fake submit did not capture both submissions");
+    expect(fake.wait_captures[0].wait == VK_NULL_HANDLE && fake.wait_captures[0].wait_stage == 0,
+           "first submission waited on a nonexistent semaphore");
+    const auto &chained = fake.wait_captures[1];
+    expect(chained.wait != VK_NULL_HANDLE,
+           "second submission did not wait on the prior signal semaphore");
+    const VkPipelineStageFlags expected_wait_stages =
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    expect(chained.wait_stage == expected_wait_stages,
+           "submission wait mask did not cover both compute and transfer consumers");
+    expect((chained.wait_stage & VK_PIPELINE_STAGE_HOST_BIT) == 0,
+           "submission wait mask included the HOST stage");
+}
+
+// Pure descriptor tests: the expected masks are written here as independent
+// literal Vulkan requirements (Vulkan 1.3 §7.9 same-queue availability and
+// visibility), never derived from the helpers under test. No fake
+// VkCommandBuffer is ever passed to real Vulkan.
+void test_shared_barrier_descriptors() {
+    const VkPipelineStageFlags compute = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    const VkPipelineStageFlags transfer = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const VkPipelineStageFlags host = VK_PIPELINE_STAGE_HOST_BIT;
+    const VkAccessFlags shader_write = VK_ACCESS_SHADER_WRITE_BIT;
+    const VkAccessFlags shader_read = VK_ACCESS_SHADER_READ_BIT;
+    const VkAccessFlags shader_rw = shader_read | shader_write;
+    const VkAccessFlags transfer_write = VK_ACCESS_TRANSFER_WRITE_BIT;
+    const VkAccessFlags transfer_read = VK_ACCESS_TRANSFER_READ_BIT;
+    const VkAccessFlags transfer_rw = transfer_read | transfer_write;
+    const VkAccessFlags host_read = VK_ACCESS_HOST_READ_BIT;
+
+    const VkPipelineStageFlags expected_wait = compute | transfer;
+    expect(vulkan_execution_wait_stages() == expected_wait,
+           "execution submit wait stages diverged from literal compute|transfer");
+    expect((vulkan_execution_wait_stages() & host) == 0,
+           "execution submit wait stages included the HOST stage");
+    expect((expected_wait & host) == 0,
+           "test literal itself must not admit a HOST wait stage");
+
+    VulkanMemoryBarrierSpec transfer_ready =
+        vulkan_transfer_ready_spec();
+    const VulkanMemoryBarrierSpec expected_transfer{
+        compute | transfer, shader_write | transfer_write, transfer, transfer_rw};
+    expect(transfer_ready.src_stage == expected_transfer.src_stage &&
+               transfer_ready.src_access == expected_transfer.src_access &&
+               transfer_ready.dst_stage == expected_transfer.dst_stage &&
+               transfer_ready.dst_access == expected_transfer.dst_access,
+           "transfer-ready barrier diverged from literal compute|transfer -> transfer");
+
+    transfer_ready = vulkan_compute_ready_spec();
+    const VulkanMemoryBarrierSpec expected_compute{
+        compute | transfer, shader_write | transfer_write, compute, shader_rw};
+    expect(transfer_ready.src_stage == expected_compute.src_stage &&
+               transfer_ready.src_access == expected_compute.src_access &&
+               transfer_ready.dst_stage == expected_compute.dst_stage &&
+               transfer_ready.dst_access == expected_compute.dst_access,
+           "compute-ready barrier diverged from literal compute|transfer -> compute");
+
+    transfer_ready = vulkan_host_read_spec();
+    const VulkanMemoryBarrierSpec expected_host{transfer, transfer_write, host, host_read};
+    expect(transfer_ready.src_stage == expected_host.src_stage &&
+               transfer_ready.src_access == expected_host.src_access &&
+               transfer_ready.dst_stage == expected_host.dst_stage &&
+               transfer_ready.dst_access == expected_host.dst_access,
+           "host-read barrier diverged from literal transfer -> HOST readback");
+}
+
 void test_fake_platform_boundary_uses_one_locked_device_phase() {
     FakeExecution fake;
     auto ops = fake_ops(fake);
@@ -1800,6 +2101,226 @@ void test_platform_staging_allocation_rollback() {
     context.synchronize();
     expect(published_after == 2,
            "post-rollback attached transfers did not publish exactly once each");
+}
+
+// Host transfer acquisition that precedes any real host map must finish an
+// earlier READY publication (including holder release) outside the queue lock
+// before returning held. Genuine RED against pre-drain absence: without the
+// acquisition pump the publication stays unpumped after device-idle proof.
+void test_host_acquisition_publishes_earlier_ready_transfer_outside_queue(
+    VulkanPlatform &platform) {
+    VulkanExecutionContext &context = platform.execution_context();
+    int published = 0;
+    int releases = 0;
+    std::weak_ptr<VulkanBuffer> weak_staging;
+    {
+        auto transfer = platform.reserve_transfer(sizeof(uint32_t));
+        expect(transfer.staging != nullptr,
+               "ready publication fixture got no exclusive staging");
+        const uint32_t pattern = 0x21524110U;
+        transfer.staging->write(&pattern, sizeof(pattern));
+        weak_staging = transfer.staging;
+        std::shared_ptr<int> owner(new int(7),
+                                   [&](int *value) { delete value; ++releases; });
+        context.begin();
+        {
+            std::lock_guard<std::mutex> lock(platform.queue_mutex());
+            context.defer_transfer(std::move(transfer.reservation), {transfer.staging, owner},
+                                   [&] {
+                                       bool queue_lock_free =
+                                           other_thread_can_lock(platform.queue_mutex());
+                                       expect(queue_lock_free,
+                                              "ready publication ran while the queue lock "
+                                              "was held");
+                                       ++published;
+                                   });
+        }
+        transfer.staging.reset();
+        owner.reset();
+        context.submit();
+    }
+    // Queue idle proves submitted-work completion without pumping publications.
+    platform.wait_for_transfer();
+    // A second acquisition grants the host guard only after the completed
+    // publication has run entirely outside every lock.
+    platform.wait_for_transfer();
+    expect(published == 1, "host acquisition did not finish an earlier ready "
+                           "publication before granting the guard");
+    expect(releases == 1, "host acquisition double-released or lost the owner");
+    expect(weak_staging.expired(), "host acquisition kept exclusive staging alive "
+                                   "after its publication");
+    expect(other_thread_can_lock(platform.queue_mutex()),
+           "host map guard was not released after acquisition returned");
+}
+
+// Deterministic host-map guard witness (design §5): the production formatter
+// presentation read holds acquire_host_transfer_lock() THROUGH read/map/unmap.
+// Integrated GPUs cannot allocate host-visible tensor storage, so this witness
+// drives the same guard/map pairing at the buffer seam: the before-map hook
+// joins a foreign thread that try_locks the queue mutex inside the real map
+// window; the held guard must exclude it and be free again after unmap.
+void test_formatter_presentation_map_guard_excludes_foreign_queue_lock(
+    VulkanPlatform &platform) {
+    constexpr VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const float seeded[] = {11.0F, 31.0F};
+    VulkanBuffer buffer(platform, sizeof(seeded), host);
+    buffer.write(seeded, sizeof(seeded));
+    bool entered = false;
+    bool excluded = false;
+    buffer.set_before_map_for_testing([&] {
+        entered = true;
+        excluded = !other_thread_can_lock(platform.queue_mutex());
+    });
+    float actual[] = {0.0F, 0.0F};
+    {
+        auto guard = platform.acquire_host_transfer_lock();
+        buffer.read(actual, sizeof(actual));
+        // The guard is still held through unmap: prove exclusion again outside
+        // the hook, then release exactly where the production read returns.
+        expect(excluded && !other_thread_can_lock(platform.queue_mutex()),
+               "guarded map window admitted a foreign queue lock before read "
+               "returned");
+        guard.unlock();
+    }
+    buffer.set_before_map_for_testing({});
+    expect(entered, "before-map observation never ran");
+    expect(excluded, "foreign thread took the queue lock inside the held map window");
+    expect(actual[0] == seeded[0] && actual[1] == seeded[1],
+           "guarded host map did not read the seeded bytes");
+    expect(other_thread_can_lock(platform.queue_mutex()),
+           "map guard was not released after unmap");
+}
+
+// Tiny actual-Vulkan owned-staging COPY witness (not an empty submission):
+// CPU-seeded F32 goes through owned upload staging → device buffer, one
+// recorded compute→copy→copy→compute command sequence, a distinct
+// semaphore-chained transfer submission, and a standalone sync-copy bridge;
+// the download staging publishes to the CPU destination only after confirmed
+// completion. No intermediate host wait hides the ordering; the two-slot
+// reservation cap is exercised by the download grant (it may only be granted
+// once the earlier publication releases its slot).
+void test_platform_owned_staging_copy_witness(VulkanPlatform &platform) {
+    VulkanExecutionContext &context = platform.execution_context();
+    context.wait();
+    platform.reset_execution_counters();
+    const pytorch_vulkan::VulkanTensorLayout layout{
+        1, {4}, {1}, 0, sizeof(float), 0, 4, 0, 4 * sizeof(float),
+        4 * sizeof(float), pytorch_vulkan::VulkanOverlap::No};
+    const float seed_lhs[] = {3.0F, 5.0F, 7.0F, 9.0F};
+    const float seed_addend[] = {1.0F, 2.0F, 3.0F, 4.0F};
+
+    VulkanBuffer lhs(platform, sizeof(seed_lhs));   // device-local data plane
+    VulkanBuffer addend(platform, sizeof(seed_addend));
+    VulkanBuffer sum(platform, sizeof(seed_lhs));
+    VulkanBuffer a(platform, sizeof(seed_lhs));
+    VulkanBuffer b(platform, sizeof(seed_lhs));
+    VulkanBuffer result(platform, sizeof(seed_lhs));
+
+    // Standalone sync-copy bridge in its own fenced command buffer (outside
+    // any execution recording): the addend reaches device memory before the
+    // recorded sequence is built. The reservation lease is dropped right
+    // after the fenced copy: an unattached reservation releases its slot only
+    // when the lease is destroyed.
+    {
+        auto bridge = platform.reserve_transfer(sizeof(seed_addend));
+        expect(bridge.staging != nullptr, "witness bridge got no exclusive staging");
+        bridge.staging->write(seed_addend, sizeof(seed_addend));
+        platform.copy_buffer_sync(bridge.staging->buffer(), addend.buffer(),
+                                  sizeof(seed_addend));
+    }
+
+    // Slots 1 and 2: owned upload staging attached BEFORE owner-referencing
+    // commands in the recorded phases, and released only by publication.
+    auto upload_lhs = platform.reserve_transfer(sizeof(seed_lhs));
+    auto upload_addend = platform.reserve_transfer(sizeof(seed_addend));
+    std::weak_ptr<VulkanBuffer> weak_upload_lhs = upload_lhs.staging;
+    std::weak_ptr<VulkanBuffer> weak_upload_addend = upload_addend.staging;
+    upload_lhs.staging->write(seed_lhs, sizeof(seed_lhs));
+    upload_addend.staging->write(seed_addend, sizeof(seed_addend));
+
+    int upload_publish = 0;
+    int download_publish = 0;
+    int releases = 0;
+    std::weak_ptr<VulkanBuffer> weak_download;
+    float witness[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+
+    // Phase 1: one recorded command sequence — compute add → copy A→B →
+    // copy B→C → compute add again.
+    platform.compute().begin_training_step();
+    {
+        std::lock_guard<std::mutex> lock(platform.queue_mutex());
+        context.defer_transfer(std::move(upload_lhs.reservation), {upload_lhs.staging},
+                               [&] { ++upload_publish; });
+        context.defer_transfer(std::move(upload_addend.reservation),
+                               {upload_addend.staging}, [&] { ++upload_publish; });
+    }
+    platform.copy_buffers_sync({{upload_lhs.staging->buffer(), lhs.buffer(),
+                                 0, 0, sizeof(seed_lhs)}});
+    platform.compute().add(lhs.buffer(), layout, addend.buffer(), layout,
+                           sum.buffer(), layout);
+    platform.copy_buffers_sync(
+        {{sum.buffer(), a.buffer(), 0, 0, sizeof(seed_lhs)}});
+    platform.copy_buffers_sync(
+        {{a.buffer(), b.buffer(), 0, 0, sizeof(seed_lhs)}});
+    platform.compute().add(b.buffer(), layout, addend.buffer(), layout,
+                           result.buffer(), layout);
+    platform.compute().end_training_step();
+    upload_lhs.staging.reset();
+    upload_addend.staging.reset();
+
+    // Phase 2: distinct semaphore-chained submission. The transfer consumer of
+    // compute output only waits the previous signal at COMPUTE_SHADER|TRANSFER
+    // stages; the download grant obeys the same two-slot reservation cap the
+    // uploads already occupy.
+    platform.compute().begin_training_step();
+    auto download = platform.reserve_transfer(sizeof(witness));
+    weak_download = download.staging;
+    {
+        std::lock_guard<std::mutex> lock(platform.queue_mutex());
+        context.defer_transfer(std::move(download.reservation),
+                               {download.staging,
+                                std::shared_ptr<int>(new int(7),
+                                                     [&](int *value) {
+                                                         delete value; ++releases;
+                                                     })},
+                               [&] {
+                                   bool queue_lock_free =
+                                       other_thread_can_lock(platform.queue_mutex());
+                                   expect(queue_lock_free,
+                                          "witness publication ran while the queue "
+                                          "lock was held");
+                                   download.staging->read(witness, sizeof(witness));
+                                   ++download_publish;
+                               });
+    }
+    platform.copy_buffers_sync({{result.buffer(), download.staging->buffer(),
+                                 0, 0, sizeof(witness)}});
+    platform.compute().end_training_step();
+    download.staging.reset();
+
+    context.synchronize();
+    const float expected[] = {seed_lhs[0] + 2.0F * seed_addend[0],
+                              seed_lhs[1] + 2.0F * seed_addend[1],
+                              seed_lhs[2] + 2.0F * seed_addend[2],
+                              seed_lhs[3] + 2.0F * seed_addend[3]};
+    for (int i = 0; i < 4; ++i)
+        expect(witness[i] == expected[i],
+               "owned staging copy witness did not move the seeded values in GPU order");
+    expect(upload_publish == 2, "upload publications did not complete exactly once");
+    expect(download_publish == 1, "download publication did not complete exactly once");
+    expect(releases == 1, "witness transfer owner was not released exactly once");
+    expect(weak_upload_lhs.expired() && weak_upload_addend.expired(),
+           "upload staging outlived its publication");
+    expect(weak_download.expired(), "download staging outlived its publication");
+    expect(context.pending_count() == 0, "witness left pending transfer work");
+    expect(context.query_complete(), "witness chain did not drain to completion");
+    expect(platform.compute_submitted_count() == 2,
+           "witness did not exercise exactly the two chained submissions");
+    // Five copies move the data: one standalone fenced bridge (addend) plus
+    // four recorded copies (lhs upload, sum→a, a→b, result→download staging).
+    expect(platform.copy_command_count() == 5,
+    "witness copy commands were not executed exactly as designed");
 }
 
 void test_nonblocking_completion_query(VulkanPlatform &platform) {
@@ -2602,8 +3123,11 @@ int main(int argc, char **argv) {
                     std::chrono::steady_clock::now() - start).count() << "s\n" << std::flush;
             };
             run("retirement", test_controlled_execution_ops_retirement);
+            run("submit-wait-mask", test_fake_submit_waits_for_compute_and_transfer);
+            run("barrier-specs", test_shared_barrier_descriptors);
             run("errors", test_controlled_cleanup_errors_are_persistent_and_nonblocking_to_cleanup);
             run("transfer-success", test_fake_transfer_record_success_only_publication);
+            run("host-access-publication", test_fake_host_access_publishes_work_completed_by_own_flush);
             run("transfer-cancel-errors", test_fake_transfer_cancel_and_failed_submit_never_publish);
             run("transfer-fence-errors", test_fake_transfer_fence_error_recovery_and_quarantine);
             run("transfer-reservations", test_fake_transfer_reservation_capacity_and_shutdown_lifetime);
@@ -2625,6 +3149,10 @@ int main(int argc, char **argv) {
             run("F6-faults", test_fake_faults_retain_whole_payload_in_instance_sink);
             run("F7", test_fake_callback_handoff_is_nonthrowing_and_preserves_owners);
             run("paused-cleanup", test_fake_paused_callback_and_last_capture_visibility);
+            run("host-access-foreign-pump", test_fake_host_access_waits_for_foreign_publication_and_capture_release);
+            run("host-access-recheck", test_fake_host_access_rechecks_intervening_producer);
+            run("host-access-recovery-lock", test_fake_host_access_error_recovery_keeps_queue_serialized);
+            run("host-access-reentry-errors", test_fake_host_access_reentry_and_sticky_callback_error);
             run("boundary-admission", test_fake_boundary_excludes_producer_until_device_cutoff);
             run("error-next-batch", test_fake_persistent_error_does_not_skip_next_safe_cleanup);
             run("flush-error-cleanup", test_fake_flush_failure_preserves_error_and_safe_cleanup);
@@ -2666,6 +3194,20 @@ int main(int argc, char **argv) {
                        [&] { test_platform_exclusive_staging_reservation(platform); });
             run_native("test_platform_staging_allocation_rollback",
                        [] { test_platform_staging_allocation_rollback(); });
+            run_native(
+                "test_host_acquisition_publishes_earlier_ready_transfer_outside_queue",
+                [&] {
+                    test_host_acquisition_publishes_earlier_ready_transfer_outside_queue(
+                        platform);
+                });
+            run_native(
+                "test_formatter_presentation_map_guard_excludes_foreign_queue_lock",
+                [&] {
+                    test_formatter_presentation_map_guard_excludes_foreign_queue_lock(
+                        platform);
+                });
+            run_native("test_platform_owned_staging_copy_witness",
+                       [&] { test_platform_owned_staging_copy_witness(platform); });
             run_native("test_wait_for_transfer_flushes_recording",
                        [&] { test_wait_for_transfer_flushes_recording(platform); });
             run_native("test_query_retains_callbacks_until_all_submissions",

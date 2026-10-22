@@ -20,6 +20,207 @@ def test_copy_broadcasts_into_strided_destination(vk):
     torch.testing.assert_close(base.cpu(), source.expand(2, 3).t(), rtol=0, atol=0)
 
 
+def test_resize_growth_preserves_storage_alias(vk):
+    base = torch.arange(6, dtype=torch.float32).to(vk)
+    alias = base[1:4]
+    storage_id = base.untyped_storage()._cdata
+    base.resize_(12)
+    assert base.untyped_storage()._cdata == storage_id
+    assert alias.untyped_storage()._cdata == storage_id
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(alias.cpu(), torch.tensor([1.0, 2.0, 3.0]))
+    torch.testing.assert_close(base[:6].cpu(), torch.arange(6, dtype=torch.float32))
+
+
+def test_resize_out_factories_preserve_output_identity(vk):
+    for factory, value in ((torch.full, 2.5), (torch.zeros, 0.0), (torch.ones, 1.0)):
+        for shape, initial_shape in (((2, 3), (2,)), ((2, 3), (2, 3)), ((0, 3), (2,))):
+            out = torch.full(initial_shape, -4.0, device=vk)
+            storage_id = out.untyped_storage()._cdata
+            result = factory(shape, value, out=out) if factory is torch.full else factory(shape, out=out)
+            assert result is out
+            assert out.untyped_storage()._cdata == storage_id
+            pytorch_vulkan._C.synchronize()
+            torch.testing.assert_close(out.cpu(), torch.full(shape, value), rtol=0, atol=0)
+
+
+def test_resize_shrink_regrow_and_resize_as_keep_alias_storage(vk):
+    base = torch.arange(12, dtype=torch.float32).to(vk)
+    alias = base[2:7]
+    storage_id = base.untyped_storage()._cdata
+    capacity = base.untyped_storage().nbytes()
+    base.resize_(4)
+    assert base.untyped_storage()._cdata == storage_id
+    assert base.untyped_storage().nbytes() == capacity
+    base.resize_(12)
+    assert base.untyped_storage()._cdata == storage_id
+    template = torch.empty((3, 4), dtype=torch.float32)
+    assert base.resize_as_(template) is base
+    assert base.shape == template.shape
+    assert base.untyped_storage()._cdata == storage_id
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(alias.cpu(), torch.arange(2, 7, dtype=torch.float32))
+
+
+def test_resize_validates_before_mutation_and_rejects_grad(vk):
+    tensor = torch.arange(6, dtype=torch.float32).to(vk)
+    storage_id = tensor.untyped_storage()._cdata
+    shape = tensor.shape
+    with pytest.raises(RuntimeError):
+        tensor.resize_((-1, 4))
+    assert tensor.shape == shape
+    assert tensor.untyped_storage()._cdata == storage_id
+
+    requires_grad = torch.ones((2,), dtype=torch.float32, device=vk, requires_grad=True)
+    with pytest.raises(RuntimeError, match="cannot resize variables that require grad"):
+        requires_grad.resize_((4,))
+    with torch.no_grad(), pytest.raises(RuntimeError, match="cannot resize variables that require grad"):
+        requires_grad.resize_((4,))
+
+    channels_last_invalid = torch.arange(6, dtype=torch.float32).to(vk)
+    before = channels_last_invalid.shape
+    with pytest.raises(RuntimeError, match="channels_last memory format requires a 4D tensor"):
+        channels_last_invalid.resize_((2, 3), memory_format=torch.channels_last)
+    assert channels_last_invalid.shape == before
+
+
+def test_resize_as_channels_last_and_empty_growth(vk):
+    empty = torch.empty((0,), dtype=torch.float32, device=vk)
+    empty.resize_((2, 3, 4, 5))
+    template = torch.empty((2, 3, 4, 5), dtype=torch.float32).to(memory_format=torch.channels_last)
+    assert empty.resize_as_(template, memory_format=torch.preserve_format) is empty
+    assert empty.stride() == template.stride()
+    pytorch_vulkan._C.synchronize()
+
+
+def test_resize_growth_preserves_pending_write(vk):
+    base = torch.arange(6, dtype=torch.float32).to(vk)
+    base.add_(10.0)
+    base.resize_(12)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(base[:6].cpu(), torch.arange(6, dtype=torch.float32) + 10.0)
+
+
+def test_resize_offset_view_preserves_storage_and_prefix(vk):
+    base = torch.arange(12, dtype=torch.float32).to(vk)
+    view = base.as_strided((3,), (2,), 2)
+    storage_id = base.untyped_storage()._cdata
+    view.resize_((6,))
+    assert view.storage_offset() == 2
+    assert view.stride() == (1,)
+    assert view.untyped_storage()._cdata == storage_id
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(base[:12].cpu(), torch.arange(12, dtype=torch.float32))
+
+
+def test_named_resize_matches_native_noop_and_rejections(vk):
+    for device in ("cpu", vk):
+        named = torch.empty((2,), dtype=torch.float32, device=device, names=("N",))
+        assert named.resize_((2,)) is named
+        assert named.names == ("N",)
+        with pytest.raises(RuntimeError, match="Cannot resize named tensor"):
+            named.resize_((3,))
+        assert named.shape == (2,)
+        with pytest.raises(RuntimeError, match="Unsupported memory format for named tensor resize"):
+            named.resize_((2,), memory_format=torch.contiguous_format)
+        assert named.shape == (2,)
+    pytorch_vulkan._C.synchronize()
+
+
+def test_resize_deterministic_fill_matches_cpu_tail(vk):
+    previous_algorithms = torch.are_deterministic_algorithms_enabled()
+    previous_fill = torch.utils.deterministic.fill_uninitialized_memory
+    try:
+        torch.use_deterministic_algorithms(True)
+        torch.utils.deterministic.fill_uninitialized_memory = True
+        for device in ("cpu", vk):
+            tensor = torch.arange(6, dtype=torch.float32).to(device)
+            tensor.resize_((9,))
+            if device == vk:
+                pytorch_vulkan._C.synchronize()
+            values = tensor.cpu()
+            torch.testing.assert_close(values[:6], torch.arange(6, dtype=torch.float32))
+            assert torch.isnan(values[6:]).all()
+    finally:
+        torch.utils.deterministic.fill_uninitialized_memory = previous_fill
+        torch.use_deterministic_algorithms(previous_algorithms)
+
+
+def test_resize_storage_direct_growth_shrink_and_zero(vk):
+    for device in ("cpu", vk):
+        tensor = torch.arange(6, dtype=torch.float32).to(device)
+        storage = tensor.untyped_storage()
+        assert storage.nbytes() == 24
+        storage.resize_(48)
+        assert storage.nbytes() == 48
+        torch.testing.assert_close(tensor.cpu(), torch.arange(6, dtype=torch.float32))
+        tensor.resize_((2,))
+        storage.resize_(8)
+        assert storage.nbytes() == 8
+        torch.testing.assert_close(tensor.cpu(), torch.tensor([0.0, 1.0]))
+        storage.resize_(0)
+        assert storage.nbytes() == 0
+    pytorch_vulkan._C.synchronize()
+
+
+def test_resize_boundaries_format_version_and_bad_out(vk):
+    for device in ("cpu", vk):
+        tensor = torch.arange(6, dtype=torch.float32).to(device)
+        capacity = tensor.untyped_storage().nbytes()
+        version = tensor._version
+        assert tensor.resize_((0,)) is tensor
+        assert tensor.untyped_storage().nbytes() == capacity
+        assert tensor._version == version + 1
+
+    for shape, memory_format in (
+        ((2, 3, 4, 5), torch.channels_last),
+        ((2, 3, 4, 5, 6), torch.channels_last_3d),
+    ):
+        empty = torch.empty((0,), dtype=torch.float32, device=vk)
+        empty.resize_(shape, memory_format=memory_format)
+        assert empty.is_contiguous(memory_format=memory_format)
+
+    tensor = torch.arange(3, dtype=torch.float32).to(vk)
+    before = (tensor.shape, tensor.untyped_storage().nbytes(), tensor._version)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError):
+        tensor.resize_((1 << 62,))
+    assert (tensor.shape, tensor.untyped_storage().nbytes(), tensor._version) == before
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+    out = torch.full((2, 3), -7.0, dtype=torch.float32, device=vk)
+    before = (out.shape, out.untyped_storage().nbytes(), out._version)
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError):
+        torch.full((-1, 3), 1.0, out=out)
+    assert (out.shape, out.untyped_storage().nbytes(), out._version) == before
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    pytorch_vulkan._C.synchronize()
+
+
+def test_resize_as_requires_grad_rejects_even_with_no_grad(vk):
+    tensor = torch.ones((2,), dtype=torch.float32, device=vk, requires_grad=True)
+    template = torch.empty((4,), dtype=torch.float32)
+    with torch.no_grad(), pytest.raises(RuntimeError, match="cannot resize variables that require grad"):
+        tensor.resize_as_(template)
+
+
+def test_resize_factory_rejects_bad_out_without_mutation(vk):
+    sparse_out = torch.sparse_coo_tensor(
+        torch.empty((2, 0), dtype=torch.int64), torch.empty((0,), dtype=torch.float32), (2, 3)
+    )
+    sparse_before = (sparse_out.shape, sparse_out._nnz())
+    with pytest.raises(RuntimeError, match=r"full\(\.\.\.\) is not implemented for sparse layout"):
+        torch.full((2, 3), 1.0, out=sparse_out)
+    assert (sparse_out.shape, sparse_out._nnz()) == sparse_before
+
+    out = torch.empty((2,), dtype=torch.float64, device=vk)
+    before = (out.shape, out.untyped_storage().nbytes(), out._version)
+    with pytest.raises(RuntimeError, match="currently supports only float32"):
+        torch.zeros((2, 3), out=out)
+    assert (out.shape, out.untyped_storage().nbytes(), out._version) == before
+
+
 def test_copy_rejects_equal_numel_incompatible_shapes_before_work(vk):
     destination = torch.full((2, 3), -4.0, device=vk)
     source = torch.arange(6, dtype=torch.float32).reshape(3, 2)

@@ -1,13 +1,16 @@
 #include "vulkan_device_guard.h"
 
 #include "vulkan_platform.h"
+#include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
+#include "vulkan_allocator.h"
 
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <c10/util/Exception.h>
 
 #include <cstdlib>
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -39,6 +42,58 @@ class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
             return platform() != nullptr;
         } catch (...) {
             return false;
+        }
+    }
+
+    void resizePrivateUse1Bytes(const c10::Storage &storage,
+                                size_t newsize) const override {
+        TORCH_CHECK(storage.resizable(),
+                    "Trying to resize storage that is not resizable");
+        TORCH_CHECK(storage.device_type() == c10::DeviceType::PrivateUse1 &&
+                        storage.device().index() == 0,
+                    "Vulkan storage resize requires PrivateUse1 device 0");
+        const size_t oldsize = storage.nbytes();
+        if (newsize <= oldsize) {
+            storage.set_nbytes(newsize);
+            return;
+        }
+
+        auto owner = pytorch_vulkan::platform();
+        owner->throw_if_device_lost();
+        auto *storage_allocator = storage.allocator();
+        TORCH_CHECK(storage_allocator != nullptr,
+                    "Trying to resize storage that is not resizable");
+        at::DataPtr replacement = storage_allocator->allocate(newsize);
+        const at::DataPtr &old_ptr = storage.data_ptr();
+        const size_t copy_bytes = std::min(oldsize, newsize);
+        if (copy_bytes != 0) {
+            pytorch_vulkan::validate_allocation(old_ptr, oldsize, "resize source");
+            pytorch_vulkan::validate_allocation(replacement, newsize, "resize destination");
+            owner->copy_buffer_sync(
+                pytorch_vulkan::allocation_buffer(old_ptr).buffer(),
+                pytorch_vulkan::allocation_buffer(replacement).buffer(),
+                copy_bytes);
+        }
+
+        // Allocate the completion holder before replacing storage so host
+        // allocation failure cannot strand an old DataPtr behind new metadata.
+        auto retained = std::make_shared<at::DataPtr>();
+        at::DataPtr previous = storage.set_data_ptr(std::move(replacement));
+        storage.set_nbytes(newsize);
+        if (previous.get_context() != nullptr &&
+            pytorch_vulkan::is_vulkan_allocation(previous)) {
+            *retained = std::move(previous);
+            try {
+                if (!owner->execution_context().retain_until_completion(
+                        [retained] {}))
+                    retained.reset();
+            } catch (...) {
+                // DataPtr's existing Vulkan allocation deleter retains on
+                // completion or intentionally leaks if pending-state bookkeeping
+                // itself fails, so dropping this holder cannot free a live buffer.
+                retained.reset();
+                throw;
+            }
         }
     }
 };

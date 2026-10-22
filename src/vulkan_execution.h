@@ -171,6 +171,13 @@ class VulkanExecutionContext final {
     void poll_device_locked();
     // Ready-only cleanup: no device polling, safe even while another batch records.
     void drain_ready_cleanup() noexcept;
+    // Shared host-map boundary used by the platform and fake fixtures. The
+    // callbacks run under the shared queue lock. Returns owning that same lock
+    // only after a queue-held completion cutoff, unlocked blocking publication
+    // drain, and an atomic queue→execution final check with no intervening work.
+    std::unique_lock<std::mutex> acquire_host_access(
+        const std::function<void()> &flush_locked,
+        const std::function<void()> &wait_idle_locked);
     // Shared production orchestration. flush_locked runs within the single queue phase.
     bool query_with_flush(const std::function<void()> &flush_locked);
     void synchronize_with_flush(const std::function<void()> &flush_locked);

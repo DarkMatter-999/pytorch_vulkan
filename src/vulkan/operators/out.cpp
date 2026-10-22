@@ -182,16 +182,17 @@ void validate_overlap_status(at::MemOverlapStatus overlap, const at::Tensor &inp
     }
 }
 
-float scalar_to_float(const at::Scalar &scalar, const char *name) {
+float scalar_to_float(const at::Scalar &scalar, const char *name,
+                      bool allow_non_finite = false) {
     TORCH_CHECK(!scalar.isComplex(), "Vulkan ", name,
                 " requires a real numeric scalar");
     const double value = scalar.toDouble();
-    TORCH_CHECK(std::isfinite(value), "Vulkan ", name,
+    TORCH_CHECK(allow_non_finite || std::isfinite(value), "Vulkan ", name,
                 " does not support non-finite scalar values");
     const float result = static_cast<float>(value);
-    TORCH_CHECK(std::isfinite(result), "Vulkan ", name,
+    TORCH_CHECK(!std::isfinite(value) || std::isfinite(result), "Vulkan ", name,
                 " scalar is outside float32 range");
-    TORCH_CHECK(value == 0.0 || result != 0.0, "Vulkan ", name,
+    TORCH_CHECK(!std::isfinite(value) || value == 0.0 || result != 0.0, "Vulkan ", name,
                 " scalar underflows to float32 zero");
     return result;
 }
@@ -483,7 +484,10 @@ at::Tensor &dispatch_tensor_scalar_alias(at::Tensor &self, const at::Scalar &sca
 at::Tensor &dispatch_fill_impl(at::Tensor &self, const at::Scalar &value,
                                const char *name) {
     const auto layout = validate_alias_input(self, name);
-    const float scalar = scalar_to_float(value, name);
+    // PyTorch's fill_empty_deterministic_ uses NaN for newly grown floating
+    // storage. Preserve that native fill_ contract; other scalar paths remain
+    // finite-only where their current backend contracts require it.
+    const float scalar = scalar_to_float(value, name, /*allow_non_finite=*/true);
     if (layout.numel == 0) {
         validate_zero_allocation(self, name);
         return self;

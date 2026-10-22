@@ -20,6 +20,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
+#include "vulkan_synchronization.h"
 
 #include <algorithm>
 #include <chrono>
@@ -3435,13 +3436,8 @@ void VulkanCompute::begin_training_step() const {
         throw std::logic_error("Vulkan training step is already recording");
     flush_recording_locked();
     platform_.execution_context().begin_locked("training");
-    const VkMemoryBarrier barrier{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(platform_.execution_context().command_buffer(),
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
-                         nullptr, 0, nullptr);
+    vulkan_record_memory_barrier(platform_.execution_context().command_buffer(),
+                                 vulkan_compute_ready_spec());
     training_step_ = true;
 }
 
@@ -3455,13 +3451,8 @@ void VulkanCompute::end_training_step() const {
         return;
     }
     try {
-        const VkMemoryBarrier barrier{
-            VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
-            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-        vkCmdPipelineBarrier(platform_.execution_context().command_buffer(),
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
-                             nullptr, 0, nullptr);
+        vulkan_record_memory_barrier(platform_.execution_context().command_buffer(),
+                                     vulkan_compute_ready_spec());
         platform_.execution_context().submit_locked();
         platform_.execution_context().wait_device_locked();
         submission_count_.fetch_add(1, std::memory_order_relaxed);
@@ -3499,12 +3490,8 @@ void VulkanCompute::record_dispatch(const char *scope) const {
         current_dispatch_setup_ = true;
         return;
     }
-    const VkMemoryBarrier barrier{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(context.command_buffer(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
-                         nullptr, 0, nullptr);
+    vulkan_record_memory_barrier(context.command_buffer(),
+                                 vulkan_compute_ready_spec());
     current_dispatch_setup_ = true;
 }
 

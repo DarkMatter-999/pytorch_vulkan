@@ -261,11 +261,23 @@ def test_contiguous_materializes_general_vulkan_view(vulkan_backend):
 
 
 def test_copy_rejects_overlapping_destination(vulkan_backend):
-    source = torch.arange(4, dtype=torch.float32).to(vulkan_backend)
-    destination = torch.as_strided(source, (2, 2), (0, 1))
+    backing_cpu = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    source_cpu = torch.arange(4, dtype=torch.float32).reshape(2, 2) + 10
+    destination_cpu = torch.as_strided(backing_cpu, (2, 2), (0, 1))
+    with pytest.raises(RuntimeError, match="single memory location"):
+        destination_cpu.copy_(source_cpu)
+    torch.testing.assert_close(backing_cpu, torch.arange(4, dtype=torch.float32).reshape(2, 2))
+
+    backing = backing_cpu.to(vulkan_backend)
+    source = source_cpu.to(vulkan_backend)
+    destination = torch.as_strided(backing, (2, 2), (0, 1))
+    before = backing.cpu()
+    pytorch_vulkan._C.reset_execution_counters()
 
     with pytest.raises(RuntimeError, match="internal overlap"):
         destination.copy_(source)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+    torch.testing.assert_close(backing.cpu(), before)
 
 
 def test_contiguous_empty_general_view(vulkan_backend):

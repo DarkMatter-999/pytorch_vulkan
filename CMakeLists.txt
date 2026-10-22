@@ -35,6 +35,7 @@ endif()
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
   if(NOT TARGET vulkan_platform)
      add_library(vulkan_platform STATIC src/vulkan_platform.cpp src/vulkan_execution.cpp
+                    src/vulkan_synchronization.cpp
                     src/vulkan/descriptor_arena.cpp
                      src/vulkan/pipeline_cache.cpp
                     src/vulkan/shader_registry.cpp
