@@ -206,6 +206,21 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
         set_tests_properties(vulkan_execution_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
+    add_executable(vulkan_pinned_allocator_test
+                   tests/cpp/vulkan_pinned_allocator_test.cpp)
+    target_sources(vulkan_pinned_allocator_test PRIVATE src/vulkan_pinned_memory.cpp)
+    target_compile_features(vulkan_pinned_allocator_test PRIVATE cxx_std_17)
+    target_compile_definitions(vulkan_pinned_allocator_test PRIVATE
+                               PYTORCH_VULKAN_TESTING=1)
+    target_include_directories(vulkan_pinned_allocator_test PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_link_libraries(vulkan_pinned_allocator_test PRIVATE vulkan_device_guard
+                          vulkan_allocator vulkan_buffer vulkan_platform
+                          ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_pinned_allocator_test COMMAND vulkan_pinned_allocator_test)
+        set_tests_properties(vulkan_pinned_allocator_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
      add_executable(vulkan_shader_registry_test
                     tests/cpp/vulkan_shader_registry_test.cpp)
     target_compile_features(vulkan_shader_registry_test PRIVATE cxx_std_17)
@@ -272,7 +287,8 @@ if(BUILD_PYTHON_EXTENSION)
     endif()
     target_link_libraries(vulkan_device_guard PUBLIC vulkan_platform ${TORCH_LIBRARIES})
 
-    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp src/vulkan_layout.cpp
+    add_library(vulkan_allocator STATIC src/vulkan_allocator.cpp src/vulkan_pinned_allocator.cpp
+                src/vulkan_layout.cpp
                 src/vulkan_transfer.cpp src/vulkan/operators/capability.cpp)
     target_compile_features(vulkan_allocator PUBLIC cxx_std_17)
     set_target_properties(vulkan_allocator PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -294,13 +310,15 @@ if(BUILD_PYTHON_EXTENSION)
     if(TORCH_CXX_FLAGS)
         target_compile_options(vulkan_cat_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(vulkan_cat_test PRIVATE vulkan_allocator ${TORCH_LIBRARIES})
+    target_link_libraries(vulkan_cat_test PRIVATE vulkan_device_guard vulkan_allocator
+                          ${TORCH_LIBRARIES})
     if(BUILD_TESTING)
         add_test(NAME vulkan_cat_test COMMAND vulkan_cat_test)
     endif()
 
     pybind11_add_module(
-        pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan/operators/autograd.cpp
+        pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan_pinned_memory.cpp
+        src/vulkan/operators/autograd.cpp
         src/vulkan/operators/add.cpp
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp
         src/vulkan/operators/scalar_division.cpp
@@ -330,8 +348,8 @@ if(BUILD_PYTHON_EXTENSION)
         separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
         target_compile_options(pytorch_vulkan_python PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(pytorch_vulkan_python PRIVATE vulkan_allocator
-                          vulkan_device_guard vulkan_buffer vulkan_platform)
+    target_link_libraries(pytorch_vulkan_python PRIVATE vulkan_device_guard
+                          vulkan_allocator vulkan_buffer vulkan_platform)
     target_link_libraries(pytorch_vulkan_python PRIVATE ${TORCH_LIBRARIES})
     if(PYTORCH_VULKAN_TORCH_COMPILE_PROBE)
         target_sources(
@@ -507,8 +525,8 @@ if(BUILD_PYTHON_EXTENSION)
     if(TORCH_CXX_FLAGS)
         target_compile_options(vulkan_allocator_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(vulkan_allocator_test PRIVATE vulkan_allocator
-                          vulkan_device_guard vulkan_buffer vulkan_platform
+    target_link_libraries(vulkan_allocator_test PRIVATE vulkan_device_guard
+                          vulkan_allocator vulkan_buffer vulkan_platform
                           ${TORCH_LIBRARIES})
     if(BUILD_TESTING)
         add_test(NAME vulkan_allocator_test COMMAND vulkan_allocator_test)
@@ -531,8 +549,8 @@ if(BUILD_PYTHON_EXTENSION)
     if(TORCH_CXX_FLAGS)
         target_compile_options(vulkan_transfer_tensor_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(vulkan_transfer_tensor_test PRIVATE vulkan_allocator
-                          vulkan_device_guard vulkan_buffer vulkan_platform
+    target_link_libraries(vulkan_transfer_tensor_test PRIVATE vulkan_device_guard
+                          vulkan_allocator vulkan_buffer vulkan_platform
                           ${TORCH_LIBRARIES})
     if(BUILD_TESTING)
         add_test(NAME vulkan_transfer_tensor_test COMMAND vulkan_transfer_tensor_test)
@@ -545,8 +563,8 @@ if(BUILD_PYTHON_EXTENSION)
     if(TORCH_CXX_FLAGS)
         target_compile_options(vulkan_dtype_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(vulkan_dtype_test PRIVATE vulkan_allocator
-                          vulkan_device_guard vulkan_buffer vulkan_platform
+    target_link_libraries(vulkan_dtype_test PRIVATE vulkan_device_guard
+                          vulkan_allocator vulkan_buffer vulkan_platform
                           ${TORCH_LIBRARIES})
     if(BUILD_TESTING)
         add_test(NAME vulkan_dtype_test COMMAND vulkan_dtype_test)
@@ -559,8 +577,8 @@ if(BUILD_PYTHON_EXTENSION)
     if(TORCH_CXX_FLAGS)
         target_compile_options(vulkan_serialization_probe PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
-    target_link_libraries(vulkan_serialization_probe PRIVATE vulkan_allocator
-                          vulkan_device_guard vulkan_buffer vulkan_platform
+    target_link_libraries(vulkan_serialization_probe PRIVATE vulkan_device_guard
+                          vulkan_allocator vulkan_buffer vulkan_platform
                           ${TORCH_LIBRARIES})
     if(BUILD_TESTING)
         add_test(NAME vulkan_serialization_probe COMMAND vulkan_serialization_probe)

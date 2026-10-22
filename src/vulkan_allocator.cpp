@@ -8,6 +8,7 @@
 
 #include <ATen/ATen.h>
 #include <ATen/EmptyTensor.h>
+#include <ATen/native/Resize.h>
 #include <ATen/native/ResizeCommon.h>
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <c10/core/Device.h>
@@ -316,6 +317,26 @@ at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destinat
     return result;
 }
 
+at::Tensor vulkan_copy_from_and_resize(const at::Tensor &source,
+                                       const at::Tensor &destination) {
+    TORCH_CHECK(source.layout() == at::kStrided && destination.layout() == at::kStrided,
+                "Vulkan _copy_from_and_resize supports only strided tensors");
+    TORCH_CHECK(source.scalar_type() == at::kFloat &&
+                    destination.scalar_type() == at::kFloat,
+                "Vulkan _copy_from_and_resize currently supports only float32 tensors");
+
+    at::Tensor result = destination;
+    // Match the pinned MPS implementation: an empty source and exact self-copy
+    // are no-ops; a zero-element destination is resized before the ordinary
+    // copy route handles strides, offsets, and any broadcast validation.
+    if (source.numel() == 0 || source.is_same(destination))
+        return result;
+    if (destination.numel() == 0)
+        result.resize_as_(source);
+    result.copy_(source, false);
+    return result;
+}
+
 const at::Tensor &vulkan_resize_(
     const at::Tensor &self, c10::SymIntArrayRef size,
     c10::optional<at::MemoryFormat> memory_format) {
@@ -389,17 +410,136 @@ const at::Tensor &vulkan_resize_(
     return self;
 }
 
+void check_set_f32(const at::Tensor &self) {
+    TORCH_CHECK(self.layout() == at::kStrided,
+                "Vulkan set_ supports only strided tensors");
+    TORCH_CHECK(self.scalar_type() == at::kFloat,
+                "Vulkan set_ currently supports only float32 tensors");
+}
+
+at::Tensor &vulkan_set_storage_(at::Tensor &self, c10::Storage storage,
+                                int64_t storage_offset,
+                                at::IntArrayRef size,
+                                at::IntArrayRef stride) {
+    check_set_f32(self);
+    TORCH_CHECK(stride.empty() || size.size() == stride.size(),
+                "unequal size length (", size.size(), ") and stride length (",
+                stride.size(), ")");
+    TORCH_CHECK(storage, "Vulkan set_ requires a defined source storage");
+    TORCH_CHECK(self.device() == storage.device(),
+                "Attempted to set the storage of a tensor on device \"", self.device(),
+                "\" to a storage on different device \"", storage.device(),
+                "\".  This is no longer allowed; the devices must match.");
+    TORCH_CHECK(storage_offset >= 0, "Tensor: invalid storage offset ", storage_offset);
+    for (const auto dim : size)
+        TORCH_CHECK(dim >= 0, "Trying to create tensor with negative dimension ", dim);
+    for (const auto dim_stride : stride)
+        TORCH_CHECK(dim_stride >= 0, "set_: negative strides are not supported");
+
+    // Match native set_storage_cpu_: empty stride means contiguous geometry.
+    std::vector<int64_t> contiguous_strides;
+    if (stride.empty()) {
+        contiguous_strides.resize(size.size());
+        if (!size.empty()) {
+            contiguous_strides.back() = 1;
+            for (int64_t i = static_cast<int64_t>(size.size()) - 2; i >= 0; --i) {
+                const auto next = contiguous_strides[static_cast<size_t>(i + 1)];
+                const auto dim = std::max<int64_t>(size[static_cast<size_t>(i + 1)], 1);
+                TORCH_CHECK(next <= std::numeric_limits<int64_t>::max() / dim,
+                            "set_: contiguous stride calculation overflow");
+                contiguous_strides[static_cast<size_t>(i)] =
+                    next * dim;
+            }
+        }
+        stride = contiguous_strides;
+    }
+
+    const bool empty = std::any_of(size.begin(), size.end(), [](int64_t dim) { return dim == 0; });
+    size_t required_bytes = 0;
+    if (!empty) {
+        required_bytes = at::detail::computeStorageNbytes(
+            size, stride, self.itemsize(), static_cast<size_t>(storage_offset));
+    }
+
+    // Native CPU grows the shared source storage when the requested view
+    // exceeds it. Route that growth through the accepted PrivateUse1 hook.
+    if (!empty && required_bytes > storage.nbytes()) {
+        TORCH_CHECK(storage.resizable(), "Trying to resize storage that is not resizable");
+        at::GetPrivateUse1HooksInterface()->resizePrivateUse1Bytes(storage, required_bytes);
+    }
+
+    auto *impl = self.unsafeGetTensorImpl();
+    // All validation, including capacity computation, precedes target mutation.
+    at::native::checkSetStorage(self, storage, storage_offset, size, stride);
+    impl->set_storage_offset(storage_offset);
+    impl->set_sizes_and_strides(size, stride);
+    return self;
+}
+
+at::Tensor &vulkan_set_storage_symint_(at::Tensor &self, c10::Storage storage,
+                                       c10::SymInt storage_offset,
+                                       c10::SymIntArrayRef size,
+                                       c10::SymIntArrayRef stride) {
+    std::vector<int64_t> concrete_size;
+    std::vector<int64_t> concrete_stride;
+    concrete_size.reserve(size.size());
+    concrete_stride.reserve(stride.size());
+    for (const auto &dim : size)
+        concrete_size.push_back(dim.expect_int());
+    for (const auto &dim : stride)
+        concrete_stride.push_back(dim.expect_int());
+    return vulkan_set_storage_(self, std::move(storage), storage_offset.expect_int(),
+                               concrete_size,
+                               stride.empty() ? at::IntArrayRef() : at::IntArrayRef(concrete_stride));
+}
+
+at::Tensor &vulkan_set_storage_all_(at::Tensor &self, c10::Storage storage) {
+    check_set_f32(self);
+    TORCH_CHECK(storage.nbytes() / self.itemsize() <=
+                    static_cast<size_t>(std::numeric_limits<int64_t>::max()),
+                "Vulkan set_ storage is too large");
+    const int64_t count = static_cast<int64_t>(storage.nbytes() / self.itemsize());
+    const std::vector<int64_t> size{count};
+    return vulkan_set_storage_(self, std::move(storage), 0, size, {});
+}
+
+at::Tensor &vulkan_set_tensor_(at::Tensor &self, const at::Tensor &source) {
+    check_set_f32(self);
+    if (self.unsafeGetTensorImpl() != source.unsafeGetTensorImpl()) {
+        std::vector<int64_t> size(source.sizes().begin(), source.sizes().end());
+        std::vector<int64_t> stride(source.strides().begin(), source.strides().end());
+        return vulkan_set_storage_(self, source.storage(), source.storage_offset(),
+                                   size, stride);
+    }
+    return self;
+}
+
+at::Tensor &vulkan_set_empty_(at::Tensor &self) {
+    check_set_f32(self);
+    auto empty = at::empty({0}, self.options());
+    auto *impl = self.unsafeGetTensorImpl();
+    impl->set_storage_keep_dtype(empty.storage());
+    impl->set_storage_offset(0);
+    impl->set_sizes_contiguous({0});
+    return self;
+}
+
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("empty.memory_format", &vulkan_empty);
     m.impl("empty_strided", &vulkan_empty_strided);
     m.impl("_copy_from", &vulkan_copy_from);
+    m.impl("_copy_from_and_resize", &vulkan_copy_from_and_resize);
     // PyTorch's autograd wrapper and CompositeExplicitAutograd callers remain
     // in use; PrivateUse1 needs its own leaf because the pinned native resize
     // implementation asserts for non-CPU/non-Meta storage. Byte growth itself
     // is delegated to PrivateUse1HooksInterface.
     m.impl("resize_", TORCH_FN(vulkan_resize_));
+    m.impl("set_", TORCH_FN(vulkan_set_empty_));
+    m.impl("set_.source_Tensor", TORCH_FN(vulkan_set_tensor_));
+    m.impl("set_.source_Storage", TORCH_FN(vulkan_set_storage_all_));
+    m.impl("set_.source_Storage_storage_offset", TORCH_FN(vulkan_set_storage_symint_));
 }
 
 REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &allocator);

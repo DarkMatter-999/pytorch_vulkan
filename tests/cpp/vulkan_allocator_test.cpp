@@ -148,6 +148,68 @@ void test_resize_retains_old_allocation_during_training_recording() {
                "resize prefix copy did not consume the queued old-allocation write");
 }
 
+void test_set_releases_old_allocation_only_after_recorded_consumer(bool rebind) {
+    auto &platform = *pytorch_vulkan::platform();
+    platform.synchronize_execution();
+    const auto baseline = platform.live_resource_snapshot().allocations;
+    auto tensor = at::empty({6}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto output = c10::GetAllocator(c10::DeviceType::PrivateUse1)->allocate(6 * sizeof(float));
+    at::Tensor replacement;
+    if (rebind)
+        replacement = at::empty({2}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+
+    auto &old_buffer = pytorch_vulkan::allocation_buffer(tensor.storage().data_ptr());
+    const VkBuffer old_handle = old_buffer.buffer();
+    auto &output_buffer = pytorch_vulkan::allocation_buffer(output);
+    const VkBuffer output_handle = output_buffer.buffer();
+    auto &context = platform.execution_context();
+    platform.compute().begin_training_step();
+    try {
+        vkCmdFillBuffer(context.command_buffer(), old_handle, 0, 6 * sizeof(float),
+                        0x3f800000U);
+        VkBufferCopy copy{};
+        copy.size = 6 * sizeof(float);
+        vkCmdCopyBuffer(context.command_buffer(), old_handle, output_handle, 1, &copy);
+
+        // No Tensor, Storage, or owning allocation alias to the old buffer is
+        // retained here. Only recorded GPU work may keep it alive.
+        if (rebind)
+            tensor.set_(replacement);
+        else
+            tensor.set_();
+        const auto expected_pending_allocations = baseline + (rebind ? 3 : 2);
+        const auto observed_pending_allocations =
+            platform.live_resource_snapshot().allocations;
+        const std::string pending_message =
+            std::string(rebind
+                            ? "set_(source) did not retain its command-owned old allocation: "
+                            : "set_() did not retain its command-owned old allocation: ") +
+            std::to_string(observed_pending_allocations) + " != " +
+            std::to_string(expected_pending_allocations);
+        expect(observed_pending_allocations == expected_pending_allocations,
+               pending_message.c_str());
+        platform.compute().end_training_step();
+    } catch (...) {
+        platform.compute().cancel_training_step();
+        throw;
+    }
+
+    expect(platform.live_resource_snapshot().allocations == baseline + (rebind ? 2 : 1),
+           rebind ? "set_(source) old allocation was not reclaimed after completion"
+                  : "set_() old allocation was not reclaimed after completion");
+    auto &completed_output = pytorch_vulkan::allocation_buffer(output);
+    VulkanBuffer host(platform, 6 * sizeof(float),
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    platform.copy_buffer_sync(completed_output.buffer(), host.buffer(), 6 * sizeof(float));
+    float result[6]{};
+    host.read(result, sizeof(result));
+    for (float value : result)
+        expect(value == 1.0f,
+               rebind ? "rebind consumer did not read the recorded old-allocation values"
+                      : "reset consumer did not read the recorded old-allocation values");
+}
+
 void test_bounded_reuse_after_submission(c10::Allocator &allocator) {
     auto &platform = *pytorch_vulkan::platform();
     auto &context = platform.execution_context();
@@ -232,6 +294,8 @@ int main() {
         test_copy_rejected(*allocator);
         test_release_after_submission(*allocator);
         test_resize_retains_old_allocation_during_training_recording();
+        test_set_releases_old_allocation_only_after_recorded_consumer(false);
+        test_set_releases_old_allocation_only_after_recorded_consumer(true);
         test_bounded_reuse_after_submission(*allocator);
         test_bounded_allocator_transition_stress(*allocator);
         test_explicit_shutdown_preserves_live_allocation(*allocator);

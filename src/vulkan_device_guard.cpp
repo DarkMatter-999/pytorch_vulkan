@@ -5,6 +5,7 @@
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_allocator.h"
+#include "vulkan_pinned_allocator.h"
 
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <c10/util/Exception.h>
@@ -34,6 +35,10 @@ void check_device(c10::Device device) {
 
 class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
   public:
+    at::Allocator *getPinnedMemoryAllocator() const override {
+        return vulkan_pinned_host_allocator_instance();
+    }
+
     bool hasPrimaryContext(c10::DeviceIndex device_index) const override {
         if (device_index != 0) {
             return false;

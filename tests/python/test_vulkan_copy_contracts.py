@@ -1,3 +1,5 @@
+import ctypes
+
 import pytest
 import pytorch_vulkan
 import torch
@@ -18,6 +20,287 @@ def test_copy_broadcasts_into_strided_destination(vk):
     pytorch_vulkan._C.synchronize()
     torch.testing.assert_close(destination.cpu(), source.expand(2, 3), rtol=0, atol=0)
     torch.testing.assert_close(base.cpu(), source.expand(2, 3).t(), rtol=0, atol=0)
+
+
+class TestPinnedHost:
+    """Vulkan host pinning uses the PrivateUse1 fallback only in CPU-only builds.
+
+    PyTorch's allocator priority is CUDA > XPU > PrivateUse1, and
+    empty(pin_memory=True) may initialize Vulkan; initialization errors must
+    propagate rather than silently falling back to pageable CPU memory.
+    """
+
+    @staticmethod
+    def _layout_cases():
+        base = torch.arange(24, dtype=torch.float32).reshape(4, 6)
+        return [
+            ("contiguous", base),
+            ("transpose", base.t()),
+            ("offset_slice", base[1:, 1::2]),
+            ("expanded", base[:1, :3].expand(4, 3)),
+            ("stride_holes", base[:, ::2]),
+            ("zero_size", base[:0, :]),
+            ("empty_view_offset", base[2:2, :]),
+        ]
+
+    @staticmethod
+    def _copy_reference(source):
+        expected = torch.empty_strided(
+            tuple(source.shape), tuple(source.stride()), dtype=source.dtype
+        )
+        expected.copy_(source)
+        return expected
+
+    def test_cpu_pin_preserves_layout_extent_and_matches_copy_overlap_oracle(self):
+        for label, source in self._layout_cases():
+            reference_error = None
+            try:
+                expected = self._copy_reference(source)
+            except RuntimeError as error:
+                reference_error = error
+
+            if reference_error is not None:
+                with pytest.raises(RuntimeError) as actual_error:
+                    source.pin_memory(device="vk")
+                assert str(actual_error.value) == str(reference_error), label
+                continue
+
+            actual = source.pin_memory(device="vk")
+            expected_bytes = expected.untyped_storage().nbytes()
+            assert actual.device.type == "cpu", label
+            assert tuple(actual.size()) == tuple(source.size()), label
+            assert tuple(actual.stride()) == tuple(source.stride()), label
+            assert actual.storage_offset() == 0, label
+            assert actual.untyped_storage().nbytes() == expected_bytes, label
+            assert actual.is_pinned(device="vk") is (expected_bytes != 0), label
+            assert actual.untyped_storage().resizable() is False, label
+            assert torch.equal(actual, expected), label
+
+    def test_pin_preserves_generated_autograd_identity_derivative(self):
+        source = torch.tensor([[1.0, -2.0], [3.0, 4.0]], requires_grad=True)
+        pinned = source.pin_memory(device="vk")
+        assert pinned.requires_grad is True
+        assert pinned.grad_fn is not None
+        assert "PinMemoryBackward" in type(pinned.grad_fn).__name__
+        seed = torch.tensor([[0.25, -3.0], [2.0, 5.5]])
+        (gradient,) = torch.autograd.grad(pinned, source, grad_outputs=seed)
+        # PyTorch 2.4 derivatives.yaml declares `_pin_memory`'s `self: grad`.
+        torch.testing.assert_close(gradient, seed, rtol=0, atol=0)
+
+    def test_vulkan_source_backendselect_guard_and_cpu_then_pin_composition(self, vk):
+        source_cpu = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        source = source_cpu.to(vk)
+        pytorch_vulkan._C.synchronize()
+        meta = torch.empty((2,), device="meta")
+        with pytest.raises(RuntimeError, match="cannot pin '.*' only dense CPU tensors can be pinned") as meta_error:
+            meta.pin_memory()
+        assert "cannot pin 'MetaFloatType'" in str(meta_error.value)
+        for device in (None, "vk", "cpu"):
+            with pytest.raises(RuntimeError, match="cannot pin '.*' only dense CPU tensors can be pinned") as vk_error:
+                source.pin_memory() if device is None else source.pin_memory(device=device)
+            assert "cannot pin 'vkFloatType'" in str(vk_error.value)
+        assert source.is_pinned() is False
+        assert source.is_pinned(device="vk") is False
+
+        pinned = source.cpu().pin_memory(device="vk")
+        assert pinned.device.type == "cpu"
+        assert pinned.is_pinned(device="vk") is True
+        assert (tuple(pinned.shape), tuple(pinned.stride()), pinned.storage_offset()) == (
+            tuple(source.shape), tuple(source.stride()), 0
+        )
+        assert pinned.untyped_storage().nbytes() == source_cpu.untyped_storage().nbytes()
+        assert torch.equal(pinned, source_cpu)
+
+    def test_pinned_recognition_tracks_storage_provenance_and_views(self):
+        pinned = torch.arange(8, dtype=torch.float32).pin_memory(device="vk")
+        assert pinned.is_pinned(device="vk") is True
+        assert pinned[:0].is_pinned(device="vk") is True
+        assert pinned[1:].is_pinned(device="vk") is True
+        assert pinned.clone().is_pinned(device="vk") is False
+        assert torch.empty((3,)).is_pinned(device="vk") is False
+
+        raw = (ctypes.c_float * pinned.numel()).from_address(pinned.data_ptr())
+        foreign = torch.from_numpy(__import__("numpy").ctypeslib.as_array(raw))
+        assert torch.equal(foreign, pinned)
+        assert foreign.is_pinned(device="vk") is False
+
+        zero = torch.empty((0,), dtype=torch.float32).pin_memory(device="vk")
+        assert zero.untyped_storage().nbytes() == 0
+        assert zero.is_pinned(device="vk") is False
+        assert pinned.contiguous() is pinned
+        assert pinned.contiguous().is_pinned(device="vk") is True
+
+    def test_public_defaults_and_global_pinned_factories(self):
+        cpu = torch.arange(4, dtype=torch.float32)
+        with pytest.raises(NotImplementedError):
+            cpu.pin_memory()
+        assert cpu.is_pinned() is False
+        assert cpu.is_pinned(device="cpu") is False
+        with pytest.raises(RuntimeError):
+            cpu.pin_memory(device="cpu")
+
+        pinned = torch.empty((5,), dtype=torch.float32, pin_memory=True)
+        strided = torch.empty_strided((2, 3), (4, 1), dtype=torch.float32,
+                                      pin_memory=True)
+        assert pinned.device.type == strided.device.type == "cpu"
+        assert pinned.is_pinned(device="vk") is True
+        assert strided.is_pinned(device="vk") is True
+        assert strided.stride() == (4, 1)
+
+    def test_blocking_copy_surface_and_existing_rejections_are_unchanged(self, vk):
+        source = torch.arange(6, dtype=torch.float32)
+        pinned = source.pin_memory(device="vk")
+        device = pinned.to(vk)
+        pytorch_vulkan._C.synchronize()
+        torch.testing.assert_close(device.cpu(), source, rtol=0, atol=0)
+
+        destination = torch.empty((6,), dtype=torch.float32).pin_memory(device="vk")
+        destination.copy_(device)
+        torch.testing.assert_close(destination, source, rtol=0, atol=0)
+
+        with pytest.raises(RuntimeError, match="non_blocking=True"):
+            pinned.to(vk, non_blocking=True)
+        with pytest.raises(RuntimeError, match="non_blocking=True"):
+            destination.copy_(device, non_blocking=True)
+        with pytest.raises(RuntimeError, match="pinned"):
+            torch.ops.aten._to_copy.default(
+                device, device=torch.device("cpu"), pin_memory=True
+            )
+
+        torch.testing.assert_close(pinned + 2.0, source + 2.0, rtol=0, atol=0)
+        torch.testing.assert_close(pinned.sum(), source.sum(), rtol=0, atol=0)
+
+
+def test_set_empty_resets_f32_storage_but_preserves_old_alias(vk):
+    base = torch.arange(6, dtype=torch.float32).to(vk)
+    alias = base[1:4]
+    assert base.set_() is base
+    assert tuple(base.shape) == (0,)
+    assert base.untyped_storage().nbytes() == 0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(alias.cpu(), torch.tensor([1.0, 2.0, 3.0]))
+
+
+def test_set_tensor_shares_source_storage_geometry_and_writes(vk):
+    source = torch.arange(12, dtype=torch.float32).reshape(3, 4).to(vk)
+    target = torch.empty((1,), dtype=torch.float32, device=vk)
+    result = target.set_(source)
+    assert result is target
+    assert target.untyped_storage()._cdata == source.untyped_storage()._cdata
+    assert (tuple(target.shape), tuple(target.stride()), target.storage_offset()) == (
+        tuple(source.shape), tuple(source.stride()), source.storage_offset()
+    )
+    target[0, 0] = -5.0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(source[0, 0].cpu(), torch.tensor(-5.0))
+    torch.testing.assert_close(
+        target.cpu(),
+        torch.tensor([[-5.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0]]),
+    )
+
+
+def test_set_tensor_accepts_noncontiguous_source_and_same_impl_noop(vk):
+    base_cpu = torch.arange(20, dtype=torch.float32).reshape(4, 5)
+    base_vk = base_cpu.to(vk)
+    source_cpu = base_cpu.as_strided((2, 3), (1, 4), storage_offset=1)
+    source_vk = base_vk.as_strided((2, 3), (1, 4), storage_offset=1)
+    target_cpu = torch.empty((1,), dtype=torch.float32)
+    target_vk = torch.empty((1,), dtype=torch.float32, device=vk)
+
+    assert target_cpu.set_(source_cpu) is target_cpu
+    assert target_vk.set_(source_vk) is target_vk
+    for target, source in ((target_cpu, source_cpu), (target_vk, source_vk)):
+        assert target.untyped_storage()._cdata == source.untyped_storage()._cdata
+        assert (tuple(target.shape), tuple(target.stride()), target.storage_offset()) == (
+            tuple(source.shape), tuple(source.stride()), source.storage_offset()
+        )
+
+    assert source_cpu.set_(source_cpu) is source_cpu
+    assert source_vk.set_(source_vk) is source_vk
+    assert (tuple(source_vk.shape), tuple(source_vk.stride()), source_vk.storage_offset()) == (
+        (2, 3), (1, 4), 1
+    )
+
+    target_cpu[1, 2] = -7.0
+    target_vk[1, 2] = -7.0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(target_vk.cpu(), target_cpu)
+    torch.testing.assert_close(base_vk.cpu(), base_cpu)
+
+
+def test_set_tensor_offset_composite_keeps_noncontiguous_rejection(vk):
+    source = torch.arange(20, dtype=torch.float32).reshape(4, 5).to(vk).t()
+    target = torch.empty((1,), dtype=torch.float32, device=vk)
+    before = (target.shape, target.stride(), target.storage_offset(), target.untyped_storage()._cdata)
+    with pytest.raises(RuntimeError, match="passed in tensor to be used as storage must be contiguous"):
+        target.set_(source, 0, source.shape, source.stride())
+    assert (target.shape, target.stride(), target.storage_offset(), target.untyped_storage()._cdata) == before
+
+
+def test_set_storage_uses_whole_storage_and_defaults(vk):
+    source = torch.arange(6, dtype=torch.float32).to(vk)
+    target = torch.empty((1,), dtype=torch.float32, device=vk)
+    assert target.set_(source.untyped_storage()) is target
+    assert target.untyped_storage()._cdata == source.untyped_storage()._cdata
+    assert tuple(target.shape) == (6,)
+    assert tuple(target.stride()) == (1,)
+    target[2] = 17.0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(source[2].cpu(), torch.tensor(17.0))
+
+
+def test_set_tensor_offset_sizes_strides_adds_source_offset(vk):
+    source = torch.arange(12, dtype=torch.float32).to(vk)[2:]
+    target = torch.empty((1,), dtype=torch.float32, device=vk)
+    assert target.set_(source, 1, (2, 2), (3, 1)) is target
+    assert target.untyped_storage()._cdata == source.untyped_storage()._cdata
+    assert (tuple(target.shape), tuple(target.stride()), target.storage_offset()) == (
+        (2, 2), (3, 1), source.storage_offset() + 1
+    )
+    target[1, 1] = 29.0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(source[5].cpu(), torch.tensor(29.0))
+
+
+def test_set_storage_offset_sizes_strides_and_defaults(vk):
+    source = torch.arange(8, dtype=torch.float32).to(vk)
+    target = torch.empty((1,), dtype=torch.float32, device=vk)
+    assert target.set_(source.untyped_storage(), 1, (2, 2), (3, 1)) is target
+    assert target.untyped_storage()._cdata == source.untyped_storage()._cdata
+    assert (tuple(target.shape), tuple(target.stride()), target.storage_offset()) == (
+        (2, 2), (3, 1), 1
+    )
+    target[1, 1] = 31.0
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(source[5].cpu(), torch.tensor(31.0))
+
+
+def test_set_storage_growth_errors_and_autograd_match_cpu(vk):
+    for device in ("cpu", vk):
+        source = torch.arange(2, dtype=torch.float32).to(device)
+        target = torch.empty((1,), dtype=torch.float32, device=device)
+        storage = source.untyped_storage()
+        assert target.set_(storage, 0, (4,), (1,)) is target
+        assert storage.nbytes() >= 4 * torch.tensor([], dtype=torch.float32).element_size()
+        if device == vk:
+            pytorch_vulkan._C.synchronize()
+        torch.testing.assert_close(target[:2].cpu(), torch.tensor([0.0, 1.0]))
+
+        before = (target.shape, target.stride(), target.storage_offset(), storage.nbytes())
+        with pytest.raises(RuntimeError):
+            target.set_(storage, -1, (1,), (1,))
+        assert (target.shape, target.stride(), target.storage_offset(), storage.nbytes()) == before
+
+    leaf = torch.ones((2,), dtype=torch.float32, device=vk, requires_grad=True)
+    source = torch.ones((2,), dtype=torch.float32, device=vk)
+    with torch.enable_grad(), pytest.raises(RuntimeError, match="leaf Variable"):
+        leaf.set_(source)
+    version = leaf._version
+    with torch.no_grad():
+        assert leaf.set_(source) is leaf
+    assert leaf.requires_grad
+    assert leaf._version == version + 1
+    pytorch_vulkan._C.synchronize()
 
 
 def test_resize_growth_preserves_storage_alias(vk):
@@ -403,6 +686,192 @@ def test_copy_from_formatter_route_normalizes_f32_broadcast(vk):
         torch.ops.aten._copy_from.default(invalid, sentinel, False)
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
     torch.testing.assert_close(sentinel, torch.full((2, 3), -3.0))
+
+
+def test_copy_from_and_resize_populates_empty_cpu_destination(vk):
+    source_cpu = torch.arange(30, dtype=torch.float32).reshape(5, 6)
+    source_cpu = source_cpu.as_strided((2, 3), (6, 2), 1)
+    source = source_cpu.to(vk)
+    destination = torch.empty((0,), dtype=torch.float32)
+
+    expected = torch.empty((0,), dtype=torch.float32)
+    expected.resize_as_(source_cpu)
+    expected.copy_(source_cpu)
+    result = torch.ops.aten._copy_from_and_resize.default(source, destination)
+
+    assert result is destination
+    assert tuple(destination.shape) == tuple(expected.shape)
+    assert tuple(destination.stride()) == tuple(expected.stride())
+    torch.testing.assert_close(destination, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("direction", ["cpu_to_vk", "vk_to_vk", "vk_to_cpu"])
+def test_copy_from_and_resize_empty_destination_direction_matrix(vk, direction):
+    source_cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    source = source_cpu if direction == "cpu_to_vk" else source_cpu.to(vk)
+    target_device = "cpu" if direction == "vk_to_cpu" else vk
+    destination = torch.empty((0,), dtype=torch.float32, device=target_device)
+
+    expected = torch.empty((0,), dtype=torch.float32)
+    expected.resize_as_(source_cpu)
+    expected.copy_(source_cpu)
+    result = torch.ops.aten._copy_from_and_resize.default(source, destination)
+    pytorch_vulkan._C.synchronize()
+
+    assert result is destination
+    assert tuple(destination.shape) == tuple(expected.shape)
+    assert tuple(destination.stride()) == tuple(expected.stride())
+    torch.testing.assert_close(destination.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_from_and_resize_nonempty_destination_broadcasts_without_resize(vk):
+    source = torch.tensor([2.0, 3.0, 4.0])
+    destination = torch.full((2, 3), -5.0, device=vk)
+    original_storage = destination.untyped_storage()._cdata
+    expected = torch.full((2, 3), -5.0)
+    expected.copy_(source)
+
+    result = torch.ops.aten._copy_from_and_resize.default(source, destination)
+    pytorch_vulkan._C.synchronize()
+
+    assert result is destination
+    assert destination.untyped_storage()._cdata == original_storage
+    assert tuple(destination.shape) == (2, 3)
+    torch.testing.assert_close(destination.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_from_and_resize_rejects_incompatible_nonempty_shape_without_mutation(vk):
+    source = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+    destination = torch.full((2, 3), -7.0, device=vk)
+    before = (tuple(destination.shape), tuple(destination.stride()),
+              destination.storage_offset(), destination.untyped_storage()._cdata,
+              destination.untyped_storage().nbytes(), destination._version)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises(RuntimeError):
+        torch.ops.aten._copy_from_and_resize.default(source, destination)
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    pytorch_vulkan._C.synchronize()
+
+    assert counters == (0, 0, 0, 0)
+    assert (tuple(destination.shape), tuple(destination.stride()),
+            destination.storage_offset(), destination.untyped_storage()._cdata,
+            destination.untyped_storage().nbytes(), destination._version) == before
+    torch.testing.assert_close(destination.cpu(), torch.full((2, 3), -7.0))
+
+
+def test_copy_from_and_resize_empty_source_and_exact_self_are_noops(vk):
+    destination = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=vk)
+    empty_source = torch.empty((0, 3), dtype=torch.float32)
+    empty_before = (tuple(destination.shape), tuple(destination.stride()),
+                    destination.storage_offset(), destination.untyped_storage()._cdata,
+                    destination.untyped_storage().nbytes(), destination._version)
+    pytorch_vulkan._C.reset_execution_counters()
+    empty_result = torch.ops.aten._copy_from_and_resize.default(empty_source, destination)
+    empty_counters = pytorch_vulkan._C.execution_counter_snapshot()
+
+    self_before = (tuple(destination.shape), tuple(destination.stride()),
+                   destination.storage_offset(), destination.untyped_storage()._cdata,
+                   destination.untyped_storage().nbytes(), destination._version)
+    pytorch_vulkan._C.reset_execution_counters()
+    self_result = torch.ops.aten._copy_from_and_resize.default(destination, destination)
+    self_counters = pytorch_vulkan._C.execution_counter_snapshot()
+    pytorch_vulkan._C.synchronize()
+
+    assert empty_result is destination
+    assert empty_counters == (0, 0, 0, 0)
+    assert (tuple(destination.shape), tuple(destination.stride()),
+            destination.storage_offset(), destination.untyped_storage()._cdata,
+            destination.untyped_storage().nbytes(), destination._version) == empty_before
+    assert self_result is destination
+    assert self_counters == (0, 0, 0, 0)
+    assert (tuple(destination.shape), tuple(destination.stride()),
+            destination.storage_offset(), destination.untyped_storage()._cdata,
+            destination.untyped_storage().nbytes(), destination._version) == self_before
+    torch.testing.assert_close(destination.cpu(), torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+
+
+def test_copy_from_and_resize_rejects_nonf32_source_before_mutating_destination(vk):
+    source = torch.tensor([True, False])
+    destination = torch.empty((0,), dtype=torch.float32, device=vk)
+    before = (tuple(destination.shape), tuple(destination.stride()),
+              destination.storage_offset(), destination.untyped_storage()._cdata,
+              destination.untyped_storage().nbytes(), destination._version)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    with pytest.raises(RuntimeError, match="only float32"):
+        torch.ops.aten._copy_from_and_resize.default(source, destination)
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    pytorch_vulkan._C.synchronize()
+
+    assert counters == (0, 0, 0, 0)
+    assert (tuple(destination.shape), tuple(destination.stride()),
+            destination.storage_offset(), destination.untyped_storage()._cdata,
+            destination.untyped_storage().nbytes(), destination._version) == before
+
+
+def test_copy_from_and_resize_out_populates_empty_cpu_out(vk):
+    source_cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    source = source_cpu.to(vk)
+    destination = torch.empty((0,), dtype=torch.float32)
+    out = torch.empty((0,), dtype=torch.float32)
+
+    expected = torch.empty((0,), dtype=torch.float32)
+    expected.resize_as_(source_cpu)
+    expected.copy_(source_cpu)
+    result = torch.ops.aten._copy_from_and_resize.out(source, destination, out=out)
+    pytorch_vulkan._C.synchronize()
+
+    assert result is out
+    assert result is not destination
+    assert tuple(destination.shape) == tuple(expected.shape)
+    assert tuple(out.shape) == tuple(expected.shape)
+    assert tuple(out.stride()) == tuple(expected.stride())
+    torch.testing.assert_close(destination.cpu(), expected, rtol=0, atol=0)
+    torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_from_and_resize_out_resizes_mismatched_preexisting_out(vk):
+    source_cpu = torch.arange(12, dtype=torch.float32).reshape(3, 4).t()
+    source = source_cpu.to(vk)
+    destination = torch.empty((0,), dtype=torch.float32)
+    out = torch.full((1,), -9.0, dtype=torch.float32)
+
+    expected = torch.empty((0,), dtype=torch.float32)
+    expected.resize_as_(source_cpu)
+    expected.copy_(source_cpu)
+    result = torch.ops.aten._copy_from_and_resize.out(source, destination, out=out)
+    pytorch_vulkan._C.synchronize()
+
+    assert result is out
+    assert tuple(destination.shape) == tuple(expected.shape)
+    assert tuple(out.shape) == tuple(expected.shape)
+    assert tuple(out.stride()) == tuple(expected.stride())
+    torch.testing.assert_close(destination.cpu(), expected, rtol=0, atol=0)
+    torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_from_and_resize_out_copies_unchanged_destination_for_empty_source(vk):
+    source = torch.empty((0, 3), dtype=torch.float32, device=vk)
+    destination = torch.tensor([[4.0, 5.0], [6.0, 7.0]])
+    out = torch.empty((0,), dtype=torch.float32)
+    before = (tuple(destination.shape), tuple(destination.stride()),
+              destination.storage_offset(), destination.untyped_storage()._cdata,
+              destination.untyped_storage().nbytes(), destination._version)
+    pytorch_vulkan._C.reset_execution_counters()
+
+    result = torch.ops.aten._copy_from_and_resize.out(source, destination, out=out)
+    counters = pytorch_vulkan._C.execution_counter_snapshot()
+    pytorch_vulkan._C.synchronize()
+
+    assert result is out
+    assert counters == (0, 0, 0, 0)
+    assert (tuple(destination.shape), tuple(destination.stride()),
+            destination.storage_offset(), destination.untyped_storage()._cdata,
+            destination.untyped_storage().nbytes(), destination._version) == before
+    assert tuple(out.shape) == tuple(destination.shape)
+    torch.testing.assert_close(destination, torch.tensor([[4.0, 5.0], [6.0, 7.0]]))
+    torch.testing.assert_close(out, destination)
 
 
 @pytest.mark.parametrize("direction", ["h2d", "d2h", "d2d"])
