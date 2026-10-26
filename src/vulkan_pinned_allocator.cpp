@@ -17,31 +17,36 @@ struct VulkanPinnedHostOwner {
     std::byte *mapped_base = nullptr;
     size_t logical_bytes = 0;
     VulkanPinnedHostTestOps ops{};
+    bool counted = false;
 };
 
-void delete_pinned_host_owner(void *context) noexcept {
-    auto *owner = static_cast<VulkanPinnedHostOwner *>(context);
+struct VulkanPinnedHostHandle {
+    std::shared_ptr<VulkanPinnedHostOwner> core;
+};
+
+void destroy_pinned_host_core(VulkanPinnedHostOwner *owner) noexcept {
     if (owner == nullptr || pytorch_vulkan::inherited_fork_state()) return;
     if (owner->platform != nullptr) {
         try {
-            if (owner->ops.should_leak_for_testing != nullptr) {
-                if (owner->ops.should_leak_for_testing(owner->ops.cookie, *owner->platform))
-                    return;
-            } else {
-                if (owner->platform->device_lost()) return;
-                if (owner->platform->execution_context().pending_count() != 0) return;
-            }
-        } catch (...) {
-            return;
-        }
+            if (owner->ops.should_leak_for_testing != nullptr &&
+                owner->ops.should_leak_for_testing(owner->ops.cookie, *owner->platform)) return;
+            if (owner->platform->device_lost()) return;
+        } catch (...) { return; }
     }
+    if (owner->platform != nullptr && owner->counted)
+        owner->platform->record_pinned_host_allocation_destroyed();
     delete owner;
+}
+
+void delete_pinned_host_owner(void *context) noexcept {
+    delete static_cast<VulkanPinnedHostHandle *>(context);
 }
 
 VulkanPinnedHostOwner *pinned_host_owner(const at::DataPtr &data) noexcept {
     if (data.get_context() == nullptr || data.get_deleter() != &delete_pinned_host_owner)
         return nullptr;
-    return static_cast<VulkanPinnedHostOwner *>(data.get_context());
+    auto *handle = static_cast<VulkanPinnedHostHandle *>(data.get_context());
+    return handle->core.get();
 }
 
 } // namespace
@@ -72,11 +77,35 @@ at::DataPtr VulkanPinnedHostAllocator::allocate(size_t nbytes) {
     owner->mapped_base = static_cast<std::byte *>(mapped);
     owner->logical_bytes = nbytes;
     owner->buffer = std::move(buffer);
+    owner->platform->record_pinned_host_allocation_created();
+    owner->counted = true;
 
     auto *data = owner->mapped_base;
-    auto *context = owner.release();
+    auto core = std::shared_ptr<VulkanPinnedHostOwner>(owner.release(), destroy_pinned_host_core);
+    auto *context = new VulkanPinnedHostHandle{std::move(core)};
     return at::DataPtr(data, context, &delete_pinned_host_owner,
                        c10::Device(c10::DeviceType::CPU));
+}
+
+bool vulkan_pinned_host_range(const c10::Storage &storage, const void *data,
+                              size_t bytes, VulkanPinnedHostRange *out) {
+    if (out == nullptr) return false;
+    const auto &ptr = storage.data_ptr();
+    auto *owner = pinned_host_owner(ptr);
+    if (owner == nullptr || owner->buffer == nullptr || data == nullptr) return false;
+    const auto base = reinterpret_cast<std::uintptr_t>(owner->mapped_base);
+    const auto address = reinterpret_cast<std::uintptr_t>(data);
+    const auto storage_bytes = storage.nbytes();
+    if (address < base || address - base > owner->logical_bytes ||
+        address - base > storage_bytes) return false;
+    const auto offset = address - base;
+    if (bytes > owner->logical_bytes - offset || bytes > storage_bytes - offset) return false;
+    auto *handle = static_cast<VulkanPinnedHostHandle *>(ptr.get_context());
+    out->lease = std::shared_ptr<void>(handle->core, handle->core.get());
+    out->buffer = owner->buffer.get();
+    out->offset = static_cast<VkDeviceSize>(offset);
+    out->bytes = static_cast<VkDeviceSize>(bytes);
+    return true;
 }
 
 void VulkanPinnedHostAllocator::copy_data(void *dest, const void *src,

@@ -40,6 +40,10 @@ struct VulkanAllocation {
     bool counted = false;
 };
 
+struct VulkanAllocationHandle {
+    std::shared_ptr<VulkanAllocation> core;
+};
+
 void destroy_allocation(VulkanAllocation *allocation) noexcept {
     if (allocation->platform != nullptr && allocation->counted) {
         allocation->platform->record_allocation_destroyed();
@@ -64,8 +68,7 @@ void check_device(c10::Device device) {
                 "Vulkan backend supports only device index 0, got ", device.index());
 }
 
-void delete_allocation(void *context) noexcept {
-    auto *allocation = static_cast<VulkanAllocation *>(context);
+void delete_allocation_core(VulkanAllocation *allocation) noexcept {
     if (allocation->platform != nullptr) {
         try {
             if (allocation->platform->device_lost())
@@ -86,6 +89,16 @@ void delete_allocation(void *context) noexcept {
         }
     }
     destroy_allocation(allocation);
+}
+
+void delete_allocation(void *context) noexcept {
+    delete static_cast<VulkanAllocationHandle *>(context);
+}
+
+VulkanAllocation *allocation_core(const at::DataPtr &data) {
+    auto *handle = data.cast_context<VulkanAllocationHandle>(&delete_allocation);
+    TORCH_CHECK(handle->core != nullptr, "Vulkan allocation payload has no core");
+    return handle->core.get();
 }
 
 VulkanAllocator allocator;
@@ -147,7 +160,7 @@ void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,
                 "Vulkan add ", label, " has an invalid allocation payload");
-    auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
+    auto *allocation = allocation_core(data);
     TORCH_CHECK(allocation->platform != nullptr && allocation->buffer != nullptr,
                 "Vulkan add ", label, " allocation payload is incomplete");
     TORCH_CHECK(required_bytes <= allocation->buffer->size(), "Vulkan add ", label,
@@ -159,12 +172,19 @@ bool is_vulkan_allocation(const at::DataPtr &data) {
     return data.get_context() != nullptr && data.get_deleter() == &delete_allocation;
 }
 
+std::shared_ptr<void> allocation_lease(const at::DataPtr &data) {
+    TORCH_CHECK(is_vulkan_allocation(data), "DataPtr is not a Vulkan allocation");
+    auto *handle = data.cast_context<VulkanAllocationHandle>(&delete_allocation);
+    TORCH_CHECK(handle->core != nullptr, "Vulkan allocation payload has no core");
+    return std::shared_ptr<void>(handle->core, handle->core.get());
+}
+
 VulkanBuffer &allocation_buffer(const at::DataPtr &data) {
     ensure_process_local_vulkan();
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,
                 "DataPtr context is not a Vulkan allocation");
-    auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
+    auto *allocation = allocation_core(data);
     TORCH_CHECK(allocation->buffer != nullptr,
                 "Vulkan allocation payload has no buffer");
     return *allocation->buffer;
@@ -175,7 +195,7 @@ const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
     TORCH_CHECK(data.get_context() != nullptr &&
                     data.get_deleter() == &delete_allocation,
                 "DataPtr context is not a Vulkan allocation");
-    auto *allocation = data.cast_context<VulkanAllocation>(&delete_allocation);
+    auto *allocation = allocation_core(data);
     TORCH_CHECK(allocation->platform != nullptr,
                 "Vulkan allocation payload has no platform");
     return *allocation->platform;
@@ -184,13 +204,13 @@ const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
 bool is_validated_label_allocation(const at::DataPtr &data) {
     if (!is_vulkan_allocation(data))
         return false;
-    return data.cast_context<VulkanAllocation>(&delete_allocation)->validated_label;
+    return allocation_core(data)->validated_label;
 }
 
 void mark_validated_label_allocation(const at::DataPtr &data) {
     TORCH_CHECK(is_vulkan_allocation(data),
                 "cannot mark a non-Vulkan allocation as a validated label");
-    data.cast_context<VulkanAllocation>(&delete_allocation)->validated_label = true;
+    allocation_core(data)->validated_label = true;
 }
 
 } // namespace pytorch_vulkan
@@ -209,8 +229,9 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
     try {
         check_device(device);
         if (nbytes == 0) {
-            VulkanAllocation *payload = allocation.release();
-            return at::DataPtr(payload, payload, delete_allocation, device);
+            auto core = std::shared_ptr<VulkanAllocation>(allocation.release(), delete_allocation_core);
+            auto *handle = new VulkanAllocationHandle{std::move(core)};
+            return at::DataPtr(handle, handle, delete_allocation, device);
         }
         allocation->platform = pytorch_vulkan::platform();
         allocation->platform->throw_if_device_lost();
@@ -226,8 +247,9 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
         throw std::runtime_error("Vulkan allocation failed (" + context +
                                  "): " + error.what());
     }
-    VulkanAllocation *payload = allocation.release();
-    return at::DataPtr(payload, payload, delete_allocation, device);
+    auto core = std::shared_ptr<VulkanAllocation>(allocation.release(), delete_allocation_core);
+    auto *handle = new VulkanAllocationHandle{std::move(core)};
+    return at::DataPtr(handle, handle, delete_allocation, device);
 }
 
 void VulkanAllocator::copy_data(void *, const void *, std::size_t) const {

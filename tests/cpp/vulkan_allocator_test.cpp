@@ -109,6 +109,58 @@ void test_release_after_submission(c10::Allocator &allocator) {
            "submitted allocation was not retired after synchronization");
 }
 
+void test_allocation_lease_outlives_dataptr_and_rebind(c10::Allocator &allocator) {
+    auto &platform = *pytorch_vulkan::platform();
+    platform.synchronize_execution();
+    const auto before = platform.live_resource_snapshot().allocations;
+    auto tensor = at::empty({8}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    auto lease = pytorch_vulkan::allocation_lease(tensor.storage().data_ptr());
+    auto view = at::empty({3}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+    view.set_(tensor.storage(), 1, {3}, {1});
+    auto same_lease = pytorch_vulkan::allocation_lease(view.storage().data_ptr());
+    expect(platform.live_resource_snapshot().allocations == before + 1, "lease core counted once");
+    auto foreign = at::from_blob(tensor.data_ptr(), {8}, at::TensorOptions().dtype(at::kFloat));
+    bool rejected = false;
+    try { (void)pytorch_vulkan::allocation_lease(foreign.storage().data_ptr()); }
+    catch (const c10::Error &) { rejected = true; }
+    expect(rejected, "foreign payload lease was accepted");
+    auto empty = allocator.allocate(0);
+    auto zero_lease = pytorch_vulkan::allocation_lease(empty);
+    expect(static_cast<bool>(zero_lease), "zero-byte lease was not safe to hold");
+    tensor.resize_({32});
+    tensor = at::Tensor();
+    view = at::Tensor();
+    platform.synchronize_execution();
+    const auto during_rebind = platform.live_resource_snapshot().allocations;
+    if (during_rebind != before + 1)
+        throw std::runtime_error("old core did not survive rebind while lease held: " +
+            std::to_string(during_rebind) + " vs " + std::to_string(before + 1));
+    lease.reset(); same_lease.reset();
+    platform.synchronize_execution();
+    expect(platform.live_resource_snapshot().allocations == before,
+           "last lease did not destroy old core exactly once");
+}
+
+void test_last_allocation_lease_defers_pending_destruction(c10::Allocator &allocator) {
+    auto &platform = *pytorch_vulkan::platform();
+    platform.synchronize_execution();
+    const auto before = platform.live_resource_snapshot().allocations;
+    auto data = allocator.allocate(4096);
+    auto lease = pytorch_vulkan::allocation_lease(data);
+    auto &buffer = pytorch_vulkan::allocation_buffer(data);
+    auto &context = platform.execution_context();
+    context.begin();
+    vkCmdFillBuffer(context.command_buffer(), buffer.buffer(), 0, 4096, 0x12345678U);
+    context.submit();
+    data.clear();
+    lease.reset();
+    expect(platform.live_resource_snapshot().allocations == before + 1,
+           "last lease destroyed a core still used by submitted work");
+    context.wait();
+    expect(platform.live_resource_snapshot().allocations == before,
+           "pending core was not destroyed after synchronization");
+}
+
 void test_resize_retains_old_allocation_during_training_recording() {
     auto &platform = *pytorch_vulkan::platform();
     platform.synchronize_execution();
@@ -293,6 +345,8 @@ int main() {
         test_oversized_allocation_rejected(*allocator);
         test_copy_rejected(*allocator);
         test_release_after_submission(*allocator);
+        test_allocation_lease_outlives_dataptr_and_rebind(*allocator);
+        test_last_allocation_lease_defers_pending_destruction(*allocator);
         test_resize_retains_old_allocation_during_training_recording();
         test_set_releases_old_allocation_only_after_recorded_consumer(false);
         test_set_releases_old_allocation_only_after_recorded_consumer(true);

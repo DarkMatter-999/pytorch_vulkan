@@ -3,6 +3,7 @@
 #include "vulkan/pipeline_cache.h"
 #include "vulkan/shader_registry.h"
 #include "vulkan_buffer.h"
+#include "vulkan_async_transfer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_synchronization.h"
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -821,6 +823,85 @@ VulkanExecutionContext &VulkanPlatform::execution_context() const {
     return *execution_;
 }
 
+VulkanExecutionOps VulkanPlatform::counting_execution_ops(VulkanExecutionOps ops) const {
+    // The remaining real ops ignore cookie. Wrap only execution-context waits,
+    // not unrelated synchronous transfer paths or logical-operation counters.
+    ops.cookie = const_cast<VulkanPlatform *>(this);
+    ops.get_fence_status = [](void *cookie, VkDevice device, VkFence fence) {
+        const auto &self = *static_cast<VulkanPlatform *>(cookie);
+        if (self.completion_held()) return VK_NOT_READY;
+        return vkGetFenceStatus(device, fence);
+    };
+    ops.wait_for_fences = [](void *cookie, VkDevice device, uint32_t count,
+                             const VkFence *fences, VkBool32 all, uint64_t timeout) {
+        const auto &self = *static_cast<VulkanPlatform *>(cookie);
+        self.execution_fence_wait_count_.fetch_add(1, std::memory_order_relaxed);
+        self.wait_completion_hold();
+        return vkWaitForFences(device, count, fences, all, timeout);
+    };
+    ops.queue_wait_idle = [](void *cookie, VkQueue queue) {
+        const auto &self = *static_cast<VulkanPlatform *>(cookie);
+        self.execution_fence_wait_count_.fetch_add(1, std::memory_order_relaxed);
+        self.wait_completion_hold();
+        return vkQueueWaitIdle(queue);
+    };
+    ops.reservation_wait_begin = [](void *cookie) noexcept {
+        static_cast<VulkanPlatform *>(cookie)->transfer_reservation_wait_count_.fetch_add(
+            1, std::memory_order_relaxed);
+    };
+    return ops;
+}
+
+void VulkanPlatform::set_completion_hold_for_testing(bool hold) const {
+    // This independent mutex must never require queue/execution locks: another
+    // thread may own both while blocked in the counting wait wrapper.
+    std::lock_guard<std::mutex> lock(completion_hold_mutex_);
+    expire_completion_hold_locked();
+    if (hold && !completion_hold_.load(std::memory_order_relaxed))
+        completion_hold_deadline_ = std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(kCompletionHoldMaxMs);
+    completion_hold_.store(hold, std::memory_order_release);
+    if (!hold) completion_hold_cv_.notify_all();
+}
+
+bool VulkanPlatform::expire_completion_hold_locked() const {
+    if (completion_hold_.load(std::memory_order_relaxed) &&
+        std::chrono::steady_clock::now() >= completion_hold_deadline_) {
+        completion_hold_.store(false, std::memory_order_release);
+        ++completion_hold_expiry_count_;
+        completion_hold_cv_.notify_all();
+    }
+    return completion_hold_.load(std::memory_order_relaxed);
+}
+
+bool VulkanPlatform::completion_held() const {
+    // The disabled production path adds only this atomic load to fence polling.
+    if (!completion_hold_.load(std::memory_order_acquire)) return false;
+    std::lock_guard<std::mutex> lock(completion_hold_mutex_);
+    return expire_completion_hold_locked();
+}
+
+void VulkanPlatform::wait_completion_hold() const {
+    if (!completion_hold_.load(std::memory_order_acquire)) return;
+    std::unique_lock<std::mutex> lock(completion_hold_mutex_);
+    while (expire_completion_hold_locked())
+        completion_hold_cv_.wait_until(lock, completion_hold_deadline_);
+}
+
+std::size_t VulkanPlatform::completion_hold_expiry_count_for_testing() const {
+    std::lock_guard<std::mutex> lock(completion_hold_mutex_);
+    expire_completion_hold_locked();
+    return completion_hold_expiry_count_;
+}
+
+std::size_t VulkanPlatform::execution_fence_wait_count() const {
+    return execution_fence_wait_count_.load(std::memory_order_relaxed);
+}
+
+std::size_t VulkanPlatform::transfer_reservation_wait_count() const {
+    return transfer_reservation_wait_count_.load(std::memory_order_relaxed);
+}
+
 bool VulkanPlatform::query_execution() const {
     throw_if_device_lost();
     return execution_->query_with_flush([&] { compute_->flush_recording_locked(); });
@@ -873,9 +954,11 @@ VulkanLiveResourceSnapshot VulkanPlatform::live_resource_snapshot() const {
             compute_ == nullptr ? 0 : compute_->live_descriptor_set_count(),
             compute_ == nullptr ? 0 : compute_->pipeline_count(),
             compute_ == nullptr ? 0 : compute_->shader_module_count(),
-            pending_transfer_resources_.size(),
+            pending_transfer_resources_.size() +
+                (execution_ == nullptr ? 0 : execution_->pending_transfer_count()),
             execution_ == nullptr ? 0 : execution_->pending_count(),
-            live_allocation_count_.load(std::memory_order_relaxed)};
+            live_allocation_count_.load(std::memory_order_relaxed),
+            live_pinned_host_allocation_count_.load(std::memory_order_relaxed)};
 }
 
 void VulkanPlatform::record_allocation_created() const {
@@ -884,6 +967,14 @@ void VulkanPlatform::record_allocation_created() const {
 
 void VulkanPlatform::record_allocation_destroyed() const {
     live_allocation_count_.fetch_sub(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_pinned_host_allocation_created() const {
+    live_pinned_host_allocation_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VulkanPlatform::record_pinned_host_allocation_destroyed() const {
+    live_pinned_host_allocation_count_.fetch_sub(1, std::memory_order_relaxed);
 }
 
 bool VulkanPlatform::timestamp_queries_supported() const {
@@ -928,7 +1019,9 @@ std::mutex &VulkanPlatform::queue_mutex() const { return queue_mutex_; }
 std::mutex &VulkanPlatform::transfer_mutex() const { return transfer_mutex_; }
 
 std::size_t VulkanPlatform::pending_transfer_count() const {
-    return pending_transfer_resources_.size();
+    std::scoped_lock lock(queue_mutex_);
+    return pending_transfer_resources_.size() +
+           (execution_ == nullptr ? 0 : execution_->pending_transfer_count());
 }
 
 std::size_t VulkanPlatform::pending_compute_count() const {
@@ -1607,8 +1700,7 @@ VulkanStagingTransfer VulkanPlatform::reserve_transfer(VkDeviceSize bytes) const
     VulkanStagingTransfer transfer;
     // The callback runs inside the context's single queue phase; it keeps compute
     // submission counters correct, unlike the context's raw default submit.
-    transfer.reservation = execution_->reserve_transfer(
-        [this] { compute_->flush_recording_locked(); });
+    transfer.reservation = reserve_transfer_slot();
     // Optional per-instance fixture seam (zero in production): the allocator
     // dependency throws after a slot was granted and before any Vulkan
     // allocation. Unwinding destroys the local transaction, whose reservation
@@ -1629,6 +1721,119 @@ VulkanStagingTransfer VulkanPlatform::reserve_transfer(VkDeviceSize bytes) const
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
         std::memory_order_relaxed);
     return transfer;
+}
+
+VulkanTransferReservation VulkanPlatform::reserve_transfer_slot() const {
+    throw_if_device_lost();
+    return execution_->reserve_transfer([this] { compute_->flush_recording_locked(); });
+}
+
+VulkanCompletionId VulkanPlatform::enqueue_async_copy(VulkanAsyncCopyRequest &&request) const {
+    return enqueue_async_copy_impl(std::move(request), {});
+}
+
+VulkanCompletionId VulkanPlatform::enqueue_async_copy_impl(
+    VulkanAsyncCopyRequest &&request,
+    const std::function<void(VkCommandBuffer)> &record_override) const {
+    const auto reject = [](const char *reason) {
+        throw std::invalid_argument(std::string("Invalid async copy: ") + reason);
+    };
+    const bool device_to_device = request.kind == VulkanAsyncCopyKind::DeviceToDevice;
+    if (request.kind != VulkanAsyncCopyKind::HostToDevice &&
+        request.kind != VulkanAsyncCopyKind::DeviceToHost && !device_to_device)
+        reject("unknown kind");
+    if (request.source == VK_NULL_HANDLE || request.destination == VK_NULL_HANDLE)
+        reject("null buffer handle");
+    if (request.regions.empty() ||
+        request.regions.size() > std::numeric_limits<uint32_t>::max())
+        reject("region count out of range");
+    if (request.owners.empty())
+        reject("no owners");
+    for (const auto &owner : request.owners) {
+        if (!owner)
+            reject("null owner");
+    }
+    if (device_to_device) {
+        if (request.reservation)
+            reject("device copy cannot hold a transfer reservation");
+        if (request.before_submit || request.publish_success)
+            reject("device copy cannot carry host callbacks");
+    } else if (!request.reservation) {
+        reject("host copy requires a transfer reservation");
+    }
+    constexpr VkDeviceSize kMaxOffset = std::numeric_limits<VkDeviceSize>::max();
+    constexpr VkDeviceSize kElementBytes = sizeof(float);
+    for (const auto &region : request.regions) {
+        if (region.size == 0 || region.size % kElementBytes != 0)
+            reject("region size must be a nonzero multiple of 4 bytes");
+        if (region.srcOffset % kElementBytes != 0 || region.dstOffset % kElementBytes != 0)
+            reject("region offset must be a multiple of 4 bytes");
+        if (region.srcOffset > kMaxOffset - region.size ||
+            region.dstOffset > kMaxOffset - region.size)
+            reject("region range overflows");
+    }
+    if (request.source == request.destination) {
+        for (const auto &source_region : request.regions) {
+            for (const auto &destination_region : request.regions) {
+                if (source_region.srcOffset < destination_region.dstOffset + destination_region.size &&
+                    destination_region.dstOffset < source_region.srcOffset + source_region.size)
+                    reject("source and destination regions overlap");
+            }
+        }
+    }
+    throw_if_device_lost();
+
+    // Declared before every queue guard so callbacks drain only after the guard is gone.
+    VulkanCallbackDrainOnExit drain(*execution_);
+    const std::function<void(VkCommandBuffer)> record = [&](VkCommandBuffer command_buffer) {
+        if (record_override)
+            record_override(command_buffer);
+        else
+            record_async_copy(command_buffer, request);
+        record_copy_command();
+    };
+
+    if (device_to_device) {
+        // Made before locking: attachment failure can never drop the last lease under the lock.
+        const auto lease_copy =
+            std::make_shared<std::vector<std::shared_ptr<void>>>(request.owners);
+        {
+            std::scoped_lock lock(queue_mutex_);
+            throw_if_device_lost();
+            try {
+                compute_->record_dispatch("async-copy");
+                execution_->defer_destruction([lease_copy] {});
+                record(execution_->command_buffer());
+                compute_->current_dispatch_recorded_ = true;
+                compute_->finish_dispatch();
+            } catch (const std::exception &error) {
+                compute_->fail_recording("async-copy", error);
+            }
+        }
+        // Success only: finish_dispatch already waited in sync mode; training stays recorded.
+        request.owners.clear();
+        return 0;
+    }
+
+    if (request.before_submit)
+        request.before_submit();
+    VulkanCompletionId id = 0;
+    bool complete_before_return = false;
+    {
+        std::scoped_lock lock(queue_mutex_);
+        throw_if_device_lost();
+        compute_->throw_if_pending_batch_failure();
+        complete_before_return =
+            !async_execution_enabled_ || compute_->training_step_active();
+        id = execution_->enqueue_transfer_locked(
+            std::move(request.reservation), std::move(request.owners),
+            std::move(request.publish_success), record, true, "async-copy");
+    }
+    if (complete_before_return)
+        synchronize_execution();
+    // Success only, unlocked: a throwing wait above skips this and leaves captures to execution.
+    request.before_submit = nullptr;
+    return id;
 }
 
 VulkanTimingSnapshot VulkanPlatform::timing_snapshot() const {

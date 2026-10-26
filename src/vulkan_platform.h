@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,7 @@ class VulkanPipelineCache;
 struct PipelineCacheSnapshot;
 class VulkanBuffer;
 struct VulkanTimestampSample;
+struct VulkanAsyncCopyRequest;
 
 // Internal: an exclusive staging buffer bound to one granted transfer slot. Pass
 // `staging` as an owner to defer_transfer so it lives until publication/quarantine.
@@ -64,6 +66,7 @@ struct VulkanLiveResourceSnapshot {
     std::size_t pending_transfers = 0;
     std::size_t pending_compute = 0;
     std::size_t allocations = 0;
+    std::size_t pinned_host_allocations = 0;
 };
 
 struct VulkanTimingSnapshot {
@@ -216,6 +219,17 @@ class VulkanPlatform {
     // pressure), THEN allocates exclusive host-visible staging. Call with no queue,
     // transfer or execution lock held. Never aliases staging_buffer().
     VulkanStagingTransfer reserve_transfer(VkDeviceSize bytes) const;
+    // No locks held by caller. Reservation pressure flushes the shared compute
+    // lifecycle. Pinned routes reserve only a slot, not a staging allocation.
+    VulkanTransferReservation reserve_transfer_slot() const;
+    // Host maintenance is unlocked; host records attach→record→submit under the
+    // queue lock. D2D uses the compute lifecycle/lease callbacks, id 0 and no slot.
+    VulkanCompletionId enqueue_async_copy(VulkanAsyncCopyRequest &&request) const;
+    // Definition exists ONLY in the native transfer test translation unit. Keep
+    // this declaration unconditional so the platform class is ODR-identical.
+    VulkanCompletionId enqueue_async_copy_for_testing(
+        VulkanAsyncCopyRequest &&request,
+        const std::function<void(VkCommandBuffer)> &record_override) const;
     VulkanTimingSnapshot timing_snapshot() const;
     void reset_timing() const;
     void record_timing(VulkanTimingCategory category, double seconds) const;
@@ -235,6 +249,8 @@ class VulkanPlatform {
     VulkanLiveResourceSnapshot live_resource_snapshot() const;
     void record_allocation_created() const;
     void record_allocation_destroyed() const;
+    void record_pinned_host_allocation_created() const;
+    void record_pinned_host_allocation_destroyed() const;
     bool timestamp_queries_supported() const;
     std::string timestamp_query_support_reason() const;
     std::vector<VulkanTimestampSample> timestamp_samples() const;
@@ -243,6 +259,13 @@ class VulkanPlatform {
     std::size_t timestamp_query_in_use() const;
     bool timestamp_query_quarantined() const;
     bool async_execution_enabled() const;
+    // Test-only observation hold, never a GPU wait/event. While held tests may
+    // only enqueue, query and drop references; release BEFORE blocking public
+    // operations/host access (host acquisition otherwise repeats indefinitely).
+    void set_completion_hold_for_testing(bool hold) const;
+    std::size_t completion_hold_expiry_count_for_testing() const;
+    std::size_t execution_fence_wait_count() const;
+    std::size_t transfer_reservation_wait_count() const;
 
   private:
     using PendingTransferResources = VulkanPendingTransferResources;
@@ -251,6 +274,15 @@ class VulkanPlatform {
     bool
     record_copy_in_training_step(const std::vector<VulkanBufferCopy> &copies) const;
     friend class VulkanCompute;
+    friend class VulkanExecutionContext;
+    VulkanExecutionOps counting_execution_ops(VulkanExecutionOps ops) const;
+    bool completion_held() const;
+    void wait_completion_hold() const;
+    bool expire_completion_hold_locked() const;
+    VulkanCompletionId enqueue_async_copy_impl(
+        VulkanAsyncCopyRequest &&request,
+        const std::function<void(VkCommandBuffer)> &record_override) const;
+    static constexpr unsigned kCompletionHoldMaxMs = 20000;
 
     VkInstance instance_ = VK_NULL_HANDLE;
     mutable std::unique_ptr<VulkanCompute> compute_;
@@ -285,9 +317,17 @@ class VulkanPlatform {
     mutable std::atomic<std::size_t> compute_wait_count_{0};
     mutable std::atomic<int> device_loss_result_{static_cast<int>(VK_SUCCESS)};
     mutable std::atomic<std::size_t> live_allocation_count_{0};
+    mutable std::atomic<std::size_t> live_pinned_host_allocation_count_{0};
     // Remaining injected exclusive-staging allocation failures (fixture seam, zero
     // in production). Each wrapper reserve consumes at most one unit.
     mutable std::atomic<unsigned> staging_allocation_failures_{0};
+    mutable std::atomic<std::size_t> execution_fence_wait_count_{0};
+    mutable std::atomic<std::size_t> transfer_reservation_wait_count_{0};
+    mutable std::atomic<bool> completion_hold_{false};
+    mutable std::mutex completion_hold_mutex_;
+    mutable std::condition_variable completion_hold_cv_;
+    mutable std::chrono::steady_clock::time_point completion_hold_deadline_{};
+    mutable std::size_t completion_hold_expiry_count_ = 0;
     mutable std::unique_ptr<VulkanBuffer> staging_buffer_;
     mutable VulkanTimingCounters timing_;
 };

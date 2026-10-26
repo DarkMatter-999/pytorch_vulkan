@@ -129,6 +129,17 @@ class VulkanExecutionContext final {
     VulkanCompletionId defer_transfer(VulkanTransferReservation &&reservation,
                                       std::vector<std::shared_ptr<void>> &&owners,
                                       std::function<void()> &&publish_success = {});
+    // Caller holds queue mutex; declare VulkanCallbackDrainOnExit before that
+    // guard. Attach strongly BEFORE recording owner-referencing commands. On
+    // failure, cancel/submit persist their existing error and pump owners only
+    // after the outer queue guard is released. Cache maintenance belongs to the
+    // platform recorder/publication, not this execution-layer transaction.
+    VulkanCompletionId enqueue_transfer_locked(
+        VulkanTransferReservation &&reservation,
+        std::vector<std::shared_ptr<void>> &&owners,
+        std::function<void()> &&publish_success,
+        const std::function<void(VkCommandBuffer)> &record,
+        bool submit_now, const char *scope = "transfer");
     void begin_timestamp_scope(const char *scope);
     void end_timestamp_scope();
     VkCommandBuffer command_buffer() const;
@@ -145,6 +156,8 @@ class VulkanExecutionContext final {
     bool retain_until_completion(std::function<void()> callback);
     void retain(VkDescriptorPool descriptor_pool);
     std::size_t pending_count() const;
+    // Host records only (including publication/quarantine), not compute/ring work.
+    std::size_t pending_transfer_count() const;
     bool timestamp_queries_supported() const;
     bool timestamp_region_capacity_exhausted() const;
     std::string timestamp_query_support_reason() const;

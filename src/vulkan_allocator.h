@@ -37,6 +37,7 @@ class VulkanLabelAllocationGuard {
 void validate_allocation(const at::DataPtr &data, VkDeviceSize required_bytes,
                          const char *label);
 bool is_vulkan_allocation(const at::DataPtr &data);
+std::shared_ptr<void> allocation_lease(const at::DataPtr &data);
 VulkanBuffer &allocation_buffer(const at::DataPtr &data);
 const VulkanPlatform &allocation_platform(const at::DataPtr &data);
 bool is_validated_label_allocation(const at::DataPtr &data);

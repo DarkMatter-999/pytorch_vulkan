@@ -231,8 +231,10 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
                                                VulkanPlatform *platform)
     : VulkanExecutionContext(device, queue, command_pool) {
     platform_ = platform;
-    if (platform_ != nullptr)
+    if (platform_ != nullptr) {
         queue_mutex_ = &platform_->queue_mutex();
+        ops_ = platform_->counting_execution_ops(ops_);
+    }
     initialize_timestamp_queries();
 }
 
@@ -272,6 +274,11 @@ void VulkanExecutionContext::begin(const char *scope) {
 
 VulkanTransferReservation VulkanExecutionContext::reserve_transfer(
     const std::function<void()> &flush_locked) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+            throw std::logic_error("completion callback cannot reserve a transfer slot");
+    }
     for (;;) {
         {
             std::unique_lock<std::mutex> slots(reservation_state_->mutex);
@@ -295,13 +302,11 @@ VulkanTransferReservation VulkanExecutionContext::reserve_transfer(
         }
         // Retire only the oldest submitted transfer; this boundary owns queue serialization.
         // No slot/context lock is held while taking the queue lock or pumping.
+        // Count the actual capacity-pressure boundary, including oldest-fence
+        // waits (not merely the later CV wait). No execution/reservation lock.
+        if (ops_.reservation_wait_begin) ops_.reservation_wait_begin(ops_.cookie);
         wait_oldest_transfer(flush_locked);
         std::unique_lock<std::mutex> slots(reservation_state_->mutex);
-        if (reservation_state_->occupied >= 2 && ops_.reservation_wait_begin) {
-            slots.unlock();
-            ops_.reservation_wait_begin(ops_.cookie);
-            slots.lock();
-        }
         const uint64_t generation = reservation_state_->generation;
         reservation_state_->cv.wait(slots, [&] {
             return reservation_state_->occupied < 2 || reservation_state_->closing ||
@@ -396,6 +401,31 @@ VulkanCompletionId VulkanExecutionContext::defer_transfer(
     lock.unlock();
     notify_reservation_change();
     return operation_id;
+}
+
+VulkanCompletionId VulkanExecutionContext::enqueue_transfer_locked(
+    VulkanTransferReservation &&reservation, std::vector<std::shared_ptr<void>> &&owners,
+    std::function<void()> &&publish_success,
+    const std::function<void(VkCommandBuffer)> &record, bool submit_now, const char *scope) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+            throw std::logic_error("completion callback cannot enqueue a transfer");
+    }
+    if (!recording()) begin_locked(scope);
+    // Keep attachment outside the catch: its strong guarantee leaves all
+    // caller-owned captures intact on failure, to be destroyed unlocked.
+    const auto id = defer_transfer(std::move(reservation), std::move(owners),
+                                   std::move(publish_success));
+    try {
+        record(command_buffer());
+    } catch (...) {
+        const auto original = std::current_exception();
+        cancel_locked(); // existing Cancelled state + persistent cancel error
+        std::rethrow_exception(original);
+    }
+    if (submit_now) submit_locked(); // existing Failed/recovery/quarantine policy
+    return id;
 }
 
 void VulkanExecutionContext::begin_locked(const char *scope) {
@@ -789,7 +819,14 @@ void VulkanExecutionContext::cancel_locked() {
                 transfer->state = TransferRecord::State::Cancelled;
         notify_reservation_change();
     }
-    ready_callbacks_.splice(ready_callbacks_.end(), deferred_callbacks_);
+    // R2 can retain owners also referenced by an earlier submitted R1. Cancelling
+    // R2 proves only its own commands were discarded, not that R1 is complete.
+    bool submitted = false;
+    for (const auto &pending : ring_) submitted |= pending.submitted;
+    if (submitted)
+        completion_callbacks_.splice(completion_callbacks_.end(), deferred_callbacks_);
+    else
+        ready_callbacks_.splice(ready_callbacks_.end(), deferred_callbacks_);
     if (!ready_callbacks_.empty())
         callback_cv_.notify_all();
     try {
@@ -861,6 +898,11 @@ std::size_t VulkanExecutionContext::pending_count() const {
     count += callbacks_active_ ? 1 : 0;
     count += transfer_records_.size();
     return count;
+}
+
+std::size_t VulkanExecutionContext::pending_transfer_count() const {
+    std::scoped_lock lock(mutex_);
+    return transfer_records_.size();
 }
 
 bool VulkanExecutionContext::timestamp_queries_supported() const {

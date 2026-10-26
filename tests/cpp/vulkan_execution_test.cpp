@@ -1988,6 +1988,432 @@ void test_fake_callback_handoff_is_nonthrowing_and_preserves_owners() {
     expect(cleanup == 2048 && destroyed_owner == 1, "batch splice lost or duplicated ownership");
 }
 
+// Audit (i): cancellation of R2 cannot destroy an owner still used by R1.
+void test_fake_cancel_preserves_cleanup_for_earlier_submission() {
+    FakeExecution fake;
+    auto ops = fake_ops(fake);
+    auto sink = fake_sink(fake);
+    std::mutex queue_mutex;
+    VulkanExecutionContext context(fake_handle<VkDevice>(141), fake_handle<VkQueue>(142),
+                                   fake_handle<VkCommandPool>(143), ops, sink, queue_mutex);
+    int destroyed = 0;
+    context.begin();
+    context.submit(); // R1 remains genuinely unsignaled in this synthetic fixture.
+    context.begin(); // R2
+    expect(context.retain_until_completion([&] { ++destroyed; }), "audit callback not retained");
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        context.cancel_locked();
+    }
+    context.drain_ready_cleanup();
+    expect(destroyed == 0, "cancel R2 destroyed an owner while earlier R1 is unsignaled");
+    fake.signal_all();
+    expect(context.query_complete() && destroyed == 1, "audit cleanup did not retire exactly once");
+}
+
+// Task 2 entry witnesses: fake only below the real execution context. Removing
+// attachment-before-record, fence gating, or unlocked owner release breaks these.
+struct EnqueueFixture {
+    FakeExecution fake;
+    VulkanExecutionOps ops = fake_ops(fake);
+    VulkanExecutionQuarantineSink sink = fake_sink(fake);
+    std::mutex queue;
+    std::atomic<int> published{0}, released{0};
+    std::atomic<bool> release_unlocked{true};
+    VulkanExecutionContext context{fake_handle<VkDevice>(151), fake_handle<VkQueue>(152),
+                                   fake_handle<VkCommandPool>(153), ops, sink, queue};
+
+    std::shared_ptr<void> owner() {
+        return std::shared_ptr<void>(new int(1), [this](void *p) {
+            release_unlocked = release_unlocked && other_thread_can_lock(queue);
+            (void)context.pending_count(); // also proves the execution mutex is free
+            delete static_cast<int *>(p);
+            ++released;
+        });
+    }
+    VulkanCompletionId enqueue(bool submit = true,
+                              std::function<void(VkCommandBuffer)> record = [](VkCommandBuffer) {},
+                              std::function<void()> publish = {}) {
+        auto reservation = context.reserve_transfer();
+        std::vector<std::shared_ptr<void>> owners{owner()};
+        if (!publish) publish = [this] { ++published; };
+        std::lock_guard<std::mutex> lock(queue);
+        return context.enqueue_transfer_locked(std::move(reservation), std::move(owners),
+                                                std::move(publish), record, submit);
+    }
+    void reusable() {
+        expect(released != 0 && release_unlocked, "slot reuse preceded unlocked owner release");
+        auto a = context.reserve_transfer();
+        auto b = context.reserve_transfer();
+        expect(a && b, "safe retirement leaked transfer slots");
+    }
+    std::string error(const std::function<void()> &operation) {
+        try { operation(); } catch (const std::exception &e) { return e.what(); }
+        return {};
+    }
+    void reclaim() {
+        // Explicit synthetic completion, never a recovery policy for hardware.
+        fake.signal_all();
+        fake.quarantines[0].reset();
+        expect(released == 1 && published == 0 && release_unlocked,
+               "fixture reclaim lost quarantine ownership");
+    }
+};
+
+void test_fake_enqueue_returns_before_completion_then_publishes_once() {
+    EnqueueFixture f;
+    std::vector<std::string> events;
+    f.enqueue(true, [&](VkCommandBuffer cb) {
+        expect(cb != VK_NULL_HANDLE && f.fake.submit_calls == 0, "submit preceded recorder");
+        // One open recording + one attached transfer: only Recording can have
+        // been attached before commands (no submission exists yet).
+        expect(f.context.recording() && f.context.pending_count() == 2,
+               "recorder ran without its attached Recording transfer");
+        events.push_back("record");
+    }, [&] {
+        expect(f.context.pending_count() != 0 && !f.context.query_complete(),
+               "publication left pending list before callback finished");
+        expect(other_thread_can_lock(f.queue), "publication inherited queue lock");
+        ++f.published;
+        events.push_back("publish");
+    });
+    expect(events == std::vector<std::string>{"record"} && f.fake.submit_calls == 1,
+           "enqueue did not record then submit exactly once");
+    expect(!f.context.query_complete() && f.published == 0 && f.released == 0,
+           "enqueue returned only after completion or released pending owners");
+    f.fake.signal_all();
+    expect(f.context.query_complete() && f.published == 1 && f.released == 1,
+           "signaled enqueue did not publish then release");
+    expect(f.context.query_complete() && events == std::vector<std::string>({"record", "publish"}),
+           "publication repeated or preceded recording");
+    f.reusable();
+}
+
+void test_fake_enqueue_without_submit_joins_open_recording() {
+    EnqueueFixture f;
+    f.context.begin();
+    f.enqueue(false);
+    expect(f.fake.submit_calls == 0 && f.context.recording() && f.published == 0,
+           "submit_now=false submitted or failed to join recording");
+    f.context.submit();
+    expect(f.fake.submit_calls == 1 && f.released == 0, "explicit submit lost pending owners");
+    f.fake.signal_all();
+    expect(f.context.query_complete() && f.published == 1, "explicit submit never published");
+    f.reusable();
+}
+
+// (a) Cancelled path: caller receives original; later boundaries receive cancel error.
+void test_fake_enqueue_record_throw_cancels_and_persists() {
+    EnqueueFixture f;
+    bool recorded = false;
+    const auto original = f.error([&] {
+        f.enqueue(true, [&](VkCommandBuffer) {
+            recorded = true;
+            throw std::runtime_error("original recorder failure");
+        });
+    });
+    expect(recorded && original == "original recorder failure" && f.fake.submit_calls == 0,
+           "recorder failure did not propagate original before submission");
+    expect(f.released == 0 && f.published == 0, "cancel released owners inside queue phase");
+    const auto sticky = f.error([&] { f.context.synchronize_with_flush({}); });
+    expect(sticky == "Vulkan transfer recording was cancelled" && f.published == 0 &&
+               f.released == 1 && f.fake.quarantine_calls == 0,
+           "cancel path did not persist cancel error and safely pump owners");
+    expect(f.error([&] { f.context.query_complete(); }) == sticky, "cancel error not sticky");
+    f.reusable();
+}
+
+// (b) Failed, no idle recovery: end failure occurs before submission attempt.
+void test_fake_enqueue_end_failure_without_idle_recovery() {
+    EnqueueFixture f;
+    f.fake.end_result = VK_ERROR_UNKNOWN;
+    expect(!f.error([&] { f.enqueue(); }).empty(), "end failure accepted");
+    expect(f.fake.idle_calls == 0 && f.fake.submit_calls == 0 && f.released == 0,
+           "end failure attempted idle recovery or released under queue lock");
+    expect(!f.error([&] { f.context.synchronize(); }).empty() && f.released == 1 &&
+               f.published == 0 && f.fake.quarantine_calls == 0, "end failure did not pump Failed record");
+    f.reusable();
+}
+
+// (b) Safe submit recovery: queue idle proves release safety, never publication.
+void test_fake_enqueue_submit_failure_safe_recovery() {
+    EnqueueFixture f;
+    f.fake.submit_result = VK_ERROR_UNKNOWN;
+    const auto original = f.error([&] { f.enqueue(); });
+    expect(!original.empty() && f.fake.idle_calls == 1 && f.fake.quarantine_calls == 0,
+           "submit safe recovery policy changed");
+    expect(f.error([&] { f.context.synchronize(); }) == original && f.released == 1 &&
+               f.published == 0, "submit failure was not sticky or published");
+    f.reusable();
+}
+
+// (b) Uncertain submit recovery: retain owners and slots in quarantine.
+void test_fake_enqueue_submit_failure_uncertain_recovery() {
+    EnqueueFixture f;
+    f.fake.submit_result = f.fake.idle_result = VK_ERROR_UNKNOWN;
+    expect(!f.error([&] { f.enqueue(); }).empty() && f.fake.quarantine_calls == 1 &&
+               f.released == 0 && f.published == 0, "uncertain submit did not quarantine");
+    expect(f.fake.quarantines[0]->transfer_records.front()->state ==
+               VulkanTransferRecord::State::Quarantined, "uncertain record state not Quarantined");
+    expect_rejected([&] { f.context.reserve_transfer(); }, "quarantine admitted reservations");
+    f.reclaim();
+}
+
+// (c) Safe status recovery retains the existing accepted policy.
+void test_fake_enqueue_status_failure_safe_recovery() {
+    EnqueueFixture f;
+    f.enqueue();
+    f.fake.statuses = {VK_ERROR_UNKNOWN};
+    const auto first = f.error([&] { f.context.query_complete(); });
+    expect(!first.empty() && f.fake.idle_calls == 1 && f.fake.quarantine_calls == 0 &&
+               f.published == 0 && f.released == 1, "safe status recovery changed");
+    expect(f.error([&] { f.context.query_complete(); }) == first, "status failure not sticky");
+    f.reusable();
+}
+
+// (c) Uncertain status recovery, distinct from the successful idle-recovery case.
+void test_fake_enqueue_status_failure_uncertain_recovery() {
+    EnqueueFixture f;
+    f.enqueue();
+    f.fake.statuses = {VK_ERROR_UNKNOWN};
+    f.fake.idle_result = VK_ERROR_UNKNOWN;
+    expect(!f.error([&] { f.context.query_complete(); }).empty() &&
+               f.fake.quarantine_calls == 1 && f.released == 0 && f.published == 0,
+           "uncertain status did not retain owners");
+    expect_rejected([&] { f.context.reserve_transfer(); }, "uncertain status freed a slot");
+    f.reclaim();
+}
+
+// (c) Device loss invalidates directly, without safe idle-recovery publication.
+void test_fake_enqueue_fence_device_loss_quarantines() {
+    EnqueueFixture f;
+    f.enqueue();
+    f.fake.fence_overrides[f.fake.submitted_fences[0]] = VK_ERROR_DEVICE_LOST;
+    expect(!f.error([&] { f.context.query_complete(); }).empty() &&
+               f.fake.quarantine_calls == 1 && f.fake.idle_calls == 0 &&
+               f.released == 0 && f.published == 0, "device loss released or published");
+    expect_rejected([&] { f.context.reserve_transfer(); }, "device loss freed a slot");
+    f.reclaim();
+}
+
+// (d) Publication fails, destination stays incomplete; safe owner release continues.
+void test_fake_enqueue_publication_failure_is_sticky() {
+    EnqueueFixture f;
+    f.enqueue(true, [](VkCommandBuffer) {}, [&] {
+        ++f.published;
+        throw std::runtime_error("enqueue publish failed");
+    });
+    f.fake.signal_all();
+    expect(f.error([&] { f.context.query_complete(); }) == "enqueue publish failed" &&
+               f.released == 1 && f.published == 1, "publication failure lost safe cleanup");
+    expect(f.error([&] { f.context.synchronize(); }) == "enqueue publish failed" &&
+               f.error([&] { f.context.query_complete(); }) == "enqueue publish failed" &&
+               f.published == 1, "failed destination reported complete or republished");
+    f.reusable();
+}
+
+// (f) Both genuinely unsignaled fakes hold slots through the last-owner destructor.
+void test_fake_enqueue_backpressure_waits_for_owner_release() {
+    EnqueueFixture f;
+    ControlledGate gate;
+    JoinedFakeWorkers workers(gate, f.fake);
+    f.fake.block_wait = true;
+    auto first = f.context.reserve_transfer();
+    std::vector<std::shared_ptr<void>> owners{
+        std::shared_ptr<void>(new int(1), [&](void *p) {
+            expect(other_thread_can_lock(f.queue), "capacity destructor inherited queue lock");
+            gate.pause();
+            delete static_cast<int *>(p);
+            ++f.released;
+        })};
+    std::function<void()> action = [&] { ++f.published; };
+    {
+        std::lock_guard<std::mutex> lock(f.queue);
+        f.context.enqueue_transfer_locked(std::move(first), std::move(owners), std::move(action),
+                                         [](VkCommandBuffer) {}, true);
+    }
+    f.enqueue();
+    std::atomic<bool> returned{false};
+    workers.spawn([&] {
+        auto third = f.context.reserve_transfer();
+        expect(f.released >= 1, "slot admitted before last-owner destructor returned");
+        returned = true;
+    });
+    {
+        std::unique_lock<std::mutex> lock(f.fake.mutex);
+        expect(f.fake.cv.wait_for(lock, std::chrono::seconds(5), [&] {
+            return f.fake.reservation_waits != 0 || f.fake.worker_failed;
+        }) && !f.fake.worker_failed, "third enqueue never reached reservation backpressure");
+    }
+    expect(!returned && f.released == 0 && f.published == 0 && f.fake.submit_calls == 2,
+           "backpressure bypassed genuinely unsignaled ring bound");
+    f.fake.signal_all();
+    {
+        std::unique_lock<std::mutex> lock(gate.mutex);
+        expect(gate.cv.wait_for(lock, std::chrono::seconds(5), [&] {
+            return gate.entered || gate.failed;
+        }) && !gate.failed, "owner destructor did not reach controlled pause within 5s");
+    }
+    expect(!returned && f.released == 0, "slot released before paused owner destruction");
+    gate.open();
+    workers.join();
+    f.context.synchronize();
+    expect(returned && f.released == 2 && f.published == 2 && f.fake.submit_calls == 2,
+           "backpressure did not retire bounded enqueues exactly once");
+    f.reusable();
+}
+
+// (g) Reject callback re-entry even when reservation capacity is available.
+void test_fake_enqueue_callback_reentry_rejected() {
+    EnqueueFixture f;
+    auto spare = f.context.reserve_transfer();
+    bool reserve_rejected = false, enqueue_rejected = false;
+    f.enqueue(true, [](VkCommandBuffer) {}, [&] {
+        try { auto token = f.context.reserve_transfer(); }
+        catch (const std::logic_error &) { reserve_rejected = true; }
+        std::vector<std::shared_ptr<void>> owners;
+        std::function<void()> publish;
+        std::lock_guard<std::mutex> lock(f.queue);
+        try {
+            f.context.enqueue_transfer_locked(std::move(spare), std::move(owners),
+                                             std::move(publish), [](VkCommandBuffer) {}, true);
+        } catch (const std::logic_error &) { enqueue_rejected = true; }
+        ++f.published;
+    });
+    spare = VulkanTransferReservation{}; // leave free capacity during the callback
+    f.fake.signal_all();
+    expect(f.context.query_complete() && reserve_rejected && enqueue_rejected,
+           "completion callback re-entered enqueue/reservation");
+    f.reusable();
+}
+
+// (h) Last-owner destruction may retain cleanup through another pending record.
+void test_fake_enqueue_owner_destructor_retains_without_recursing() {
+    EnqueueFixture f;
+    int cleanup = 0;
+    bool retained = false, incomplete = false;
+    auto reservation = f.context.reserve_transfer();
+    std::vector<std::shared_ptr<void>> owners{
+        std::shared_ptr<void>(new int(1), [&](void *p) {
+            expect(other_thread_can_lock(f.queue), "retaining destructor inherited queue lock");
+            retained = f.context.retain_until_completion([&] { ++cleanup; });
+            incomplete = !f.context.query_complete();
+            f.context.drain_ready_cleanup(); // must not recurse into this active pump
+            delete static_cast<int *>(p);
+            ++f.released;
+        })};
+    std::function<void()> action = [&] { ++f.published; };
+    {
+        std::lock_guard<std::mutex> lock(f.queue);
+        f.context.enqueue_transfer_locked(std::move(reservation), std::move(owners),
+                                         std::move(action), [](VkCommandBuffer) {}, true);
+    }
+    f.enqueue();
+    f.fake.fences[f.fake.submitted_fences[0]] = true;
+    expect(!f.context.query_complete() && retained && incomplete && cleanup == 0 && f.released == 1,
+           "last-owner retention recursed or ignored later pending work");
+    f.fake.signal_all();
+    expect(f.context.query_complete() && cleanup == 1 && f.released == 2,
+           "retained destructor cleanup did not drain exactly once");
+    f.reusable();
+}
+
+void test_fake_enqueue_attachment_failure_preserves_inputs() {
+    EnqueueFixture f;
+    auto reservation = f.context.reserve_transfer();
+    std::vector<std::shared_ptr<void>> owners{f.owner()};
+    std::function<void()> action = [&] { ++f.published; };
+    bool recorded = false;
+    f.fake.fail_attachment_allocations = 1;
+    {
+        std::lock_guard<std::mutex> lock(f.queue);
+        expect_rejected([&] {
+            f.context.enqueue_transfer_locked(std::move(reservation), std::move(owners),
+                std::move(action), [&](VkCommandBuffer) { recorded = true; }, true);
+        }, "forced enqueue attachment failure not surfaced");
+    }
+    expect(reservation && owners.size() == 1 && action && !recorded && f.released == 0,
+           "failed attachment consumed inputs or recorded unowned commands");
+    f.context.cancel();
+    owners.clear();
+    reservation = VulkanTransferReservation{};
+    f.reusable();
+}
+
+// HS: real tiny copy, but completion observation is synthetic, NOT proof that
+// the hardware fence remained unsignaled. Never perform blocking host access
+// while held: enqueue, query, drop references, release, then synchronize/read.
+void test_platform_completion_hold_and_real_wait_counter(VulkanPlatform &platform) {
+    auto &context = platform.execution_context();
+    platform.synchronize_execution();
+    constexpr auto host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    auto source = std::make_shared<VulkanBuffer>(platform, 2 * sizeof(float), host);
+    auto destination = std::make_shared<VulkanBuffer>(platform, 2 * sizeof(float), host);
+    const float seed[] = {2.0F, 7.0F};
+    source->write(seed, sizeof(seed));
+    std::weak_ptr<VulkanBuffer> weak = source;
+    int published = 0;
+    auto reservation = context.reserve_transfer();
+    std::vector<std::shared_ptr<void>> owners{source, destination};
+    std::function<void()> publish = [&] { ++published; };
+    const auto waits = platform.execution_fence_wait_count();
+    const auto pressure = platform.transfer_reservation_wait_count();
+    const auto start = std::chrono::steady_clock::now();
+    platform.set_completion_hold_for_testing(true);
+    try {
+        {
+            std::lock_guard<std::mutex> lock(platform.queue_mutex());
+            context.enqueue_transfer_locked(std::move(reservation), std::move(owners),
+                std::move(publish), [&](VkCommandBuffer cb) {
+                    VkBufferCopy copy{0, 0, sizeof(seed)};
+                    vkCmdCopyBuffer(cb, source->buffer(), destination->buffer(), 1, &copy);
+                    vulkan_record_memory_barrier(cb, vulkan_host_read_spec());
+                }, true);
+        }
+        source.reset();
+        expect(!platform.query_execution() && published == 0 && !weak.expired(),
+               "hold did not retain owners and suppress observed completion");
+        expect(platform.execution_fence_wait_count() == waits &&
+                   platform.transfer_reservation_wait_count() == pressure,
+               "query or unpressured enqueue counted a wait");
+        expect(std::chrono::steady_clock::now() - start < std::chrono::seconds(5),
+               "hold state transition exceeded 5s bound");
+    } catch (...) {
+        platform.set_completion_hold_for_testing(false);
+        throw;
+    }
+    platform.set_completion_hold_for_testing(false);
+    const auto release = std::chrono::steady_clock::now();
+    platform.synchronize_execution();
+    expect(std::chrono::steady_clock::now() - release < std::chrono::seconds(5),
+           "post-release completion exceeded 5s bound");
+    expect(platform.execution_fence_wait_count() == waits + 1 && published == 1 && weak.expired(),
+           "real wait wrapper failed to count or retire once");
+    expect(platform.completion_hold_expiry_count_for_testing() == 0, "completion hold watchdog expired");
+    float actual[2]{};
+    destination->read(actual, sizeof(actual));
+    expect(actual[0] == 2.0F && actual[1] == 7.0F, "held real copy lost CPU seed");
+
+    // H: with hold OFF, real capacity backpressure must count the wait even
+    // when the oldest real fence already completed before the CPU reached it.
+    for (int i = 0; i < 2; ++i) {
+        auto slot = context.reserve_transfer();
+        std::vector<std::shared_ptr<void>> retained{destination};
+        std::function<void()> done;
+        std::lock_guard<std::mutex> lock(platform.queue_mutex());
+        context.enqueue_transfer_locked(std::move(slot), std::move(retained), std::move(done),
+            [&](VkCommandBuffer cb) {
+                vulkan_record_memory_barrier(cb, vulkan_transfer_ready_spec());
+                vkCmdFillBuffer(cb, destination->buffer(), 0, sizeof(seed), 0);
+            }, true);
+    }
+    auto third = context.reserve_transfer();
+    expect(platform.transfer_reservation_wait_count() == pressure + 1 &&
+               platform.execution_fence_wait_count() == waits + 2,
+           "real reservation/fence wait counter missed capacity-pressure boundary");
+    platform.synchronize_execution();
+}
+
 void test_platform_exclusive_staging_reservation(VulkanPlatform &platform) {
     auto &context = platform.execution_context();
     expect_rejected([&] { (void)platform.reserve_transfer(0); },
@@ -3111,8 +3537,9 @@ void run_native(const char *name, const std::function<void()> &test) {
 
 int main(int argc, char **argv) {
     try {
-        if (argc >= 2 && std::string(argv[1]) == "--fake-only") {
-            const std::string selected = argc == 3 ? argv[2] : "all";
+        {
+            const bool fake_only = argc >= 2 && std::string(argv[1]) == "--fake-only";
+            const std::string selected = fake_only && argc == 3 ? argv[2] : "all";
             bool found = false;
             const auto run = [&](const char *name, void (*test)()) {
                 if (selected != "all" && selected != name) return;
@@ -3127,6 +3554,21 @@ int main(int argc, char **argv) {
             run("barrier-specs", test_shared_barrier_descriptors);
             run("errors", test_controlled_cleanup_errors_are_persistent_and_nonblocking_to_cleanup);
             run("transfer-success", test_fake_transfer_record_success_only_publication);
+            run("cancel-audit", test_fake_cancel_preserves_cleanup_for_earlier_submission);
+            run("enqueue-order", test_fake_enqueue_returns_before_completion_then_publishes_once);
+            run("enqueue-open", test_fake_enqueue_without_submit_joins_open_recording);
+            run("enqueue-record-throw", test_fake_enqueue_record_throw_cancels_and_persists);
+            run("enqueue-end-failure", test_fake_enqueue_end_failure_without_idle_recovery);
+            run("enqueue-submit-safe", test_fake_enqueue_submit_failure_safe_recovery);
+            run("enqueue-submit-uncertain", test_fake_enqueue_submit_failure_uncertain_recovery);
+            run("enqueue-status-safe", test_fake_enqueue_status_failure_safe_recovery);
+            run("enqueue-status-uncertain", test_fake_enqueue_status_failure_uncertain_recovery);
+            run("enqueue-device-loss", test_fake_enqueue_fence_device_loss_quarantines);
+            run("enqueue-publish-throw", test_fake_enqueue_publication_failure_is_sticky);
+            run("enqueue-pressure", test_fake_enqueue_backpressure_waits_for_owner_release);
+            run("enqueue-reentry", test_fake_enqueue_callback_reentry_rejected);
+            run("enqueue-owner-retain", test_fake_enqueue_owner_destructor_retains_without_recursing);
+            run("enqueue-attach-failure", test_fake_enqueue_attachment_failure_preserves_inputs);
             run("host-access-publication", test_fake_host_access_publishes_work_completed_by_own_flush);
             run("transfer-cancel-errors", test_fake_transfer_cancel_and_failed_submit_never_publish);
             run("transfer-fence-errors", test_fake_transfer_fence_error_recovery_and_quarantine);
@@ -3158,7 +3600,7 @@ int main(int argc, char **argv) {
             run("flush-error-cleanup", test_fake_flush_failure_preserves_error_and_safe_cleanup);
             expect(found, "unknown fake-only case");
             std::cout << "Controlled execution-ops tests passed\n";
-            return 0;
+            if (fake_only) return 0;
         }
         std::cout << "START platform-context-initialization\n" << std::flush;
         const auto init_start = std::chrono::steady_clock::now();
@@ -3192,6 +3634,8 @@ int main(int argc, char **argv) {
                        [&] { test_timestamp_capacity_query(platform); });
             run_native("test_platform_exclusive_staging_reservation",
                        [&] { test_platform_exclusive_staging_reservation(platform); });
+            run_native("test_platform_completion_hold_and_real_wait_counter",
+                       [&] { test_platform_completion_hold_and_real_wait_counter(platform); });
             run_native("test_platform_staging_allocation_rollback",
                        [] { test_platform_staging_allocation_rollback(); });
             run_native(

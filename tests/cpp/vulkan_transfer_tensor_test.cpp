@@ -5,16 +5,22 @@
 #include "vulkan/operators/pooling.h"
 #include "vulkan/operators/reduction.h"
 #include "vulkan_allocator.h"
+#include "vulkan_async_transfer.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
+#include "vulkan_device_guard.h"
 #include "vulkan_layout.h"
 #include "vulkan_platform.h"
+#include "vulkan_pinned_allocator.h"
 #include "vulkan_transfer.h"
 
 #include <ATen/ATen.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -24,6 +30,14 @@
 #include <thread>
 #include <type_traits>
 #include <vector>
+
+// Defined in this native target only. The library has one identical class
+// definition in all TUs, and no Python/production definition of this overload.
+VulkanCompletionId VulkanPlatform::enqueue_async_copy_for_testing(
+    VulkanAsyncCopyRequest &&request,
+    const std::function<void(VkCommandBuffer)> &record_override) const {
+    return enqueue_async_copy_impl(std::move(request), record_override);
+}
 
 namespace pytorch_vulkan {
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
@@ -57,6 +71,569 @@ void expect_error(const std::function<void()> &operation, const char *text) {
         return;
     }
     throw std::runtime_error("Vulkan transfer accepted invalid input");
+}
+
+void test_async_copy_rejects_empty_request() {
+    expect_error([&] { pytorch_vulkan::platform()->enqueue_async_copy({}); },
+                 "Invalid async copy");
+}
+
+using Clock = std::chrono::steady_clock;
+constexpr VkDeviceSize kAsyncBytes = 2 * sizeof(float);
+constexpr auto kHostMemory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+// Native qualification must destroy the cached platform while validation-layer
+// dispatch state is alive, not during libc atexit. Declared before main's try so
+// all test locals unwind first on both normal and exception returns. Weak-only
+// observation cannot itself delay destruction; expiry proves shutdown really
+// destroyed the platform instead of leaving a strong owner for late atexit.
+class NativePlatformShutdown {
+  public:
+    void observe(const std::shared_ptr<VulkanPlatform> &platform) {
+        platform_ = platform;
+        observed_ = true;
+    }
+    ~NativePlatformShutdown() {
+        pytorch_vulkan::shutdown_platform();
+        if (!platform_.expired()) {
+            std::cerr << "STOP: native cached platform still strongly owned at exit\n";
+            std::abort();
+        }
+        if (observed_)
+            std::cout << "native-main-shutdown cached-platform-destroyed-before-exit\n";
+    }
+  private:
+    std::weak_ptr<VulkanPlatform> platform_;
+    bool observed_ = false;
+};
+
+// HS is synthetic completion observation on real hardware, not an unsignaled
+// hardware fence. Every finalizer releases and asserts zero expiries, including
+// exceptional exits. Never synchronize/read while held.
+class AsyncHold {
+  public:
+    explicit AsyncHold(const VulkanPlatform &platform) : platform_(platform) {
+        platform_.set_completion_hold_for_testing(true);
+    }
+    ~AsyncHold() { release(); }
+    void release() {
+        platform_.set_completion_hold_for_testing(false);
+        if (platform_.completion_hold_expiry_count_for_testing() != 0) {
+            std::cerr << "STOP: completion hold watchdog expired\n";
+            std::abort();
+        }
+    }
+  private:
+    const VulkanPlatform &platform_;
+};
+
+struct AsyncPinned {
+    VulkanPinnedHostAllocator allocator;
+    c10::Storage storage;
+    VulkanPinnedHostRange range;
+    explicit AsyncPinned(const std::shared_ptr<VulkanPlatform> &platform,
+                         VulkanPinnedHostTestOps ops = {})
+        : allocator(platform, ops),
+          storage(c10::Storage::use_byte_size_t(), 64, &allocator, false) {
+        auto *interior = static_cast<char *>(storage.mutable_data()) + sizeof(float);
+        expect(vulkan_pinned_host_range(storage, interior, kAsyncBytes, &range),
+               "async pinned interior range failed");
+        expect(range.offset == sizeof(float), "pinned interior offset lost");
+    }
+    void seed(float x = 2.0F, float y = 7.0F) {
+        const float values[] = {x, y};
+        std::memcpy(static_cast<char *>(storage.mutable_data()) + range.offset,
+                    values, sizeof(values));
+    }
+    void expect_values(float x = 2.0F, float y = 7.0F) const {
+        float actual[2]{};
+        std::memcpy(actual, static_cast<const char *>(storage.data()) + range.offset,
+                    sizeof(actual));
+        expect(actual[0] == x && actual[1] == y, "pinned async result != CPU oracle");
+    }
+};
+
+VulkanAsyncCopyRequest host_request(
+    const VulkanPlatform &platform, VulkanAsyncCopyKind kind,
+    const VulkanPinnedHostRange &host, const std::shared_ptr<VulkanBuffer> &device,
+    VkDeviceSize device_offset = sizeof(float)) {
+    VulkanAsyncCopyRequest request;
+    request.kind = kind;
+    request.source = kind == VulkanAsyncCopyKind::HostToDevice ? host.buffer->buffer() : device->buffer();
+    request.destination = kind == VulkanAsyncCopyKind::HostToDevice ? device->buffer() : host.buffer->buffer();
+    request.regions = kind == VulkanAsyncCopyKind::HostToDevice
+        ? std::vector<VkBufferCopy>{{host.offset, device_offset, host.bytes}}
+        : std::vector<VkBufferCopy>{{device_offset, host.offset, host.bytes}};
+    request.reservation = platform.reserve_transfer_slot();
+    request.owners = {host.lease, device};
+    if (kind == VulkanAsyncCopyKind::HostToDevice)
+        request.before_submit = [host] { host.buffer->flush_range(host.offset, host.bytes); };
+    else
+        request.publish_success = [host] { host.buffer->invalidate_range(host.offset, host.bytes); };
+    return request;
+}
+
+VulkanAsyncCopyRequest device_request(const std::shared_ptr<VulkanBuffer> &source,
+                                      const std::shared_ptr<VulkanBuffer> &destination) {
+    VulkanAsyncCopyRequest request;
+    request.kind = VulkanAsyncCopyKind::DeviceToDevice;
+    request.source = source->buffer();
+    request.destination = destination->buffer();
+    request.regions = {{0, 0, kAsyncBytes}};
+    request.owners = {source, destination};
+    return request;
+}
+
+void test_async_pinned_offsets_and_publication() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    AsyncPinned source(p), destination(p);
+    source.seed();
+    auto device = std::make_shared<VulkanBuffer>(*p, 64, kHostMemory);
+    auto h2d = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, device);
+    const auto waits = p->execution_fence_wait_count(), transfer_waits = p->transfer_wait_count();
+    AsyncHold hold(*p);
+    const auto start = Clock::now();
+    expect(p->enqueue_async_copy(std::move(h2d)) != 0, "host completion id is zero");
+    expect(p->live_resource_snapshot().pending_transfers == 1,
+           "H2D did not retain one pending transfer");
+    expect(p->execution_fence_wait_count() == waits && p->transfer_wait_count() == transfer_waits,
+           "H2D enqueue waited unexpectedly");
+    expect(!p->query_execution(), "held H2D query reported complete");
+    expect(Clock::now() - start < std::chrono::seconds(5), "H2D held transition exceeded 5s");
+    hold.release();
+    p->synchronize_execution();
+    float actual[2]{};
+    device->read(actual, sizeof(actual), sizeof(float));
+    expect(actual[0] == 2.0F && actual[1] == 7.0F, "H2D offsets lost CPU seed");
+    expect(p->live_resource_snapshot().pending_transfers == 0, "H2D did not retire");
+    expect(p->query_execution(), "released H2D observation did not resume");
+
+    unsigned published = 0;
+    auto d2h = host_request(*p, VulkanAsyncCopyKind::DeviceToHost, destination.range, device);
+    const auto invalidate = d2h.publish_success;
+    d2h.publish_success = [&, invalidate] {
+        expect(p->queue_mutex().try_lock(), "publication held queue lock");
+        p->queue_mutex().unlock();
+        invalidate();
+        ++published;
+        expect(!p->query_execution(), "query completed within publication");
+    };
+    AsyncHold read_hold(*p);
+    p->enqueue_async_copy(std::move(d2h));
+    expect(!p->query_execution() && published == 0, "D2H published while held");
+    read_hold.release();
+    p->synchronize_execution();
+    expect(published == 1 && p->query_execution(), "D2H did not publish exactly once");
+    destination.expect_values();
+}
+
+struct AsyncMaintenance {
+    const VulkanPlatform *platform;
+    unsigned flushes = 0, invalidates = 0;
+    std::size_t copies_before = 0, submissions_before = 0;
+    VkMappedMemoryRange flushed{}, invalidated{};
+    static VkResult flush(void *cookie, VkDevice device, uint32_t n,
+                          const VkMappedMemoryRange *ranges) {
+        auto &c = *static_cast<AsyncMaintenance *>(cookie);
+        expect(c.platform->queue_mutex().try_lock(), "flush ran under queue lock");
+        c.platform->queue_mutex().unlock();
+        expect(c.platform->copy_command_count() == c.copies_before &&
+                   c.platform->compute_submitted_count() == c.submissions_before,
+               "flush ran after recording/submission");
+        ++c.flushes;
+        expect(n == 1, "flush range count != 1");
+        c.flushed = ranges[0];
+        return vkFlushMappedMemoryRanges(device, n, ranges);
+    }
+    static VkResult invalidate(void *cookie, VkDevice device, uint32_t n,
+                               const VkMappedMemoryRange *ranges) {
+        auto &c = *static_cast<AsyncMaintenance *>(cookie);
+        expect(c.platform->queue_mutex().try_lock(), "invalidate ran under queue lock");
+        c.platform->queue_mutex().unlock();
+        ++c.invalidates;
+        expect(n == 1, "invalidate range count != 1");
+        c.invalidated = ranges[0];
+        return vkInvalidateMappedMemoryRanges(device, n, ranges);
+    }
+    VulkanPinnedHostTestOps ops() {
+        VulkanPinnedHostTestOps ops;
+        ops.map.cookie = this;
+        ops.map.flush = flush;
+        ops.map.invalidate = invalidate;
+        ops.map.override_coherent_for_testing = true;
+        ops.map.coherent_for_testing = false;
+        return ops;
+    }
+    void checkpoint() {
+        copies_before = platform->copy_command_count();
+        submissions_before = platform->compute_submitted_count();
+    }
+    void check_range(const VkMappedMemoryRange &range, const VulkanPinnedHostRange &host) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(platform->physical_device(), &properties);
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(platform->device(), host.buffer->buffer(), &requirements);
+        const auto atom = properties.limits.nonCoherentAtomSize;
+        const auto begin = host.offset / atom * atom;
+        const auto end = std::min(requirements.size,
+            ((host.offset + host.bytes + atom - 1) / atom) * atom);
+        // Accepted primitive uses VK_WHOLE_SIZE when the aligned cover reaches
+        // allocation end; this is the exact same byte cover, not a larger range.
+        const auto size = end == requirements.size ? VK_WHOLE_SIZE : end - begin;
+        expect(range.offset == begin && range.size == size,
+               "noncoherent range not exact atom-aligned cover");
+    }
+};
+
+void test_async_synthetic_maintenance_real_queue() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    AsyncMaintenance counts{p.get()};
+    AsyncPinned source(p, counts.ops()), destination(p, counts.ops());
+    source.seed();
+    auto device = std::make_shared<VulkanBuffer>(*p, 64, kHostMemory);
+    counts.checkpoint();
+    auto request = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, device);
+    AsyncHold hold(*p);
+    p->enqueue_async_copy(std::move(request));
+    expect(counts.flushes == 1 && counts.invalidates == 0, "H2D maintenance counts wrong");
+    expect(p->copy_command_count() == counts.copies_before + 1 &&
+               p->compute_submitted_count() == counts.submissions_before + 1,
+           "flush witness did not actually record/submit");
+    expect(!p->query_execution(), "synthetic maintenance hold not active");
+    counts.check_range(counts.flushed, source.range);
+    hold.release();
+    p->synchronize_execution();
+    auto readback = host_request(*p, VulkanAsyncCopyKind::DeviceToHost, destination.range, device);
+    AsyncHold second(*p);
+    p->enqueue_async_copy(std::move(readback));
+    expect(!p->query_execution() && counts.invalidates == 0, "invalidate ran before release");
+    second.release();
+    p->synchronize_execution();
+    expect(counts.flushes == 1 && counts.invalidates == 1, "success maintenance not exactly once");
+    counts.check_range(counts.invalidated, destination.range);
+    destination.expect_values();
+}
+
+void test_async_maintenance_failures() {
+    // Dedicated instance: a recorder cancellation intentionally leaves a sticky
+    // execution error. No GPU commands are recorded by the throwing override.
+    auto p = std::make_shared<VulkanPlatform>(true);
+    AsyncMaintenance counts{p.get()};
+    AsyncPinned source(p, counts.ops());
+    source.seed();
+    auto device = std::make_shared<VulkanBuffer>(*p, 64, kHostMemory);
+    counts.checkpoint();
+    {
+        auto invalid = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, device);
+        invalid.regions.clear();
+        expect_error([&] { p->enqueue_async_copy(std::move(invalid)); }, "Invalid async copy");
+        expect(counts.flushes == 0 && counts.invalidates == 0, "validation failure ran maintenance");
+    }
+    for (unsigned bad = 0; bad < 7; ++bad) {
+        auto invalid = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, device);
+        if (bad == 0) invalid.source = VK_NULL_HANDLE;
+        if (bad == 1) invalid.regions[0].size = 0;
+        if (bad == 2) invalid.regions[0].srcOffset = 1;
+        if (bad == 3) invalid.regions[0].dstOffset = std::numeric_limits<VkDeviceSize>::max() - 3;
+        if (bad == 4) invalid.owners.clear();
+        if (bad == 5) invalid.reservation = {};
+        if (bad == 6) invalid.kind = static_cast<VulkanAsyncCopyKind>(99);
+        expect_error([&] { p->enqueue_async_copy(std::move(invalid)); }, "Invalid async copy");
+        expect(counts.flushes == 0 && counts.invalidates == 0 && p->copy_command_count() == 0,
+               "invalid request performed maintenance or recorded");
+    }
+    {
+        auto snapshot = p->reserve_transfer(8);
+        expect_error([&] { const float seed[] = {2, 7}; snapshot.staging->write(seed, 8, 4); }, "outside");
+        expect(counts.flushes == 0, "snapshot failure ran pinned flush");
+    }
+    {
+        auto pre = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, device);
+        pre.before_submit = [] { throw std::runtime_error("injected host maintenance failure"); };
+        expect_error([&] { p->enqueue_async_copy(std::move(pre)); }, "host maintenance failure");
+        expect(p->copy_command_count() == 0 && counts.invalidates == 0,
+               "maintenance failure recorded/published");
+    }
+    auto cancel = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, device);
+    cancel.publish_success = [range = source.range] {
+        range.buffer->invalidate_range(range.offset, range.bytes);
+    };
+    expect_error([&] {
+        p->enqueue_async_copy_for_testing(std::move(cancel), [](VkCommandBuffer) {
+            throw std::runtime_error("injected async recorder failure");
+        });
+    }, "injected async recorder failure");
+    expect(counts.flushes == 1 && counts.invalidates == 0 &&
+               p->copy_command_count() == 0 && p->compute_submitted_count() == 0,
+           "cancel maintenance counts not flush=1 invalidate=0");
+    counts.check_range(counts.flushed, source.range);
+    expect(p->live_resource_snapshot().pending_transfers == 0, "cancel retained transfer slot");
+}
+
+void test_async_d2d_batching_and_slots() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    auto a = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    auto b = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    auto c = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    const float seed[] = {2, 7};
+    a->write(seed, sizeof(seed));
+    const auto waits = p->execution_fence_wait_count(), tw = p->transfer_wait_count();
+    AsyncHold hold(*p);
+    expect(p->enqueue_async_copy(device_request(a, b)) == 0, "D2D allocated a transfer id");
+    p->enqueue_async_copy(device_request(b, c));
+    expect(!p->query_execution(), "held D2D reported completion");
+    auto slot1 = p->reserve_transfer_slot(), slot2 = p->reserve_transfer_slot();
+    expect(bool(slot1) && bool(slot2) && p->live_resource_snapshot().pending_transfers == 0,
+           "D2D consumed host transfer slots");
+    expect(p->execution_fence_wait_count() == waits && p->transfer_wait_count() == tw,
+           "D2D enqueue/query waited");
+    slot1 = {}; slot2 = {};
+    hold.release();
+    p->synchronize_execution();
+    float actual[2]{}; c->read(actual, sizeof(actual));
+    expect(actual[0] == 2 && actual[1] == 7, "chained D2D lost data");
+    const auto submits = p->compute_submitted_count();
+    AsyncHold batch(*p);
+    for (unsigned i = 0; i < 17; ++i) p->enqueue_async_copy(device_request(a, b));
+    expect(p->compute_submitted_count() >= submits + 1, "17 D2D exceeded shared flush bound");
+    expect(!p->query_execution(), "held D2D batch completed");
+    batch.release();
+    p->synchronize_execution();
+    b->read(actual, sizeof(actual));
+    expect(actual[0] == 2 && actual[1] == 7, "D2D flush bound lost data");
+
+    const auto cpu = at::tensor({2.0F, 7.0F});
+    auto input = at::empty_like(cpu, cpu.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, cpu, false);
+    const auto mixed_submits = p->compute_submitted_count();
+    AsyncHold mixed(*p);
+    for (unsigned i = 0; i < 15; ++i) p->enqueue_async_copy(device_request(a, b));
+    auto output = at::add(input, 1.0F);
+    expect(p->compute_submitted_count() == mixed_submits + 1,
+           "compute and D2D did not share the SAME 16-dispatch bound");
+    expect(!p->query_execution(), "mixed bound not held");
+    mixed.release(); p->synchronize_execution();
+    auto output_cpu = at::empty_like(cpu);
+    pytorch_vulkan::copy_tensor(output_cpu, output, false);
+    expect(output_cpu.equal(cpu + 1), "mixed batch lost compute output");
+}
+
+void test_async_d2d_shutdown_drains_unsubmitted_leases() {
+    auto p = std::make_shared<VulkanPlatform>(true);
+    auto a = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    auto b = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    const float seed[] = {2, 7}; a->write(seed, sizeof(seed));
+    std::weak_ptr<VulkanBuffer> wa = a, wb = b;
+    p->enqueue_async_copy(device_request(a, b));
+    expect(p->execution_context().recording(), "D2D teardown witness not recording");
+    a.reset(); b.reset();
+    expect(!wa.expired() && !wb.expired(), "D2D teardown leases not attached");
+    p.reset();
+    expect(wa.expired() && wb.expired(), "D2D deferred callbacks outlived platform shutdown");
+}
+
+void test_async_compute_and_war_order() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    const auto seed = at::tensor({2.0F, 7.0F});
+    auto input = at::empty_like(seed, seed.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(input, seed, false);
+    AsyncPinned destination(p), source(p);
+    source.seed();
+    auto device = std::make_shared<VulkanBuffer>(*p, 64, kHostMemory);
+    const float overwrite[] = {11, 19};
+    device->write(overwrite, sizeof(overwrite), sizeof(float));
+    AsyncHold hold(*p);
+    auto producer = at::add(input, 3.0F);
+    VulkanAsyncCopyRequest read;
+    read.kind = VulkanAsyncCopyKind::DeviceToHost;
+    read.source = pytorch_vulkan::allocation_buffer(producer.storage().data_ptr()).buffer();
+    read.destination = destination.range.buffer->buffer();
+    read.regions = {{0, destination.range.offset, kAsyncBytes}};
+    read.reservation = p->reserve_transfer_slot();
+    read.owners = {pytorch_vulkan::allocation_lease(producer.storage().data_ptr()), destination.range.lease};
+    const auto range = destination.range;
+    read.publish_success = [range] { range.buffer->invalidate_range(range.offset, range.bytes); };
+    p->enqueue_async_copy(std::move(read));
+    auto consumer = at::add(producer, 4.0F);
+    expect(!p->query_execution(), "compute/transfer chain not held");
+    hold.release(); p->synchronize_execution();
+    destination.expect_values(5, 10);
+    auto actual = at::empty_like(seed);
+    pytorch_vulkan::copy_tensor(actual, consumer, false);
+    expect(actual.equal(seed + 7), "compute consumer != CPU oracle");
+
+    auto first_device = std::make_shared<VulkanBuffer>(*p, 64, kHostMemory);
+    auto h2d = host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, first_device);
+    auto d2h = host_request(*p, VulkanAsyncCopyKind::DeviceToHost, source.range, device);
+    AsyncHold war(*p);
+    p->enqueue_async_copy(std::move(h2d));
+    p->enqueue_async_copy(std::move(d2h));
+    expect(!p->query_execution(), "WAR queue not held");
+    war.release(); p->synchronize_execution();
+    source.expect_values(11, 19);
+    float first[2]{}; first_device->read(first, sizeof(first), sizeof(float));
+    expect(first[0] == 2 && first[1] == 7, "H2D read observed later D2H overwrite (WAR)");
+}
+
+void test_async_backpressure() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    AsyncPinned source(p); source.seed();
+    std::vector<std::shared_ptr<VulkanBuffer>> devices;
+    for (unsigned i = 0; i < 3; ++i) devices.push_back(std::make_shared<VulkanBuffer>(*p, 64, kHostMemory));
+    const auto before = p->transfer_reservation_wait_count();
+    AsyncHold hold(*p);
+    p->enqueue_async_copy(host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, devices[0]));
+    p->enqueue_async_copy(host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, devices[1]));
+    expect(p->live_resource_snapshot().pending_transfers == 2, "two slots not occupied");
+    std::atomic<bool> done{false}; std::exception_ptr failure;
+    std::thread third([&] {
+        try { p->enqueue_async_copy(host_request(*p, VulkanAsyncCopyKind::HostToDevice, source.range, devices[2])); }
+        catch (...) { failure = std::current_exception(); }
+        done.store(true, std::memory_order_release);
+    });
+    const auto poll_end = Clock::now() + std::chrono::seconds(5);
+    while (p->transfer_reservation_wait_count() == before && Clock::now() < poll_end)
+        std::this_thread::yield();
+    const bool pressure = p->transfer_reservation_wait_count() == before + 1 && !done.load();
+    hold.release();
+    const auto join_end = Clock::now() + std::chrono::seconds(5);
+    while (!done.load(std::memory_order_acquire) && Clock::now() < join_end) std::this_thread::yield();
+    if (!done.load(std::memory_order_acquire)) {
+        std::cerr << "STOP: async pressure thread missed 5s join bound\n";
+        std::abort();
+    }
+    third.join();
+    expect(pressure, "third request did not block at capacity transition within 5s");
+    if (failure) std::rethrow_exception(failure);
+    p->synchronize_execution();
+    for (auto &device : devices) {
+        float actual[2]{}; device->read(actual, sizeof(actual), sizeof(float));
+        expect(actual[0] == 2 && actual[1] == 7, "pressure copy lost CPU seed");
+    }
+    expect(p->live_resource_snapshot().pending_transfers == 0, "pressure left slots pending");
+}
+
+void test_async_allocation_lifetimes() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    const auto before = p->live_resource_snapshot();
+    AsyncPinned pinned(p); pinned.seed();
+    auto data = vulkan_allocator_instance()->allocate(64);
+    VulkanAsyncCopyRequest request;
+    request.kind = VulkanAsyncCopyKind::HostToDevice;
+    request.source = pinned.range.buffer->buffer();
+    request.destination = pytorch_vulkan::allocation_buffer(data).buffer();
+    request.regions = {{pinned.range.offset, sizeof(float), kAsyncBytes}};
+    request.reservation = p->reserve_transfer_slot();
+    request.owners = {pinned.range.lease, pytorch_vulkan::allocation_lease(data)};
+    request.before_submit = [range = pinned.range] {
+        range.buffer->flush_range(range.offset, range.bytes);
+    };
+    const auto allocated = p->live_resource_snapshot();
+    AsyncHold hold(*p);
+    p->enqueue_async_copy(std::move(request));
+    data.clear(); pinned.storage = {}; pinned.range = {};
+    expect(p->live_resource_snapshot().allocations == allocated.allocations &&
+               p->live_resource_snapshot().pinned_host_allocations == allocated.pinned_host_allocations,
+           "pending copy did not retain dropped DataPtrs");
+    expect(!p->query_execution(), "lifetime copy not held");
+    hold.release(); p->synchronize_execution();
+    expect(p->live_resource_snapshot().allocations == before.allocations,
+           "device lease survived completion");
+    const auto pinned_after = p->live_resource_snapshot().pinned_host_allocations;
+
+    auto source = vulkan_allocator_instance()->allocate(kAsyncBytes);
+    auto destination = vulkan_allocator_instance()->allocate(kAsyncBytes);
+    VulkanAsyncCopyRequest d2d;
+    d2d.kind = VulkanAsyncCopyKind::DeviceToDevice;
+    d2d.source = pytorch_vulkan::allocation_buffer(source).buffer();
+    d2d.destination = pytorch_vulkan::allocation_buffer(destination).buffer();
+    d2d.regions = {{0, 0, kAsyncBytes}};
+    d2d.owners = {pytorch_vulkan::allocation_lease(source), pytorch_vulkan::allocation_lease(destination)};
+    // Initialize through the normal blocking host path before the held copy.
+    auto seed_staging = p->reserve_transfer(kAsyncBytes);
+    const float seed[] = {2, 7}; seed_staging.staging->write(seed, sizeof(seed));
+    p->copy_buffer_sync(seed_staging.staging->buffer(), d2d.source, kAsyncBytes);
+    seed_staging.reservation = {}; seed_staging.staging.reset();
+    AsyncHold device_hold(*p);
+    p->enqueue_async_copy(std::move(d2d));
+    source.clear(); destination.clear();
+    expect(p->live_resource_snapshot().allocations == before.allocations + 2,
+           "D2D failed to lease dropped DataPtrs");
+    expect(!p->query_execution(), "D2D lifetime not held");
+    device_hold.release(); p->synchronize_execution();
+    const auto device_after = p->live_resource_snapshot().allocations;
+    expect(pinned_after == before.pinned_host_allocations && device_after == before.allocations,
+           ("named requests retained leases after completion: pinned excess=" +
+            std::to_string(pinned_after - before.pinned_host_allocations) +
+            " device excess=" + std::to_string(device_after - before.allocations)).c_str());
+}
+
+void test_async_pageable_snapshot_and_modes() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    auto device = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    auto staging = p->reserve_transfer(kAsyncBytes);
+    float pageable[] = {2, 7}; staging.staging->write(pageable, sizeof(pageable));
+    pageable[0] = 100; pageable[1] = 200;
+    VulkanAsyncCopyRequest request;
+    request.kind = VulkanAsyncCopyKind::HostToDevice;
+    request.source = staging.staging->buffer(); request.destination = device->buffer();
+    request.regions = {{0, 0, kAsyncBytes}};
+    request.reservation = std::move(staging.reservation);
+    request.owners = {staging.staging, device};
+    AsyncHold hold(*p);
+    p->enqueue_async_copy(std::move(request));
+    expect(!p->query_execution(), "snapshot copy not held");
+    hold.release(); p->synchronize_execution();
+    float actual[2]{}; device->read(actual, sizeof(actual));
+    expect(actual[0] == 2 && actual[1] == 7, "engine reread pageable source");
+
+    // H: active training scope forces host completion before return, and D2D
+    // stays in training recording until the existing end-training boundary.
+    AsyncPinned pinned(p); pinned.seed();
+    p->compute().begin_training_step();
+    p->enqueue_async_copy(host_request(*p, VulkanAsyncCopyKind::HostToDevice, pinned.range, device, 0));
+    expect(p->live_resource_snapshot().pending_transfers == 0 && p->query_execution(),
+           "training host enqueue returned incomplete");
+    auto other = std::make_shared<VulkanBuffer>(*p, kAsyncBytes, kHostMemory);
+    p->enqueue_async_copy(device_request(device, other));
+    expect(p->execution_context().recording(), "training D2D failed to join recording");
+    p->compute().end_training_step(); p->synchronize_execution();
+    other->read(actual, sizeof(actual));
+    expect(actual[0] == 2 && actual[1] == 7, "training D2D changed values");
+
+    const char *old = std::getenv("PYTORCH_VULKAN_ASYNC_EXECUTION");
+    const std::string saved = old ? old : "";
+    setenv("PYTORCH_VULKAN_ASYNC_EXECUTION", "0", 1);
+    std::shared_ptr<VulkanPlatform> sync;
+    try { sync = std::make_shared<VulkanPlatform>(true); }
+    catch (...) { setenv("PYTORCH_VULKAN_ASYNC_EXECUTION", saved.c_str(), 1); throw; }
+    setenv("PYTORCH_VULKAN_ASYNC_EXECUTION", saved.c_str(), 1);
+    AsyncPinned sync_pinned(sync); sync_pinned.seed();
+    auto a = std::make_shared<VulkanBuffer>(*sync, 64, kHostMemory);
+    auto b = std::make_shared<VulkanBuffer>(*sync, kAsyncBytes, kHostMemory);
+    sync->enqueue_async_copy(host_request(*sync, VulkanAsyncCopyKind::HostToDevice, sync_pinned.range, a, 0));
+    expect(sync->live_resource_snapshot().pending_transfers == 0 && sync->query_execution(),
+           "sync host enqueue returned incomplete");
+    sync->enqueue_async_copy(device_request(a, b));
+    expect(sync->query_execution(), "sync D2D returned incomplete");
+    sync->synchronize_execution(); b->read(actual, sizeof(actual));
+    expect(actual[0] == 2 && actual[1] == 7, "sync D2D changed values");
+    std::cout << "H mode=sync env=0 per-instance (outer gate env=1 restored)\n";
+}
+
+void run_async_witness(const char *name, const char *evidence, void (*test)()) {
+    const auto start = Clock::now();
+    test();
+    std::cout << "async-witness " << name << " evidence=" << evidence << " seconds="
+              << std::chrono::duration<double>(Clock::now() - start).count() << '\n';
 }
 
 void test_rnn_limit_validation_uses_supplied_limits() {
@@ -1347,9 +1924,37 @@ void test_reduction_indexing_reject_malformed_metadata() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    NativePlatformShutdown shutdown;
     try {
-        (void)pytorch_vulkan::platform();
+        shutdown.observe(pytorch_vulkan::platform());
+        if (argc == 2 && std::string(argv[1]) == "--retention-only") {
+            // RED/GREEN of the unchanged stronger lifetime body, but always
+            // through the repaired pre-libc shutdown boundary above.
+            run_async_witness("named-request-retention", "HS", test_async_allocation_lifetimes);
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--ordinary-error-exit") {
+            test_async_pinned_offsets_and_publication();
+            const auto platform = pytorch_vulkan::platform();
+            platform->synchronize_execution();
+            expect(platform->query_execution() &&
+                       platform->completion_hold_expiry_count_for_testing() == 0 &&
+                       platform->live_resource_snapshot().pending_transfers == 0,
+                   "ordinary error-exit fixture was not released and synchronized");
+            throw std::runtime_error("intentional ordinary native error after hold release and synchronize");
+        }
+        expect(argc == 1, "unknown native transfer test arguments");
+        test_async_copy_rejects_empty_request();
+        run_async_witness("pinned-offsets-publication-hold-selftest", "HS", test_async_pinned_offsets_and_publication);
+        run_async_witness("noncoherent-success-real-queue", "S+HS", test_async_synthetic_maintenance_real_queue);
+        run_async_witness("maintenance-validation-snapshot-cancel", "S", test_async_maintenance_failures);
+        run_async_witness("D2D-chain-slots-17-bound", "HS", test_async_d2d_batching_and_slots);
+        run_async_witness("D2D-unsubmitted-shutdown-leases", "H", test_async_d2d_shutdown_drains_unsubmitted_leases);
+        run_async_witness("compute-and-WAR-order", "HS", test_async_compute_and_war_order);
+        run_async_witness("two-slots-backpressure-5s-poll-5s-join", "HS", test_async_backpressure);
+        run_async_witness("pinned-device-D2D-lifetimes", "HS", test_async_allocation_lifetimes);
+        run_async_witness("pageable-snapshot-training-sync-modes", "HS+H", test_async_pageable_snapshot_and_modes);
         test_copy_round_trip();
         test_copy_returns_without_pending_transfer_resources();
         test_contiguous_reshape_copy_is_bulk();

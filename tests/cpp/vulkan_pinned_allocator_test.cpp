@@ -34,7 +34,7 @@ struct PinnedFakeCalls {
     std::vector<char> cleanup_order;
     void *mapped = nullptr;
     void *mapped_allocation = nullptr;
-    enum class Guard { Clear, DeviceLost, Pending } guard = Guard::Clear;
+    enum class Guard { Clear, DeviceLost } guard = Guard::Clear;
 };
 
 VkResult fake_create(void *cookie, VkDevice, VkDeviceSize, VkBuffer *buffer) {
@@ -213,8 +213,7 @@ void test_pinned_allocator_fake_lifecycle() {
             throw std::runtime_error("misaligned map was not rejected and cleaned exactly once");
     }
 
-    for (const auto guard : {PinnedFakeCalls::Guard::DeviceLost,
-                             PinnedFakeCalls::Guard::Pending}) {
+    for (const auto guard : {PinnedFakeCalls::Guard::DeviceLost}) {
         PinnedFakeCalls calls;
         calls.guard = guard;
         calls.mapped_allocation = std::aligned_alloc(c10::gAlignment, 256);
@@ -223,8 +222,64 @@ void test_pinned_allocator_fake_lifecycle() {
         { auto data = allocator.allocate(128); }
         if (calls.unmaps != 0 || calls.destroys != 0 || calls.frees != 0 ||
             calls.mapped_allocation == nullptr || calls.safety_checks != 1)
-            throw std::runtime_error("lost/pending guard freed a resource that must be leaked");
+            throw std::runtime_error("device-lost guard freed a resource that must be leaked");
         // Intentional test-fixture leak models the safety rule under these states.
+    }
+    {
+        PinnedFakeCalls calls;
+        calls.mapped_allocation = std::aligned_alloc(c10::gAlignment, 256);
+        calls.mapped = calls.mapped_allocation;
+        VulkanPinnedHostAllocator allocator(pytorch_vulkan::platform(), fake_pinned_ops(calls));
+        c10::Storage storage(c10::Storage::use_byte_size_t(), 128, &allocator, false);
+        const auto &data = storage.data_ptr();
+        VulkanPinnedHostRange range;
+        if (!vulkan_pinned_host_range(storage, data.get(), 8, &range) ||
+            range.buffer == nullptr || range.offset != 0 || range.bytes != 8)
+            throw std::runtime_error("pinned base range was not resolved");
+        auto interior = static_cast<unsigned char *>(data.get()) + 16;
+        if (!vulkan_pinned_host_range(storage, interior, 8, &range) || range.offset != 16)
+            throw std::runtime_error("pinned interior range offset was incorrect");
+        if (!vulkan_pinned_host_range(storage,
+                static_cast<unsigned char *>(const_cast<void *>(data.get())) + 128,
+                0, &range) || range.offset != 128)
+            throw std::runtime_error("zero-length pinned range was rejected");
+        if (vulkan_pinned_host_range(storage, interior, 200, &range))
+            throw std::runtime_error("out-of-range pinned span was accepted");
+        auto foreign = at::from_blob(data.get(), {128}, at::TensorOptions().dtype(at::kByte));
+        if (vulkan_pinned_host_range(foreign.storage(), data.get(), 8, &range))
+            throw std::runtime_error("foreign from_blob inherited pinned provenance");
+        c10::Storage pageable(c10::Storage::use_byte_size_t(), 128,
+                              at::getCPUAllocator(), false);
+        if (vulkan_pinned_host_range(pageable, pageable.data(), 1, &range))
+            throw std::runtime_error("pageable storage was recognized as Vulkan pinned");
+        auto lease = range.lease;
+        range.lease.reset();
+        c10::Storage released;
+        released = std::move(storage);
+        released = c10::Storage();
+        if (calls.destroys != 0) throw std::runtime_error("pinned lease did not retain buffer");
+        lease.reset();
+        if (calls.destroys != 1 || calls.unmaps != 1 || calls.frees != 1)
+            throw std::runtime_error("pinned lease did not destroy resource exactly once");
+    }
+    {
+        PinnedFakeCalls calls;
+        calls.mapped_allocation = std::aligned_alloc(c10::gAlignment, 256);
+        calls.mapped = calls.mapped_allocation;
+        auto platform = pytorch_vulkan::platform();
+        auto ops = fake_pinned_ops(calls);
+        ops.should_leak_for_testing = nullptr;
+        VulkanPinnedHostAllocator allocator(platform, ops);
+        c10::Storage storage(c10::Storage::use_byte_size_t(), 128, &allocator, false);
+        auto &execution = platform->execution_context();
+        execution.begin();
+        execution.submit();
+        if (execution.pending_count() == 0)
+            throw std::runtime_error("pending pinned policy witness did not submit work");
+        storage = c10::Storage();
+        if (calls.destroys != 1 || calls.unmaps != 1 || calls.frees != 1)
+            throw std::runtime_error("pending work caused an unleased pinned allocation leak");
+        execution.wait();
     }
 }
 
@@ -383,6 +438,8 @@ int main() {
         test_pinned_memory_operators();
         Calls calls;
         std::cout << "device=" << platform.device_info().name << '\n';
+        const auto pinned_counter_baseline =
+            pytorch_vulkan::platform()->live_resource_snapshot().pinned_host_allocations;
         {
             VulkanBuffer buffer(platform, 64, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
             buffer.set_map_ops_for_testing({&calls, map, unmap, flush, invalidate});
@@ -555,10 +612,14 @@ int main() {
                 throw std::runtime_error("standalone empty storage was recognized as pinned");
             if (allocator.raw_deleter() != nullptr)
                 throw std::runtime_error("raw allocation must remain unsupported");
+            const auto pinned_before = pinned_counter_baseline;
 
             const auto buffers_before =
                 pytorch_vulkan::platform()->timing_snapshot().buffer_creations;
             auto data = allocator.allocate(256);
+            if (pytorch_vulkan::platform()->live_resource_snapshot().pinned_host_allocations !=
+                pinned_before + 1)
+                throw std::runtime_error("pinned live counter did not increment");
             const auto buffers_after =
                 pytorch_vulkan::platform()->timing_snapshot().buffer_creations;
             if (buffers_after != buffers_before + 1)
@@ -580,6 +641,9 @@ int main() {
                 throw std::runtime_error("pinned allocator copy_data mismatch");
 
             c10::Storage storage(c10::Storage::use_byte_size_t(), 256, &allocator, false);
+            if (pytorch_vulkan::platform()->live_resource_snapshot().pinned_host_allocations !=
+                pinned_before + 2)
+                throw std::runtime_error("pinned storage core was not counted");
             if (!is_vulkan_pinned_storage(storage))
                 throw std::runtime_error("allocator storage provenance was not recognized");
             auto view = at::empty({1}, at::TensorOptions().dtype(at::kByte));
@@ -597,6 +661,11 @@ int main() {
             if (is_vulkan_pinned_storage(pageable.storage()))
                 throw std::runtime_error("ordinary CPU storage was recognized as pinned");
         }
+        const auto pinned_after =
+            pytorch_vulkan::platform()->live_resource_snapshot().pinned_host_allocations;
+        if (pinned_after != pinned_counter_baseline)
+            throw std::runtime_error("pinned live counter did not return to baseline: " +
+                std::to_string(pinned_after) + " vs " + std::to_string(pinned_counter_baseline));
 
         Calls temporary_calls;
         temporary_calls.fail_flushes = 1;

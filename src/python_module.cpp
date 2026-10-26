@@ -12,6 +12,13 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(_C, module) {
+    // Only the seam registers a platform here: atexit release must not create a
+    // runtime during teardown if this module was imported but never used.
+    struct CompletionHoldOwner {
+        std::mutex mutex;
+        std::weak_ptr<VulkanPlatform> platform;
+    };
+    auto hold_owner = std::make_shared<CompletionHoldOwner>();
     (void)vulkan_allocator_instance();
     module.doc() = "Minimal Vulkan runtime interface";
     module.def("is_available", &VulkanPlatform::is_available);
@@ -60,7 +67,7 @@ PYBIND11_MODULE(_C, module) {
         return py::make_tuple(snapshot.descriptor_pools, snapshot.descriptor_sets,
                               snapshot.pipelines, snapshot.shader_modules,
                               snapshot.pending_transfers, snapshot.pending_compute,
-                              snapshot.allocations);
+                              snapshot.allocations, snapshot.pinned_host_allocations);
     });
     // Narrow diagnostic seam for migration tests; this does not expose runtime
     // ownership or control outside the existing test module.
@@ -93,7 +100,8 @@ PYBIND11_MODULE(_C, module) {
         return result;
     });
     module.def("begin_training_step",
-               [] { pytorch_vulkan::platform()->compute().begin_training_step(); });
+               [] { pytorch_vulkan::platform()->compute().begin_training_step(); },
+               py::call_guard<py::gil_scoped_release>());
     module.def("execution_mode", [] {
         return pytorch_vulkan::platform()->async_execution_enabled() ? "async" : "sync";
     });
@@ -101,16 +109,35 @@ PYBIND11_MODULE(_C, module) {
         const c10::Stream stream(c10::Stream::DEFAULT,
                                  c10::Device(c10::DeviceType::PrivateUse1, 0));
         pytorch_vulkan::VulkanDeviceGuard().synchronizeStream(stream);
-    });
+    }, py::call_guard<py::gil_scoped_release>());
     module.def("query", [] {
         const c10::Stream stream(c10::Stream::DEFAULT,
                                  c10::Device(c10::DeviceType::PrivateUse1, 0));
         return pytorch_vulkan::VulkanDeviceGuard().queryStream(stream);
-    });
+    }, py::call_guard<py::gil_scoped_release>());
     module.def("end_training_step",
-               [] { pytorch_vulkan::platform()->compute().end_training_step(); });
+               [] { pytorch_vulkan::platform()->compute().end_training_step(); },
+               py::call_guard<py::gil_scoped_release>());
     module.def("cancel_training_step",
-               [] { pytorch_vulkan::platform()->compute().cancel_training_step(); });
+               [] { pytorch_vulkan::platform()->compute().cancel_training_step(); },
+               py::call_guard<py::gil_scoped_release>());
+    module.def("test_hold_completion", [hold_owner](bool hold) {
+        auto owner = pytorch_vulkan::platform();
+        {
+            std::lock_guard<std::mutex> lock(hold_owner->mutex);
+            hold_owner->platform = owner;
+        }
+        owner->set_completion_hold_for_testing(hold);
+    }, py::call_guard<py::gil_scoped_release>());
+    module.def("completion_hold_expiry_count", [] {
+        return pytorch_vulkan::platform()->completion_hold_expiry_count_for_testing();
+    }, py::call_guard<py::gil_scoped_release>());
+    module.def("execution_fence_wait_count", [] {
+        return pytorch_vulkan::platform()->execution_fence_wait_count();
+    }, py::call_guard<py::gil_scoped_release>());
+    module.def("transfer_reservation_wait_count", [] {
+        return pytorch_vulkan::platform()->transfer_reservation_wait_count();
+    }, py::call_guard<py::gil_scoped_release>());
     module.def("training_step_active", [] {
         return pytorch_vulkan::platform()->compute().training_step_active();
     });
@@ -204,5 +231,17 @@ PYBIND11_MODULE(_C, module) {
         }
     });
     py::module_::import("atexit").attr("register")(
-        py::cpp_function(&pytorch_vulkan::shutdown_platform));
+        py::cpp_function(&pytorch_vulkan::shutdown_platform,
+                         py::call_guard<py::gil_scoped_release>()));
+    // Registered AFTER shutdown: Python atexit is LIFO, so release precedes any
+    // shutdown fence wait. Never retain a strong platform owner through exit.
+    py::module_::import("atexit").attr("register")(
+        py::cpp_function([hold_owner] {
+            std::shared_ptr<VulkanPlatform> owner;
+            {
+                std::lock_guard<std::mutex> lock(hold_owner->mutex);
+                owner = hold_owner->platform.lock();
+            }
+            if (owner) owner->set_completion_hold_for_testing(false);
+        }, py::call_guard<py::gil_scoped_release>()));
 }

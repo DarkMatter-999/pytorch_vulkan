@@ -265,6 +265,9 @@ class VulkanCompute final {
     void test_inject_pre_dispatch_failure() const;
 
   private:
+    // The internal async-copy engine shares this exact admission/finish/error
+    // lifecycle and eager bound. No second batching counter or public hook.
+    friend class VulkanPlatform;
     uint32_t validate_dispatch_extra_limits(
         VkDeviceSize input_bytes, VkDeviceSize output_bytes, uint32_t params_size,
         uint32_t output_numel, VkDeviceSize metadata_size,
