@@ -239,6 +239,7 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
     TORCH_CHECK(source_layout.internal_overlap == VulkanOverlap::No,
                 "Vulkan reshape copy requires a non-overlapping source layout");
 
+    return with_vulkan_operation(allocation_runtime(source.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor destination =
         at::empty(source.sizes(), source.options().device(source.device()));
     const auto destination_layout =
@@ -316,11 +317,13 @@ at::Tensor vulkan_contiguous_copy(const at::Tensor &source) {
         platform.copy_buffers_sync(copies);
     }
     return destination;
+    });
 }
 
 at::Tensor vulkan_stack_copy(at::TensorList tensors, int64_t dim) {
     TORCH_CHECK(!tensors.empty(), "Vulkan stack requires at least one tensor");
     const auto &first = tensors[0];
+    return with_vulkan_operation(allocation_runtime(first.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output =
         dim == 0 ? at::empty({static_cast<int64_t>(tensors.size()), first.size(0),
                               first.size(1)},
@@ -387,6 +390,7 @@ at::Tensor vulkan_stack_copy(at::TensorList tensors, int64_t dim) {
         platform.copy_buffers_sync(copies);
     }
     return output;
+    });
 }
 
 at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
@@ -439,6 +443,7 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     const at::DataPtr &vulkan_data = vulkan_tensor.storage().data_ptr();
     VulkanBuffer &vulkan_buffer = allocation_buffer(vulkan_data);
     const VulkanPlatform &platform = allocation_platform(vulkan_data);
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor& {
     platform.record_transfer_operation();
     const bool host_visible =
         (vulkan_buffer.memory_properties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
@@ -604,6 +609,7 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     }
     mark_label_copy();
     return destination;
+    });
 }
 
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
@@ -637,6 +643,7 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                         "formatter presentation source");
     const VulkanBuffer &buffer = allocation_buffer(data);
     const VulkanPlatform &platform = allocation_platform(data);
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor& {
     platform.record_transfer_operation();
     const VkDeviceSize offset = static_cast<VkDeviceSize>(
         static_cast<uint64_t>(source.storage_offset()) *
@@ -661,6 +668,7 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
     platform.copy_buffer_sync(buffer.buffer(), staging.buffer(), size, offset);
     staging.read(destination.data_ptr(), size);
     return destination;
+    });
 }
 
 } // namespace pytorch_vulkan

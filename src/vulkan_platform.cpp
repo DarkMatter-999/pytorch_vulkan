@@ -5,6 +5,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_async_transfer.h"
 #include "vulkan_compute.h"
+#include "vulkan/descriptor_arena.h"
 #include "vulkan_execution.h"
 #include "vulkan_synchronization.h"
 
@@ -653,6 +654,7 @@ VulkanPlatform::VulkanPlatform(bool enable_validation,
 VulkanPlatform::~VulkanPlatform() noexcept { cleanup(); }
 
 void VulkanPlatform::cleanup() noexcept {
+    if (native_services_destroyed_) return;
     if (pytorch_vulkan::inherited_fork_state()) {
         // Do not invoke Vulkan teardown on handles inherited across fork.
         compute_.release();
@@ -661,6 +663,7 @@ void VulkanPlatform::cleanup() noexcept {
         pipeline_cache_.release();
         return;
     }
+    pytorch_vulkan::VulkanCleanupScope cleanup(runtime_lifecycle_);
     std::unique_lock lock(queue_mutex_);
     if (device_ != VK_NULL_HANDLE) {
         if (device_lost() || vkDeviceWaitIdle(device_) != VK_SUCCESS) {
@@ -760,6 +763,10 @@ void VulkanPlatform::cleanup() noexcept {
         vkDestroyInstance(instance_, nullptr);
         instance_ = VK_NULL_HANDLE;
     }
+}
+
+pytorch_vulkan::VulkanRuntimeLifecycle& VulkanPlatform::runtime_lifecycle() const noexcept {
+    return runtime_lifecycle_;
 }
 
 bool VulkanPlatform::is_available() noexcept {
@@ -904,13 +911,123 @@ std::size_t VulkanPlatform::transfer_reservation_wait_count() const {
 
 bool VulkanPlatform::query_execution() const {
     throw_if_device_lost();
-    return execution_->query_with_flush([&] { compute_->flush_recording_locked(); });
+    if (execution_->callback_active_on_this_thread())
+        return execution_->query_with_flush([&] { compute_->flush_recording_locked(); });
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&] {
+        return execution_->query_with_flush([&] { compute_->flush_recording_locked(); });
+    });
 }
 
 void VulkanPlatform::synchronize_execution() const {
     throw_if_device_lost();
-    execution_->synchronize_with_flush([&] { compute_->flush_recording_locked(); });
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&] {
+        execution_->synchronize_with_flush([&] { compute_->flush_recording_locked(); });
+    });
 }
+
+pytorch_vulkan::VulkanQuiescence VulkanPlatform::lifecycle_snapshot() const {
+    pytorch_vulkan::ensure_process_local_vulkan();
+    auto snapshot = execution_ ? execution_->lifecycle_snapshot() : pytorch_vulkan::VulkanQuiescence{};
+    // Terminal callers have closed admission and joined all host epilogues. The
+    // execution value above took queue -> execution -> reservation together; no
+    // lifecycle mutex is taken while reading these additional native services.
+    std::lock_guard<std::mutex> queue(queue_mutex_);
+    snapshot.standalone_resources = pending_transfer_resources_.size();
+    snapshot.private_scope_active = compute_ && compute_->training_step_active();
+    snapshot.service_invalidated = device_lost();
+    if (compute_) {
+        const auto descriptors = compute_->descriptor_arena_snapshot();
+        snapshot.service_invalidated |= descriptors.invalidated || descriptors.quarantined != 0;
+        snapshot.standalone_resources += descriptors.pending;
+    }
+    if (pipeline_cache_) {
+        const auto pipelines = pipeline_cache_->snapshot();
+        snapshot.service_invalidated |= pipelines.invalidated;
+        snapshot.standalone_resources += pipelines.pending_destructions + pipelines.pending_layout_destructions;
+    }
+    if (shader_registry_) snapshot.service_invalidated |= shader_registry_->snapshot().invalidated;
+    // timestamp_query_quarantined is diagnostic timestamp availability, NOT
+    // execution quarantine; invalidated/poison above are authoritative.
+    return snapshot;
+}
+
+void VulkanPlatform::synchronize_execution_until(pytorch_vulkan::VulkanHostTime deadline,
+    const pytorch_vulkan::VulkanHostClock &clock) const {
+    // Internal healthy completion borrows the coordinator-retained root. Cover
+    // publication/native host maintenance without admitting new callback work.
+    // PythonNative close never invokes this general completion route.
+    pytorch_vulkan::VulkanCleanupScope cleanup(runtime_lifecycle_);
+    throw_if_device_lost();
+    if (native_services_destroyed_) throw std::logic_error("Vulkan native services already closed");
+    execution_->synchronize_with_flush_until([&] { compute_->flush_recording_locked(); }, deadline, clock);
+}
+
+void VulkanPlatform::destroy_empty_native_services() {
+    pytorch_vulkan::ensure_process_local_vulkan();
+    if (native_services_destroyed_) return;
+    const auto empty = lifecycle_snapshot();
+    if (!empty.healthy_empty())
+        throw std::logic_error("native-only platform teardown requires empty healthy services");
+    // VulkanBuffer is General cleanup, not an audited-native service scope.
+    // Release staging before taking the queue lock: its destructor must never
+    // acquire runtime accounting inside queue -> execution -> reservation.
+    staging_buffer_.reset();
+    pytorch_vulkan::VulkanCleanupScope cleanup(runtime_lifecycle_,
+        pytorch_vulkan::VulkanCleanupKind::AuditedNativeOnly);
+    execution_->teardown_empty_native_services([&] {
+        // Audited native services only. These paths clear native handle tables
+        // in place, without allocating destructor vectors/function captures.
+        // Ordinary dedicated-platform destructors keep their existing paths.
+        pipeline_cache_->destroy_empty_native(empty);
+        compute_->destroy_empty_native_descriptor_services(empty);
+        compute_.reset();
+        pipeline_cache_.reset();
+        shader_registry_->destroy_empty_native(empty);
+        shader_registry_.reset();
+    });
+    execution_.reset(); // device_ already null: no destructor cancellation/pump.
+    std::lock_guard<std::mutex> queue(queue_mutex_);
+    if (command_pool_ != VK_NULL_HANDLE) vkDestroyCommandPool(device_, command_pool_, nullptr);
+    command_pool_ = VK_NULL_HANDLE;
+    if (device_ != VK_NULL_HANDLE) vkDestroyDevice(device_, nullptr);
+    device_ = VK_NULL_HANDLE;
+    if (debug_messenger_ != VK_NULL_HANDLE) {
+        const auto destroy = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
+        if (destroy) destroy(instance_, debug_messenger_, nullptr);
+        debug_messenger_ = VK_NULL_HANDLE;
+    }
+    if (instance_ != VK_NULL_HANDLE) vkDestroyInstance(instance_, nullptr);
+    instance_ = VK_NULL_HANDLE;
+    compute_queue_ = VK_NULL_HANDLE;
+    physical_device_ = VK_NULL_HANDLE;
+    native_services_destroyed_ = true;
+}
+
+namespace pytorch_vulkan {
+VulkanLifecycleRoot make_vulkan_lifecycle_root(std::shared_ptr<VulkanPlatform> platform) {
+    auto *p = platform.get();
+    return {std::move(platform), &p->runtime_lifecycle(),
+        [](void *p, VulkanHostTime deadline) {
+            static_cast<VulkanPlatform *>(p)->synchronize_execution_until(deadline, vulkan_host_clock());
+        },
+        [](void *p) { return static_cast<VulkanPlatform *>(p)->lifecycle_snapshot(); },
+        [](void *p, bool closed) {
+            static_cast<VulkanPlatform *>(p)->execution_context().set_lifecycle_reservations_closed(closed);
+        },
+        [](void *p, VulkanHostTime deadline) {
+            static_cast<VulkanPlatform *>(p)->execution_context().wait_foreign_epilogues_until(deadline, vulkan_host_clock());
+        },
+        [](void *p) noexcept {
+            return static_cast<VulkanPlatform *>(p)->execution_context().callback_active_on_this_thread();
+        },
+        [](void *p) noexcept {
+            try { return static_cast<VulkanPlatform *>(p)->lifecycle_snapshot().private_scope_active; }
+            catch (...) { return true; } // Conservative: never terminate through noexcept observation.
+        },
+        [](void *p) { static_cast<VulkanPlatform *>(p)->destroy_empty_native_services(); }};
+}
+} // namespace pytorch_vulkan
 
 VulkanShaderRegistry &VulkanPlatform::shader_registry() const {
     return *shader_registry_;
@@ -1009,7 +1126,7 @@ bool VulkanPlatform::timestamp_query_quarantined() const {
 }
 
 bool VulkanPlatform::async_execution_enabled() const {
-    return async_execution_enabled_;
+    return async_execution_enabled_ && !runtime_lifecycle_.finalizing_sync();
 }
 
 VulkanCompute &VulkanPlatform::compute() const { return *compute_; }
@@ -1195,6 +1312,7 @@ void VulkanPlatform::copy_buffers_sync(
             throw std::invalid_argument("Invalid Vulkan bulk buffer copy arguments");
     }
 
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&] {
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
@@ -1304,7 +1422,8 @@ void VulkanPlatform::copy_buffers_sync(
                                     .count(),
                                 std::memory_order_relaxed);
         release_resources();
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (device_lost()) {
             defer_resources();
             throw;
@@ -1341,6 +1460,7 @@ void VulkanPlatform::copy_buffers_sync(
         }
         throw;
     }
+    });
 }
 
 bool VulkanPlatform::validation_enabled() const { return validation_enabled_; }
@@ -1360,6 +1480,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         throw std::invalid_argument("Invalid Vulkan buffer copy arguments");
     }
 
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&] {
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
@@ -1498,7 +1619,8 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
                 .count(),
             std::memory_order_relaxed);
         transfer_completion_count_.fetch_add(1, std::memory_order_relaxed);
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (command_buffer == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
             throw;
         }
@@ -1542,6 +1664,7 @@ void VulkanPlatform::copy_buffer_sync(VkBuffer source, VkBuffer destination,
         std::chrono::duration<double>(std::chrono::steady_clock::now() - total_start)
             .count(),
         std::memory_order_relaxed);
+    });
 }
 
 void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
@@ -1549,6 +1672,7 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
     if (buffer == VK_NULL_HANDLE || size == 0 || (offset % 4) != 0 || (size % 4) != 0) {
         throw std::invalid_argument("Invalid Vulkan buffer fill arguments");
     }
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&] {
     throw_if_device_lost();
     std::scoped_lock lock(queue_mutex_);
     throw_if_device_lost();
@@ -1609,7 +1733,8 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
                 "Vulkan device lost; execution state invalidated (VkResult -4)");
         }
         check_result(wait_result, "Could not wait for Vulkan fill fence");
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (device_lost()) {
             defer_resources();
             throw;
@@ -1634,10 +1759,13 @@ void VulkanPlatform::fill_buffer_sync(VkBuffer buffer, VkDeviceSize offset,
     }
     vkDestroyFence(device_, fence, nullptr);
     vkFreeCommandBuffers(device_, command_pool_, 1, &command_buffer);
+    });
 }
 
 void VulkanPlatform::wait_for_transfer() const {
-    auto lock = acquire_host_transfer_lock();
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&] {
+        auto lock = acquire_host_transfer_lock();
+    });
 }
 
 std::unique_lock<std::mutex> VulkanPlatform::acquire_host_transfer_lock() const {
@@ -1679,6 +1807,7 @@ VulkanBuffer &VulkanPlatform::staging_buffer(VkDeviceSize size) const {
     if (size == 0)
         throw std::invalid_argument(
             "Vulkan staging buffer size must be greater than zero");
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&]() -> VulkanBuffer& {
     std::scoped_lock lock(queue_mutex_);
     const auto start = std::chrono::steady_clock::now();
     if (staging_buffer_ == nullptr || staging_buffer_->size() < size) {
@@ -1690,12 +1819,17 @@ VulkanBuffer &VulkanPlatform::staging_buffer(VkDeviceSize size) const {
     timing_.allocation.fetch_add(std::chrono::duration<double>(end - start).count(),
                                  std::memory_order_relaxed);
     return *staging_buffer_;
+    });
 }
 
 VulkanStagingTransfer VulkanPlatform::reserve_transfer(VkDeviceSize bytes) const {
     if (bytes == 0)
         throw std::invalid_argument(
             "Vulkan exclusive staging size must be greater than zero");
+    if (runtime_lifecycle_.finalizing_sync() && !runtime_lifecycle_.operation_active_on_this_thread() &&
+        !runtime_lifecycle_.can_defer_operation_on_this_thread())
+        throw pytorch_vulkan::VulkanAdmissionClosed("reservation transaction requires an enclosing finalizing operation");
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&]() -> VulkanStagingTransfer {
     throw_if_device_lost();
     VulkanStagingTransfer transfer;
     // The callback runs inside the context's single queue phase; it keeps compute
@@ -1721,11 +1855,17 @@ VulkanStagingTransfer VulkanPlatform::reserve_transfer(VkDeviceSize bytes) const
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
         std::memory_order_relaxed);
     return transfer;
+    });
 }
 
 VulkanTransferReservation VulkanPlatform::reserve_transfer_slot() const {
+    if (runtime_lifecycle_.finalizing_sync() && !runtime_lifecycle_.operation_active_on_this_thread() &&
+        !runtime_lifecycle_.can_defer_operation_on_this_thread())
+        throw pytorch_vulkan::VulkanAdmissionClosed("reservation transaction requires an enclosing finalizing operation");
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&]() -> VulkanTransferReservation {
     throw_if_device_lost();
     return execution_->reserve_transfer([this] { compute_->flush_recording_locked(); });
+    });
 }
 
 VulkanCompletionId VulkanPlatform::enqueue_async_copy(VulkanAsyncCopyRequest &&request) const {
@@ -1784,6 +1924,7 @@ VulkanCompletionId VulkanPlatform::enqueue_async_copy_impl(
     throw_if_device_lost();
 
     // Declared before every queue guard so callbacks drain only after the guard is gone.
+    return pytorch_vulkan::with_vulkan_operation(runtime_lifecycle_, [&]() -> VulkanCompletionId {
     VulkanCallbackDrainOnExit drain(*execution_);
     const std::function<void(VkCommandBuffer)> record = [&](VkCommandBuffer command_buffer) {
         if (record_override)
@@ -1824,7 +1965,7 @@ VulkanCompletionId VulkanPlatform::enqueue_async_copy_impl(
         throw_if_device_lost();
         compute_->throw_if_pending_batch_failure();
         complete_before_return =
-            !async_execution_enabled_ || compute_->training_step_active();
+            !async_execution_enabled() || compute_->training_step_active();
         id = execution_->enqueue_transfer_locked(
             std::move(request.reservation), std::move(request.owners),
             std::move(request.publish_success), record, true, "async-copy");
@@ -1834,6 +1975,7 @@ VulkanCompletionId VulkanPlatform::enqueue_async_copy_impl(
     // Success only, unlocked: a throwing wait above skips this and leaves captures to execution.
     request.before_submit = nullptr;
     return id;
+    });
 }
 
 VulkanTimingSnapshot VulkanPlatform::timing_snapshot() const {

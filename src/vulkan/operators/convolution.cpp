@@ -540,9 +540,11 @@ at::Tensor run_single(const at::Tensor &input, const at::Tensor &weight,
                                      transposed, output_padding, mask,
                                      true);
     const auto &spec = plan.outputs[0];
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output = allocate_convolution_output(spec, input.options());
     dispatch_convolution_output(spec, input, weight, bias, grad_output, output, plan);
     return output;
+    });
 }
 
 at::Tensor run_legacy_backward_operation(
@@ -646,6 +648,7 @@ at::Tensor run_legacy_backward_operation(
         input_layout.allocation_bytes, weight_layout.allocation_bytes,
         bias_layout.allocation_bytes, spec.bytes, spec.numel,
         operation == 2 || operation == 3);
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor {
     at::Tensor output = allocate_convolution_output(spec, input_role.options());
     const auto output_layout = inspect_vulkan_tensor_layout(output,
                                                             "convolution output");
@@ -657,6 +660,7 @@ at::Tensor run_legacy_backward_operation(
         input_layout, weight_layout, bias_layout, output_layout, operation,
         spec.kernel_height, spec.kernel_width, spec.shader_geometry, false);
     return output;
+    });
 }
 
 } // namespace
@@ -714,7 +718,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
     auto plan = preflight_convolution(input, weight, nullptr, &grad_output,
                                      geometry, transposed,
                                      normalized_output_padding,
-                                     output_mask, false);
+                                      output_mask, false);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> std::tuple<at::Tensor, at::Tensor, at::Tensor> {
     std::array<at::Tensor, 3> outputs;
     for (size_t i = 0; i < plan.output_count; ++i) {
         const auto &spec = plan.outputs[i];
@@ -727,6 +732,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
                                     &grad_output, outputs[spec.result_slot], plan);
     }
     return {outputs[0], outputs[1], outputs[2]};
+    });
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward_overrideable(

@@ -15,15 +15,6 @@ constexpr std::size_t kPoolCapacity = 64;
 constexpr std::size_t kMaxPoolCount = 64;
 constexpr uint32_t kDescriptorBindingsPerSet = 5;
 
-struct Pool {
-    VkDescriptorPool handle = VK_NULL_HANDLE;
-    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-    uint32_t descriptor_count = kDescriptorBindingsPerSet;
-    std::size_t capacity = kPoolCapacity;
-    std::vector<VkDescriptorSet> sets;
-    std::vector<VkDescriptorSet> free_sets;
-    std::size_t pending = 0;
-};
 } // namespace
 
 struct DescriptorArena::State {
@@ -51,6 +42,7 @@ DescriptorArena::DescriptorArena(VkDevice device, VulkanExecutionContext &execut
 }
 
 DescriptorArena::~DescriptorArena() {
+    if (native_destroyed_) return;
     std::vector<VkDescriptorPool> pools;
     {
         std::scoped_lock lock(state_->mutex);
@@ -78,6 +70,30 @@ DescriptorArena::~DescriptorArena() {
         // Completion is not knowable here; leak safely rather than destroy in-flight
         // pools.
     }
+}
+
+void DescriptorArena::destroy_empty_native_pools(VkDevice device,
+    const pytorch_vulkan::VulkanQuiescence &empty, bool invalidated,
+    std::size_t pending, std::size_t quarantined, std::vector<Pool> &pools,
+    void *cookie, void (*destroy)(void *, VkDevice, VkDescriptorPool)) {
+    if (!empty.healthy_empty() || invalidated || pending || quarantined || !destroy)
+        throw std::logic_error("native descriptor cleanup requires empty healthy execution/services");
+    for (const auto &pool : pools)
+        if (pool.pending) throw std::logic_error("native descriptor pool still pending");
+    for (auto &pool : pools) {
+        if (pool.handle != VK_NULL_HANDLE) destroy(cookie, device, pool.handle);
+        pool.handle = VK_NULL_HANDLE;
+    }
+    pools.clear(); // Only native set handles/vectors, no callback/capture owners.
+}
+
+void DescriptorArena::destroy_empty_native(const pytorch_vulkan::VulkanQuiescence &empty) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    destroy_empty_native_pools(device_, empty, state_->invalidated, state_->pending,
+        state_->quarantined, state_->pools, nullptr,
+        [](void *, VkDevice device, VkDescriptorPool pool) { vkDestroyDescriptorPool(device, pool, nullptr); });
+    state_->alive = false;
+    native_destroyed_ = true;
 }
 
 VkDescriptorSet DescriptorArena::acquire(VkDescriptorSetLayout layout,

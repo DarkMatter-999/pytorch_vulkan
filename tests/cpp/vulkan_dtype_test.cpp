@@ -1,7 +1,9 @@
 #include "vulkan_allocator.h"
 #include "vulkan_device_guard.h"
 #include "vulkan_layout.h"
+#include "vulkan_lifecycle.h"
 #include "vulkan_platform.h"
+#include "vulkan_terminal_selector.h"
 #include "vulkan_transfer.h"
 
 #include <ATen/ATen.h>
@@ -62,15 +64,34 @@ void test_empty_bool_storage() {
            "empty bool Vulkan tensor has nonzero storage");
 }
 
+void test_terminal_smoke() {
+    const auto source = at::tensor({1.0F, -2.0F, 3.5F, 4.0F});
+    auto device_tensor = at::empty({4}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device_tensor, source, false);
+    pytorch_vulkan::platform()->synchronize_execution();
+    auto restored = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(restored, device_tensor, false);
+    expect(restored.equal(source), "terminal smoke Vulkan round trip changed data");
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    pytorch_vulkan::NativeVulkanTerminalGuard terminal(pytorch_vulkan::platform_lifecycle());
     try {
+        const auto selector = vulkan_terminal_selector::parse(argc, argv);
         (void)vulkan_allocator_instance();
         try {
             (void)pytorch_vulkan::platform();
         } catch (const VulkanUnavailable &) {
             return 77;
+        }
+        if (selector != vulkan_terminal_selector::Selector::Default) {
+            test_terminal_smoke();
+            if (selector == vulkan_terminal_selector::Selector::OrdinaryError)
+                throw std::runtime_error("intentional ordinary native error after terminal smoke use");
+            std::cout << "Vulkan bool dtype terminal smoke passed\n";
+            return 0;
         }
         test_bool_storage_and_round_trip();
         test_empty_bool_storage();

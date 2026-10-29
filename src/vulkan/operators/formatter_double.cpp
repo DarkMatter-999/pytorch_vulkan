@@ -54,6 +54,7 @@ at::Tensor dispatch(const at::Tensor &input, uint32_t operation, const char *nam
                     const at::Tensor *rhs_tensor = nullptr) {
     validate(input, name);
     const uint32_t count = checked_count(input, name);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output =
         at::empty(reduction_output ? at::IntArrayRef{} : input.sizes(),
                   input.options().dtype(bool_output ? at::kBool : at::kDouble));
@@ -79,6 +80,7 @@ at::Tensor dispatch(const at::Tensor &input, uint32_t operation, const char *nam
         allocation_buffer(output_data).buffer(), input_bytes, rhs_bytes, output_bytes,
         count, operation, scalar, output_numel, bool_output);
     return output;
+    });
 }
 
 } // namespace
@@ -118,7 +120,8 @@ at::Tensor formatter_double_ne(const at::Tensor &input, const at::Tensor &other)
         TORCH_CHECK(
             (input.storage_offset() == 0 || input.dim() == 0) &&
                 (other.storage_offset() == 0 || other.dim() == 0),
-            "Vulkan ne.Tensor does not support tensors with non-zero storage_offset()");
+                "Vulkan ne.Tensor does not support tensors with non-zero storage_offset()");
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::Tensor output = at::empty(input.sizes(), input.options().dtype(at::kBool));
         const auto count = checked_count(input, "ne.Tensor");
         const auto bytes = static_cast<VkDeviceSize>(count) * sizeof(float);
@@ -140,6 +143,7 @@ at::Tensor formatter_double_ne(const at::Tensor &input, const at::Tensor &other)
             allocation_buffer(out).buffer(),
             inspect_vulkan_tensor_layout(output, "ne output"), 10);
         return output;
+        });
     }
     validate(input, "ne.Tensor");
     validate(other, "ne.Tensor");

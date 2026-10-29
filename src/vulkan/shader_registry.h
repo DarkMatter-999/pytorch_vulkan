@@ -10,6 +10,7 @@
 
 class VulkanExecutionContext;
 class VulkanPlatform;
+namespace pytorch_vulkan { struct VulkanQuiescence; }
 
 struct ShaderKey {
     std::string name;
@@ -53,20 +54,28 @@ class VulkanShaderRegistry final {
                                  std::size_t word_count);
     void invalidate_device_loss();
     Snapshot snapshot() const;
+    // Caller owns queue serialization after admission/epilogues are closed.
+    void destroy_empty_native(const pytorch_vulkan::VulkanQuiescence &);
 
   private:
+    friend struct VulkanNativeServiceTestPeer;
     struct KeyHash {
         std::size_t operator()(const ShaderKey &key) const noexcept;
     };
+    using NativeModules = std::unordered_map<ShaderKey, VkShaderModule, KeyHash>;
+    static void destroy_empty_native_table(VkDevice,
+        const pytorch_vulkan::VulkanQuiescence &, bool invalidated,
+        NativeModules &, void *, void (*destroy)(void *, VkDevice, VkShaderModule));
 
     VkDevice device_ = VK_NULL_HANDLE;
     VulkanPlatform &platform_;
     VulkanExecutionContext &execution_;
     mutable std::mutex mutex_;
-    std::unordered_map<ShaderKey, VkShaderModule, KeyHash> modules_;
+    NativeModules modules_;
     std::size_t cache_hits_ = 0;
     std::size_t cache_misses_ = 0;
     bool invalidated_ = false;
+    bool native_destroyed_ = false;
 };
 
 namespace std {

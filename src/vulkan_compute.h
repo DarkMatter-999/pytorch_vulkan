@@ -19,6 +19,7 @@ struct DescriptorArenaSnapshot;
 using pytorch_vulkan::VulkanTensorLayout;
 
 namespace pytorch_vulkan {
+struct VulkanQuiescence;
 struct VulkanConvolutionGeometry {
     uint32_t stride_height = 1;
     uint32_t stride_width = 1;
@@ -244,6 +245,7 @@ class VulkanCompute final {
     std::size_t live_descriptor_set_count() const;
     void invalidate_device_loss() const;
     DescriptorArenaSnapshot descriptor_arena_snapshot() const;
+    void destroy_empty_native_descriptor_services(const pytorch_vulkan::VulkanQuiescence &) const;
     std::size_t pipeline_count() const;
     std::size_t shader_module_count() const;
     void cat_gather(VkBuffer input, VkDeviceSize input_range, VkBuffer output,

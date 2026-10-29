@@ -14,13 +14,22 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <pthread.h>
 
 namespace pytorch_vulkan {
 namespace {
 
-std::shared_ptr<VulkanPlatform> platform_instance;
-std::exception_ptr platform_initialization_error;
-std::once_flag platform_initialization;
+VulkanLifecycleCoordinator* fork_coordinator = nullptr;
+
+void abandon_singleton_child() noexcept {
+    if (fork_coordinator) fork_coordinator->abandon_inherited_child();
+}
+
+void check_platform_late() noexcept {
+    // Registered only after the holder exists. Check-only: never synchronize or
+    // destroy Vulkan services in libc's late fallback.
+    platform_lifecycle().check_late();
+}
 
 const c10::Device kDevice(c10::DeviceType::PrivateUse1, 0);
 thread_local c10::Device current = kDevice;
@@ -45,7 +54,8 @@ class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
         }
         try {
             return platform() != nullptr;
-        } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             return false;
         }
     }
@@ -64,6 +74,7 @@ class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
         }
 
         auto owner = pytorch_vulkan::platform();
+        return with_vulkan_operation(owner->runtime_lifecycle(), [&] {
         owner->throw_if_device_lost();
         auto *storage_allocator = storage.allocator();
         TORCH_CHECK(storage_allocator != nullptr,
@@ -92,7 +103,8 @@ class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
                 if (!owner->execution_context().retain_until_completion(
                         [retained] {}))
                     retained.reset();
-            } catch (...) {
+            } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+            catch (...) {
                 // DataPtr's existing Vulkan allocation deleter retains on
                 // completion or intentionally leaks if pending-state bookkeeping
                 // itself fails, so dropping this holder cannot free a live buffer.
@@ -100,6 +112,7 @@ class VulkanPrivateUse1Hooks final : public at::PrivateUse1HooksInterface {
                 throw;
             }
         }
+        });
     }
 };
 
@@ -112,21 +125,27 @@ const bool hooks_registered = [] {
 
 std::shared_ptr<VulkanPlatform> platform() {
     ensure_process_local_vulkan();
-    std::call_once(platform_initialization, [] {
-        try {
-            register_fork_state_handler();
-            platform_instance = std::make_shared<VulkanPlatform>();
-            // Destroy the cached platform before static teardown can outlive
-            // Vulkan's loader and validation-layer dispatch.
-            std::atexit(&shutdown_platform);
-        } catch (...) {
-            platform_initialization_error = std::current_exception();
-        }
+    auto& coordinator = platform_lifecycle();
+    auto owner = coordinator.acquire([&] {
+        static std::once_flag registration;
+        std::call_once(registration, [&] {
+        register_fork_state_handler();
+        fork_coordinator = &coordinator;
+        if (pthread_atfork(nullptr, nullptr, &abandon_singleton_child) != 0)
+            throw std::runtime_error("Could not register Vulkan lifecycle fork handler");
+        // Register before construction so registration failure cannot unwind a
+        // live device root. The holder's destructor is already registered.
+        if (std::atexit(&check_platform_late) != 0)
+            throw std::runtime_error("Could not register Vulkan lifecycle late check");
+        });
+        return make_vulkan_lifecycle_root(std::make_shared<VulkanPlatform>());
     });
-    if (platform_initialization_error != nullptr) {
-        std::rethrow_exception(platform_initialization_error);
-    }
-    return platform_instance;
+    return std::static_pointer_cast<VulkanPlatform>(owner);
+}
+
+VulkanLifecycleCoordinator& platform_lifecycle() {
+    static VulkanLifecycleCoordinator coordinator(vulkan_host_clock());
+    return coordinator;
 }
 
 c10::DeviceType VulkanDeviceGuard::type() const { return c10::DeviceType::PrivateUse1; }
@@ -187,7 +206,7 @@ void VulkanDeviceGuard::synchronizeStream(const c10::Stream &stream) const {
     check_device(stream.device());
     const auto owner = platform();
     owner->throw_if_device_lost();
-    owner->synchronize_execution();
+    with_vulkan_operation(owner->runtime_lifecycle(), [&] { owner->synchronize_execution(); });
 }
 
 c10::Device current_device() { return current; }
@@ -197,7 +216,7 @@ void set_device(c10::DeviceIndex index) {
     guard.setDevice(c10::Device(c10::DeviceType::PrivateUse1, index));
 }
 
-void shutdown_platform() { platform_instance.reset(); }
+void shutdown_platform() { platform_lifecycle().retire_cached(); }
 
 } // namespace pytorch_vulkan
 

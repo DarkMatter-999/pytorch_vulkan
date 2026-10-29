@@ -78,6 +78,7 @@ at::Tensor dispatch_unary(const at::Tensor &input,
         }
     }
     const auto input_layout = validate_input(input, operation, operation_name);
+    return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output =
         at::empty(input.sizes(), input.options().device(input.device()));
     const auto output_layout = validate_input(output, operation, operation_name);
@@ -106,6 +107,7 @@ at::Tensor dispatch_unary(const at::Tensor &input,
                                    output_buffer.buffer(), output_layout,
                                    static_cast<uint32_t>(operation));
     return output;
+    });
 }
 
 } // namespace
@@ -145,30 +147,38 @@ at::Tensor ceil_tensor(const at::Tensor &input) {
 }
 
 at::Tensor abs_backward_tensor(const at::Tensor &input, const at::Tensor &grad) {
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     return at::mul(
         dispatch_unary(input, PointwiseOperation::AbsBackward, "abs backward"), grad);
+    });
 }
 
 at::Tensor relu_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor {
     return at::mul(
         dispatch_unary(output, PointwiseOperation::ReluBackward, "relu backward"),
         grad);
+    });
 }
 
 at::Tensor sigmoid_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
     TORCH_CHECK(!c10::GradMode::is_enabled(),
                 "Vulkan sigmoid does not support higher-order gradients");
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor {
     return at::mul(
         dispatch_unary(output, PointwiseOperation::SigmoidBackward, "sigmoid backward"),
         grad);
+    });
 }
 
 at::Tensor tanh_backward_tensor(const at::Tensor &output, const at::Tensor &grad) {
     TORCH_CHECK(!c10::GradMode::is_enabled(),
                 "Vulkan tanh does not support higher-order gradients");
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor {
     return at::mul(
         dispatch_unary(output, PointwiseOperation::TanhBackward, "tanh backward"),
         grad);
+    });
 }
 
 at::Tensor gelu_backward_tensor(const at::Tensor &input, const at::Tensor &grad,
@@ -177,32 +187,38 @@ at::Tensor gelu_backward_tensor(const at::Tensor &input, const at::Tensor &grad,
                 "Vulkan gelu does not support higher-order gradients");
     TORCH_CHECK(approximate == "tanh",
                 "Vulkan gelu supports only approximate=\"tanh\"");
-    return at::mul(
-        dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"),
-        grad);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return at::mul(
+            dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"), grad);
+    });
 }
 
 at::Tensor &sigmoid_backward_out(const at::Tensor &grad_output,
                                  const at::Tensor &output, at::Tensor &grad_input) {
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor& {
     return grad_input.copy_(at::mul(
         dispatch_unary(output, PointwiseOperation::SigmoidBackward, "sigmoid backward"),
         grad_output));
+    });
 }
 
 at::Tensor &tanh_backward_out(const at::Tensor &grad_output, const at::Tensor &output,
                               at::Tensor &grad_input) {
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor& {
     return grad_input.copy_(at::mul(
         dispatch_unary(output, PointwiseOperation::TanhBackward, "tanh backward"),
         grad_output));
+    });
 }
 
 at::Tensor &gelu_backward_out(const at::Tensor &grad_output, const at::Tensor &input,
                               c10::string_view approximate, at::Tensor &grad_input) {
     TORCH_CHECK(approximate == "tanh",
                 "Vulkan gelu supports only approximate=\"tanh\"");
-    return grad_input.copy_(at::mul(
-        dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"),
-        grad_output));
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor& {
+        return grad_input.copy_(at::mul(
+            dispatch_unary(input, PointwiseOperation::GeluTanhBackward, "gelu backward"), grad_output));
+    });
 }
 
 at::Tensor &neg_out(const at::Tensor &input, at::Tensor &out) {

@@ -10,6 +10,7 @@
 #include "vulkan_compute.h"
 #include "vulkan_device_guard.h"
 #include "vulkan_layout.h"
+#include "vulkan_lifecycle.h"
 #include "vulkan_platform.h"
 #include "vulkan_pinned_allocator.h"
 #include "vulkan_transfer.h"
@@ -25,6 +26,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -95,7 +97,9 @@ class NativePlatformShutdown {
         observed_ = true;
     }
     ~NativePlatformShutdown() {
-        pytorch_vulkan::shutdown_platform();
+        // Explicit reset: the shared guard's terminal close must precede the
+        // expiry assertion, not follow it as a member destructor.
+        terminal_.reset();
         if (!platform_.expired()) {
             std::cerr << "STOP: native cached platform still strongly owned at exit\n";
             std::abort();
@@ -106,6 +110,8 @@ class NativePlatformShutdown {
   private:
     std::weak_ptr<VulkanPlatform> platform_;
     bool observed_ = false;
+    std::optional<pytorch_vulkan::NativeVulkanTerminalGuard> terminal_{
+        std::in_place, pytorch_vulkan::platform_lifecycle()};
 };
 
 // HS is synthetic completion observation on real hardware, not an unsignaled
@@ -1922,6 +1928,16 @@ void test_reduction_indexing_reject_malformed_metadata() {
         "output layout metadata lengths");
 }
 
+void test_terminal_smoke() {
+    const auto source = at::tensor({1.0F, -2.0F, 3.5F, 4.0F});
+    auto device_tensor = at::empty({4}, source.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device_tensor, source, false);
+    pytorch_vulkan::platform()->synchronize_execution();
+    auto restored = at::empty_like(source);
+    pytorch_vulkan::copy_tensor(restored, device_tensor, false);
+    expect(restored.equal(source), "terminal smoke Vulkan round trip changed data");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1943,6 +1959,15 @@ int main(int argc, char **argv) {
                        platform->live_resource_snapshot().pending_transfers == 0,
                    "ordinary error-exit fixture was not released and synchronized");
             throw std::runtime_error("intentional ordinary native error after hold release and synchronize");
+        }
+        if (argc == 2 && std::string(argv[1]) == "--terminal-smoke") {
+            test_terminal_smoke();
+            std::cout << "Vulkan terminal smoke passed\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--terminal-ordinary-error") {
+            test_terminal_smoke();
+            throw std::runtime_error("intentional ordinary native error after terminal smoke use");
         }
         expect(argc == 1, "unknown native transfer test arguments");
         test_async_copy_rejects_empty_request();

@@ -3,10 +3,15 @@
 #include "vulkan_execution.h"
 #include "vulkan_platform.h"
 #include "vulkan/descriptor_arena.h"
+#include "vulkan/pipeline_cache.h"
+#include "vulkan/shader_registry.h"
 #include "vulkan_synchronization.h"
 #include "vulkan_tensor_layout.h"
+#include "vulkan_lifecycle_seam_test.h"
+#include "vulkan_buffer_maintenance_test.h"
 
 #include <cstdint>
+#include <cstring>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
@@ -23,6 +28,72 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <cstdlib>
+
+namespace native_allocation_test {
+thread_local bool deny = false;
+thread_local unsigned attempts = 0;
+}
+
+void *operator new(std::size_t size) {
+    if (native_allocation_test::deny) {
+        ++native_allocation_test::attempts;
+        throw std::bad_alloc();
+    }
+    if (void *p = std::malloc(size ? size : 1)) return p;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete[](void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
+
+// Accesses the production routines and their real native table types, not a
+// fixture-specific implementation. No VulkanPlatform/instance is constructed.
+struct VulkanNativeServiceTestPeer {
+    static void destroy_tables(const pytorch_vulkan::VulkanQuiescence &empty,
+                               bool invalidated, bool deny_allocations,
+                               unsigned &destroyed, unsigned mask = 7,
+                               std::size_t pending = 0, std::size_t quarantined = 0) {
+        const auto device = reinterpret_cast<VkDevice>(uintptr_t{1});
+        VulkanPipelineCache::NativePipelines pipelines;
+        VulkanPipelineCache::NativeLayouts layouts;
+        VulkanPipelineCache::NativeLru lru;
+        PipelineKey key; key.shader_identity = "fake-native-pipeline";
+        lru.push_back(key);
+        pipelines.emplace(key, VulkanPipelineCache::Entry{
+            reinterpret_cast<VkPipeline>(uintptr_t{2}), lru.begin()});
+        layouts.emplace(PipelineLayoutKey{}, VulkanPipelineCache::LayoutEntry{
+            reinterpret_cast<VkPipelineLayout>(uintptr_t{3})});
+        VulkanShaderRegistry::NativeModules modules;
+        modules.emplace(ShaderKey{"fake-native-module", 4},
+                        reinterpret_cast<VkShaderModule>(uintptr_t{4}));
+        std::vector<DescriptorArena::Pool> pools(1);
+        pools.front().handle = reinterpret_cast<VkDescriptorPool>(uintptr_t{5});
+        const auto previous_deny = native_allocation_test::deny;
+        native_allocation_test::deny = deny_allocations;
+        try {
+            if (mask & 1) VulkanPipelineCache::destroy_empty_native_tables(device, empty, invalidated, pending, 0,
+                pipelines, layouts, lru, &destroyed,
+                [](void *p, VkDevice, VkPipeline) { ++*static_cast<unsigned *>(p); },
+                [](void *p, VkDevice, VkPipelineLayout) { ++*static_cast<unsigned *>(p); });
+            if (mask & 2) VulkanShaderRegistry::destroy_empty_native_table(device, empty, invalidated, modules,
+                &destroyed, [](void *p, VkDevice, VkShaderModule) { ++*static_cast<unsigned *>(p); });
+            if (mask & 4) DescriptorArena::destroy_empty_native_pools(device, empty, invalidated, pending, quarantined, pools,
+                &destroyed, [](void *p, VkDevice, VkDescriptorPool) { ++*static_cast<unsigned *>(p); });
+        } catch (...) {
+            native_allocation_test::deny = previous_deny;
+            throw;
+        }
+        native_allocation_test::deny = previous_deny;
+        if (((mask & 1) && (!pipelines.empty() || !layouts.empty() || !lru.empty())) ||
+            ((mask & 2) && !modules.empty()) || ((mask & 4) && !pools.empty()))
+            throw std::runtime_error("native service tables were not emptied in place");
+    }
+};
 
 namespace {
 
@@ -275,6 +346,398 @@ void expect_rejected(Function &&function, const char *message) {
         rejected = true;
     }
     expect(rejected, message);
+}
+
+// Only the device operations are injected: admission, close and capture retirement
+// below all use the production coordinator and execution context.
+struct LifecycleExecutionRoot {
+    pytorch_vulkan::VulkanHostClock clock;
+    pytorch_vulkan::VulkanRuntimeLifecycle runtime;
+    std::mutex queue;
+    VulkanExecutionQuarantineSink sink;
+    VulkanExecutionContext context;
+    bool services_destroyed = false;
+    bool fail_service_cleanup = false;
+    bool forbid_destruction = false;
+    ~LifecycleExecutionRoot() { if (forbid_destruction) std::_Exit(98); }
+    LifecycleExecutionRoot(FakeExecution &fake, pytorch_vulkan::VulkanHostClock c)
+        : clock(c), runtime(c), sink(fake_sink(fake)),
+          context(fake_handle<VkDevice>(1), fake_handle<VkQueue>(2),
+                  fake_handle<VkCommandPool>(3), fake_ops(fake), sink, queue) {}
+    pytorch_vulkan::VulkanLifecycleRoot adapter(std::shared_ptr<LifecycleExecutionRoot> owner) {
+        return {owner, &runtime,
+            [](void *p, pytorch_vulkan::VulkanHostTime deadline) {
+                auto &r = *static_cast<LifecycleExecutionRoot *>(p);
+                r.context.synchronize_with_flush_until([&] {
+                    if (r.context.recording()) r.context.submit_locked();
+                }, deadline, r.clock);
+            },
+            [](void *p) { return static_cast<LifecycleExecutionRoot *>(p)->context.lifecycle_snapshot(); },
+            [](void *p, bool closed) { static_cast<LifecycleExecutionRoot *>(p)->context.set_lifecycle_reservations_closed(closed); },
+            [](void *p, pytorch_vulkan::VulkanHostTime deadline) {
+                auto &r = *static_cast<LifecycleExecutionRoot *>(p);
+                r.context.wait_foreign_epilogues_until(deadline, r.clock);
+            },
+            [](void *p) noexcept { return static_cast<LifecycleExecutionRoot *>(p)->context.callback_active_on_this_thread(); },
+            [](void *) noexcept { return false; },
+            [](void *p) {
+                auto &r = *static_cast<LifecycleExecutionRoot *>(p);
+                pytorch_vulkan::VulkanCleanupScope cleanup(r.runtime, pytorch_vulkan::VulkanCleanupKind::AuditedNativeOnly);
+                r.context.teardown_empty_native_services([&] {
+                    if (r.fail_service_cleanup) {
+                        native_allocation_test::deny = true;
+                        (void)::operator new(sizeof(int)); // Must fault70, never noexcept terminate/unwind root.
+                    }
+                    r.services_destroyed = true;
+                });
+            }};
+    }
+};
+
+void test_lifecycle_cycle() {
+    FakeExecution fake;
+    auto clock = pytorch_vulkan::vulkan_host_clock();
+    pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+    auto root = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+        auto r = std::make_shared<LifecycleExecutionRoot>(fake, clock);
+        return r->adapter(r);
+    }));
+    std::weak_ptr<LifecycleExecutionRoot> weak = root;
+    root->context.begin("lifecycle-cycle");
+    root->context.defer_destruction([owner = root] {});
+    root.reset();
+    coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly);
+    expect(weak.expired(), "production close must retire real execution captures");
+    expect(fake.quarantine_calls == 0, "healthy close cannot quarantine");
+    expect(fake.submit_calls == 1 && fake.wait_calls == 1,
+           "close must submit and wait recording, not cancel it");
+    expect(fake.idle_calls == 0 && fake.freed_buffers == 2,
+           "empty-native teardown must destroy handles without general destructor drain");
+}
+
+void test_lifecycle_snapshot() {
+    FakeExecution fake;
+    LifecycleExecutionRoot root(fake, pytorch_vulkan::vulkan_host_clock());
+    auto &c = root.context;
+    expect(c.lifecycle_snapshot().healthy_empty(), "initial snapshot not empty");
+    c.begin();
+    expect(c.lifecycle_snapshot().recording, "recording absent from snapshot");
+    c.defer_destruction([] {});
+    expect(c.lifecycle_snapshot().deferred_callbacks == 1, "deferred callback absent");
+    c.submit();
+    c.retain_until_completion([] {});
+    auto s = c.lifecycle_snapshot();
+    expect(s.submitted_slots == 1 && s.ring_callbacks == 1 && s.completion_callbacks == 1,
+           "submitted/ring/completion snapshot incomplete");
+    c.begin(); c.submit();
+    expect(c.lifecycle_snapshot().submitted_slots == 2, "snapshot omitted second ring slot");
+    { std::lock_guard<std::mutex> q(root.queue); c.wait_device_locked(); }
+    s = c.lifecycle_snapshot();
+    expect(s.ready_callbacks == 2 && !s.healthy_empty(), "ready callbacks omitted");
+    c.drain_ready_cleanup();
+    auto reservation = c.reserve_transfer();
+    s = c.lifecycle_snapshot();
+    expect(c.pending_count() == 0 && s.reservations == 1 && !s.healthy_empty(),
+           "pending_count cannot substitute for stable quiescence");
+    c.begin();
+    std::vector<std::shared_ptr<void>> owners;
+    c.defer_transfer(std::move(reservation), std::move(owners));
+    expect(c.lifecycle_snapshot().transfer_records == 1, "transfer list absent");
+    c.submit(); c.synchronize();
+    expect(c.lifecycle_snapshot().healthy_empty(), "successful publication left state");
+}
+
+template<class Function> void lifecycle_expect_exit70(Function function);
+
+void test_lifecycle_reservation_close() {
+    FakeExecution fake;
+    LifecycleExecutionRoot root(fake, pytorch_vulkan::vulkan_host_clock());
+    auto first = root.context.reserve_transfer();
+    auto second = root.context.reserve_transfer();
+    std::atomic<bool> rejected{false};
+    std::atomic<bool> capture_released_unlocked{false};
+    auto waiter = std::async(std::launch::async, [&] {
+        pytorch_vulkan::VulkanOperationScope operation(root.runtime);
+        try {
+            auto capture = std::shared_ptr<int>(new int(1), [&](int *p) {
+                // Would deadlock if closing destroyed waiter captures inside the
+                // execution/reservation/queue chain rather than unwinding caller.
+                capture_released_unlocked = root.context.lifecycle_snapshot().reservation_closing;
+                delete p;
+            });
+            auto slot = root.context.reserve_transfer();
+        }
+        catch (const std::logic_error &) { rejected = true; }
+        operation.finish();
+    });
+    { std::unique_lock<std::mutex> lock(fake.mutex);
+      fake.cv.wait(lock, [&] { return fake.reservation_waits != 0; }); }
+    root.runtime.close_admission();
+    root.context.set_lifecycle_reservations_closed(true);
+    waiter.get();
+    expect(rejected && capture_released_unlocked && root.runtime.outer_permits() == 0,
+           "closing failed to wake admitted waiter for unlocked capture unwind");
+    auto s = root.context.lifecycle_snapshot();
+    expect(s.reservations == 2 && s.reservation_closing && !s.healthy_empty(),
+           "unattached leases cannot be ignored or consumed by close");
+    first = {}; second = {};
+    expect(root.context.lifecycle_snapshot().healthy_empty(), "closed gate is not poison");
+    root.context.set_lifecycle_reservations_closed(false);
+    auto reopened = root.context.reserve_transfer();
+    expect(static_cast<bool>(reopened), "temporary barrier did not reopen reservation gate");
+    lifecycle_expect_exit70([] {
+        FakeExecution fake;
+        auto clock = pytorch_vulkan::vulkan_host_clock();
+        pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+        auto r = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+            auto owner = std::make_shared<LifecycleExecutionRoot>(fake, clock); return owner->adapter(owner);
+        }));
+        auto unattached = r->context.reserve_transfer();
+        r.reset();
+        coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly);
+    });
+}
+
+struct LifecyclePausedDestructor {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool entered = false, released = false;
+    void pause() {
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true; cv.notify_all();
+        cv.wait(lock, [&] { return released; });
+    }
+    void await() { std::unique_lock<std::mutex> lock(mutex); cv.wait(lock, [&] { return entered; }); }
+    void release() { std::lock_guard<std::mutex> lock(mutex); released = true; cv.notify_all(); }
+};
+struct LifecycleDestructorCapture {
+    LifecyclePausedDestructor &pause;
+    ~LifecycleDestructorCapture() { pause.pause(); }
+};
+
+struct LifecycleDeadlineClock {
+    std::atomic<int64_t> elapsed{0};
+    unsigned waits = 0;
+    pytorch_vulkan::VulkanHostClock clock() {
+        return {this,
+            [](void *p) noexcept { return pytorch_vulkan::VulkanHostTime{} + std::chrono::nanoseconds(static_cast<LifecycleDeadlineClock *>(p)->elapsed.load()); },
+            [](void *p, std::condition_variable &, std::unique_lock<std::mutex> &,
+               pytorch_vulkan::VulkanHostTime deadline) {
+                auto &c = *static_cast<LifecycleDeadlineClock *>(p);
+                ++c.waits;
+                if (deadline != pytorch_vulkan::VulkanHostTime{} + std::chrono::seconds(20)) std::_Exit(98);
+                c.elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline.time_since_epoch()).count();
+            }};
+    }
+};
+
+template<class Function> void lifecycle_expect_exit70(Function function) {
+    const auto pid = fork();
+    expect(pid >= 0, "CPU policy child fork failed");
+    if (pid == 0) { function(); std::_Exit(99); }
+    int status = 0;
+    expect(waitpid(pid, &status, 0) == pid, "CPU policy child wait failed");
+    expect(WIFEXITED(status) && WEXITSTATUS(status) == 70, "terminal policy child did not exit70");
+}
+
+void test_lifecycle_foreign_pump() {
+    FakeExecution fake;
+    auto clock = pytorch_vulkan::vulkan_host_clock();
+    pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+    auto root = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+        auto r = std::make_shared<LifecycleExecutionRoot>(fake, clock); return r->adapter(r);
+    }));
+    std::weak_ptr<LifecycleExecutionRoot> weak = root;
+    LifecyclePausedDestructor pause;
+    auto capture = std::shared_ptr<LifecycleDestructorCapture>(new LifecycleDestructorCapture{pause});
+    root->context.begin();
+    root->context.defer_destruction([capture, owner = root] {});
+    capture.reset();
+    root->context.submit();
+    auto *context = &root->context;
+    { std::lock_guard<std::mutex> queue(root->queue); context->wait_device_locked(); }
+    auto pump = std::async(std::launch::async, [&] { context->drain_ready_cleanup(); });
+    pause.await();
+    const auto paused_snapshot = context->lifecycle_snapshot();
+    root.reset();
+    auto close = std::async(std::launch::async, [&] { coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly); });
+    { std::unique_lock<std::mutex> lock(fake.mutex); fake.cv.wait(lock, [&] { return fake.pump_waits != 0; }); }
+    const bool retained_while_paused = !weak.expired();
+    pause.release(); pump.get(); close.get();
+    expect(paused_snapshot.pump_active && !paused_snapshot.healthy_empty(),
+           "capture destructor epilogue must remain visible after invocation");
+    expect(retained_while_paused, "root released before foreign destructor epilogue");
+    expect(weak.expired(), "root survived completed foreign epilogue close");
+
+    // The bounded synchronization path must also use the supplied clock rather
+    // than the legacy unbounded foreign-pump CV wait. This is not a GPU timeout.
+    FakeExecution bounded_fake;
+    LifecycleDeadlineClock host;
+    LifecycleExecutionRoot bounded(bounded_fake, host.clock());
+    LifecyclePausedDestructor bounded_pause;
+    auto bounded_capture = std::shared_ptr<LifecycleDestructorCapture>(new LifecycleDestructorCapture{bounded_pause});
+    bounded.context.begin(); bounded.context.defer_destruction([bounded_capture] {});
+    bounded_capture.reset(); bounded.context.submit();
+    { std::lock_guard<std::mutex> queue(bounded.queue); bounded.context.wait_device_locked(); }
+    auto bounded_pump = std::async(std::launch::async, [&] { bounded.context.drain_ready_cleanup(); });
+    bounded_pause.await();
+    bool timed_out = false;
+    try { bounded.context.synchronize_with_flush_until({}, pytorch_vulkan::VulkanHostTime{} + std::chrono::seconds(20), host.clock()); }
+    catch (const pytorch_vulkan::VulkanHostCloseTimeout &) { timed_out = true; }
+    bounded_pause.release(); bounded_pump.get();
+    expect(timed_out && host.waits == 1, "foreign synchronization renewed or ignored shared host deadline");
+
+    lifecycle_expect_exit70([] {
+        FakeExecution fake;
+        LifecycleDeadlineClock host;
+        pytorch_vulkan::VulkanLifecycleCoordinator coordinator(host.clock());
+        auto root = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+            auto r = std::make_shared<LifecycleExecutionRoot>(fake, host.clock()); return r->adapter(r);
+        }));
+        LifecyclePausedDestructor pause;
+        auto capture = std::shared_ptr<LifecycleDestructorCapture>(new LifecycleDestructorCapture{pause});
+        root->context.begin(); root->context.defer_destruction([capture, owner = root] {});
+        capture.reset(); root->context.submit();
+        auto *context = &root->context;
+        { std::lock_guard<std::mutex> queue(root->queue); context->wait_device_locked(); }
+        auto pump = std::async(std::launch::async, [&] { context->drain_ready_cleanup(); });
+        pause.await(); root.reset();
+        // Intentional terminal child: root and paused capture must remain intact
+        // at exit70, not be unwound or released to make the timeout look clean.
+        coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly);
+    });
+}
+
+void test_lifecycle_self_close() {
+    FakeExecution fake;
+    auto clock = pytorch_vulkan::vulkan_host_clock();
+    pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+    auto root = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+        auto r = std::make_shared<LifecycleExecutionRoot>(fake, clock); return r->adapter(r);
+    }));
+    { pytorch_vulkan::VulkanOperationScope operation(root->runtime);
+      expect_rejected([&] { coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly); }, "own permit close accepted");
+      operation.finish(); }
+    root->context.begin();
+    root->context.defer_destruction([&] {
+        expect(root->context.callback_active_on_this_thread(), "callback identity absent");
+        expect(!root->context.query_complete(), "active-pump query must remain false");
+        expect(static_cast<bool>(coordinator.observe()), "callback observation deadlocked/lost root");
+        expect_rejected([&] { coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly); }, "own callback close accepted");
+    });
+    root->context.submit(); root->context.synchronize();
+    root.reset(); coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly);
+}
+
+void test_lifecycle_sticky() {
+    for (int fault = 0; fault != 3; ++fault) lifecycle_expect_exit70([&] {
+        FakeExecution fake;
+        auto clock = pytorch_vulkan::vulkan_host_clock();
+        pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+        auto root = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+            auto r = std::make_shared<LifecycleExecutionRoot>(fake, clock); return r->adapter(r);
+        }));
+        auto slot = root->context.reserve_transfer();
+        root->context.begin();
+        std::vector<std::shared_ptr<void>> owners{std::make_shared<int>(42)};
+        std::weak_ptr<void> retained = owners.front();
+        root->context.defer_transfer(std::move(slot), std::move(owners), [] { throw std::runtime_error("first publication error"); });
+        root->context.submit();
+        if (fault == 1) fake.wait_result = VK_ERROR_DEVICE_LOST;
+        if (fault == 2) { fake.wait_result = VK_TIMEOUT; fake.idle_result = VK_ERROR_UNKNOWN; }
+        expect_rejected([&] { root->context.synchronize(); }, "fault was not propagated");
+        const auto s = root->context.lifecycle_snapshot();
+        expect(!s.healthy_empty(), "sticky error cannot become healthy after safe release");
+        if (fault == 0) {
+            expect(s.sticky_error && retained.expired(), "safe publication error lost or payload not released");
+            try { root->context.synchronize(); expect(false, "sticky error vanished"); }
+            catch (const std::runtime_error &e) { expect(std::string(e.what()) == "first publication error", "first error replaced"); }
+        } else {
+            expect(s.invalidated && s.reservation_poisoned && fake.quarantine_calls == 1 && !retained.expired(),
+                   "uncertain payload was not retained intact");
+            root->context.set_lifecycle_reservations_closed(true);
+            root->context.set_lifecycle_reservations_closed(false);
+            expect_rejected([&] { auto reservation = root->context.reserve_transfer(); },
+                            "temporary gate reopening revived poisoned execution");
+        }
+        root.reset(); coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly);
+    });
+}
+
+void test_lifecycle_native_empty() {
+    FakeExecution fake;
+    LifecycleExecutionRoot root(fake, pytorch_vulkan::vulkan_host_clock());
+    int destroyed = 0, invoked = 0;
+    auto capture = std::shared_ptr<int>(new int(1), [&](int *p) { ++destroyed; delete p; });
+    root.context.begin(); root.context.defer_destruction([capture, &invoked] { ++invoked; }); capture.reset();
+    bool service_called = false;
+    expect_rejected([&] { root.context.teardown_empty_native_services([&] { service_called = true; }); }, "nonempty native-only cleanup accepted");
+    expect(destroyed == 0 && invoked == 0 && !service_called && fake.idle_calls == 0 &&
+               fake.freed_buffers == 0 && fake.destroyed_fences == 0 && fake.destroyed_semaphores == 0,
+           "native precheck touched a service, native handle or arbitrary capture");
+    root.context.submit(); root.context.synchronize();
+    root.context.teardown_empty_native_services([&] { root.services_destroyed = true; });
+    expect(root.services_destroyed && destroyed == 1 && invoked == 1 && fake.idle_calls == 0 && fake.freed_buffers == 2,
+           "empty-native teardown did not exclusively destroy native state");
+    unsigned native_destroyed = 0;
+    const auto attempts_before = native_allocation_test::attempts;
+    VulkanNativeServiceTestPeer::destroy_tables(root.context.lifecycle_snapshot(), false, true, native_destroyed);
+    expect(native_destroyed == 4 && native_allocation_test::attempts == attempts_before,
+           "native table cleanup allocated or skipped a handle");
+    native_destroyed = 0;
+    auto nonempty = root.context.lifecycle_snapshot(); nonempty.deferred_callbacks = 1;
+    for (unsigned mask : {1u, 2u, 4u}) {
+        expect_rejected([&] { VulkanNativeServiceTestPeer::destroy_tables(nonempty, false, false, native_destroyed, mask); },
+                        "native tables accepted nonempty execution");
+        expect(native_destroyed == 0, "failed execution precheck destroyed native handles");
+        expect_rejected([&] { VulkanNativeServiceTestPeer::destroy_tables(root.context.lifecycle_snapshot(), true, false, native_destroyed, mask); },
+                        "native tables accepted invalidated services");
+        expect(native_destroyed == 0, "failed service precheck destroyed native handles");
+    }
+    for (unsigned mask : {1u, 4u}) {
+        expect_rejected([&] { VulkanNativeServiceTestPeer::destroy_tables(root.context.lifecycle_snapshot(), false, false, native_destroyed, mask, 1); },
+                        "native tables accepted pending resources");
+        expect(native_destroyed == 0, "pending-resource precheck destroyed native handles");
+    }
+    expect_rejected([&] { VulkanNativeServiceTestPeer::destroy_tables(root.context.lifecycle_snapshot(), false, false, native_destroyed, 4, 0, 1); },
+                    "native descriptor tables accepted quarantine");
+    expect(native_destroyed == 0, "quarantine precheck destroyed native handles");
+    {
+        FakeExecution allocation_fake;
+        LifecycleExecutionRoot allocation_root(allocation_fake, pytorch_vulkan::vulkan_host_clock());
+        std::function<void()> cleanup = [&] { ++native_destroyed; };
+        native_allocation_test::deny = true;
+        try { allocation_root.context.teardown_empty_native_services(cleanup); }
+        catch (...) { native_allocation_test::deny = false; throw; }
+        native_allocation_test::deny = false;
+        expect(native_allocation_test::attempts == attempts_before && allocation_fake.freed_buffers == 2,
+               "empty-native execution teardown allocated");
+    }
+    lifecycle_expect_exit70([] {
+        FakeExecution fake;
+        auto clock = pytorch_vulkan::vulkan_host_clock();
+        pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+        auto r = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+            auto owner = std::make_shared<LifecycleExecutionRoot>(fake, clock); return owner->adapter(owner);
+        }));
+        auto capture = std::shared_ptr<int>(new int(1), [](int *) { std::_Exit(98); });
+        r->context.begin();
+        r->context.defer_destruction([capture] { std::_Exit(97); });
+        capture.reset(); r.reset();
+        coordinator.close(pytorch_vulkan::VulkanCloseBoundary::PythonNative);
+    });
+    lifecycle_expect_exit70([] {
+        FakeExecution fake;
+        auto clock = pytorch_vulkan::vulkan_host_clock();
+        pytorch_vulkan::VulkanLifecycleCoordinator coordinator(clock);
+        auto r = std::static_pointer_cast<LifecycleExecutionRoot>(coordinator.acquire([&] {
+            auto owner = std::make_shared<LifecycleExecutionRoot>(fake, clock); return owner->adapter(owner);
+        }));
+        r->fail_service_cleanup = true;
+        r->forbid_destruction = true;
+        r.reset();
+        coordinator.close(pytorch_vulkan::VulkanCloseBoundary::NativeEarly);
+    });
 }
 
 void test_invalid_states(VulkanExecutionContext &context) {
@@ -1222,7 +1685,7 @@ void test_fake_transfer_publication_submission_and_operation_order() {
     auto second = context.reserve_transfer();
     auto attach = [&](VulkanTransferReservation &&reservation, int value) {
         std::lock_guard<std::mutex> lock(queue_mutex);
-        context.defer_transfer(std::move(reservation), {}, [&] { order.push_back(value); });
+        context.defer_transfer(std::move(reservation), {}, [&order, value] { order.push_back(value); });
     };
     context.begin();
     attach(std::move(first), 1);
@@ -2702,6 +3165,8 @@ void test_platform_owned_staging_copy_witness(VulkanPlatform &platform) {
     platform.compute().begin_training_step();
     auto download = platform.reserve_transfer(sizeof(witness));
     weak_download = download.staging;
+    auto download_owner = download.staging;
+    void *download_mapped = download_owner->map_persistent();
     {
         std::lock_guard<std::mutex> lock(platform.queue_mutex());
         context.defer_transfer(std::move(download.reservation),
@@ -2710,13 +3175,14 @@ void test_platform_owned_staging_copy_witness(VulkanPlatform &platform) {
                                                      [&](int *value) {
                                                          delete value; ++releases;
                                                      })},
-                               [&] {
+                               [&, download_owner, download_mapped] {
                                    bool queue_lock_free =
                                        other_thread_can_lock(platform.queue_mutex());
                                    expect(queue_lock_free,
                                           "witness publication ran while the queue "
                                           "lock was held");
-                                   download.staging->read(witness, sizeof(witness));
+                                   download_owner->invalidate_range(0, sizeof(witness));
+                                   std::memcpy(witness, download_mapped, sizeof(witness));
                                    ++download_publish;
                                });
     }
@@ -2724,6 +3190,7 @@ void test_platform_owned_staging_copy_witness(VulkanPlatform &platform) {
                                  0, 0, sizeof(witness)}});
     platform.compute().end_training_step();
     download.staging.reset();
+    download_owner.reset();
 
     context.synchronize();
     const float expected[] = {seed_lhs[0] + 2.0F * seed_addend[0],
@@ -3550,6 +4017,21 @@ int main(int argc, char **argv) {
                     std::chrono::steady_clock::now() - start).count() << "s\n" << std::flush;
             };
             run("retirement", test_controlled_execution_ops_retirement);
+            run("lifecycle-cycle", test_lifecycle_cycle);
+            run("lifecycle-operation-tail", [] { lifecycle_seam_test::tail(false); });
+            run("callback-cache-coherent", [] { buffer_maintenance_test::publication(true); });
+            run("callback-cache-noncoherent", [] { buffer_maintenance_test::publication(false); });
+            run("callback-cache-error", [] { buffer_maintenance_test::publication(false, true); });
+            run("callback-cache-boundaries", buffer_maintenance_test::boundaries);
+            run("callback-cache-closing", buffer_maintenance_test::closing_wait);
+            run("callback-cache-completion", buffer_maintenance_test::completion);
+            run("lifecycle-deferred-entry", lifecycle_seam_test::deferred_entry);
+            run("lifecycle-snapshot", test_lifecycle_snapshot);
+            run("lifecycle-reservation-close", test_lifecycle_reservation_close);
+            run("lifecycle-foreign-pump", test_lifecycle_foreign_pump);
+            run("lifecycle-self-close", test_lifecycle_self_close);
+            run("lifecycle-sticky", test_lifecycle_sticky);
+            run("lifecycle-native-empty", test_lifecycle_native_empty);
             run("submit-wait-mask", test_fake_submit_waits_for_compute_and_transfer);
             run("barrier-specs", test_shared_barrier_descriptors);
             run("errors", test_controlled_cleanup_errors_are_persistent_and_nonblocking_to_cleanup);
@@ -3600,7 +4082,12 @@ int main(int argc, char **argv) {
             run("flush-error-cleanup", test_fake_flush_failure_preserves_error_and_safe_cleanup);
             expect(found, "unknown fake-only case");
             std::cout << "Controlled execution-ops tests passed\n";
-            if (fake_only) return 0;
+            if (fake_only) {
+                expect(VulkanPlatform::platform_construction_count() == 0 &&
+                           VulkanPlatform::availability_probe_count() == 0,
+                       "fake-only path constructed or probed a Vulkan platform");
+                return 0;
+            }
         }
         std::cout << "START platform-context-initialization\n" << std::flush;
         const auto init_start = std::chrono::steady_clock::now();

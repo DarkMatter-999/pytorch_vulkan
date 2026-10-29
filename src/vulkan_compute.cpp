@@ -1468,6 +1468,11 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyDescriptorSetLayout(device_, cat_descriptor_layout_, nullptr);
 }
 
+void VulkanCompute::destroy_empty_native_descriptor_services(
+    const pytorch_vulkan::VulkanQuiescence &empty) const {
+    descriptor_arena_->destroy_empty_native(empty);
+}
+
 void VulkanCompute::add(VkBuffer lhs, const VulkanTensorLayout &lhs_layout,
                         VkBuffer rhs, const VulkanTensorLayout &rhs_layout,
                         VkBuffer output,
@@ -2096,6 +2101,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
         c == VK_NULL_HANDLE ? output_layout : c_layout;
     const VulkanTensorLayout &effective_bias =
         bias == VK_NULL_HANDLE ? output_layout : bias_layout;
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     try {
@@ -2175,6 +2181,7 @@ void VulkanCompute::gemm(VkBuffer a, const VulkanTensorLayout &a_layout, VkBuffe
     } catch (const std::exception &error) {
         fail_recording("GEMM dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::rnn_sequence(
@@ -2187,6 +2194,7 @@ void VulkanCompute::rnn_sequence(
         input_dimension == 0 || hidden_dimension == 0)
         throw std::invalid_argument("Vulkan RNN sequence has an invalid range");
     validate_rnn_sequence(batch, sequence, input_dimension, hidden_dimension);
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     try {
@@ -2237,6 +2245,7 @@ void VulkanCompute::rnn_sequence(
     } catch (const std::exception &error) {
         fail_recording("RNN sequence dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::rnn_sequence_backward(
@@ -2254,6 +2263,7 @@ void VulkanCompute::rnn_sequence_backward(
         if (buffer == VK_NULL_HANDLE)
             throw std::invalid_argument("Vulkan RNN backward has an invalid buffer");
     validate_rnn_sequence_backward(batch, sequence, input_dimension, hidden_dimension);
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     try {
@@ -2335,6 +2345,7 @@ void VulkanCompute::rnn_sequence_backward(
     } catch (const std::exception &error) {
         fail_recording("RNN backward dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::validate_rnn_sequence(uint32_t batch, uint32_t sequence,
@@ -2687,6 +2698,7 @@ void VulkanCompute::dispatch_model(
     if (metadata == nullptr || metadata_size == 0 ||
         metadata_size > max_storage_buffer_range_)
         throw std::invalid_argument("Vulkan model compute has invalid metadata");
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -2733,6 +2745,7 @@ void VulkanCompute::dispatch_model(
     } catch (const std::exception &error) {
         fail_recording("model dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::dispatch_multi_output(
@@ -2791,6 +2804,7 @@ void VulkanCompute::dispatch_multi_output(
         throw std::invalid_argument(
             "Vulkan multi-output backward dispatch count overflows");
 
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     std::shared_ptr<VulkanBuffer> metadata_holder;
@@ -2874,6 +2888,7 @@ void VulkanCompute::dispatch_multi_output(
     } catch (const std::exception &error) {
         fail_recording("multi-output dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::compute_multi_output(
@@ -2927,6 +2942,7 @@ void VulkanCompute::dispatch_extra(
         one_workgroup_per_output);
     if ((metadata == nullptr) != (metadata_size == 0))
         throw std::invalid_argument("Vulkan compute metadata is invalid");
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -2972,6 +2988,7 @@ void VulkanCompute::dispatch_extra(
     } catch (const std::exception &error) {
         fail_recording("reduction dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::cat_gather(VkBuffer input, VkDeviceSize input_range,
@@ -2985,6 +3002,7 @@ void VulkanCompute::cat_gather(VkBuffer input, VkDeviceSize input_range,
         std::min<uint64_t>(max_compute_workgroup_count_x_, UINT32_MAX / 256)));
     if (!input || !output || groups == 0)
         throw std::invalid_argument("Vulkan cat gather has invalid buffers or grid");
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     std::shared_ptr<VulkanBuffer> metadata_buffer;
@@ -3019,6 +3037,7 @@ void VulkanCompute::cat_gather(VkBuffer input, VkDeviceSize input_range,
     } catch (const std::exception &error) {
         fail_recording("cat gather", error);
     }
+    });
 }
 
 void VulkanCompute::validate_cat_gather(VkDeviceSize input_range,
@@ -3052,6 +3071,7 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
         output_bytes > max_storage_buffer_range_ || output_numel > max_elements)
         throw std::invalid_argument(
             "Vulkan formatter Double compute has an invalid range");
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -3112,6 +3132,7 @@ void VulkanCompute::dispatch_formatter(VkBuffer input, VkBuffer rhs, VkBuffer ou
         cleanup();
         fail_recording("formatter dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer output,
@@ -3137,6 +3158,7 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         output_bytes > max_storage_buffer_range_ || output_bytes == 0 ||
         static_cast<uint64_t>(element_count) > max_elements)
         throw std::invalid_argument("Vulkan masked-select has an invalid range");
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -3197,6 +3219,7 @@ void VulkanCompute::dispatch_masked(VkBuffer input, VkBuffer mask, VkBuffer outp
         cleanup();
         fail_recording("masked-select dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
@@ -3261,6 +3284,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
     if (groups > max_compute_workgroup_count_x_)
         throw std::invalid_argument("Vulkan compute pointwise exceeds workgroup limit");
 
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -3337,6 +3361,7 @@ void VulkanCompute::dispatch(uint32_t mode, VkBuffer lhs,
     } catch (const std::exception &error) {
         fail_recording("dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::dispatch_compound(
@@ -3385,6 +3410,7 @@ void VulkanCompute::dispatch_compound(
     if (groups > max_compute_workgroup_count_x_)
         throw std::invalid_argument("Vulkan compute compound exceeds workgroup limit");
 
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     auto metadata_holder = std::make_shared<VulkanBuffer>(
@@ -3427,9 +3453,13 @@ void VulkanCompute::dispatch_compound(
     } catch (const std::exception &error) {
         fail_recording("compound dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::begin_training_step() const {
+    if (platform_.runtime_lifecycle().finalizing_sync())
+        throw pytorch_vulkan::VulkanAdmissionClosed("private training scope cannot begin during finalizing-sync");
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (training_step_)
@@ -3439,9 +3469,11 @@ void VulkanCompute::begin_training_step() const {
     vulkan_record_memory_barrier(platform_.execution_context().command_buffer(),
                                  vulkan_compute_ready_spec());
     training_step_ = true;
+    });
 }
 
 void VulkanCompute::end_training_step() const {
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!training_step_)
@@ -3456,21 +3488,25 @@ void VulkanCompute::end_training_step() const {
         platform_.execution_context().submit_locked();
         platform_.execution_context().wait_device_locked();
         submission_count_.fetch_add(1, std::memory_order_relaxed);
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         training_step_ = false;
         cancel_recording();
         throw;
     }
     training_step_ = false;
+    });
 }
 
 void VulkanCompute::cancel_training_step() const {
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!training_step_)
         return;
     training_step_ = false;
     cancel_recording();
+    });
 }
 
 bool VulkanCompute::training_step_active() const { return training_step_; }
@@ -3553,6 +3589,7 @@ void VulkanCompute::throw_if_pending_batch_failure() const {
 }
 
 void VulkanCompute::test_inject_recording_failure() const {
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!platform_.async_execution_enabled())
@@ -3571,9 +3608,11 @@ void VulkanCompute::test_inject_recording_failure() const {
     } catch (const std::exception &error) {
         fail_recording("injected dispatch", error);
     }
+    });
 }
 
 void VulkanCompute::test_inject_pre_dispatch_failure() const {
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
     CallbackDrainOnExit drain(platform_.execution_context());
     std::scoped_lock lock(platform_.queue_mutex());
     if (!platform_.async_execution_enabled())
@@ -3584,6 +3623,7 @@ void VulkanCompute::test_inject_pre_dispatch_failure() const {
     } catch (const std::exception &error) {
         fail_recording("injected dispatch setup", error);
     }
+    });
 }
 
 void VulkanCompute::finish_dispatch() const {
@@ -3610,7 +3650,14 @@ void VulkanCompute::finish_dispatch() const {
 }
 
 void VulkanCompute::flush_recording() const {
-    (void)platform_.execution_context().query_with_flush([&] { flush_recording_locked(); });
+    auto& context = platform_.execution_context();
+    if (context.callback_active_on_this_thread()) {
+        (void)context.query_with_flush([&] { flush_recording_locked(); });
+        return;
+    }
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
+        (void)context.query_with_flush([&] { flush_recording_locked(); });
+    });
 }
 
 void VulkanCompute::flush_recording_locked() const {

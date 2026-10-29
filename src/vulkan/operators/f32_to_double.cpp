@@ -62,6 +62,13 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                          c10::optional<at::MemoryFormat> memory_format) {
     const auto output_device = device.value_or(input.device());
     const auto requested_dtype = dtype.value_or(input.scalar_type());
+    // CPU-origin entry learns its runtime only at actual inner admission. The
+    // deferred frame then owns that permit through copy/error/temporary tails,
+    // without eager initialization or a cache snapshot racing Closing/reopen.
+    auto* runtime = input.device().is_cpu()
+        ? nullptr
+        : pytorch_vulkan::allocation_runtime(input.storage().data_ptr());
+    return pytorch_vulkan::with_vulkan_operation(runtime, [&]() -> at::Tensor {
     if (output_device.is_cpu()) {
         TORCH_CHECK(input.device().type() != c10::DeviceType::PrivateUse1 ||
                         input.scalar_type() != at::kDouble,
@@ -199,6 +206,7 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
         static_cast<VkDeviceSize>(input_bytes), static_cast<VkDeviceSize>(output_bytes),
         static_cast<uint32_t>(count));
     return output;
+    });
 }
 
 } // namespace

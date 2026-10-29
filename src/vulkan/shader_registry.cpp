@@ -12,6 +12,7 @@ VulkanShaderRegistry::VulkanShaderRegistry(VkDevice device, VulkanPlatform &plat
     : device_(device), platform_(platform), execution_(execution) {}
 
 VulkanShaderRegistry::~VulkanShaderRegistry() noexcept {
+    if (native_destroyed_) return;
     std::vector<VkShaderModule> modules;
     bool invalidated = false;
     {
@@ -32,6 +33,25 @@ VulkanShaderRegistry::~VulkanShaderRegistry() noexcept {
     };
     if (!execution_.retain_until_completion(destroy_modules))
         destroy_modules();
+}
+
+void VulkanShaderRegistry::destroy_empty_native_table(VkDevice device,
+    const pytorch_vulkan::VulkanQuiescence &empty, bool invalidated,
+    NativeModules &modules, void *cookie, void (*destroy)(void *, VkDevice, VkShaderModule)) {
+    if (!empty.healthy_empty() || invalidated || !destroy)
+        throw std::logic_error("native shader cleanup requires empty healthy execution/services");
+    for (auto &entry : modules) {
+        if (entry.second != VK_NULL_HANDLE) destroy(cookie, device, entry.second);
+        entry.second = VK_NULL_HANDLE;
+    }
+    modules.clear(); // Shader keys and VkShaderModule only, no arbitrary captures.
+}
+
+void VulkanShaderRegistry::destroy_empty_native(const pytorch_vulkan::VulkanQuiescence &empty) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    destroy_empty_native_table(device_, empty, invalidated_, modules_, nullptr,
+        [](void *, VkDevice device, VkShaderModule module) { vkDestroyShaderModule(device, module, nullptr); });
+    native_destroyed_ = true;
 }
 
 std::size_t

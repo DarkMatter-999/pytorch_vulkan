@@ -55,6 +55,7 @@ at::Tensor dispatch(const at::Tensor &input, const at::Tensor &grad,
         TORCH_CHECK(grad.sizes().equals({input.size(0), input.size(1), 1, 1}),
                     "Vulkan pooling grad_output has unsupported shape");
     }
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output = operation == 0 ? at::empty({input.size(0), input.size(1), 1, 1},
                                                    input.options())
                                        : at::empty(input.sizes(), input.options());
@@ -79,6 +80,7 @@ at::Tensor dispatch(const at::Tensor &input, const at::Tensor &grad,
         static_cast<uint32_t>(input.size(2)), static_cast<uint32_t>(input.size(3)),
         operation);
     return output;
+    });
 }
 } // namespace
 at::Tensor adaptive_avg_pool2d(const at::Tensor &input, at::IntArrayRef output_size) {

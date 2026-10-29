@@ -89,6 +89,7 @@ nll_loss_forward(const at::Tensor &self, const at::Tensor &target,
     TORCH_CHECK(ignore_index.expect_int() >= std::numeric_limits<int32_t>::min() &&
                     ignore_index.expect_int() <= std::numeric_limits<int32_t>::max(),
                 "Vulkan nll_loss ignore_index does not fit in int32");
+    return with_vulkan_operation(allocation_runtime(self.storage().data_ptr()), [&]() -> std::tuple<at::Tensor, at::Tensor> {
     auto loss = reduction == 0 ? at::empty({batch}, self.options())
                                : at::empty({}, self.options());
     auto total = at::empty({}, self.options());
@@ -99,6 +100,7 @@ nll_loss_forward(const at::Tensor &self, const at::Tensor &target,
     run(inputs, 4, outputs, 2, mode, ignore_index.expect_int(),
         static_cast<uint32_t>(batch), static_cast<uint32_t>(classes));
     return {loss, total};
+    });
 }
 
 at::Tensor nll_loss_backward(const at::Tensor &grad_output, const at::Tensor &self,
@@ -120,6 +122,7 @@ at::Tensor nll_loss_backward(const at::Tensor &grad_output, const at::Tensor &se
     TORCH_CHECK(ignore_index.expect_int() >= std::numeric_limits<int32_t>::min() &&
                     ignore_index.expect_int() <= std::numeric_limits<int32_t>::max(),
                 "Vulkan nll_loss ignore_index does not fit in int32");
+    return with_vulkan_operation(allocation_runtime(self.storage().data_ptr()), [&]() -> at::Tensor {
     auto output = at::empty_like(self);
     const at::Tensor *inputs[] = {&grad_output, &self, &target, &total_weight};
     const at::Tensor *outputs[] = {&output};
@@ -127,6 +130,7 @@ at::Tensor nll_loss_backward(const at::Tensor &grad_output, const at::Tensor &se
     run(inputs, 4, outputs, 1, mode, ignore_index.expect_int(),
         static_cast<uint32_t>(self.size(0)), static_cast<uint32_t>(self.size(1)));
     return output;
+    });
 }
 } // namespace pytorch_vulkan
 

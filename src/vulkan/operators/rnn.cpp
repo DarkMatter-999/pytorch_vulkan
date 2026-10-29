@@ -98,7 +98,8 @@ at::Tensor rnn_sequence_forward(const at::Tensor &input, const at::Tensor &weigh
     // All rejection checks precede output allocation so malformed raw calls have
     // no Vulkan allocation or dispatch side effects.
     platform.compute().validate_rnn_sequence(batch, sequence, input_dimension,
-                                              hidden_dimension);
+                                               hidden_dimension);
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor {
     at::Tensor output = at::empty({input.size(0), input.size(1), weight.size(0)},
                                   input.options());
     const auto output_layout = inspect_vulkan_tensor_layout(output, "RNN output");
@@ -117,6 +118,7 @@ at::Tensor rnn_sequence_forward(const at::Tensor &input, const at::Tensor &weigh
     (void)bias_layout;
     (void)output_layout;
     return output;
+    });
 }
 
 std::array<at::Tensor, 4> rnn_sequence_backward_impl(
@@ -197,6 +199,7 @@ std::array<at::Tensor, 4> rnn_sequence_backward_impl(
     TORCH_CHECK(need_input || need_weight || need_recurrent_weight || need_bias,
                 "Vulkan RNN backward received no requested gradients");
 
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> std::array<at::Tensor, 4> {
     at::Tensor gradient_input = need_input ? at::empty_like(input) : at::Tensor();
     at::Tensor gradient_weight = need_weight ? at::empty_like(weight) : at::Tensor();
     at::Tensor gradient_recurrent = need_recurrent_weight ? at::empty_like(recurrent_weight)
@@ -251,6 +254,7 @@ std::array<at::Tensor, 4> rnn_sequence_backward_impl(
             need_weight ? gradient_weight : at::Tensor(),
             need_recurrent_weight ? gradient_recurrent : at::Tensor(),
             need_bias ? gradient_bias : at::Tensor()};
+    });
 }
 
 class RnnSequenceAutograd final : public torch::autograd::Function<RnnSequenceAutograd> {
@@ -258,32 +262,39 @@ class RnnSequenceAutograd final : public torch::autograd::Function<RnnSequenceAu
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input, const at::Tensor &weight,
                               const at::Tensor &recurrent_weight, const at::Tensor &bias) {
+        return with_vulkan_operation(allocation_platform(input.storage().data_ptr()).runtime_lifecycle(), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         auto output = rnn_sequence_forward(input, weight, recurrent_weight, bias);
         ctx->save_for_backward({input, weight, recurrent_weight, bias, output});
         return output;
+        });
     }
 
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list gradients) {
+             torch::autograd::variable_list incoming_gradients) {
         at::AutoDispatchBelowAutograd guard;
         TORCH_CHECK(!c10::GradMode::is_enabled(),
                     "Vulkan RNN sequence does not support higher-order gradients");
-        if (!gradients[0].defined())
+        if (!incoming_gradients[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor()};
+        return with_vulkan_operation(allocation_platform(incoming_gradients[0].storage().data_ptr()).runtime_lifecycle(), [&]() -> torch::autograd::variable_list {
+        auto gradients = std::move(incoming_gradients);
         const auto saved = ctx->get_saved_variables();
         auto gradients_out = rnn_sequence_backward_impl(
             gradients[0], saved[0], saved[1], saved[2], saved[3], saved[4],
             saved[0].requires_grad(), saved[1].requires_grad(),
             saved[2].requires_grad(), saved[3].requires_grad());
         return {gradients_out[0], gradients_out[1], gradients_out[2], gradients_out[3]};
+        });
     }
 };
 
 at::Tensor rnn_sequence(const at::Tensor &input, const at::Tensor &weight,
                         const at::Tensor &recurrent_weight, const at::Tensor &bias) {
-    return RnnSequenceAutograd::apply(input, weight, recurrent_weight, bias);
+    return with_vulkan_operation(allocation_platform(input.storage().data_ptr()).runtime_lifecycle(), [&]() -> at::Tensor {
+        return RnnSequenceAutograd::apply(input, weight, recurrent_weight, bias);
+    });
 }
 } // namespace pytorch_vulkan
 

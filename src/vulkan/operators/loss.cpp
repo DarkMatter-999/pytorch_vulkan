@@ -41,6 +41,8 @@ at::Tensor dispatch_loss(const at::Tensor &input_view,
                          const at::Tensor &target_view, int64_t reduction) {
     const uint32_t elements =
         validate_common(input_view, target_view, reduction, "forward");
+    auto* runtime = allocation_runtime(input_view.storage().data_ptr());
+    return with_vulkan_operation(runtime, [&]() -> at::Tensor {
     const auto input = input_view.contiguous();
     const auto target = target_view.contiguous();
     auto output =
@@ -75,6 +77,7 @@ at::Tensor dispatch_loss(const at::Tensor &input_view,
                                 &allocation_buffer(output_data), output_layout,
                                 elements, static_cast<uint32_t>(reduction), false);
     return output;
+    });
 }
 } // namespace
 
@@ -117,6 +120,7 @@ at::Tensor mse_loss_backward(const at::Tensor &grad_view,
     // A one-element upstream is readable directly without an expanded copy.
     // Stock second reverse also passes full-shaped p for mean/sum: retain every
     // logical value there, independently of numerical reduction normalization.
+    return with_vulkan_operation(allocation_runtime(input_view.storage().data_ptr()), [&]() -> at::Tensor {
     const auto input = input_view.contiguous();
     const auto target = target_view.contiguous();
     const auto grad_output = grad_view.numel() == 1
@@ -156,6 +160,7 @@ at::Tensor mse_loss_backward(const at::Tensor &grad_view,
                                 &allocation_buffer(result_data), result_layout,
                                 elements, static_cast<uint32_t>(reduction), true);
     return result;
+    });
 }
 
 } // namespace pytorch_vulkan

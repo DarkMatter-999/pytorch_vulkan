@@ -1,4 +1,5 @@
 #include "vulkan_pinned_allocator.h"
+#include "vulkan_pinned_host_core.h"
 
 #include "vulkan_platform.h"
 
@@ -11,14 +12,8 @@
 
 namespace {
 
-struct VulkanPinnedHostOwner {
-    std::shared_ptr<VulkanPlatform> platform;
-    std::unique_ptr<VulkanBuffer> buffer;
-    std::byte *mapped_base = nullptr;
-    size_t logical_bytes = 0;
-    VulkanPinnedHostTestOps ops{};
-    bool counted = false;
-};
+using VulkanPinnedHostOwner = pytorch_vulkan::detail::
+    PinnedHostCore<VulkanPlatform, VulkanBuffer, VulkanPinnedHostTestOps>;
 
 struct VulkanPinnedHostHandle {
     std::shared_ptr<VulkanPinnedHostOwner> core;
@@ -26,16 +21,7 @@ struct VulkanPinnedHostHandle {
 
 void destroy_pinned_host_core(VulkanPinnedHostOwner *owner) noexcept {
     if (owner == nullptr || pytorch_vulkan::inherited_fork_state()) return;
-    if (owner->platform != nullptr) {
-        try {
-            if (owner->ops.should_leak_for_testing != nullptr &&
-                owner->ops.should_leak_for_testing(owner->ops.cookie, *owner->platform)) return;
-            if (owner->platform->device_lost()) return;
-        } catch (...) { return; }
-    }
-    if (owner->platform != nullptr && owner->counted)
-        owner->platform->record_pinned_host_allocation_destroyed();
-    delete owner;
+    pytorch_vulkan::detail::destroy_pinned_host_core(owner);
 }
 
 void delete_pinned_host_owner(void *context) noexcept {
@@ -60,6 +46,8 @@ at::DataPtr VulkanPinnedHostAllocator::allocate(size_t nbytes) {
         return at::DataPtr(nullptr, nullptr, &delete_pinned_host_owner,
                            c10::Device(c10::DeviceType::CPU));
 
+    auto platform = platform_ ? platform_ : pytorch_vulkan::platform();
+    return pytorch_vulkan::with_vulkan_operation(platform->runtime_lifecycle(), [&]() -> at::DataPtr {
     auto owner = std::make_unique<VulkanPinnedHostOwner>();
     owner->platform = platform_ ? platform_ : pytorch_vulkan::platform();
     owner->platform->throw_if_device_lost();
@@ -85,6 +73,7 @@ at::DataPtr VulkanPinnedHostAllocator::allocate(size_t nbytes) {
     auto *context = new VulkanPinnedHostHandle{std::move(core)};
     return at::DataPtr(data, context, &delete_pinned_host_owner,
                        c10::Device(c10::DeviceType::CPU));
+    });
 }
 
 bool vulkan_pinned_host_range(const c10::Storage &storage, const void *data,

@@ -1,6 +1,10 @@
 #include "vulkan_buffer.h"
+#include "vulkan_device_guard.h"
+#include "vulkan_lifecycle.h"
 #include "vulkan_platform.h"
 #include "vulkan_pinned_allocator.h"
+#include "vulkan_terminal_selector.h"
+#include "vulkan_pinned_core_test.h"
 
 #include <ATen/ATen.h>
 #include <ATen/ops/_pin_memory.h>
@@ -15,6 +19,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace pytorch_vulkan::testing {
@@ -213,18 +218,6 @@ void test_pinned_allocator_fake_lifecycle() {
             throw std::runtime_error("misaligned map was not rejected and cleaned exactly once");
     }
 
-    for (const auto guard : {PinnedFakeCalls::Guard::DeviceLost}) {
-        PinnedFakeCalls calls;
-        calls.guard = guard;
-        calls.mapped_allocation = std::aligned_alloc(c10::gAlignment, 256);
-        calls.mapped = calls.mapped_allocation;
-        VulkanPinnedHostAllocator allocator(pytorch_vulkan::platform(), fake_pinned_ops(calls));
-        { auto data = allocator.allocate(128); }
-        if (calls.unmaps != 0 || calls.destroys != 0 || calls.frees != 0 ||
-            calls.mapped_allocation == nullptr || calls.safety_checks != 1)
-            throw std::runtime_error("device-lost guard freed a resource that must be leaked");
-        // Intentional test-fixture leak models the safety rule under these states.
-    }
     {
         PinnedFakeCalls calls;
         calls.mapped_allocation = std::aligned_alloc(c10::gAlignment, 256);
@@ -425,13 +418,39 @@ VkResult invalidate(void *cookie, VkDevice device, uint32_t count,
     if (calls.synthetic_cache) return VK_SUCCESS;
     return vkInvalidateMappedMemoryRanges(device, count, ranges);
 }
+void test_terminal_smoke() {
+    const std::array<float, 4> seed{{1.0F, -2.0F, 3.5F, 4.0F}};
+    VulkanPinnedHostAllocator allocator;
+    auto data = allocator.allocate(seed.size() * sizeof(float));
+    auto *values = static_cast<float *>(data.get());
+    std::copy(seed.begin(), seed.end(), values);
+    if (!std::equal(seed.begin(), seed.end(), values))
+        throw std::runtime_error("terminal smoke pinned round trip changed data");
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    // CPU-only permanent-retention child must precede any real platform/probe.
     try {
+        vulkan_pinned_core_testing::retention();
+    } catch (const std::exception &error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+    pytorch_vulkan::NativeVulkanTerminalGuard terminal(pytorch_vulkan::platform_lifecycle());
+    try {
+        const auto selector = vulkan_terminal_selector::parse(argc, argv);
         if (!VulkanPlatform::is_available()) {
             std::cout << "SKIP: Vulkan platform unavailable\n";
             return 77;
+        }
+        if (selector != vulkan_terminal_selector::Selector::Default) {
+            test_terminal_smoke();
+            if (selector == vulkan_terminal_selector::Selector::OrdinaryError)
+                throw std::runtime_error("intentional ordinary native error after terminal smoke use");
+            std::cout << "Vulkan pinned allocator terminal smoke passed\n";
+            return 0;
         }
         VulkanPlatform platform(false);
         test_pinned_allocator_fake_lifecycle();

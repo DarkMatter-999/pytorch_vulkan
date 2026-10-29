@@ -2,12 +2,37 @@ cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 project(pytorch_vulkan LANGUAGES CXX)
 include(CTest)
 
+# Host-only lifecycle core: deliberately below Vulkan, Torch and shader tooling.
+find_package(Threads REQUIRED)
+add_library(vulkan_lifecycle STATIC src/vulkan_lifecycle.cpp)
+target_compile_features(vulkan_lifecycle PUBLIC cxx_std_17)
+target_include_directories(vulkan_lifecycle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(vulkan_lifecycle PUBLIC Threads::Threads)
+set_target_properties(vulkan_lifecycle PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_executable(vulkan_lifecycle_test tests/cpp/vulkan_lifecycle_test.cpp)
+target_link_libraries(vulkan_lifecycle_test PRIVATE vulkan_lifecycle)
+add_executable(vulkan_pinned_core_test tests/cpp/vulkan_pinned_core_test.cpp)
+target_link_libraries(vulkan_pinned_core_test PRIVATE vulkan_lifecycle)
+
+option(BUILD_PYTHON_LIFECYCLE_TEST "Build CPU-only CPython lifecycle harness" OFF)
+if(BUILD_PYTHON_LIFECYCLE_TEST)
+    find_package(Python3 3.12 COMPONENTS Interpreter Development.Embed REQUIRED)
+    add_executable(vulkan_python_lifecycle_test
+        tests/cpp/vulkan_python_lifecycle_test.cpp src/vulkan_python_lifecycle.cpp)
+    target_link_libraries(vulkan_python_lifecycle_test PRIVATE vulkan_lifecycle Python3::Python)
+    target_compile_definitions(vulkan_python_lifecycle_test PRIVATE
+        PYTORCH_VULKAN_TEST_PYTHON="${Python3_EXECUTABLE}")
+endif()
+
 # The legacy OpenCL implementation is retained as reference material only.
 # Vulkan and CPU integration will add active targets in later phases.
 message(STATUS "GPU backend disabled; configuring CPU-only project shell")
 
 option(BUILD_VULKAN_PROBE "Build the Vulkan device discovery probe" OFF)
 option(BUILD_PYTHON_EXTENSION "Build the minimal Python Vulkan extension" OFF)
+if(BUILD_PYTHON_LIFECYCLE_TEST AND NOT (BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION))
+    message(FATAL_ERROR "BUILD_PYTHON_LIFECYCLE_TEST requires BUILD_VULKAN_PROBE or BUILD_PYTHON_EXTENSION for native Vulkan libraries")
+endif()
 
 if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     find_package(Vulkan 1.1 REQUIRED)
@@ -164,7 +189,7 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
     target_compile_features(vulkan_platform PUBLIC cxx_std_17)
     set_target_properties(vulkan_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vulkan_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(vulkan_platform PUBLIC Vulkan::Vulkan)
+    target_link_libraries(vulkan_platform PUBLIC Vulkan::Vulkan vulkan_lifecycle)
   endif()
 endif()
 
@@ -199,6 +224,14 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
         set_tests_properties(vulkan_transfer_test PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
+    # Opt-in injected execution cases remain CPU-only at runtime, but need the
+    # platform/buffer implementation. Preserve the default host-only core build.
+    target_compile_definitions(vulkan_lifecycle_test PRIVATE
+                               PYTORCH_VULKAN_LIFECYCLE_EXECUTION_TESTS=1)
+    target_link_libraries(vulkan_lifecycle_test PRIVATE vulkan_platform vulkan_buffer)
+    if(BUILD_PYTHON_LIFECYCLE_TEST)
+        target_link_libraries(vulkan_python_lifecycle_test PRIVATE vulkan_platform vulkan_buffer)
+    endif()
     add_executable(vulkan_execution_test tests/cpp/vulkan_execution_test.cpp)
     target_compile_features(vulkan_execution_test PRIVATE cxx_std_17)
     target_link_libraries(vulkan_execution_test PRIVATE vulkan_buffer vulkan_platform)
@@ -273,6 +306,9 @@ if(BUILD_PYTHON_EXTENSION)
 
     if(TORCH_CXX_FLAGS)
         separate_arguments(TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        # Native context headers cross these targets; propagate Torch's ABI to
+        # every consumer without adding a Torch link dependency to host tests.
+        target_compile_options(vulkan_lifecycle PUBLIC ${TORCH_CXX_FLAGS_LIST})
         target_compile_options(vulkan_platform PRIVATE ${TORCH_CXX_FLAGS_LIST})
         target_compile_options(vulkan_buffer PRIVATE ${TORCH_CXX_FLAGS_LIST})
     endif()
@@ -318,7 +354,7 @@ if(BUILD_PYTHON_EXTENSION)
     endif()
 
     pybind11_add_module(
-        pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan_pinned_memory.cpp
+        pytorch_vulkan_python MODULE src/python_module.cpp src/vulkan_python_lifecycle.cpp src/vulkan_pinned_memory.cpp
         src/vulkan/operators/autograd.cpp
         src/vulkan/operators/add.cpp
         src/vulkan/operators/sub.cpp src/vulkan/operators/mul.cpp

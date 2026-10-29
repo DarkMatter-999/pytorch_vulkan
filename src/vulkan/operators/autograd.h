@@ -3,6 +3,7 @@
 #include <ATen/ATen.h>
 #include <c10/util/string_view.h>
 #include <torch/autograd.h>
+#include "vulkan_allocator.h"
 
 namespace pytorch_vulkan {
 
@@ -24,20 +25,25 @@ class UnaryAutogradFunctionSaved
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input) {
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         at::Tensor output = Forward(input);
         ctx->save_for_backward({input});
         return output;
+        });
     }
 
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grad_outputs) {
+             torch::autograd::variable_list incoming_grad_outputs) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grad_outputs[0].defined()) {
+        if (!incoming_grad_outputs[0].defined()) {
             return {at::Tensor()};
         }
+        return with_vulkan_operation(allocation_runtime(incoming_grad_outputs[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grad_outputs = std::move(incoming_grad_outputs);
         return {Backward(ctx->get_saved_variables()[0], grad_outputs[0])};
+        });
     }
 };
 
@@ -53,20 +59,25 @@ class UnaryAutogradFunctionSavedOutput
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input) {
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         at::Tensor output = Forward(input);
         ctx->save_for_backward({output});
         return output;
+        });
     }
 
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grad_outputs) {
+             torch::autograd::variable_list incoming_grad_outputs) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grad_outputs[0].defined()) {
+        if (!incoming_grad_outputs[0].defined()) {
             return {at::Tensor()};
         }
+        return with_vulkan_operation(allocation_runtime(incoming_grad_outputs[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grad_outputs = std::move(incoming_grad_outputs);
         return {Backward(ctx->get_saved_variables()[0], grad_outputs[0])};
+        });
     }
 };
 
@@ -81,20 +92,25 @@ class UnaryAutogradFunctionNoSave
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input) {
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         (void)ctx;
         at::AutoDispatchBelowAutograd guard;
         return Forward(input);
+        });
     }
 
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grad_outputs) {
+             torch::autograd::variable_list incoming_grad_outputs) {
         (void)ctx;
         at::AutoDispatchBelowAutograd guard;
-        if (!grad_outputs[0].defined()) {
+        if (!incoming_grad_outputs[0].defined()) {
             return {at::Tensor()};
         }
+        return with_vulkan_operation(allocation_runtime(incoming_grad_outputs[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grad_outputs = std::move(incoming_grad_outputs);
         return {Backward(grad_outputs[0])};
+        });
     }
 };
 
@@ -120,21 +136,25 @@ class BinaryTensorAutogradFunction
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &lhs, const at::Tensor &rhs,
                               const at::Scalar &alpha) {
+        return with_vulkan_operation(allocation_runtime((lhs.device().is_cpu() ? rhs : lhs).storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         at::Tensor output = Forward(lhs, rhs, alpha);
         if constexpr (SaveOperands) {
             ctx->save_for_backward({lhs, rhs});
         }
         return output;
+        });
     }
 
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grad_outputs) {
+             torch::autograd::variable_list incoming_grad_outputs) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grad_outputs[0].defined()) {
+        if (!incoming_grad_outputs[0].defined()) {
             return {at::Tensor(), at::Tensor(), at::Tensor()};
         }
+        return with_vulkan_operation(allocation_runtime(incoming_grad_outputs[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grad_outputs = std::move(incoming_grad_outputs);
         at::Tensor lhs;
         at::Tensor rhs;
         if constexpr (SaveOperands) {
@@ -144,6 +164,7 @@ class BinaryTensorAutogradFunction
         }
         return {BackwardLhs(lhs, rhs, grad_outputs[0]),
                 BackwardRhs(rhs, lhs, grad_outputs[0]), at::Tensor()};
+        });
     }
 };
 
@@ -164,23 +185,28 @@ class BinaryScalarAutogradFunction
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &tensor, const at::Scalar &scalar,
                               const at::Scalar &alpha) {
+        return with_vulkan_operation(allocation_runtime(tensor.storage().data_ptr()), [&]() -> at::Tensor {
         (void)ctx;
         at::AutoDispatchBelowAutograd guard;
         ctx->saved_data["scalar"] = scalar;
         return Forward(tensor, scalar, alpha);
+        });
     }
 
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grad_outputs) {
+             torch::autograd::variable_list incoming_grad_outputs) {
         (void)ctx;
         at::AutoDispatchBelowAutograd guard;
-        if (!grad_outputs[0].defined()) {
+        if (!incoming_grad_outputs[0].defined()) {
             return {at::Tensor(), at::Tensor(), at::Tensor()};
         }
+        return with_vulkan_operation(allocation_runtime(incoming_grad_outputs[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grad_outputs = std::move(incoming_grad_outputs);
         const at::Scalar scalar = ctx->saved_data["scalar"].toScalar();
         return {Backward(at::Tensor(), scalar, grad_outputs[0]), at::Tensor(),
                 at::Tensor()};
+        });
     }
 };
 

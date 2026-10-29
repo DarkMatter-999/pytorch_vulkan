@@ -133,6 +133,7 @@ at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
                                   bool scalar_left, const char *operation_name,
                                   float alpha = 1.0F) {
     const auto tensor_layout = validate_tensor(tensor, operation, operation_name);
+    return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(tensor.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output =
         at::empty(tensor.sizes(), tensor.options().device(tensor.device()));
     const auto output_layout = validate_tensor(output, operation, operation_name);
@@ -168,6 +169,7 @@ at::Tensor dispatch_tensor_scalar(const at::Tensor &tensor, float scalar,
                                                 scalar, op, false, alpha);
     }
     return output;
+    });
 }
 
 } // namespace
@@ -207,6 +209,7 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
                 output_numel *= static_cast<uint64_t>(size);
             }
         }
+        return with_vulkan_operation(allocation_runtime(lhs.storage().data_ptr()), [&]() -> at::Tensor {
         const at::Tensor expanded_lhs = lhs.sizes().equals(output_sizes)
             ? lhs
             : lhs.expand(output_sizes);
@@ -254,6 +257,7 @@ at::Tensor pointwise_tensor_operands(const at::Tensor &lhs, const at::Tensor &rh
             pointwise_uses_bool(lhs.scalar_type(), operation),
             scalar_to_float(alpha, operation_name));
         return output;
+        });
     }
     TORCH_CHECK(lhs_wrapped_number != rhs_wrapped_number, "Vulkan ", operation_name,
                 " requires one Python numeric scalar and one Vulkan tensor; scalar "

@@ -231,6 +231,7 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
                 "Vulkan linear supports 2-D input and weight with matching features");
     const auto input_layout = inspect_vulkan_tensor_layout(input, "linear input");
     const auto weight_layout = inspect_vulkan_tensor_layout(weight, "linear weight");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor b = bias.has_value() ? *bias : at::empty({1}, input.options());
     TORCH_CHECK(
         !bias.has_value() ||
@@ -283,6 +284,7 @@ at::Tensor lower_linear(const at::Tensor &input, const at::Tensor &weight,
         static_cast<uint32_t>(input.size(0)), static_cast<uint32_t>(input.size(1)),
         static_cast<uint32_t>(outputs), transposed_weight, bias.has_value(), operation);
     return output;
+    });
 }
 
 at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
@@ -337,6 +339,9 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
             static_cast<uint32_t>(k), true);
         matrix_platform = &platform;
     }
+    if (m == 0 || n == 0)
+        return at::empty({m, n}, mat1.options());
+    return with_vulkan_operation(allocation_runtime(mat1.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output = at::empty({m, n}, mat1.options());
     if (m == 0 || n == 0)
         return output;
@@ -373,6 +378,7 @@ at::Tensor mm(const at::Tensor &mat1, const at::Tensor &mat2) {
     platform.execution_context().retain_until_completion(
         [mat1, mat2, a, b, output] {});
     return output;
+    });
 }
 
 at::Tensor dot(const at::Tensor &lhs, const at::Tensor &rhs) {
@@ -388,8 +394,10 @@ at::Tensor dot(const at::Tensor &lhs, const at::Tensor &rhs) {
     // Retain the original read layouts and offsets in the promoted views. The
     // shared checked mm planner materializes only layouts its GEMM kernel cannot
     // read directly, and its K=0 path produces the scalar additive identity.
+    return with_vulkan_operation(allocation_runtime(lhs.storage().data_ptr()), [&]() -> at::Tensor {
     return pytorch_vulkan::mm(lhs.unsqueeze(0), rhs.unsqueeze(1))
         .squeeze(0).squeeze(0);
+    });
 }
 
 at::Tensor mv(const at::Tensor &matrix, const at::Tensor &vector) {
@@ -406,13 +414,17 @@ at::Tensor mv(const at::Tensor &matrix, const at::Tensor &vector) {
 
     // Promotion to a column keeps vector storage offset/stride intact; mm's
     // planner validates and materializes readable noncanonical views.
+    return with_vulkan_operation(allocation_runtime(matrix.storage().data_ptr()), [&]() -> at::Tensor {
     return pytorch_vulkan::mm(matrix, vector.unsqueeze(1)).squeeze(1);
+    });
 }
 
 at::Tensor bmm(const at::Tensor &mat1, const at::Tensor &mat2) {
     TORCH_CHECK(mat1.dim() == 3 && mat2.dim() == 3,
                 "Vulkan bmm requires matching 3-D batch matrices");
-    return bmm_out(mat1, mat2, at::Tensor());
+    return with_vulkan_operation(allocation_runtime(mat1.storage().data_ptr()), [&]() -> at::Tensor {
+        return bmm_out(mat1, mat2, at::Tensor());
+    });
 }
 
 at::Tensor bmm_out(const at::Tensor &mat1, const at::Tensor &mat2,
@@ -449,6 +461,9 @@ at::Tensor bmm_out(const at::Tensor &mat1, const at::Tensor &mat2,
                             (static_cast<uint64_t>(m) * static_cast<uint64_t>(n)),
                 "Vulkan bmm output element count exceeds shader limits");
     const std::vector<int64_t> output_shape{batch, m, n};
+    if (batch == 0 || m == 0 || n == 0)
+        return output_arg.defined() ? output_arg : at::empty(output_shape, mat1.options());
+    return with_vulkan_operation(allocation_runtime(mat1.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output = output_arg;
     if (batch == 0 || m == 0 || n == 0) {
         if (!output.defined())
@@ -536,12 +551,14 @@ at::Tensor bmm_out(const at::Tensor &mat1, const at::Tensor &mat2,
         static_cast<uint32_t>(out_layout.strides[0]));
     platform.execution_context().retain_until_completion([mat1, mat2, a, b, output] {});
     return output;
+    });
 }
 
 at::Tensor transpose_contiguous_2d(const at::Tensor &input) {
     TORCH_CHECK(input.dim() == 2 && input.scalar_type() == at::kFloat &&
                     input.layout() == at::kStrided && input.is_contiguous(),
                 "Vulkan GEMM transpose requires a contiguous float32 2-D tensor");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output = at::empty({input.size(1), input.size(0)}, input.options());
     if (input.numel() == 0)
         return output;
@@ -565,6 +582,7 @@ at::Tensor transpose_contiguous_2d(const at::Tensor &input) {
         allocation_buffer(output.storage().data_ptr()).buffer(), destination,
         static_cast<uint32_t>(input.numel()), 1.0F);
     return output;
+    });
 }
 
 at::Tensor linear_relu(const at::Tensor &input, const at::Tensor &weight,
@@ -593,6 +611,7 @@ at::Tensor fused_gradient(const at::Tensor &grad_output, const at::Tensor &rhs,
     auto rhs_layout = inspect_vulkan_tensor_layout(rhs, "fused gradient operand");
     auto activation_layout =
         inspect_vulkan_tensor_layout(activation, "fused activation");
+    return with_vulkan_operation(allocation_runtime(grad_output.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor output = at::empty(shape, grad_output.options());
     auto output_layout = inspect_vulkan_tensor_layout(output, "fused gradient result");
     const auto &go_data = grad_output.storage().data_ptr();
@@ -635,6 +654,7 @@ at::Tensor fused_gradient(const at::Tensor &grad_output, const at::Tensor &rhs,
             output_layout, rows, static_cast<uint32_t>(grad_output.size(1)));
     }
     return output;
+    });
 }
 } // namespace
 
@@ -652,8 +672,10 @@ at::Tensor linear_relu_backward_weight(const at::Tensor &grad_output,
 }
 at::Tensor linear_relu_backward_bias(const at::Tensor &grad_output,
                                      const at::Tensor &activation) {
+    return with_vulkan_operation(allocation_runtime(grad_output.storage().data_ptr()), [&]() -> at::Tensor {
     auto masked = relu_backward_tensor(activation, grad_output);
     return at::sum(masked, {0});
+    });
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor>
@@ -678,6 +700,7 @@ linear_relu_backward(const at::Tensor &grad_output, const at::Tensor &input,
                     features <= std::numeric_limits<uint32_t>::max() &&
                     outputs <= std::numeric_limits<uint32_t>::max(),
                 "Vulkan fused backward dimensions exceed dispatch limits");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> std::tuple<at::Tensor, at::Tensor, at::Tensor> {
     at::Tensor d_input = at::empty({rows, features}, input.options());
     at::Tensor d_weight = at::empty({outputs, features}, input.options());
     at::Tensor d_bias = at::empty({outputs}, input.options());
@@ -728,6 +751,7 @@ linear_relu_backward(const at::Tensor &grad_output, const at::Tensor &input,
         &allocation_buffer(d_bias_data), d_bias_layout, static_cast<uint32_t>(rows),
         static_cast<uint32_t>(features), static_cast<uint32_t>(outputs));
     return {d_input, d_weight, d_bias};
+    });
 }
 
 at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tensor &mat2,
@@ -764,6 +788,7 @@ at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tenso
     const auto c_plan = plan_matrix_read(self, c_shape, "addmm self");
     if (m == 0 || n == 0)
         return at::empty({m, n}, self.options());
+    return with_vulkan_operation(allocation_runtime(self.storage().data_ptr()), [&]() -> at::Tensor {
     const auto dense_output = dense_matrix_layout(c_shape, "addmm output");
     if (k == 0) {
         const bool beta_is_zero = beta.toComplexDouble() == 0.0;
@@ -888,6 +913,7 @@ at::Tensor addmm(const at::Tensor &self, const at::Tensor &mat1, const at::Tenso
     platform.execution_context().retain_until_completion(
         [self, mat1, mat2, a, b, c, output] {});
     return output;
+    });
 }
 
 at::Tensor &addmm_out(const at::Tensor &self, const at::Tensor &mat1,

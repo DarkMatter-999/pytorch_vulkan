@@ -175,6 +175,9 @@ at::Tensor cat(const at::TensorList &inputs, int64_t dim) {
       }
     }
   }
+  if (plan.regions.empty())
+    return at::empty(plan.sizes, first.options().memory_format(plan.memory_format));
+  return with_vulkan_operation(allocation_platform(inputs[plan.regions.front().input_index].storage().data_ptr()).runtime_lifecycle(), [&]() -> at::Tensor {
   auto output = at::empty(plan.sizes, first.options().memory_format(plan.memory_format));
   if (plan.all_skipped || output.numel() == 0) return output;
   TORCH_CHECK(static_cast<uint64_t>(output.numel()) <= UINT32_MAX,
@@ -237,6 +240,7 @@ at::Tensor cat(const at::TensorList &inputs, int64_t dim) {
     platform.execution_context().retain_until_completion([input=entry.tensor, output] {});
   }
   return output;
+  });
 }
 }
 

@@ -25,6 +25,7 @@ at::Tensor argmax_tensor_impl(const at::Tensor &input, c10::optional<int64_t> di
     TORCH_CHECK(input.dim() > 0,
                 "Vulkan argmax does not support zero-dimensional inputs");
     validate_operator_rank(input.dim(), "argmax");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     if (!dim) {
         const auto original_layout = inspect_vulkan_tensor_layout(input, "argmax");
         TORCH_CHECK(original_layout.internal_overlap == VulkanOverlap::No,
@@ -99,6 +100,7 @@ at::Tensor argmax_tensor_impl(const at::Tensor &input, c10::optional<int64_t> di
                               static_cast<uint32_t>(input.size(reduce_dim)),
                               static_cast<uint32_t>(output_numel));
     return output;
+    });
 }
 
 } // namespace

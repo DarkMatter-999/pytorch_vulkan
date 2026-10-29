@@ -45,6 +45,13 @@ struct VulkanAllocationHandle {
 };
 
 void destroy_allocation(VulkanAllocation *allocation) noexcept {
+    if (allocation->platform) {
+        auto platform = allocation->platform;
+        pytorch_vulkan::VulkanCleanupScope cleanup(platform->runtime_lifecycle());
+        if (allocation->counted) platform->record_allocation_destroyed();
+        delete allocation;
+        return;
+    }
     if (allocation->platform != nullptr && allocation->counted) {
         allocation->platform->record_allocation_destroyed();
         allocation->counted = false;
@@ -69,7 +76,10 @@ void check_device(c10::Device device) {
 }
 
 void delete_allocation_core(VulkanAllocation *allocation) noexcept {
+    if (pytorch_vulkan::inherited_fork_state()) return;
     if (allocation->platform != nullptr) {
+        auto platform = allocation->platform;
+        pytorch_vulkan::VulkanCleanupScope cleanup(platform->runtime_lifecycle());
         try {
             if (allocation->platform->device_lost())
                 return;
@@ -200,6 +210,12 @@ const VulkanPlatform &allocation_platform(const at::DataPtr &data) {
                 "Vulkan allocation payload has no platform");
     return *allocation->platform;
 }
+VulkanRuntimeLifecycle* allocation_runtime(const at::DataPtr &data) {
+    if (!is_vulkan_allocation(data)) return nullptr;
+    ensure_process_local_vulkan();
+    auto* allocation = allocation_core(data);
+    return allocation->platform ? &allocation->platform->runtime_lifecycle() : nullptr;
+}
 
 bool is_validated_label_allocation(const at::DataPtr &data) {
     if (!is_vulkan_allocation(data))
@@ -225,15 +241,31 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
                                     " exceeds the supported maximum");
     }
 
-    auto allocation = std::make_unique<VulkanAllocation>();
-    try {
-        check_device(device);
-        if (nbytes == 0) {
+    try { check_device(device); }
+    catch (const std::exception &error) {
+        throw std::runtime_error("Vulkan allocation failed (" + context + "): " + error.what());
+    }
+    if (nbytes == 0) {
+        auto allocation = std::make_unique<VulkanAllocation>();
+        try {
             auto core = std::shared_ptr<VulkanAllocation>(allocation.release(), delete_allocation_core);
             auto *handle = new VulkanAllocationHandle{std::move(core)};
             return at::DataPtr(handle, handle, delete_allocation, device);
+        } catch (const std::exception &error) {
+            throw std::runtime_error("Vulkan allocation failed (" + context + "): " + error.what());
         }
-        allocation->platform = pytorch_vulkan::platform();
+    }
+    std::shared_ptr<VulkanPlatform> platform;
+    try { platform = pytorch_vulkan::platform(); }
+    catch (const VulkanUnavailable &error) {
+        throw VulkanUnavailable("Vulkan allocation failed (" + context + "): " + error.what());
+    } catch (const std::exception &error) {
+        throw std::runtime_error("Vulkan allocation failed (" + context + "): " + error.what());
+    }
+    return pytorch_vulkan::with_vulkan_operation(platform->runtime_lifecycle(), [&]() -> at::DataPtr {
+    auto allocation = std::make_unique<VulkanAllocation>();
+    try {
+        allocation->platform = platform;
         allocation->platform->throw_if_device_lost();
         allocation->buffer =
             std::make_unique<VulkanBuffer>(*allocation->platform, nbytes);
@@ -250,6 +282,7 @@ at::DataPtr VulkanAllocator::allocate(size_t nbytes) {
     auto core = std::shared_ptr<VulkanAllocation>(allocation.release(), delete_allocation_core);
     auto *handle = new VulkanAllocationHandle{std::move(core)};
     return at::DataPtr(handle, handle, delete_allocation, device);
+    });
 }
 
 void VulkanAllocator::copy_data(void *, const void *, std::size_t) const {
@@ -353,10 +386,13 @@ at::Tensor vulkan_copy_from_and_resize(const at::Tensor &source,
     // copy route handles strides, offsets, and any broadcast validation.
     if (source.numel() == 0 || source.is_same(destination))
         return result;
+    const auto& device_tensor = source.device().is_cpu() ? destination : source;
+    return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(device_tensor.storage().data_ptr()), [&]() -> at::Tensor {
     if (destination.numel() == 0)
         result.resize_as_(source);
     result.copy_(source, false);
     return result;
+    });
 }
 
 const at::Tensor &vulkan_resize_(
@@ -407,6 +443,10 @@ const at::Tensor &vulkan_resize_(
     // through the registered PrivateUse1 storage hook before touching metadata.
     const bool new_shape_is_empty = std::any_of(
         concrete_size.begin(), concrete_size.end(), [](int64_t dim) { return dim == 0; });
+    // The hook owns copy/old-DataPtr retirement; this scope also owns metadata
+    // mutation and the deterministic-fill tail.
+    return pytorch_vulkan::with_vulkan_operation(
+        pytorch_vulkan::allocation_runtime(self.storage().data_ptr()), [&]() -> const at::Tensor& {
     if (!new_shape_is_empty &&
         static_cast<uint64_t>(target_bytes) > self.storage().nbytes()) {
         at::GetPrivateUse1HooksInterface()->resizePrivateUse1Bytes(
@@ -430,6 +470,7 @@ const at::Tensor &vulkan_resize_(
         }
     }
     return self;
+    });
 }
 
 void check_set_f32(const at::Tensor &self) {
@@ -483,6 +524,8 @@ at::Tensor &vulkan_set_storage_(at::Tensor &self, c10::Storage storage,
             size, stride, self.itemsize(), static_cast<size_t>(storage_offset));
     }
 
+    return pytorch_vulkan::with_vulkan_operation(
+        pytorch_vulkan::allocation_runtime(self.storage().data_ptr()), [&]() -> at::Tensor& {
     // Native CPU grows the shared source storage when the requested view
     // exceeds it. Route that growth through the accepted PrivateUse1 hook.
     if (!empty && required_bytes > storage.nbytes()) {
@@ -496,6 +539,7 @@ at::Tensor &vulkan_set_storage_(at::Tensor &self, c10::Storage storage,
     impl->set_storage_offset(storage_offset);
     impl->set_sizes_and_strides(size, stride);
     return self;
+    });
 }
 
 at::Tensor &vulkan_set_storage_symint_(at::Tensor &self, c10::Storage storage,
@@ -538,12 +582,14 @@ at::Tensor &vulkan_set_tensor_(at::Tensor &self, const at::Tensor &source) {
 
 at::Tensor &vulkan_set_empty_(at::Tensor &self) {
     check_set_f32(self);
+    return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(self.storage().data_ptr()), [&]() -> at::Tensor& {
     auto empty = at::empty({0}, self.options());
     auto *impl = self.unsafeGetTensorImpl();
     impl->set_storage_keep_dtype(empty.storage());
     impl->set_storage_offset(0);
     impl->set_sizes_contiguous({0});
     return self;
+    });
 }
 
 } // namespace

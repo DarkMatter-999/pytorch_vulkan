@@ -5,17 +5,21 @@
 
 #include <array>
 #include <chrono>
+#include <cxxabi.h>
 #include <exception>
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 
 struct VulkanTransferReservationState {
+    const int process = ::getpid();
     std::mutex mutex;
     std::condition_variable cv;
     std::size_t occupied = 0;
     uint64_t generation = 0;
     bool closing = false;
+    bool lifecycle_closed = false;
     bool poisoned = false;
 };
 
@@ -23,7 +27,7 @@ struct VulkanTransferSlotLease {
     explicit VulkanTransferSlotLease(std::shared_ptr<VulkanTransferReservationState> state)
         : state(std::move(state)) {}
     ~VulkanTransferSlotLease() {
-        if (!state) return;
+        if (!state || state->process != ::getpid()) return;
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->occupied) --state->occupied;
         ++state->generation;
@@ -33,6 +37,22 @@ struct VulkanTransferSlotLease {
 };
 
 namespace {
+// Identity outlives callback invocation and last capture destruction, including
+// the foreign pump's final member accesses. Intrusive TLS has no allocation or
+// execution/lifecycle lock and supports reentrant ready-only observation.
+struct PumpIdentity {
+    pytorch_vulkan::VulkanCallbackObservationScope observation;
+    const VulkanExecutionContext* context;
+    PumpIdentity* previous;
+    static thread_local PumpIdentity* current;
+    explicit PumpIdentity(const VulkanExecutionContext* c) : context(c), previous(current) { current = this; }
+    ~PumpIdentity() { current = previous; }
+    static bool contains(const VulkanExecutionContext* c) noexcept {
+        for (auto* p = current; p; p = p->previous) if (p->context == c) return true;
+        return false;
+    }
+};
+thread_local PumpIdentity* PumpIdentity::current = nullptr;
 constexpr uint32_t kQueriesPerSlot = 10;
 
 VkResult real_allocate(void *, VkDevice d, const VkCommandBufferAllocateInfo *i,
@@ -113,12 +133,13 @@ void check_result(VkResult result, const char *operation) {
 }
 
 std::exception_ptr
-execute_callbacks(VulkanExecutionCallbacks &callbacks) noexcept {
+execute_callbacks(VulkanExecutionCallbacks &callbacks) {
     std::exception_ptr error;
     for (auto &callback : callbacks) {
         try {
             callback();
-        } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             if (!error)
                 error = std::current_exception();
         }
@@ -239,8 +260,13 @@ VulkanExecutionContext::VulkanExecutionContext(VkDevice device, VkQueue queue,
 }
 
 VulkanExecutionContext::~VulkanExecutionContext() noexcept {
+    // Empty-native terminal teardown already destroyed all handles and never
+    // enters the cancellation/pump semantics of dedicated-context destruction.
+    if (device_ == VK_NULL_HANDLE) return;
     try {
         if (!teardown_with_services({})) return;
+    } catch (const __cxxabiv1::__forced_unwind&) {
+        pytorch_vulkan::vulkan_terminal_fault("forced unwind through noexcept execution teardown");
     } catch (...) {
         // Never release possibly referenced owners on an uncertain teardown path.
         std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
@@ -250,6 +276,10 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
     }
     std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
     std::lock_guard<std::mutex> lock(mutex_);
+    destroy_native_handles_locked();
+}
+
+void VulkanExecutionContext::destroy_native_handles_locked() {
     if (device_ == VK_NULL_HANDLE) return;
     for (auto &record : ring_) {
         if (record.fence != VK_NULL_HANDLE)
@@ -258,10 +288,16 @@ VulkanExecutionContext::~VulkanExecutionContext() noexcept {
             ops_.destroy_semaphore(ops_.cookie, device_, record.signal_semaphore, nullptr);
         if (record.command_buffer != VK_NULL_HANDLE)
             ops_.free_command_buffers(ops_.cookie, device_, command_pool_, 1,
-                                      &record.command_buffer);
+                                       &record.command_buffer);
+        record.fence = VK_NULL_HANDLE;
+        record.signal_semaphore = VK_NULL_HANDLE;
+        record.command_buffer = VK_NULL_HANDLE;
     }
     if (timestamp_query_pool_ != VK_NULL_HANDLE)
         vkDestroyQueryPool(device_, timestamp_query_pool_, nullptr);
+    timestamp_query_pool_ = VK_NULL_HANDLE;
+    latest_signal_semaphore_ = VK_NULL_HANDLE;
+    device_ = VK_NULL_HANDLE;
 }
 
 void VulkanExecutionContext::begin(const char *scope) {
@@ -274,6 +310,10 @@ void VulkanExecutionContext::begin(const char *scope) {
 
 VulkanTransferReservation VulkanExecutionContext::reserve_transfer(
     const std::function<void()> &flush_locked) {
+    if (reservation_state_->process != ::getpid())
+        throw std::logic_error("Vulkan reservations inherited across fork");
+    if (callback_active_on_this_thread())
+        throw std::logic_error("completion pump cannot reserve a transfer slot");
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
@@ -282,7 +322,7 @@ VulkanTransferReservation VulkanExecutionContext::reserve_transfer(
     for (;;) {
         {
             std::unique_lock<std::mutex> slots(reservation_state_->mutex);
-            if (reservation_state_->closing || reservation_state_->poisoned)
+            if (reservation_state_->closing || reservation_state_->lifecycle_closed || reservation_state_->poisoned)
                 throw std::logic_error("Vulkan transfer reservations are unavailable");
             if (reservation_state_->occupied < 2) {
                 if (ops_.fail_reservation_allocation &&
@@ -308,10 +348,15 @@ VulkanTransferReservation VulkanExecutionContext::reserve_transfer(
         wait_oldest_transfer(flush_locked);
         std::unique_lock<std::mutex> slots(reservation_state_->mutex);
         const uint64_t generation = reservation_state_->generation;
-        reservation_state_->cv.wait(slots, [&] {
-            return reservation_state_->occupied < 2 || reservation_state_->closing ||
-                   reservation_state_->poisoned ||
-                   reservation_state_->generation != generation;
+        const auto pending = [&] {
+            return reservation_state_->occupied >= 2 && !reservation_state_->closing &&
+                !reservation_state_->lifecycle_closed && !reservation_state_->poisoned &&
+                reservation_state_->generation == generation;
+        };
+        // The reservation lock is the FULL lock set here. Re-evaluate capacity,
+        // lifecycle and generation at the outer loop after restoring the GIL.
+        pytorch_vulkan::vulkan_host_wait(slots, pending, [&] {
+            reservation_state_->cv.wait(slots, [&] { return !pending(); });
         });
     }
 }
@@ -340,7 +385,8 @@ void VulkanExecutionContext::wait_oldest_transfer(
                 if (flush_locked) flush_locked();
                 else submit_locked();
             }
-        } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             error = std::current_exception();
         }
         std::unique_lock<std::mutex> lock(mutex_);
@@ -366,11 +412,13 @@ void VulkanExecutionContext::wait_oldest_transfer(
                     }
                 }
             }
-        } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             error = std::current_exception();
         }
     }
     try { drain_ready_callbacks(false); }
+    catch (const __cxxabiv1::__forced_unwind&) { throw; }
     catch (...) { if (!error) error = std::current_exception(); }
     if (error) std::rethrow_exception(error);
 }
@@ -419,7 +467,8 @@ VulkanCompletionId VulkanExecutionContext::enqueue_transfer_locked(
                                    std::move(publish_success));
     try {
         record(command_buffer());
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         const auto original = std::current_exception();
         cancel_locked(); // existing Cancelled state + persistent cancel error
         std::rethrow_exception(original);
@@ -592,7 +641,8 @@ void VulkanExecutionContext::submit_locked() {
         ring_[active_slot_].submitted = true;
         latest_signal_semaphore_ = ring_[active_slot_].signal_semaphore;
         recording_ = false;
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (invalidated_)
             throw;
         const auto original = std::current_exception();
@@ -639,6 +689,7 @@ void VulkanExecutionContext::wait_device_locked() {
 void VulkanExecutionContext::synchronize() { wait(); }
 
 bool VulkanExecutionContext::query_with_flush(const std::function<void()> &flush_locked) {
+    if (callback_active_on_this_thread()) return false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (callbacks_active_) return false;
@@ -649,14 +700,18 @@ bool VulkanExecutionContext::query_with_flush(const std::function<void()> &flush
         std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
         try {
             if (!closing_ && flush_locked) flush_locked();
-        } catch (...) { error = std::current_exception(); }
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) { error = std::current_exception(); }
         try {
             if (!recording()) poll_device_locked();
-        } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             if (!error) error = std::current_exception();
         }
     }
-    try { drain_ready_callbacks(false); } catch (...) {
+    try { drain_ready_callbacks(false); }
+    catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (!error) error = std::current_exception();
     }
     if (error) std::rethrow_exception(error);
@@ -671,6 +726,8 @@ bool VulkanExecutionContext::query_with_flush(const std::function<void()> &flush
 }
 
 void VulkanExecutionContext::synchronize_with_flush(const std::function<void()> &flush_locked) {
+    if (callback_active_on_this_thread())
+        throw std::logic_error("completion pump cannot wait for itself");
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
@@ -682,15 +739,152 @@ void VulkanExecutionContext::synchronize_with_flush(const std::function<void()> 
         std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
         try {
             if (!closing_ && flush_locked) flush_locked();
-        } catch (...) { error = std::current_exception(); }
-        try { wait_device_locked(); } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) { error = std::current_exception(); }
+        try { wait_device_locked(); }
+        catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             if (!error) error = std::current_exception();
         }
     }
-    try { drain_ready_callbacks(true); } catch (...) {
+    try { drain_ready_callbacks(true); }
+    catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (!error) error = std::current_exception();
     }
     if (error) std::rethrow_exception(error);
+}
+
+pytorch_vulkan::VulkanQuiescence VulkanExecutionContext::snapshot_locked() const {
+    pytorch_vulkan::VulkanQuiescence s;
+    s.recording = recording_;
+    for (const auto &record : ring_) {
+        s.submitted_slots += record.submitted ? 1 : 0;
+        s.ring_callbacks += record.callbacks.size();
+    }
+    s.deferred_callbacks = deferred_callbacks_.size();
+    s.completion_callbacks = completion_callbacks_.size();
+    s.ready_callbacks = ready_callbacks_.size();
+    s.pump_active = callbacks_active_ || callback_epilogues_ != 0;
+    s.pump_owner = callback_owner_;
+    s.transfer_records = transfer_records_.size();
+    s.reservations = reservation_state_->occupied;
+    s.reservation_generation = reservation_state_->generation;
+    s.reservation_closing = reservation_state_->closing || reservation_state_->lifecycle_closed;
+    s.reservation_poisoned = reservation_state_->poisoned;
+    s.invalidated = invalidated_;
+    s.sticky_error = static_cast<bool>(callback_error_);
+    return s;
+}
+
+pytorch_vulkan::VulkanQuiescence VulkanExecutionContext::lifecycle_snapshot() const {
+    if (reservation_state_->process != ::getpid())
+        throw std::logic_error("Vulkan execution inherited across fork");
+    std::lock_guard<std::mutex> queue(*queue_mutex_);
+    std::lock_guard<std::mutex> execution(mutex_);
+    std::lock_guard<std::mutex> reservations(reservation_state_->mutex);
+    return snapshot_locked(); // Value only; all three locks release before caller consults lifecycle.
+}
+
+void VulkanExecutionContext::set_lifecycle_reservations_closed(bool closed) {
+    if (reservation_state_->process != ::getpid()) return;
+    std::lock_guard<std::mutex> slots(reservation_state_->mutex);
+    // Independent of destructor closing and poison: reopening never revives either.
+    reservation_state_->lifecycle_closed = closed;
+    ++reservation_state_->generation;
+    reservation_state_->cv.notify_all();
+}
+
+bool VulkanExecutionContext::callback_active_on_this_thread() const noexcept {
+    if (reservation_state_->process != ::getpid()) return false;
+    return PumpIdentity::contains(this);
+}
+
+void VulkanExecutionContext::wait_callback_epilogue(std::unique_lock<std::mutex> &lock,
+    pytorch_vulkan::VulkanHostTime deadline, const pytorch_vulkan::VulkanHostClock *clock) {
+    if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+        throw std::logic_error("completion callback cannot wait for itself");
+    if (callbacks_active_ && ops_.callback_wait_begin) ops_.callback_wait_begin(ops_.cookie);
+    while (callbacks_active_) {
+        // Called only by unlocked drain routes: no caller queue/reservation lock.
+        pytorch_vulkan::vulkan_host_wait(lock, [&] { return callbacks_active_; }, [&] {
+            if (!clock) callback_cv_.wait(lock);
+            else {
+                if (clock->now(clock->cookie) >= deadline)
+                    throw pytorch_vulkan::VulkanHostCloseTimeout("Vulkan foreign callback epilogue deadline");
+                clock->wait_until(clock->cookie, callback_cv_, lock, deadline);
+            }
+        });
+    }
+}
+
+void VulkanExecutionContext::wait_foreign_epilogues_until(
+    pytorch_vulkan::VulkanHostTime deadline, const pytorch_vulkan::VulkanHostClock &clock) {
+    if (reservation_state_->process != ::getpid()) return;
+    if (callback_active_on_this_thread())
+        throw std::logic_error("completion pump cannot wait for itself");
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
+        throw std::logic_error("completion callback cannot wait for itself");
+    if ((callbacks_active_ || callback_epilogues_) && ops_.callback_wait_begin)
+        ops_.callback_wait_begin(ops_.cookie);
+    // Include the pump's final error read and local owner destruction, not just
+    // invocation/capture destruction. No context member access follows its
+    // counted epilogue's final mutex release.
+    while (callbacks_active_ || callback_epilogues_) {
+        if (clock.now(clock.cookie) >= deadline)
+            throw pytorch_vulkan::VulkanHostCloseTimeout("Vulkan foreign pump epilogue deadline");
+        pytorch_vulkan::vulkan_host_wait(lock,
+            [&] { return callbacks_active_ || callback_epilogues_; },
+            [&] { clock.wait_until(clock.cookie, callback_cv_, lock, deadline); });
+    }
+}
+
+void VulkanExecutionContext::synchronize_with_flush_until(
+    const std::function<void()> &flush_locked, pytorch_vulkan::VulkanHostTime deadline,
+    const pytorch_vulkan::VulkanHostClock &clock) {
+    if (reservation_state_->process != ::getpid())
+        throw std::logic_error("Vulkan execution inherited across fork");
+    if (callback_active_on_this_thread())
+        throw std::logic_error("completion callback cannot wait for itself");
+    std::exception_ptr error;
+    {
+        std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
+        try { if (!closing_ && flush_locked) flush_locked(); }
+        catch (const __cxxabiv1::__forced_unwind &) { throw; }
+        catch (...) { error = std::current_exception(); }
+        try { wait_device_locked(); }
+        catch (const __cxxabiv1::__forced_unwind &) { throw; }
+        catch (...) { if (!error) error = std::current_exception(); }
+    }
+    try { drain_ready_callbacks(true, deadline, &clock); }
+    catch (const __cxxabiv1::__forced_unwind &) { throw; }
+    catch (...) { if (!error) error = std::current_exception(); }
+    if (error) std::rethrow_exception(error);
+}
+
+void VulkanExecutionContext::teardown_empty_native_services(
+    const std::function<void()> &destroy_services) {
+    if (reservation_state_->process != ::getpid()) return;
+    std::lock_guard<std::mutex> queue(*queue_mutex_);
+    {
+        std::lock_guard<std::mutex> execution(mutex_);
+        std::lock_guard<std::mutex> reservations(reservation_state_->mutex);
+        if (!snapshot_locked().healthy_empty())
+            throw std::logic_error("native-only teardown requires healthy empty execution");
+        closing_ = true;
+        reservation_state_->closing = true;
+        ++reservation_state_->generation;
+        reservation_state_->cv.notify_all();
+    }
+    // Only audited native services, under queue serialization. Their retain calls
+    // see no recording/submissions and destroy native payloads inline, never pump.
+    if (destroy_services) destroy_services();
+    std::lock_guard<std::mutex> execution(mutex_);
+    std::lock_guard<std::mutex> reservations(reservation_state_->mutex);
+    if (!snapshot_locked().healthy_empty())
+        throw std::logic_error("native service cleanup changed execution quiescence");
+    destroy_native_handles_locked();
 }
 
 bool VulkanExecutionContext::teardown_with_services(const std::function<void()> &destroy_services) {
@@ -724,7 +918,9 @@ bool VulkanExecutionContext::teardown_with_services(const std::function<void()> 
         }
         ready_callbacks_.splice(ready_callbacks_.end(), deferred_callbacks_);
     }
-    try { drain_ready_callbacks(true); } catch (...) {
+    try { drain_ready_callbacks(true); }
+    catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         // Safe cleanup continues; the callback exception is already persistent.
     }
     std::lock_guard<std::mutex> queue_lock(*queue_mutex_);
@@ -1118,9 +1314,25 @@ VulkanExecutionContext::abandon_recording(std::exception_ptr original,
     std::rethrow_exception(original);
 }
 
-void VulkanExecutionContext::drain_ready_callbacks(bool wait_for_foreign_pump) {
+void VulkanExecutionContext::drain_ready_callbacks(bool wait_for_foreign_pump,
+    pytorch_vulkan::VulkanHostTime deadline, const pytorch_vulkan::VulkanHostClock *clock) {
+    PumpIdentity identity(this);
+    struct PumpEpilogue {
+        std::mutex &mutex;
+        std::condition_variable &cv;
+        std::size_t &count;
+        ~PumpEpilogue() {
+            std::lock_guard<std::mutex> lock(mutex);
+            --count;
+            cv.notify_all();
+        }
+    };
+    { std::lock_guard<std::mutex> lock(mutex_); ++callback_epilogues_; }
+    PumpEpilogue epilogue{mutex_, callback_cv_, callback_epilogues_};
     std::exception_ptr error;
-    try { drain_ready_transfers(wait_for_foreign_pump); } catch (...) {
+    try { drain_ready_transfers(wait_for_foreign_pump, deadline, clock); }
+    catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         error = std::current_exception();
     }
     VulkanExecutionCallbacks callbacks;
@@ -1134,8 +1346,7 @@ void VulkanExecutionContext::drain_ready_callbacks(bool wait_for_foreign_pump) {
             }
             if (!wait_for_foreign_pump)
                 return;
-            if (ops_.callback_wait_begin) ops_.callback_wait_begin(ops_.cookie);
-            callback_cv_.wait(lock, [&] { return !callbacks_active_; });
+            wait_callback_epilogue(lock, deadline, clock);
         }
         if (!ready_callbacks_.empty()) {
             callbacks.swap(ready_callbacks_);
@@ -1161,7 +1372,8 @@ void VulkanExecutionContext::drain_ready_callbacks(bool wait_for_foreign_pump) {
         std::rethrow_exception(error);
 }
 
-void VulkanExecutionContext::drain_ready_transfers(bool wait_for_foreign_pump) {
+void VulkanExecutionContext::drain_ready_transfers(bool wait_for_foreign_pump,
+    pytorch_vulkan::VulkanHostTime deadline, const pytorch_vulkan::VulkanHostClock *clock) {
     for (;;) {
         std::shared_ptr<TransferRecord> transfer;
         bool publish = false;
@@ -1180,7 +1392,7 @@ void VulkanExecutionContext::drain_ready_transfers(bool wait_for_foreign_pump) {
                     return;
                 }
                 if (!wait_for_foreign_pump) return;
-                callback_cv_.wait(lock, [&] { return !callbacks_active_; });
+                wait_callback_epilogue(lock, deadline, clock);
             }
             std::shared_ptr<TransferRecord> earliest_submitted;
             for (const auto &candidate : transfer_records_) {
@@ -1213,7 +1425,9 @@ void VulkanExecutionContext::drain_ready_transfers(bool wait_for_foreign_pump) {
 
         std::exception_ptr error;
         if (publish && transfer->publish_success) {
-            try { transfer->publish_success(); } catch (...) { error = std::current_exception(); }
+            try { transfer->publish_success(); }
+            catch (const __cxxabiv1::__forced_unwind&) { throw; }
+            catch (...) { error = std::current_exception(); }
         }
         bool quarantined = false;
         {
@@ -1252,6 +1466,10 @@ void VulkanExecutionContext::drain_ready_transfers(bool wait_for_foreign_pump) {
 void VulkanExecutionContext::drain_ready_cleanup() noexcept {
     try {
         drain_ready_callbacks(false);
+    } catch (const __cxxabiv1::__forced_unwind&) {
+        // A noexcept legacy ready-only destructor cannot propagate a forced
+        // unwind. Never swallow it (GNU aborts); retain state and fail closed.
+        pytorch_vulkan::vulkan_terminal_fault("forced unwind through noexcept ready cleanup");
     } catch (...) {
         // drain_ready_callbacks persists the first callback exception before throwing.
     }
@@ -1260,6 +1478,8 @@ void VulkanExecutionContext::drain_ready_cleanup() noexcept {
 std::unique_lock<std::mutex> VulkanExecutionContext::acquire_host_access(
     const std::function<void()> &flush_locked,
     const std::function<void()> &wait_idle_locked) {
+    if (callback_active_on_this_thread())
+        throw std::logic_error("completion pump cannot acquire host access");
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (callbacks_active_ && callback_owner_ == std::this_thread::get_id())
@@ -1281,10 +1501,13 @@ std::unique_lock<std::mutex> VulkanExecutionContext::acquire_host_access(
             // Poll, retire, reset and any error recovery all remain serialized
             // with every other use of the shared Vulkan queue/command pool.
             poll_device_locked();
-        } catch (...) {
+        } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+        catch (...) {
             const std::exception_ptr original = std::current_exception();
             queue_lock.unlock();
-            try { drain_ready_callbacks(true); } catch (...) {}
+            try { drain_ready_callbacks(true); }
+            catch (const __cxxabiv1::__forced_unwind&) { throw; }
+            catch (...) {}
             std::rethrow_exception(original);
         }
 

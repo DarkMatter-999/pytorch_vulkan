@@ -62,6 +62,7 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
     if (size == 0) {
         throw std::invalid_argument("Vulkan buffer size must be greater than zero");
     }
+    pytorch_vulkan::with_vulkan_operation(platform.runtime_lifecycle(), [&] {
     const auto create_start = std::chrono::steady_clock::now();
 
     VkBufferCreateInfo buffer_info{};
@@ -108,7 +109,8 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
         if (bind != VK_SUCCESS) {
             throw std::runtime_error("Could not bind Vulkan buffer memory");
         }
-    } catch (...) {
+    } catch (const __cxxabiv1::__forced_unwind&) { throw; }
+    catch (...) {
         if (buffer_ != VK_NULL_HANDLE) {
             if (ops.destroy_buffer) ops.destroy_buffer(ops.cookie, device_, buffer_);
             else vkDestroyBuffer(device_, buffer_, nullptr);
@@ -127,6 +129,7 @@ VulkanBuffer::VulkanBuffer(const VulkanPlatform &platform, VkDeviceSize size,
         VulkanTimingCategory::BufferCreate,
         std::chrono::duration<double>(std::chrono::steady_clock::now() - create_start)
             .count());
+    });
 }
 
 VulkanBuffer::~VulkanBuffer() {
@@ -136,6 +139,7 @@ VulkanBuffer::~VulkanBuffer() {
     }
     if (buffer_ == VK_NULL_HANDLE && memory_ == VK_NULL_HANDLE)
         return;
+    pytorch_vulkan::VulkanCleanupScope cleanup(platform_->runtime_lifecycle());
     const auto destroy_start = std::chrono::steady_clock::now();
     struct DestroyTimer {
         const VulkanPlatform *platform;
@@ -248,6 +252,7 @@ VkMappedMemoryRange VulkanBuffer::vk_range(VkDeviceSize offset,
 }
 
 void *VulkanBuffer::map_persistent() {
+    return pytorch_vulkan::with_vulkan_operation(platform_->runtime_lifecycle(), [&]() -> void* {
     if ((memory_properties_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0)
         throw std::runtime_error("Vulkan buffer memory is not host visible");
     if (mapped_base_ != nullptr) return mapped_base_;
@@ -261,22 +266,23 @@ void *VulkanBuffer::map_persistent() {
     }
     mapped_base_ = mapped;
     return mapped_base_;
+    });
 }
 
 void *VulkanBuffer::mapped_base() const { return mapped_base_; }
 
 void VulkanBuffer::flush_range(VkDeviceSize offset, VkDeviceSize size) {
-    const auto range = vk_range(offset, size);
-    if (size == 0 || coherent()) return;
-    if (flush_memory(&range) != VK_SUCCESS)
-        throw std::runtime_error("Could not flush Vulkan buffer memory");
+    maintain_range(platform_->runtime_lifecycle(), size,
+                   [&] { return vk_range(offset, size); }, [&] { return coherent(); },
+                   [&](const VkMappedMemoryRange *range) { return flush_memory(range); },
+                   "Could not flush Vulkan buffer memory");
 }
 
 void VulkanBuffer::invalidate_range(VkDeviceSize offset, VkDeviceSize size) {
-    const auto range = vk_range(offset, size);
-    if (size == 0 || coherent()) return;
-    if (invalidate_memory(&range) != VK_SUCCESS)
-        throw std::runtime_error("Could not invalidate Vulkan buffer memory");
+    maintain_range(platform_->runtime_lifecycle(), size,
+                   [&] { return vk_range(offset, size); }, [&] { return coherent(); },
+                   [&](const VkMappedMemoryRange *range) { return invalidate_memory(range); },
+                   "Could not invalidate Vulkan buffer memory");
 }
 
 void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offset) {
@@ -289,6 +295,7 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
     if (size == 0)
         return;
 
+    return pytorch_vulkan::with_vulkan_operation(platform_->runtime_lifecycle(), [&] {
     const auto map_start = std::chrono::steady_clock::now();
     void *mapped = mapped_base_;
     const bool temporary_map = mapped == nullptr;
@@ -311,6 +318,7 @@ void VulkanBuffer::write(const void *data, VkDeviceSize size, VkDeviceSize offse
         VulkanTimingCategory::BufferMapWrite,
         std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start)
             .count());
+    });
 }
 
 void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) const {
@@ -323,6 +331,7 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
     if (size == 0)
         return;
 
+    return pytorch_vulkan::with_vulkan_operation(platform_->runtime_lifecycle(), [&] {
     const auto map_start = std::chrono::steady_clock::now();
     void *mapped = mapped_base_;
     const bool temporary_map = mapped == nullptr;
@@ -345,4 +354,5 @@ void VulkanBuffer::read(void *data, VkDeviceSize size, VkDeviceSize offset) cons
         VulkanTimingCategory::BufferMapRead,
         std::chrono::duration<double>(std::chrono::steady_clock::now() - map_start)
             .count());
+    });
 }

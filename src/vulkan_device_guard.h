@@ -4,6 +4,11 @@
 
 namespace pytorch_vulkan {
 
+class VulkanLifecycleCoordinator;
+// Host-only access; never constructs a Vulkan instance. Terminal/Python guards
+// use this single coordinator rather than duplicating shutdown state.
+VulkanLifecycleCoordinator& platform_lifecycle();
+
 class VulkanDeviceGuard final : public c10::impl::DeviceGuardImplInterface {
   public:
     c10::DeviceType type() const override;
@@ -21,6 +26,6 @@ class VulkanDeviceGuard final : public c10::impl::DeviceGuardImplInterface {
 
 c10::Device current_device();
 void set_device(c10::DeviceIndex index);
-void shutdown_platform();
+void shutdown_platform(); // nonterminal cache retirement; live allocations remain valid
 
 } // namespace pytorch_vulkan

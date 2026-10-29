@@ -240,6 +240,9 @@ at::Tensor &dispatch_unary_out(const at::Tensor &input, at::Tensor &out,
     validate_output_metadata(out, operation, name);
     const auto before_overlap = classify_overlap(input, out, name);
     validate_overlap_status(before_overlap, input, out, name);
+    auto* runtime = allocation_runtime(input.storage().data_ptr());
+    if (!runtime) runtime = allocation_runtime(out.storage().data_ptr());
+    return with_vulkan_operation(runtime, [&]() -> at::Tensor& {
     resize_output(out, input.sizes(), name);
     validate_overlap_status(classify_overlap(input, out, name), input, out, name);
     const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(out, name);
@@ -260,6 +263,7 @@ at::Tensor &dispatch_unary_out(const at::Tensor &input, at::Tensor &out,
                                  output_layout, static_cast<uint32_t>(operation));
     }
     return out;
+    });
 }
 
 at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &rhs,
@@ -300,6 +304,9 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
     const auto rhs_before_overlap = classify_overlap(rhs, out, name);
     validate_overlap_status(lhs_before_overlap, lhs, out, name);
     validate_overlap_status(rhs_before_overlap, rhs, out, name);
+    auto* runtime = allocation_runtime(lhs.storage().data_ptr());
+    if (!runtime) runtime = allocation_runtime(out.storage().data_ptr());
+    return with_vulkan_operation(runtime, [&]() -> at::Tensor& {
     resize_output(out, lhs.sizes(), name);
     validate_overlap_status(classify_overlap(lhs, out, name), lhs, out, name);
     validate_overlap_status(classify_overlap(rhs, out, name), rhs, out, name);
@@ -330,6 +337,7 @@ at::Tensor &dispatch_tensor_tensor_out(const at::Tensor &lhs, const at::Tensor &
             scalar_to_float(alpha, name));
     }
     return out;
+    });
 }
 
 at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor,
@@ -346,6 +354,9 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor,
                 " requires matching input and output dtypes");
     const auto before_overlap = classify_overlap(tensor, out, name);
     validate_overlap_status(before_overlap, tensor, out, name);
+    auto* runtime = allocation_runtime(tensor.storage().data_ptr());
+    if (!runtime) runtime = allocation_runtime(out.storage().data_ptr());
+    return with_vulkan_operation(runtime, [&]() -> at::Tensor& {
     resize_output(out, tensor.sizes(), name);
     validate_overlap_status(classify_overlap(tensor, out, name), tensor, out, name);
     const auto output_layout = pytorch_vulkan::inspect_vulkan_tensor_layout(out, name);
@@ -379,6 +390,7 @@ at::Tensor &dispatch_tensor_scalar_out(const at::Tensor &tensor,
                                          static_cast<uint32_t>(operation));
     }
     return out;
+    });
 }
 
 at::Tensor &dispatch_tensor_tensor_alias(at::Tensor &self, const at::Tensor &other,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include "vulkan_lifecycle.h"
 
 #include <array>
 #include <cstdint>
@@ -195,6 +196,15 @@ class VulkanExecutionContext final {
     bool query_with_flush(const std::function<void()> &flush_locked);
     void synchronize_with_flush(const std::function<void()> &flush_locked);
     bool teardown_with_services(const std::function<void()> &destroy_services);
+    pytorch_vulkan::VulkanQuiescence lifecycle_snapshot() const;
+    void set_lifecycle_reservations_closed(bool closed);
+    bool callback_active_on_this_thread() const noexcept;
+    void wait_foreign_epilogues_until(pytorch_vulkan::VulkanHostTime deadline,
+                                     const pytorch_vulkan::VulkanHostClock &clock);
+    void synchronize_with_flush_until(const std::function<void()> &flush_locked,
+                                      pytorch_vulkan::VulkanHostTime deadline,
+                                      const pytorch_vulkan::VulkanHostClock &clock);
+    void teardown_empty_native_services(const std::function<void()> &destroy_services);
 
   private:
     struct InFlightRecord {
@@ -224,8 +234,17 @@ class VulkanExecutionContext final {
     void reset_reusable_resources(InFlightRecord &record);
     void wait_and_retire(InFlightRecord &record, std::unique_lock<std::mutex> &lock);
     void poll_completed(std::unique_lock<std::mutex> &lock);
-    void drain_ready_callbacks(bool wait);
-    void drain_ready_transfers(bool wait);
+    void drain_ready_callbacks(bool wait,
+        pytorch_vulkan::VulkanHostTime deadline = {},
+        const pytorch_vulkan::VulkanHostClock *clock = nullptr);
+    void drain_ready_transfers(bool wait,
+        pytorch_vulkan::VulkanHostTime deadline = {},
+        const pytorch_vulkan::VulkanHostClock *clock = nullptr);
+    void wait_callback_epilogue(std::unique_lock<std::mutex> &,
+        pytorch_vulkan::VulkanHostTime, const pytorch_vulkan::VulkanHostClock *);
+    // Requires queue -> execution -> reservation, never a coordinator lock.
+    pytorch_vulkan::VulkanQuiescence snapshot_locked() const;
+    void destroy_native_handles_locked();
     void wait_oldest_transfer(const std::function<void()> &flush_locked);
     void notify_reservation_change() noexcept;
     [[noreturn]] void abandon_recording(std::exception_ptr original,
@@ -258,6 +277,7 @@ class VulkanExecutionContext final {
     VulkanExecutionCallbacks ready_callbacks_;
     std::condition_variable callback_cv_;
     bool callbacks_active_ = false;
+    std::size_t callback_epilogues_ = 0;
     std::thread::id callback_owner_{};
     std::exception_ptr callback_error_;
     std::list<std::shared_ptr<TransferRecord>> transfer_records_;

@@ -14,6 +14,7 @@
 
 class VulkanExecutionContext;
 class VulkanPlatform;
+namespace pytorch_vulkan { struct VulkanQuiescence; }
 
 struct PipelineKey {
     std::string shader_identity;
@@ -73,8 +74,11 @@ class VulkanPipelineCache final {
     void invalidate_device_loss();
     PipelineCacheSnapshot snapshot() const;
     void destroy_all() noexcept;
+    // Caller owns queue serialization after admission/epilogues are closed.
+    void destroy_empty_native(const pytorch_vulkan::VulkanQuiescence &);
 
   private:
+    friend struct VulkanNativeServiceTestPeer;
     struct KeyHash {
         std::size_t operator()(const PipelineKey &) const noexcept;
     };
@@ -88,6 +92,15 @@ class VulkanPipelineCache final {
     struct LayoutEntry {
         VkPipelineLayout layout = VK_NULL_HANDLE;
     };
+    using NativePipelines = std::unordered_map<PipelineKey, Entry, KeyHash>;
+    using NativeLayouts = std::unordered_map<PipelineLayoutKey, LayoutEntry, LayoutKeyHash>;
+    using NativeLru = std::list<PipelineKey>;
+    static void destroy_empty_native_tables(VkDevice,
+        const pytorch_vulkan::VulkanQuiescence &, bool invalidated,
+        std::size_t pending, std::size_t pending_layouts,
+        NativePipelines &, NativeLayouts &, NativeLru &, void *,
+        void (*destroy_pipeline)(void *, VkDevice, VkPipeline),
+        void (*destroy_layout)(void *, VkDevice, VkPipelineLayout));
 
     void destroy_pipeline(VkPipeline) noexcept;
     void destroy_layout(VkPipelineLayout) noexcept;
@@ -98,9 +111,9 @@ class VulkanPipelineCache final {
     VulkanExecutionContext &execution_;
     std::size_t max_entries_ = 0;
     mutable std::mutex mutex_;
-    std::unordered_map<PipelineKey, Entry, KeyHash> entries_;
-    std::unordered_map<PipelineLayoutKey, LayoutEntry, LayoutKeyHash> layouts_;
-    std::list<PipelineKey> lru_;
+    NativePipelines entries_;
+    NativeLayouts layouts_;
+    NativeLru lru_;
     std::size_t hits_ = 0;
     std::size_t misses_ = 0;
     std::size_t evictions_ = 0;
@@ -109,6 +122,7 @@ class VulkanPipelineCache final {
     std::shared_ptr<std::atomic<std::size_t>> pending_layout_destructions_ =
         std::make_shared<std::atomic<std::size_t>>(0);
     bool invalidated_ = false;
+    bool native_destroyed_ = false;
 };
 
 namespace std {

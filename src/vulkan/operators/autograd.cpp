@@ -7,6 +7,7 @@
 #include "linear.h"
 #include "pooling.h"
 #include "unary.h"
+#include "vulkan_allocator.h"
 
 #include <torch/library.h>
 #include <c10/core/GradMode.h>
@@ -35,17 +36,21 @@ class LinearReluAutogradFunction final
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input, const at::Tensor &weight,
                               const at::Tensor &bias) {
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         auto output = pytorch_vulkan::linear_relu(input, weight, bias);
         ctx->save_for_backward({input, weight, output});
         return output;
+        });
     }
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
+             torch::autograd::variable_list incoming_grads) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined())
+        if (!incoming_grads[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor()};
+        return with_vulkan_operation(allocation_runtime(incoming_grads[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grads = std::move(incoming_grads);
         auto saved = ctx->get_saved_variables();
         if (disable_multi_output_backward() ||
             !supports_multi_output_backward(grads[0]) ||
@@ -57,6 +62,7 @@ class LinearReluAutogradFunction final
                     linear_relu_backward_bias(grads[0], saved[2])};
         auto gradients = linear_relu_backward(grads[0], saved[0], saved[1], saved[2]);
         return {std::get<0>(gradients), std::get<1>(gradients), std::get<2>(gradients)};
+        });
     }
 };
 class AdaptiveAvgPoolAutogradFunction final
@@ -64,19 +70,24 @@ class AdaptiveAvgPoolAutogradFunction final
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input, at::IntArrayRef output_size) {
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         ctx->save_for_backward({input});
         return pytorch_vulkan::adaptive_avg_pool2d(input, output_size);
+        });
     }
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
+             torch::autograd::variable_list incoming_grads) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined())
+        if (!incoming_grads[0].defined())
             return {at::Tensor(), at::Tensor()};
+        return with_vulkan_operation(allocation_runtime(incoming_grads[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grads = std::move(incoming_grads);
         return {pytorch_vulkan::adaptive_avg_pool2d_backward(
                     grads[0], ctx->get_saved_variables()[0]),
                 at::Tensor()};
+        });
     }
 };
 } // namespace
@@ -104,11 +115,13 @@ class StackAutogradFunction final
   public:
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               at::TensorList tensors, int64_t dim) {
+        return with_vulkan_operation(tensors.empty() ? nullptr : allocation_runtime(tensors[0].storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         std::vector<at::Tensor> saved(tensors.begin(), tensors.end());
         ctx->save_for_backward(saved);
         ctx->saved_data["dim"] = dim;
         return stack_raw(tensors, dim);
+        });
     }
 
     static torch::autograd::variable_list
@@ -130,7 +143,10 @@ class StackAutogradFunction final
 } // namespace
 
 at::Tensor autograd_stack(at::TensorList tensors, int64_t dim) {
-    return StackAutogradFunction::apply(tensors, dim);
+    if (tensors.empty()) return StackAutogradFunction::apply(tensors, dim);
+    return with_vulkan_operation(allocation_runtime(tensors[0].storage().data_ptr()), [&]() -> at::Tensor {
+        return StackAutogradFunction::apply(tensors, dim);
+    });
 }
 
 at::Tensor stack(at::TensorList tensors, int64_t dim) {
@@ -139,16 +155,22 @@ at::Tensor stack(at::TensorList tensors, int64_t dim) {
 
 at::Tensor autograd_linear_relu(const at::Tensor &input, const at::Tensor &weight,
                                 const at::Tensor &bias) {
-    return LinearReluAutogradFunction::apply(input, weight, bias);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return LinearReluAutogradFunction::apply(input, weight, bias);
+    });
 }
 
 at::Tensor autograd_adaptive_avg_pool2d(const at::Tensor &input,
                                         at::IntArrayRef output_size) {
-    return AdaptiveAvgPoolAutogradFunction::apply(input, output_size);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return AdaptiveAvgPoolAutogradFunction::apply(input, output_size);
+    });
 }
 
 at::Tensor autograd_neg(const at::Tensor &input) {
-    return autograd_unary_no_save<&neg_tensor, &neg_backward>(input);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return autograd_unary_no_save<&neg_tensor, &neg_backward>(input);
+    });
 }
 
 at::Tensor neg_backward(const at::Tensor &grad) { return neg_tensor(grad); }
@@ -250,8 +272,10 @@ at::Tensor autograd_add_tensor(const at::Tensor &lhs, const at::Tensor &rhs,
 
 at::Tensor autograd_sub_tensor(const at::Tensor &lhs, const at::Tensor &rhs,
                                const at::Scalar &alpha) {
+    return with_vulkan_operation(allocation_runtime((lhs.device().is_cpu() ? rhs : lhs).storage().data_ptr()), [&]() -> at::Tensor {
     return autograd_binary_tensor<&sub_tensor_raw, &sub_backward_raw,
                                   &neg_sub_backward_raw>(lhs, rhs, alpha);
+    });
 }
 
 at::Tensor autograd_mul_tensor(const at::Tensor &lhs, const at::Tensor &rhs) {
@@ -267,14 +291,18 @@ at::Tensor autograd_add_scalar(const at::Tensor &tensor, const at::Scalar &scala
 
 at::Tensor autograd_sub_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
                                const at::Scalar &alpha) {
+    return with_vulkan_operation(allocation_runtime(tensor.storage().data_ptr()), [&]() -> at::Tensor {
     return autograd_binary_scalar<&sub_scalar_raw, &scalar_sub_backward, false>(
         tensor, scalar, alpha);
+    });
 }
 
 at::Tensor autograd_rsub_scalar(const at::Tensor &tensor, const at::Scalar &scalar,
                                 const at::Scalar &alpha) {
+    return with_vulkan_operation(allocation_runtime(tensor.storage().data_ptr()), [&]() -> at::Tensor {
     return autograd_binary_scalar<&rsub_scalar_raw, &scalar_rsub_backward, true>(
         tensor, scalar, alpha);
+    });
 }
 
 at::Tensor autograd_mul_scalar(const at::Tensor &tensor, const at::Scalar &scalar) {
@@ -285,20 +313,28 @@ at::Tensor autograd_mul_scalar(const at::Tensor &tensor, const at::Scalar &scala
 at::Tensor autograd_abs(const at::Tensor &input) {
     if (input.scalar_type() == at::kDouble)
         return pytorch_vulkan::formatter_double_abs(input);
-    return autograd_unary_saved_input<&abs_tensor, &abs_backward_tensor>(input);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return autograd_unary_saved_input<&abs_tensor, &abs_backward_tensor>(input);
+    });
 }
 
 at::Tensor autograd_relu(const at::Tensor &input) {
-    return autograd_unary_saved_output<&relu_tensor, &relu_backward_tensor>(input);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return autograd_unary_saved_output<&relu_tensor, &relu_backward_tensor>(input);
+    });
 }
 
 at::Tensor autograd_sigmoid(const at::Tensor &input) {
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     return autograd_unary_saved_output<&sigmoid_tensor, &sigmoid_backward_tensor>(
         input);
+    });
 }
 
 at::Tensor autograd_tanh(const at::Tensor &input) {
-    return autograd_unary_saved_output<&tanh_tensor, &tanh_backward_tensor>(input);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return autograd_unary_saved_output<&tanh_tensor, &tanh_backward_tensor>(input);
+    });
 }
 
 namespace {
@@ -310,25 +346,32 @@ class GeluAutogradFunction final
         at::AutoDispatchBelowAutograd guard;
         TORCH_CHECK(approximate == "tanh",
                     "Vulkan gelu supports only approximate=\"tanh\"");
+        return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         ctx->save_for_backward({input});
         return gelu_tensor(input, approximate);
+        });
     }
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
+             torch::autograd::variable_list incoming_grads) {
         at::AutoDispatchBelowAutograd guard;
         TORCH_CHECK(!c10::GradMode::is_enabled(),
                     "Vulkan gelu does not support higher-order gradients");
-        if (!grads[0].defined())
+        if (!incoming_grads[0].defined())
             return {at::Tensor(), at::Tensor()};
+        return with_vulkan_operation(allocation_runtime(incoming_grads[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grads = std::move(incoming_grads);
         return {gelu_backward_tensor(ctx->get_saved_variables()[0], grads[0], "tanh"),
-                at::Tensor()};
+                 at::Tensor()};
+        });
     }
 };
 } // namespace
 
 at::Tensor autograd_gelu(const at::Tensor &input, c10::string_view approximate) {
-    return GeluAutogradFunction::apply(input, approximate);
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
+        return GeluAutogradFunction::apply(input, approximate);
+    });
 }
 
 } // namespace pytorch_vulkan

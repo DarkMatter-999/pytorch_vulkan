@@ -72,6 +72,33 @@ class VulkanBuffer {
     void set_map_ops_for_testing(VulkanBufferMapOps ops) { map_ops_for_testing_ = ops; }
 
   private:
+    friend struct VulkanBufferMaintenanceTestPeer;
+    // Keep the range query inside the protected lifetime, including coherent
+    // no-ops. Only flush_range/invalidate_range use this bounded native seam.
+    template<class Range, class Coherent, class Cache>
+    static void maintain_range(pytorch_vulkan::VulkanRuntimeLifecycle &runtime,
+                               VkDeviceSize size, Range &&range_provider,
+                               Coherent &&coherent, Cache &&cache, const char *error) {
+        const auto maintain = [&] {
+            const auto range = range_provider();
+            if (size == 0 || coherent()) return;
+            if (cache(&range) != VK_SUCCESS)
+                throw std::runtime_error(error);
+        };
+        // Publication is already owned by this runtime's operation/completion
+        // cleanup. Cache visibility does not create work and must not recursively
+        // enter/finish an operation from the pump. Keep the covering scope alive
+        // and count this entire native access as General (never audited-native)
+        // cleanup. Foreign-thread/runtime activity grants no permission here.
+        if (pytorch_vulkan::vulkan_callback_observation_active() &&
+            (runtime.operation_active_on_this_thread() ||
+             runtime.cleanup_active_on_this_thread())) {
+            pytorch_vulkan::VulkanCleanupScope cleanup(runtime);
+            maintain();
+            return;
+        }
+        pytorch_vulkan::with_vulkan_operation(runtime, maintain);
+    }
     const VulkanPlatform *platform_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VkBuffer buffer_ = VK_NULL_HANDLE;

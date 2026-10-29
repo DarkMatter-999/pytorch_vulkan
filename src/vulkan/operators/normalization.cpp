@@ -135,12 +135,14 @@ native_batch_norm(const at::Tensor &input, const c10::optional<at::Tensor> &weig
     TORCH_CHECK(momentum == 0.1, "Vulkan native_batch_norm supports momentum=0.1 only");
     TORCH_CHECK(eps == 1e-5, "Vulkan native_batch_norm supports eps=1e-5 only");
     validate_common(input, weight, bias, running_mean, running_var);
+    return with_vulkan_operation(allocation_runtime(weight->storage().data_ptr()), [&]() -> std::tuple<at::Tensor, at::Tensor, at::Tensor> {
     auto output = at::empty_like(input);
     auto mean = at::empty_like(*weight);
     auto invstd = at::empty_like(*weight);
     run(input, *weight, *bias, *running_mean, *running_var, nullptr, nullptr, nullptr,
         output, mean, invstd, 0, momentum, eps);
     return {output, mean, invstd};
+    });
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor>
@@ -172,6 +174,7 @@ native_batch_norm_backward(const at::Tensor &grad_out, const at::Tensor &input,
                 "Vulkan native_batch_norm grad_out has unsupported overlapping layout");
     validate(*save_mean, "save_mean", true, input.size(1));
     validate(*save_invstd, "save_invstd", true, input.size(1));
+    return with_vulkan_operation(allocation_runtime(weight->storage().data_ptr()), [&]() -> std::tuple<at::Tensor, at::Tensor, at::Tensor> {
     const at::Tensor readable_grad =
         grad_out.is_contiguous() ? grad_out : grad_out.contiguous();
     validate(readable_grad, "grad_out", false);
@@ -181,6 +184,7 @@ native_batch_norm_backward(const at::Tensor &grad_out, const at::Tensor &input,
     run(readable_grad, *weight, *weight, *running_mean, *running_var, &input,
         save_mean.operator->(), save_invstd.operator->(), dx, dw, db, 1, 0.1, eps);
     return {dx, dw, db};
+    });
 }
 } // namespace pytorch_vulkan
 

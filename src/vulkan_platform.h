@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vulkan_execution.h"
+#include "vulkan_lifecycle.h"
 
 #include <vulkan/vulkan.h>
 
@@ -155,6 +156,7 @@ class VulkanPlatform {
     explicit VulkanPlatform(bool enable_validation = false,
                             unsigned injected_staging_allocation_failures = 0);
     ~VulkanPlatform() noexcept;
+    pytorch_vulkan::VulkanRuntimeLifecycle& runtime_lifecycle() const noexcept;
 
     static bool is_available() noexcept;
     // Diagnostic counters: availability probes construct a throwaway platform.
@@ -240,6 +242,10 @@ class VulkanPlatform {
     VulkanExecutionContext &execution_context() const;
     bool query_execution() const;
     void synchronize_execution() const;
+    pytorch_vulkan::VulkanQuiescence lifecycle_snapshot() const;
+    void synchronize_execution_until(pytorch_vulkan::VulkanHostTime,
+                                    const pytorch_vulkan::VulkanHostClock &) const;
+    void destroy_empty_native_services();
     VulkanShaderRegistry &shader_registry() const;
     VulkanPipelineCache &pipeline_cache() const;
     PipelineCacheSnapshot pipeline_cache_snapshot() const;
@@ -284,6 +290,9 @@ class VulkanPlatform {
         const std::function<void(VkCommandBuffer)> &record_override) const;
     static constexpr unsigned kCompletionHoldMaxMs = 20000;
 
+    // Declared before services so host accounting outlives their destruction.
+    mutable pytorch_vulkan::VulkanRuntimeLifecycle runtime_lifecycle_{
+        pytorch_vulkan::vulkan_host_clock()};
     VkInstance instance_ = VK_NULL_HANDLE;
     mutable std::unique_ptr<VulkanCompute> compute_;
     mutable std::unique_ptr<VulkanExecutionContext> execution_;
@@ -294,6 +303,7 @@ class VulkanPlatform {
     VkQueue compute_queue_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     bool async_execution_enabled_ = false;
+    bool native_services_destroyed_ = false;
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     bool validation_enabled_ = false;
     bool bool_pointwise_supported_ = false;
@@ -344,5 +354,8 @@ void register_fork_state_handler();
 void ensure_process_local_vulkan();
 
 std::shared_ptr<VulkanPlatform> platform();
+
+// Real queue/execution/reservation snapshot and empty-only native teardown.
+VulkanLifecycleRoot make_vulkan_lifecycle_root(std::shared_ptr<VulkanPlatform>);
 
 } // namespace pytorch_vulkan

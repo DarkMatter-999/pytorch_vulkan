@@ -120,8 +120,10 @@ at::Tensor &isfinite_out(const at::Tensor &self, at::Tensor &out) {
 
 at::Tensor isfinite(const at::Tensor &self) {
     validate_input(self, "isfinite");
+    return with_vulkan_operation(allocation_runtime(self.storage().data_ptr()), [&]() -> at::Tensor {
     at::Tensor out = at::empty(self.sizes(), self.options().dtype(at::kBool));
     return isfinite_out(self, out);
+    });
 }
 
 at::Tensor &eq_tensor_out(const at::Tensor &self, const at::Tensor &other,
@@ -247,6 +249,7 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
                 "Vulkan masked_select requires bool pointwise Vulkan capability");
     if (self.numel() == 0)
         return at::empty({0}, self.options());
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor {
     // The shader consumes a densely packed logical sequence.  Validation above
     // must remain side-effect free; only then may a supported value view be
     // materialized on Vulkan.
@@ -296,6 +299,7 @@ at::Tensor masked_select(const at::Tensor &self, const at::Tensor &mask) {
                                              allocation_buffer(result_data).buffer(),
                                              counter.buffer(), element_count, selected);
     return result;
+    });
 }
 
 } // namespace pytorch_vulkan

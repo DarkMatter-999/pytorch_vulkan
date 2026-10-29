@@ -48,6 +48,7 @@ class ReductionAutograd final
                               const at::Tensor &input,
                               c10::OptionalArrayRef<int64_t> dims, bool keepdim,
                               c10::optional<at::ScalarType> dtype) {
+        return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         auto normalized = normalized_dims(input, dims, Mean ? "mean" : "sum");
         uint64_t mask = 0, count = 1;
@@ -61,13 +62,16 @@ class ReductionAutograd final
         ctx->saved_data["count"] = static_cast<int64_t>(count);
         ctx->saved_data["keepdim"] = keepdim;
         return dispatch(input, dims, keepdim, Mean ? 1u : 0u, Mean ? "mean" : "sum");
+        });
     }
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
+             torch::autograd::variable_list incoming_grads) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined())
+        if (!incoming_grads[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor()};
+        return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(incoming_grads[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grads = std::move(incoming_grads);
         auto input = ctx->get_saved_variables()[0];
         pytorch_vulkan::validate_operator_rank(input.dim(),
                                                Mean ? "mean backward" : "sum backward");
@@ -114,6 +118,7 @@ class ReductionAutograd final
                        1.0 / static_cast<double>(ctx->saved_data["count"].toInt()))
                  : 1.0F);
         return {result, at::Tensor(), at::Tensor(), at::Tensor()};
+        });
     }
 };
 
@@ -180,6 +185,8 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
                     output_numel <= std::numeric_limits<uint32_t>::max(),
                 "Vulkan ", name, " exceeds dispatch limits");
     auto expected_sizes = output_sizes(input, reduced_dims, keepdim);
+    auto* runtime = pytorch_vulkan::allocation_runtime(input.storage().data_ptr());
+    return pytorch_vulkan::with_vulkan_operation(runtime, [&]() -> at::Tensor {
     at::Tensor output =
         provided_output ? *provided_output : at::empty(expected_sizes, input.options());
     if (provided_output) {
@@ -240,6 +247,7 @@ at::Tensor dispatch(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims
         static_cast<uint32_t>(reduce_numel), static_cast<uint32_t>(output_numel),
         operation);
     return output;
+    });
 }
 
 at::Tensor reduction_backward_dispatch(const at::Tensor &input,
@@ -249,6 +257,7 @@ at::Tensor reduction_backward_dispatch(const at::Tensor &input,
     TORCH_CHECK(input.scalar_type() == at::kFloat && input.is_contiguous() &&
                     forward.is_contiguous(),
                 "Vulkan reduction backward requires contiguous float32 input and forward tensors");
+    return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     auto readable_grad = grad_output.is_contiguous() ? grad_output
                                                      : grad_output.contiguous();
     TORCH_CHECK(readable_grad.scalar_type() == at::kFloat &&
@@ -292,6 +301,7 @@ at::Tensor reduction_backward_dispatch(const at::Tensor &input,
         static_cast<uint32_t>(input.size(dim)), static_cast<uint32_t>(dim), operation,
         keepdim);
     return grad_input;
+    });
 }
 
 template <uint32_t Operation>
@@ -301,6 +311,7 @@ class ExtendedReductionAutograd final
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input,
                               c10::OptionalArrayRef<int64_t> dims, bool keepdim) {
+        return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         auto normalized = normalized_dims(input, dims, "reduction");
         TORCH_CHECK(normalized.size() == 1,
@@ -313,13 +324,16 @@ class ExtendedReductionAutograd final
         ctx->saved_data["dim"] = normalized[0];
         ctx->saved_data["keepdim"] = keepdim;
         return output;
+        });
     }
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
+             torch::autograd::variable_list incoming_grads) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined())
+        if (!incoming_grads[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor()};
+        return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(incoming_grads[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grads = std::move(incoming_grads);
         auto saved = ctx->get_saved_variables();
         return {reduction_backward_dispatch(saved[0], saved[1], grads[0],
                                             ctx->saved_data["dim"].toInt(),
@@ -328,6 +342,7 @@ class ExtendedReductionAutograd final
                                                              : 1u,
                                             ctx->saved_data["keepdim"].toBool()),
                 at::Tensor(), at::Tensor()};
+        });
     }
 };
 
@@ -336,6 +351,7 @@ class SoftmaxAutograd final : public torch::autograd::Function<SoftmaxAutograd> 
     static at::Tensor forward(torch::autograd::AutogradContext *ctx,
                               const at::Tensor &input, int64_t dim, bool half_to_float,
                               bool logarithmic) {
+        return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
         at::AutoDispatchBelowAutograd guard;
         auto output =
             logarithmic ? pytorch_vulkan::log_softmax_tensor(input, dim, half_to_float)
@@ -344,18 +360,22 @@ class SoftmaxAutograd final : public torch::autograd::Function<SoftmaxAutograd> 
         ctx->saved_data["dim"] = dim < 0 ? dim + input.dim() : dim;
         ctx->saved_data["logarithmic"] = logarithmic;
         return output;
+        });
     }
     static torch::autograd::variable_list
     backward(torch::autograd::AutogradContext *ctx,
-             torch::autograd::variable_list grads) {
+             torch::autograd::variable_list incoming_grads) {
         at::AutoDispatchBelowAutograd guard;
-        if (!grads[0].defined())
+        if (!incoming_grads[0].defined())
             return {at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor()};
+        return pytorch_vulkan::with_vulkan_operation(pytorch_vulkan::allocation_runtime(incoming_grads[0].storage().data_ptr()), [&]() -> torch::autograd::variable_list {
+        auto grads = std::move(incoming_grads);
         auto saved = ctx->get_saved_variables();
         return {reduction_backward_dispatch(
                     saved[0], saved[1], grads[0], ctx->saved_data["dim"].toInt(),
                     ctx->saved_data["logarithmic"].toBool() ? 4u : 3u, true),
                 at::Tensor(), at::Tensor(), at::Tensor()};
+        });
     }
 };
 } // namespace
@@ -431,6 +451,7 @@ at::Tensor softmax_tensor(const at::Tensor &input, int64_t dim, bool half_to_flo
     auto dims = normalized_dims(input, c10::ArrayRef<int64_t>(&dim, 1), "softmax");
     TORCH_CHECK(dims.size() == 1 && input.size(dims[0]) > 0,
                 "Vulkan softmax requires a non-empty dimension");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     auto output = at::empty_like(input);
     if (input.numel() == 0)
         return output;
@@ -457,6 +478,7 @@ at::Tensor softmax_tensor(const at::Tensor &input, int64_t dim, bool half_to_flo
         static_cast<uint32_t>(reduce), static_cast<uint32_t>(count),
         input.dim() > 0 ? 5u : 5u, static_cast<uint32_t>(dims[0]));
     return output;
+    });
 }
 
 at::Tensor &softmax_out(const at::Tensor &input, int64_t dim, bool half_to_float,
@@ -466,9 +488,11 @@ at::Tensor &softmax_out(const at::Tensor &input, int64_t dim, bool half_to_float
             out.layout() == at::kStrided && out.is_contiguous() &&
             out.sizes().equals(input.sizes()),
         "Vulkan softmax out requires a contiguous float32 output with the input shape");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor& {
     auto result = softmax_tensor(input, dim, half_to_float);
     out.copy_(result);
     return out;
+    });
 }
 
 at::Tensor log_softmax_tensor(const at::Tensor &input, int64_t dim,
@@ -485,6 +509,7 @@ at::Tensor log_softmax_tensor(const at::Tensor &input, int64_t dim,
         dim += input.dim();
     TORCH_CHECK(input.size(dim) > 0,
                 "Vulkan log_softmax requires a non-empty dimension");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor {
     auto output = at::empty_like(input);
     if (input.numel() == 0)
         return output;
@@ -507,6 +532,7 @@ at::Tensor log_softmax_tensor(const at::Tensor &input, int64_t dim,
         static_cast<uint32_t>(input.size(dim)), static_cast<uint32_t>(count), 6u,
         static_cast<uint32_t>(dim));
     return output;
+    });
 }
 
 at::Tensor &log_softmax_out(const at::Tensor &input, int64_t dim, bool half_to_float,
@@ -516,9 +542,11 @@ at::Tensor &log_softmax_out(const at::Tensor &input, int64_t dim, bool half_to_f
                     out.sizes().equals(input.sizes()),
                 "Vulkan log_softmax out requires a contiguous float32 output with the "
                 "input shape");
+    return with_vulkan_operation(allocation_runtime(input.storage().data_ptr()), [&]() -> at::Tensor& {
     auto result = log_softmax_tensor(input, dim, half_to_float);
     out.copy_(result);
     return out;
+    });
 }
 at::Tensor &sum_out(const at::Tensor &input, c10::OptionalArrayRef<int64_t> dims,
                     bool keepdim, c10::optional<at::ScalarType> dtype,
@@ -582,20 +610,24 @@ at::Tensor &softmax_backward_out(const at::Tensor &grad_output,
                                  c10::ScalarType input_dtype, at::Tensor &grad_input) {
     TORCH_CHECK(input_dtype == at::kFloat,
                 "Vulkan softmax backward supports only float32");
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor& {
     auto result =
         reduction_backward_dispatch(output, output, grad_output, dim, 3u, true);
     grad_input.copy_(result);
     return grad_input;
+    });
 }
 at::Tensor &log_softmax_backward_out(const at::Tensor &grad_output,
                                      const at::Tensor &output, int64_t dim,
                                      c10::ScalarType input_dtype, at::Tensor &out) {
     TORCH_CHECK(input_dtype == at::kFloat,
                 "Vulkan log_softmax backward supports only float32");
+    return with_vulkan_operation(allocation_runtime(output.storage().data_ptr()), [&]() -> at::Tensor& {
     auto result =
         reduction_backward_dispatch(output, output, grad_output, dim, 4u, true);
     out.copy_(result);
     return out;
+    });
 }
 } // namespace pytorch_vulkan
 

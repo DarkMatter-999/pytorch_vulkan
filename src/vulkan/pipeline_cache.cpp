@@ -52,7 +52,40 @@ VulkanPipelineCache::VulkanPipelineCache(VkDevice device, VulkanPlatform &platfo
         throw std::invalid_argument("Vulkan pipeline cache maximum must be positive");
 }
 
-VulkanPipelineCache::~VulkanPipelineCache() noexcept { destroy_all(); }
+VulkanPipelineCache::~VulkanPipelineCache() noexcept {
+    if (!native_destroyed_) destroy_all();
+}
+
+void VulkanPipelineCache::destroy_empty_native_tables(VkDevice device,
+    const pytorch_vulkan::VulkanQuiescence &empty, bool invalidated,
+    std::size_t pending, std::size_t pending_layouts,
+    NativePipelines &pipelines, NativeLayouts &layouts, NativeLru &lru, void *cookie,
+    void (*destroy_pipeline)(void *, VkDevice, VkPipeline),
+    void (*destroy_layout)(void *, VkDevice, VkPipelineLayout)) {
+    if (!empty.healthy_empty() || invalidated || pending || pending_layouts ||
+        !destroy_pipeline || !destroy_layout)
+        throw std::logic_error("native pipeline cleanup requires empty healthy execution/services");
+    for (auto &entry : pipelines) {
+        if (entry.second.pipeline != VK_NULL_HANDLE) destroy_pipeline(cookie, device, entry.second.pipeline);
+        entry.second.pipeline = VK_NULL_HANDLE;
+    }
+    for (auto &entry : layouts) {
+        if (entry.second.layout != VK_NULL_HANDLE) destroy_layout(cookie, device, entry.second.layout);
+        entry.second.layout = VK_NULL_HANDLE;
+    }
+    pipelines.clear(); layouts.clear(); lru.clear(); // Native handles, keys and iterators only.
+}
+
+void VulkanPipelineCache::destroy_empty_native(const pytorch_vulkan::VulkanQuiescence &empty) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    destroy_empty_native_tables(device_, empty, invalidated_,
+        pending_destructions_->load(std::memory_order_relaxed),
+        pending_layout_destructions_->load(std::memory_order_relaxed),
+        entries_, layouts_, lru_, nullptr,
+        [](void *, VkDevice device, VkPipeline pipeline) { vkDestroyPipeline(device, pipeline, nullptr); },
+        [](void *, VkDevice device, VkPipelineLayout layout) { vkDestroyPipelineLayout(device, layout, nullptr); });
+    native_destroyed_ = true;
+}
 
 void VulkanPipelineCache::destroy_pipeline(VkPipeline pipeline) noexcept {
     if (pipeline == VK_NULL_HANDLE)
@@ -171,6 +204,7 @@ PipelineCacheSnapshot VulkanPipelineCache::snapshot() const {
 }
 
 void VulkanPipelineCache::destroy_all() noexcept {
+    if (native_destroyed_) return;
     std::vector<VkPipeline> pipelines;
     std::vector<VkPipelineLayout> layouts;
     bool invalidated = false;
