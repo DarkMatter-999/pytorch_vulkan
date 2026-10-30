@@ -375,6 +375,77 @@ def test_unsigned_cached_package_is_not_extracted_or_adopted(tmp_path, monkeypat
     assert not target.exists()
 
 
+def _project_profile_dir(label):
+    """Fresh nonexistent profile path under the project tmp (never system /tmp)."""
+    import uuid
+    base = ROOT / "tmp" / f"shader-toolchain-test-{label}-{uuid.uuid4().hex[:8]}"
+    return base
+
+
+def test_project_tmp_profile_location_is_accepted_and_reaches_package_checks():
+    target = _project_profile_dir("accept") / "profile"
+    with pytest.raises(ValueError, match="hash.*missing"):
+        selector().prepare_profile(ROOT / "tmp" / "no-such-cache", target, ROOT / "tmp" / "no-keyring")
+    assert not target.exists() and not target.parent.exists()
+
+
+def test_legacy_system_profile_location_is_still_accepted():
+    target = Path("/tmp/opencode") / ("shader-toolchain-test-never-created-" + _project_profile_dir("x").name) / "profile"
+    with pytest.raises(ValueError, match="hash.*missing"):
+        selector().prepare_profile(ROOT / "tmp" / "no-such-cache", target, ROOT / "tmp" / "no-keyring")
+    assert not target.exists()  # rejected before any creation
+
+
+@pytest.mark.parametrize("make_target", [
+    lambda: Path("/var/tmp/shader-toolchain-outside/profile"),
+    lambda: Path("/tmp/opencode-evil/profile"),                    # sibling prefix, not a child
+    lambda: ROOT / "tmp-evil" / "profile",                          # sibling prefix of project tmp
+    lambda: ROOT / "tmp" / ".." / "shader-toolchain-escape" / "profile",   # traversal out of project tmp
+    lambda: ROOT / "docs" / "shader-toolchain-escape" / "profile",  # other repo path
+    lambda: ROOT / "shader-toolchain-escape",
+])
+def test_profile_location_outside_approved_roots_is_rejected(make_target):
+    target = make_target()
+    with pytest.raises(ValueError, match="restricted"):
+        selector().prepare_profile(ROOT / "tmp" / "no-such-cache", target, ROOT / "tmp" / "no-keyring")
+    assert not target.exists()
+
+
+def test_symlink_inside_project_tmp_cannot_escape(tmp_path):
+    base = _project_profile_dir("symlink")
+    base.mkdir()
+    escape = base / "link"
+    escape.symlink_to("/nonexistent-shader-toolchain-outside")
+    target = escape / "profile"
+    with pytest.raises(ValueError, match="restricted"):
+        selector().prepare_profile(ROOT / "tmp" / "no-such-cache", target, ROOT / "tmp" / "no-keyring")
+    assert not Path("/nonexistent-shader-toolchain-outside").exists()
+
+
+def test_symlinked_project_tmp_root_is_not_trusted(monkeypatch):
+    module = selector()
+    base = _project_profile_dir("rootlink")
+    base.mkdir()
+    real, link = base / "real", base / "tmp-link"
+    real.mkdir()
+    link.symlink_to(real)
+    monkeypatch.setattr(module, "PROJECT_TMP", link)
+    target = link / "profile"
+    with pytest.raises(ValueError, match="restricted"):
+        module.prepare_profile(ROOT / "tmp" / "no-such-cache", target, ROOT / "tmp" / "no-keyring")
+    assert not (real / "profile").exists()
+
+
+def test_existing_project_tmp_profile_directory_is_never_overwritten():
+    existing = _project_profile_dir("exists")
+    existing.mkdir()
+    marker = existing / "keep"
+    marker.write_text("evidence")
+    with pytest.raises(ValueError, match="already exists"):
+        selector().prepare_profile(ROOT / "tmp" / "no-such-cache", existing, ROOT / "tmp" / "no-keyring")
+    assert marker.read_text() == "evidence"
+
+
 def test_cached_package_hash_mismatch_is_not_adopted(tmp_path):
     target = tmp_path / "compiler"
     with pytest.raises(ValueError, match="hash.*missing"):
@@ -687,7 +758,8 @@ def test_pax_extended_member_paths_are_preflighted_without_extraction(tmp_path, 
 def test_authenticated_archives_and_cmake_operator_generation_are_protected(tmp_path):
     """Real signed packages and compiler; every write confined to copied roots."""
     module = selector()
-    profile = module.prepare_profile(Path("/var/cache/pacman/pkg"), tmp_path / "profile",
+    cache = ROOT / "tmp/shader-profile-20261030-01/cache"
+    profile = module.prepare_profile(cache, tmp_path / "profile",
                                      Path("/etc/pacman.d/gnupg/pubring.gpg"))
     provenance = module.profile_provenance(profile)
     assert provenance["compiler"]["version"].startswith("2026.3\n")

@@ -10,6 +10,7 @@
 #include "vulkan_compute.h"
 #include "vulkan_device_guard.h"
 #include "vulkan_layout.h"
+#include "vulkan_lock_probe.h"
 #include "vulkan_lifecycle.h"
 #include "vulkan_platform.h"
 #include "vulkan_pinned_allocator.h"
@@ -220,8 +221,7 @@ void test_async_pinned_offsets_and_publication() {
     auto d2h = host_request(*p, VulkanAsyncCopyKind::DeviceToHost, destination.range, device);
     const auto invalidate = d2h.publish_success;
     d2h.publish_success = [&, invalidate] {
-        expect(p->queue_mutex().try_lock(), "publication held queue lock");
-        p->queue_mutex().unlock();
+        expect(vulkan_test::other_thread_can_lock(p->queue_mutex()), "publication held queue lock");
         invalidate();
         ++published;
         expect(!p->query_execution(), "query completed within publication");
@@ -243,8 +243,7 @@ struct AsyncMaintenance {
     static VkResult flush(void *cookie, VkDevice device, uint32_t n,
                           const VkMappedMemoryRange *ranges) {
         auto &c = *static_cast<AsyncMaintenance *>(cookie);
-        expect(c.platform->queue_mutex().try_lock(), "flush ran under queue lock");
-        c.platform->queue_mutex().unlock();
+        expect(vulkan_test::other_thread_can_lock(c.platform->queue_mutex()), "flush ran under queue lock");
         expect(c.platform->copy_command_count() == c.copies_before &&
                    c.platform->compute_submitted_count() == c.submissions_before,
                "flush ran after recording/submission");
@@ -256,8 +255,7 @@ struct AsyncMaintenance {
     static VkResult invalidate(void *cookie, VkDevice device, uint32_t n,
                                const VkMappedMemoryRange *ranges) {
         auto &c = *static_cast<AsyncMaintenance *>(cookie);
-        expect(c.platform->queue_mutex().try_lock(), "invalidate ran under queue lock");
-        c.platform->queue_mutex().unlock();
+        expect(vulkan_test::other_thread_can_lock(c.platform->queue_mutex()), "invalidate ran under queue lock");
         ++c.invalidates;
         expect(n == 1, "invalidate range count != 1");
         c.invalidated = ranges[0];
@@ -633,6 +631,213 @@ void test_async_pageable_snapshot_and_modes() {
     sync->synchronize_execution(); b->read(actual, sizeof(actual));
     expect(actual[0] == 2 && actual[1] == 7, "sync D2D changed values");
     std::cout << "H mode=sync env=0 per-instance (outer gate env=1 restored)\n";
+}
+
+// ---- Task 4: classification-driven async_copy_tensor routes (device; hold seam) ----
+at::Tensor pinned_view(AsyncPinned &pinned, int64_t elements) {
+    // Interior view: float offset 1 of the 64-byte pinned storage (AsyncPinned::range).
+    return at::empty({0}, at::TensorOptions().dtype(at::kFloat))
+        .set_(pinned.storage, 1, {elements}, {1});
+}
+
+at::Tensor vk_floats(const std::vector<float> &values) {
+    const auto cpu = at::tensor(values, at::TensorOptions().dtype(at::kFloat));
+    auto device = at::empty({static_cast<int64_t>(values.size())}, cpu.options().device(kDevice));
+    pytorch_vulkan::copy_tensor(device, cpu, false);
+    return device;
+}
+
+at::Tensor read_back(const at::Tensor &device) {
+    auto cpu = at::empty(device.sizes(), device.options().device(c10::kCPU));
+    pytorch_vulkan::copy_tensor(cpu, device, false);
+    return cpu;
+}
+
+void test_async_copy_tensor_routes() {
+    const auto p = pytorch_vulkan::platform();
+    expect(p->async_execution_enabled(), "Task 4 routes require the async execution gate");
+    p->synchronize_execution();
+
+    {   // PinnedHostToDevice: returns before completion, values after release.
+        AsyncPinned pinned(p); pinned.seed(3, 5);
+        auto source = pinned_view(pinned, 2);
+        expect(pytorch_vulkan::classify_f32_copy(at::empty({2}, source.options().device(kDevice)),
+                                                 source, true, true, false) ==
+                   pytorch_vulkan::F32CopyRoute::PinnedHostToDevice, "pinned view not classified pinned");
+        auto destination = at::empty({2}, source.options().device(kDevice));
+        const auto waits = p->transfer_wait_count();
+        AsyncHold hold(*p);
+        pytorch_vulkan::async_copy_tensor(destination, source, true);
+        expect(!p->query_execution() && p->live_resource_snapshot().pending_transfers == 1,
+               "pinned H2D completed before return");
+        expect(p->transfer_wait_count() == waits, "pinned H2D waited on the host");
+        hold.release(); p->synchronize_execution();
+        const auto actual = read_back(destination);
+        expect(actual[0].item<float>() == 3 && actual[1].item<float>() == 5, "pinned H2D values");
+    }
+    {   // PageableHostToDevice: call-time snapshot independent of later CPU writes.
+        auto source = at::tensor({2.0f, 7.0f}, at::TensorOptions().dtype(at::kFloat));
+        auto destination = at::empty({2}, source.options().device(kDevice));
+        AsyncHold hold(*p);
+        pytorch_vulkan::async_copy_tensor(destination, source, true);
+        source.fill_(-1.0f);
+        expect(!p->query_execution(), "pageable H2D completed before return");
+        hold.release(); p->synchronize_execution();
+        const auto actual = read_back(destination);
+        expect(actual[0].item<float>() == 2 && actual[1].item<float>() == 7, "pageable snapshot lost");
+    }
+    {   // PinnedDeviceToHost: invalidated and valid only after completion.
+        AsyncPinned pinned(p); pinned.seed(-9, -9);
+        auto destination = pinned_view(pinned, 2);
+        auto source = vk_floats({4, 6});
+        p->synchronize_execution();
+        AsyncHold hold(*p);
+        pytorch_vulkan::async_copy_tensor(destination, source, true);
+        expect(!p->query_execution(), "pinned D2H completed before return");
+        hold.release(); p->synchronize_execution();
+        pinned.expect_values(4, 6);
+    }
+    {   // DeviceToDevice: either flag, no host wait, ordered after producer.
+        for (const bool flag : {false, true}) {
+            auto source = vk_floats({8, 9});
+            auto destination = at::empty({2}, source.options());
+            p->synchronize_execution();
+            const auto waits = p->transfer_wait_count();
+            AsyncHold hold(*p);
+            pytorch_vulkan::async_copy_tensor(destination, source, flag);
+            expect(!p->query_execution(), "held D2D completed before return");
+            expect(p->transfer_wait_count() == waits, "D2D waited on the host");
+            hold.release(); p->synchronize_execution();
+            const auto actual = read_back(destination);
+            expect(actual[0].item<float>() == 8 && actual[1].item<float>() == 9, "D2D values");
+        }
+    }
+    {   // Vulkan-side nonzero storage_offset: H2D, then D2D, regions start at the offset bytes.
+        auto base = vk_floats({0, 1, 2, 3, 4, 5, 6, 7});
+        auto other = vk_floats({0, 0, 0, 0, 0, 0, 0, 0});
+        auto destination = base.narrow(0, 3, 2);
+        auto d2d_source = base.narrow(0, 5, 2);
+        auto d2d_destination = other.narrow(0, 1, 2);
+        expect(destination.storage_offset() == 3 && d2d_source.storage_offset() == 5,
+               "offset views lost their storage offsets");
+        auto pageable = at::tensor({20.0f, 21.0f}, at::TensorOptions().dtype(at::kFloat));
+        p->synchronize_execution();
+        AsyncHold hold(*p);
+        pytorch_vulkan::async_copy_tensor(d2d_destination, d2d_source, true);
+        pytorch_vulkan::async_copy_tensor(destination, pageable, true);
+        expect(!p->query_execution(), "offset routes completed before return");
+        hold.release(); p->synchronize_execution();
+        const auto expected_base = at::tensor({0.f, 1.f, 2.f, 20.f, 21.f, 5.f, 6.f, 7.f});
+        const auto expected_other = at::tensor({0.f, 5.f, 6.f, 0.f, 0.f, 0.f, 0.f, 0.f});
+        expect(read_back(base).equal(expected_base), "H2D offset region wrote the wrong bytes");
+        expect(read_back(other).equal(expected_other), "D2D offset region copied the wrong bytes");
+    }
+    {   // E2: channels-last preserve-format pair is one region (one copy command).
+        auto cpu = at::arange(24, at::TensorOptions().dtype(at::kFloat))
+                       .view({1, 2, 3, 4}).contiguous(at::MemoryFormat::ChannelsLast);
+        auto destination = at::empty_strided(cpu.sizes(), cpu.strides(), cpu.options().device(kDevice));
+        p->synchronize_execution();
+        const auto copies = p->copy_command_count();
+        pytorch_vulkan::async_copy_tensor(destination, cpu, true);
+        p->synchronize_execution();
+        expect(p->copy_command_count() == copies + 1, "channels-last copy was not one region");
+        expect(read_back(destination).equal(cpu), "channels-last values");
+    }
+}
+
+void test_async_copy_tensor_blocking_and_rejections() {
+    const auto p = pytorch_vulkan::platform();
+    p->synchronize_execution();
+    {   // Pageable D2H and ineligible layouts complete before return (hold off).
+        auto source = vk_floats({1, 2, 3, 4, 5, 6});
+        auto pageable = at::empty({6}, source.options().device(c10::kCPU));
+        pytorch_vulkan::async_copy_tensor(pageable, source, true);
+        expect(p->query_execution(), "pageable D2H was not blocking");
+        expect(pageable[5].item<float>() == 6, "pageable D2H values");
+        auto matrix = at::arange(6, at::TensorOptions().dtype(at::kFloat)).view({2, 3});
+        auto device_t = at::empty({3, 2}, matrix.options().device(kDevice));
+        pytorch_vulkan::async_copy_tensor(device_t, matrix.t(), true);
+        expect(p->query_execution(), "ineligible layout was not blocking");
+        expect(read_back(device_t).equal(matrix.t()), "ineligible layout values");
+    }
+    {   // Empty tensors create no record.
+        auto empty_cpu = at::empty({0}, at::TensorOptions().dtype(at::kFloat));
+        auto empty_vk = at::empty({0}, empty_cpu.options().device(kDevice));
+        const auto operations = p->transfer_operation_count();
+        pytorch_vulkan::async_copy_tensor(empty_vk, empty_cpu, true);
+        expect(p->transfer_operation_count() == operations && p->query_execution(),
+               "empty async copy created a record");
+    }
+    {   // Validation precedes reservation: counters and sentinel unchanged.
+        auto base = vk_floats({1, 2, 3, 4});
+        auto overlapping_dst = base.narrow(0, 0, 3);
+        auto overlapping_src = base.narrow(0, 1, 3);
+        auto sentinel = vk_floats({7, 7, 7});
+        auto mismatched = at::ones({2}, at::TensorOptions().dtype(at::kFloat));
+        p->synchronize_execution();
+        const auto operations = p->transfer_operation_count();
+        const auto copies = p->copy_command_count();
+        expect_error([&] { pytorch_vulkan::async_copy_tensor(overlapping_dst, overlapping_src, true); },
+                     "partially overlap");
+        expect_error([&] { pytorch_vulkan::async_copy_tensor(sentinel, mismatched, true); },
+                     "expanded size");
+        expect(p->transfer_operation_count() == operations && p->copy_command_count() == copies &&
+                   p->live_resource_snapshot().pending_transfers == 0,
+               "rejected async copy changed counters");
+        expect(read_back(sentinel).equal(at::full({3}, 7.0f)), "rejected async copy changed sentinel");
+    }
+    {   // Task 0 error type: c10::Error (Python RuntimeError). Oracle messages are
+        // PyTorch's (async-t0-cpu-probe-03.json errors.*); the Vulkan messages keep
+        // their existing, shorter substrings ("internal overlap", "expanded size").
+        auto stride_zero = at::empty({1}, at::TensorOptions().dtype(at::kFloat).device(kDevice)).expand({4});
+        auto cpu_source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+        auto sentinel = vk_floats({7, 7});
+        auto mismatched = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+        p->synchronize_execution();
+        const auto operations = p->transfer_operation_count();
+        const auto expect_runtime_error = [](const std::function<void()> &operation, const char *text) {
+            try { operation(); }
+            catch (const c10::Error &error) {
+                expect(std::string(error.what()).find(text) != std::string::npos,
+                       "async copy rejection lost its message substring");
+                return;
+            }
+            throw std::runtime_error("async copy accepted invalid input or threw a non-c10::Error type");
+        };
+        expect_runtime_error([&] { pytorch_vulkan::async_copy_tensor(stride_zero, cpu_source, true); },
+                             "internal overlap");
+        expect_runtime_error([&] { pytorch_vulkan::async_copy_tensor(sentinel, mismatched, true); },
+                             "expanded size");
+        expect(p->transfer_operation_count() == operations &&
+                   p->live_resource_snapshot().pending_transfers == 0,
+               "rejected async copy changed counters");
+        expect(read_back(sentinel).equal(at::full({2}, 7.0f)), "rejected async copy changed sentinel");
+    }
+    {   // N2: non-F32 and two-CPU pairs keep copy_tensor's non_blocking rejections.
+        // The Vulkan allocator builds only float32 and bool tensors (int64 only on the
+        // index/label path, Double never), so Long/Double appear as CPU operands
+        // against a float32 Vulkan peer; Bool also gets a Bool Vulkan destination.
+        auto float_device = at::empty({4}, at::TensorOptions().dtype(at::kFloat).device(kDevice));
+        for (const auto dtype : {at::kDouble, at::kLong, at::kBool}) {
+            auto cpu = at::ones({4}, at::TensorOptions().dtype(dtype));
+            expect_error([&] { pytorch_vulkan::async_copy_tensor(float_device, cpu, true); },
+                         "non_blocking=True");
+        }
+        auto bool_cpu = at::ones({4}, at::TensorOptions().dtype(at::kBool));
+        auto bool_device = at::empty({4}, bool_cpu.options().device(kDevice));
+        expect_error([&] { pytorch_vulkan::async_copy_tensor(bool_device, bool_cpu, true); },
+                     "non_blocking=True");
+        auto cpu_a = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+        auto cpu_b = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+        expect_error([&] { pytorch_vulkan::async_copy_tensor(cpu_a, cpu_b, true); },
+                     "non_blocking=True");
+    }
+    {   // The public entry still rejects non_blocking=True.
+        auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
+        auto device_tensor = at::empty({4}, source.options().device(kDevice));
+        expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, source, true); },
+                     "non_blocking=True");
+    }
 }
 
 void run_async_witness(const char *name, const char *evidence, void (*test)()) {
@@ -1980,6 +2185,8 @@ int main(int argc, char **argv) {
         run_async_witness("two-slots-backpressure-5s-poll-5s-join", "HS", test_async_backpressure);
         run_async_witness("pinned-device-D2D-lifetimes", "HS", test_async_allocation_lifetimes);
         run_async_witness("pageable-snapshot-training-sync-modes", "HS+H", test_async_pageable_snapshot_and_modes);
+        run_async_witness("task4-async-copy-tensor-routes", "HS", test_async_copy_tensor_routes);
+        run_async_witness("task4-blocking-rejections-empty", "H", test_async_copy_tensor_blocking_and_rejections);
         test_copy_round_trip();
         test_copy_returns_without_pending_transfer_resources();
         test_contiguous_reshape_copy_is_bulk();

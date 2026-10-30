@@ -7,6 +7,7 @@ int main(int argc, char **argv) {
         const std::string name(argv[2]);
         if (name == "release") vulkan_pinned_core_testing::release();
         else if (name == "retention") vulkan_pinned_core_testing::retention();
+        else if (name == "alias-leases") vulkan_pinned_core_testing::alias_lease_counts();
         else if (name == "policy") vulkan_pinned_core_testing::release(true);
         else if (name == "reporter-failure") vulkan_pinned_core_testing::reporter_failure();
         else throw std::runtime_error("unknown pinned core CPU case");

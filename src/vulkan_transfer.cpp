@@ -1,10 +1,13 @@
 #include "vulkan_transfer.h"
 
 #include "vulkan_allocator.h"
+#include "vulkan_async_transfer.h"
 #include "vulkan_buffer.h"
 #include "vulkan_compute.h"
 #include "vulkan_execution.h"
 #include "vulkan_layout.h"
+#include "vulkan_pinned_allocator.h"
+#include "vulkan_platform.h"
 #include "vulkan_synchronization.h"
 
 #include <ATen/MemoryOverlap.h>
@@ -667,6 +670,156 @@ at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     platform.copy_buffer_sync(buffer.buffer(), staging.buffer(), size, offset);
     staging.read(destination.data_ptr(), size);
+    return destination;
+    });
+}
+
+} // namespace pytorch_vulkan
+
+namespace {
+
+bool resolve_cpu_pinned(const at::Tensor &cpu, VulkanPinnedHostRange *range) {
+    VulkanPinnedHostRange scratch;
+    return vulkan_pinned_host_range(
+        cpu.storage(), cpu.data_ptr(),
+        static_cast<std::size_t>(cpu.numel()) * sizeof(float), range ? range : &scratch);
+}
+
+} // namespace
+
+namespace pytorch_vulkan {
+
+F32CopyRoute classify_f32_copy(const at::Tensor &destination, const at::Tensor &source,
+                               bool non_blocking, bool async_execution,
+                               bool training_scope) {
+    // Pinned provenance only matters for an eligible async host transfer; skip the
+    // storage lookup otherwise (the pure classifier ignores it on those paths).
+    bool host_pinned = false;
+    if (non_blocking && async_execution && !training_scope &&
+        destination.scalar_type() == at::kFloat && source.scalar_type() == at::kFloat &&
+        destination.numel() > 0 && destination.numel() == source.numel() &&
+        detail::copy_route_layout_eligible(destination, source)) {
+        const bool host_to_device = source.device().is_cpu() && !destination.device().is_cpu();
+        const bool device_to_host = destination.device().is_cpu() && !source.device().is_cpu();
+        if (host_to_device)
+            host_pinned = resolve_cpu_pinned(source, nullptr);
+        else if (device_to_host)
+            host_pinned = resolve_cpu_pinned(destination, nullptr);
+    }
+    return classify_f32_copy_resolved(destination, source, non_blocking, async_execution,
+                                      training_scope, host_pinned);
+}
+
+at::Tensor &async_copy_tensor(at::Tensor &destination, const at::Tensor &source,
+                              bool non_blocking) {
+    const bool f32 = destination.scalar_type() == at::kFloat &&
+                     source.scalar_type() == at::kFloat;
+    if (f32 && destination.sizes() != source.sizes()) {
+        const at::Tensor expanded_source = source.expand(destination.sizes());
+        return async_copy_tensor(destination, expanded_source, non_blocking);
+    }
+    // Non-F32 and two-CPU pairs are never async; forward non_blocking so the
+    // existing path keeps its rejections and exception contract.
+    if (!f32 || (destination.device().is_cpu() && source.device().is_cpu()))
+        return copy_tensor(destination, source, non_blocking);
+
+    // Validation (shapes, overlap, bounds, devices) precedes classification and any
+    // reservation, staging or enqueue; it has no side effects.
+    TransferLayout destination_layout;
+    TransferLayout source_layout;
+    validate(destination, source, false, destination_layout, source_layout);
+    ensure_process_local_vulkan();
+    const std::size_t bytes = checked_bytes(destination, source);
+    if (bytes == 0)
+        return destination;
+    const bool destination_cpu = destination.device().is_cpu();
+    const bool source_cpu = source.device().is_cpu();
+    if (!destination_cpu && !source_cpu && same_allocation(destination, source) &&
+        same_layout(destination_layout, source_layout))
+        return destination;
+
+    const at::Tensor &vulkan_tensor = source_cpu ? destination : source;
+    const at::DataPtr &vulkan_data = vulkan_tensor.storage().data_ptr();
+    const VulkanPlatform &platform = allocation_platform(vulkan_data);
+    const F32CopyRoute route = classify_f32_copy(
+        destination, source, non_blocking, platform.async_execution_enabled(),
+        platform.compute().training_step_active());
+    if (route == F32CopyRoute::Blocking)
+        return copy_tensor(destination, source, false);
+
+    return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor & {
+    const auto region_bytes = static_cast<VkDeviceSize>(bytes);
+    const auto device_offset = [&](const TransferLayout &layout, const at::Tensor &tensor,
+                                   const char *label) {
+        const auto offset = static_cast<VkDeviceSize>(layout.vulkan_layout.byte_offset);
+        validate_allocation(tensor.storage().data_ptr(), offset + region_bytes, label);
+        return offset;
+    };
+    VulkanAsyncCopyRequest request;
+    if (route == F32CopyRoute::DeviceToDevice) {
+        const auto source_offset = device_offset(source_layout, source, "async copy source");
+        const auto destination_offset =
+            device_offset(destination_layout, destination, "async copy destination");
+        request.kind = VulkanAsyncCopyKind::DeviceToDevice;
+        request.source = allocation_buffer(source.storage().data_ptr()).buffer();
+        request.destination = allocation_buffer(destination.storage().data_ptr()).buffer();
+        request.regions = {{source_offset, destination_offset, region_bytes}};
+        request.owners = {allocation_lease(source.storage().data_ptr()),
+                          allocation_lease(destination.storage().data_ptr())};
+        platform.record_transfer_operation();
+        platform.record_vulkan_copy();
+        platform.enqueue_async_copy(std::move(request));
+        return destination;
+    }
+
+    VulkanBuffer &vulkan_buffer = allocation_buffer(vulkan_data);
+    const auto vulkan_offset =
+        route == F32CopyRoute::PinnedDeviceToHost
+            ? device_offset(source_layout, source, "async copy source")
+            : device_offset(destination_layout, destination, "async copy destination");
+    const auto vulkan_lease = allocation_lease(vulkan_data);
+    // Counted only after the slot/staging reservation succeeded.
+    const auto record_host_route = [&] {
+        platform.record_transfer_operation();
+        platform.record_explicit_transfer();
+    };
+    if (route == F32CopyRoute::PinnedHostToDevice) {
+        VulkanPinnedHostRange range;
+        TORCH_CHECK(resolve_cpu_pinned(source, &range),
+                    "Vulkan async copy lost pinned host provenance");
+        request.kind = VulkanAsyncCopyKind::HostToDevice;
+        request.source = range.buffer->buffer();
+        request.destination = vulkan_buffer.buffer();
+        request.regions = {{range.offset, vulkan_offset, region_bytes}};
+        request.reservation = platform.reserve_transfer_slot();
+        record_host_route();
+        request.owners = {range.lease, vulkan_lease};
+        request.before_submit = [range] { range.buffer->flush_range(range.offset, range.bytes); };
+    } else if (route == F32CopyRoute::PinnedDeviceToHost) {
+        VulkanPinnedHostRange range;
+        TORCH_CHECK(resolve_cpu_pinned(destination, &range),
+                    "Vulkan async copy lost pinned host provenance");
+        request.kind = VulkanAsyncCopyKind::DeviceToHost;
+        request.source = vulkan_buffer.buffer();
+        request.destination = range.buffer->buffer();
+        request.regions = {{vulkan_offset, range.offset, region_bytes}};
+        request.reservation = platform.reserve_transfer_slot();
+        record_host_route();
+        request.owners = {vulkan_lease, range.lease};
+        request.publish_success = [range] { range.buffer->invalidate_range(range.offset, range.bytes); };
+    } else {
+        // PageableHostToDevice: snapshot the CPU bytes into exclusive staging now.
+        auto staged = platform.reserve_transfer(region_bytes);
+        record_host_route();
+        staged.staging->write(source.data_ptr(), region_bytes);
+        request.kind = VulkanAsyncCopyKind::HostToDevice;
+        request.source = staged.staging->buffer();
+        request.destination = vulkan_buffer.buffer();
+        request.regions = {{0, vulkan_offset, region_bytes}};
+        request.reservation = std::move(staged.reservation);
+        request.owners = {staged.staging, vulkan_lease};
+    }
+    platform.enqueue_async_copy(std::move(request));
     return destination;
     });
 }

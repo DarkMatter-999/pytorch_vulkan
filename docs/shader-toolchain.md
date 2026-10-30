@@ -15,18 +15,26 @@ actual linked-library paths/hashes (including host runtime libraries). An update
 missing dependency or edited profile fails visibly. This is not a portable
 toolchain claim; other platforms need their own reviewed profile.
 
-Prepare a **new** directory from already cached, signed packages:
+Prepare a **new** directory from already cached, signed packages. Prefer a
+repository-local path under `tmp/`; the target must resolve inside an approved
+scratch root after symlinks and `..` are resolved. Other locations, a symlinked
+project `tmp/` root, and an existing destination are refused. Keep reviewed copies
+of `profile.json` and `signatures.json` with the qualification evidence:
 
 ```sh
-.venv/bin/python tools/shader_toolchain.py prepare --directory /tmp/opencode/my-shader-profile
+.venv/bin/python tools/shader_toolchain.py prepare --directory tmp/my-shader-profile
 ```
+
+When the packages are not in the package-manager cache, pass `--cache` with the
+repository-relative path to the directory holding the archives. Package hashes
+and signatures are checked before extraction regardless of cache location.
 
 Use the emitted `profile.json` path, not an old executable with current libraries:
 
 ```sh
-.venv/bin/python tools/shader_toolchain.py inspect --profile /tmp/opencode/my-shader-profile/profile.json
-.venv/bin/python tools/shader_toolchain.py run --profile /tmp/opencode/my-shader-profile/profile.json -- .venv/bin/python tools/verify_operator_spv.py
-cmake -S . -B build -DVULKAN_SHADER_TOOLCHAIN_PROFILE=/tmp/opencode/my-shader-profile/profile.json
+.venv/bin/python tools/shader_toolchain.py inspect --profile tmp/my-shader-profile/profile.json
+.venv/bin/python tools/shader_toolchain.py run --profile tmp/my-shader-profile/profile.json -- .venv/bin/python tools/verify_operator_spv.py
+cmake -S . -B build -DVULKAN_SHADER_TOOLCHAIN_PROFILE=tmp/my-shader-profile/profile.json
 ```
 
 Keep the usual build options when configuring. CMake validates the complete
@@ -45,7 +53,7 @@ and system libraries are never changed.
 For a separately authorized full qualification:
 
 ```sh
-.venv/bin/python tools/run_vulkan_qualification.py --device vk:0 --build build --output qualification.json --shader-toolchain-profile /tmp/opencode/my-shader-profile/profile.json
+.venv/bin/python tools/run_vulkan_qualification.py --device vk:0 --build build --output tmp/qualification.json --shader-toolchain-profile tmp/my-shader-profile/profile.json
 ```
 
 The runner validates before its device probe, propagates compiler selection to

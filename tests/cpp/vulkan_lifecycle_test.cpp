@@ -44,9 +44,14 @@ struct FakeClock {
     VulkanHostTime time{};
     std::vector<VulkanHostTime> deadlines;
     std::function<void()> tick;
+    std::function<void()> on_now;
     bool keep_lock = false;
     VulkanHostClock clock() {
-        return {this, [](void* p) noexcept { return static_cast<FakeClock*>(p)->time; },
+        return {this, [](void* p) noexcept {
+                auto& c = *static_cast<FakeClock*>(p);
+                if (c.on_now) c.on_now();
+                return c.time;
+            },
             [](void* p, std::condition_variable&, std::unique_lock<std::mutex>& lock,
                VulkanHostTime deadline) {
                 auto& c = *static_cast<FakeClock*>(p);
@@ -344,6 +349,19 @@ void child_case(const std::string& name, int fd) {
         coordinator->close(VulkanCloseBoundary::NativeEarly);
         std::_Exit(125);
     }
+    if (name == "owner-exclusive-at-deadline") {
+        std::shared_ptr<void> held = std::move(root);
+        clock.on_now = [&] {
+            if (held && clock.time == VulkanHostTime{} + std::chrono::seconds(20)) {
+                evidence.log("owner-deadline-release");
+                held.reset();
+            }
+        };
+        coordinator->close(VulkanCloseBoundary::NativeEarly);
+        expect(clock.deadlines.size() == 1 && clock.deadlines[0] == VulkanHostTime{} + std::chrono::seconds(20),
+               "deadline transition must use the original budget");
+        std::_Exit(0);
+    }
     if (name == "retire-cross") {
         std::weak_ptr<void> old = root;
         coordinator->retire_cached();
@@ -457,6 +475,41 @@ void owner_cross_roots() {
     coordinator.close(VulkanCloseBoundary::NativeEarly);
     expect(services == 2 && retries == 2 && old_weak.expired() && new_weak.expired(),
            "post-service/final root ownership gates did not reconcile every root");
+}
+// VulkanAllocation holds a strong platform reference. This fixture models only
+// that ownership edge, not Vulkan allocation cleanup or a real tensor.
+void owner_allocation_and_capture() {
+    struct AllocationLike {
+        std::shared_ptr<void> platform;
+        Evidence& evidence;
+        ~AllocationLike() { evidence.log("allocation-destroyed"); }
+    };
+    FakeClock clock;
+    Evidence evidence;
+    VulkanLifecycleCoordinator coordinator(clock.clock());
+    FakeRoot* fake = nullptr;
+    auto root = coordinator.acquire([&] { return make_fake_root(clock, evidence, coordinator, fake); });
+    std::weak_ptr<void> weak = root;
+    auto external = std::shared_ptr<AllocationLike>(new AllocationLike{root, evidence});
+    fake->captures.push_back(std::shared_ptr<AllocationLike>(new AllocationLike{root, evidence}));
+    root.reset();
+    expect(weak.use_count() == 3, "cache and two allocation edges must own root before close");
+    unsigned retries = 0;
+    clock.tick = [&] {
+        expect(clock.deadlines.back() == VulkanHostTime{} + std::chrono::seconds(20),
+               "allocation owner retry must preserve close deadline");
+        expect(!coordinator.observe() && weak.use_count() == 3,
+               "external allocation remains after capture retirement and observation seal");
+        expect(evidence.events == std::vector<std::string>({"complete", "allocation-destroyed", "captures-released"}),
+               "only root-owned capture retires before owner reconciliation");
+        ++retries;
+        external.reset();
+        expect(weak.use_count() == 2, "external allocation release restores cache/local baseline");
+    };
+    coordinator.close(VulkanCloseBoundary::NativeEarly);
+    expect(retries == 1 && weak.expired(), "external release must permit terminal close");
+    expect(evidence.events == std::vector<std::string>({"complete", "allocation-destroyed", "captures-released",
+        "allocation-destroyed", "services", "root-destroyed"}), "allocation and root destruction order");
 }
 void owner_observation_race() {
     FakeClock clock;
@@ -807,7 +860,11 @@ void guard_selector(const std::string& name) {
     for (const auto& label : guard_labels) child_expect(name + "-" + label, status, events);
 }
 void run(const std::string& name) {
-    if (name == "owner-reconciliation") {
+    if (name == "owner-exclusive-at-deadline") {
+        child_expect("owner-exclusive-at-deadline", 0,
+                     "complete\ncaptures-released\nowner-deadline-release\nservices\nroot-destroyed\n");
+    }
+    else if (name == "owner-reconciliation") {
         child_expect("owner-tail-transient", 0,
                      "complete\ncaptures-released\nservices\nroot-destroyed\nowner-tail-reconciled\n");
     }
@@ -820,6 +877,7 @@ void run(const std::string& name) {
         child_expect("owner-post-service-persistent", 70, "complete\ncaptures-released\nservices\nowner-deadline-20\n");
     }
     else if (name == "owner-reconciliation-cross-roots") owner_cross_roots();
+    else if (name == "owner-allocation-capture") owner_allocation_and_capture();
     else if (name == "owner-reconciliation-observe") owner_observation_race();
     else if (name == "owner-cycle") owner_cycle();
     else if (name == "cache-reentry") { owner_cycle(true); finalizing_mode(); }
@@ -864,7 +922,7 @@ int main(int argc, char** argv) {
         if (argc == 4 && std::string(argv[1]) == "--child") child_case(argv[2], std::stoi(argv[3]));
         expect(argc == 3 && std::string(argv[1]) == "--case", "usage: --case NAME");
         if (std::string(argv[2]) == "all") {
-            for (auto name : {"owner-cycle", "cache-reentry", "unknown-owner", "late-check", "holder-check",
+            for (auto name : {"owner-exclusive-at-deadline", "owner-allocation-capture", "owner-cycle", "cache-reentry", "unknown-owner", "late-check", "holder-check",
                 "init-close", "retire-live", "fork", "host-deadline", "admission-allocation"}) run(name);
         } else run(argv[2]);
         return 0;

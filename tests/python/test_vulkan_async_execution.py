@@ -1,4 +1,8 @@
 import os
+import codecs
+import hashlib
+import importlib.machinery
+import selectors
 import subprocess
 import sys
 from pathlib import Path
@@ -7,20 +11,67 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 
 
+def _run_child(script, env):
+    env = env.copy()
+    build_value = env.get("PYTORCH_VULKAN_TEST_BUILD")
+    sha = env.get("PYTORCH_VULKAN_TEST_EXTENSION_SHA256")
+    if bool(build_value) != bool(sha):
+        raise AssertionError("Set both PYTORCH_VULKAN_TEST_BUILD and PYTORCH_VULKAN_TEST_EXTENSION_SHA256")
+    build = Path(build_value or ROOT / "build").resolve()
+    candidates = [build / "pytorch_vulkan" / ("_C" + suffix)
+                  for suffix in importlib.machinery.EXTENSION_SUFFIXES]
+    candidates = [path.resolve() for path in candidates if path.is_file()]
+    if len(candidates) != 1:
+        raise AssertionError(f"Expected exactly one binding in {build}, found {candidates}")
+    expected = candidates[0]
+    if not sha:
+        sha = hashlib.sha256(expected.read_bytes()).hexdigest()
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(build), str(ROOT), env.get("PYTHONPATH"))))
+    prelude = f'''\nimport hashlib as _hashlib\nimport sys as _sys\nfrom pathlib import Path as _Path\n_sys.path.insert(0, {str(build)!r})\nimport pytorch_vulkan as _vulkan\n_actual = _Path(_vulkan._C.__file__).resolve()\n_expected = _Path({str(expected)!r})\nif _actual != _expected:\n    raise AssertionError(f"Loaded binding {{_actual}} outside selected binding {{_expected}}")\n_digest = _hashlib.sha256(_actual.read_bytes()).hexdigest()\nif _digest != {sha.lower()!r}:\n    raise AssertionError(f"Loaded binding SHA256 mismatch: {{_actual}} has {{_digest}}")\n'''
+    # Qualification receipts must run pytest with -s and supervise its entire
+    # process group; forwarding here cannot bypass pytest's normal capture.
+    process = subprocess.Popen(
+        [sys.executable, "-c", prelude + "\n" + script], cwd=ROOT, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    chunks = {"stdout": [], "stderr": []}
+    selector = selectors.DefaultSelector()
+    for name, pipe, target in (("stdout", process.stdout, sys.stdout),
+                               ("stderr", process.stderr, sys.stderr)):
+        selector.register(pipe, selectors.EVENT_READ,
+                          (name, target, codecs.getincrementaldecoder("utf-8")(errors="backslashreplace")))
+    try:
+        while selector.get_map():
+            for key, _ in selector.select():
+                name, target, decoder = key.data
+                data = os.read(key.fileobj.fileno(), 65536)
+                text = decoder.decode(data, final=not data)
+                chunks[name].append(text)
+                target.write(text)
+                target.flush()
+                if not data:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+        result = subprocess.CompletedProcess(process.args, process.wait(),
+                                             "".join(chunks["stdout"]), "".join(chunks["stderr"]))
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        selector.close()
+    output = result.stdout + result.stderr
+    if result.returncode != 0 or any(marker in output.lower() for marker in ("vuid-", "validation error")):
+        raise AssertionError(f"Child exit code {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return result
+
+
 def _execution_mode(value):
     env = os.environ.copy()
     env.pop("PYTORCH_VULKAN_ASYNC_EXECUTION", None)
     if value is not None:
         env["PYTORCH_VULKAN_ASYNC_EXECUTION"] = value
-    env["PYTHONPATH"] = f"{ROOT}:{ROOT / 'build'}"
-    result = subprocess.run(
-        [sys.executable, "-c", "import pytorch_vulkan; print(pytorch_vulkan._C.execution_mode())"],
-        cwd=ROOT,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_child("import pytorch_vulkan; print(pytorch_vulkan._C.execution_mode())", env)
     return result.stdout.strip()
 
 
@@ -34,7 +85,6 @@ def test_execution_mode_is_selected_before_platform_initialization():
 def test_async_gpu_chain_and_ordered_transfer_boundaries():
     env = os.environ.copy()
     env["PYTORCH_VULKAN_ASYNC_EXECUTION"] = "1"
-    env["PYTHONPATH"] = f"{ROOT}:{ROOT / 'build'}"
     script = r"""
 import torch
 import pytorch_vulkan
@@ -83,21 +133,12 @@ assert torch.equal(copied.cpu(), torch.full((64,), 7.0)), copied.cpu()
 assert torch.equal(pending_fill.cpu(), torch.full((64,), 7.0)), pending_fill.cpu()
 assert torch.equal(filled.cpu(), torch.zeros(2)), filled.cpu()
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_child(script, env)
 
 
 def test_async_host_readback_and_explicit_synchronization_boundaries():
     env = os.environ.copy()
     env["PYTORCH_VULKAN_ASYNC_EXECUTION"] = "1"
-    env["PYTHONPATH"] = f"{ROOT}:{ROOT / 'build'}"
     script = r"""
 import gc
 import torch
@@ -135,21 +176,12 @@ api.synchronize()
 survivor = torch.add(torch.full((32,), 1.0, device='vk'), 6.0)
 assert torch.equal(survivor.cpu(), expected)
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_child(script, env)
 
 
 def test_async_training_parity_for_cnn_rnn_attention_and_repeated_lifecycle():
     env = os.environ.copy()
     env["PYTORCH_VULKAN_ASYNC_EXECUTION"] = "1"
-    env["PYTHONPATH"] = f"{ROOT}:{ROOT / 'build'}"
     script = r"""
 import torch
 import pytorch_vulkan
@@ -209,12 +241,4 @@ for name, fixture in fixtures:
             name, scoped, api.compute_completed_count(), api.compute_submitted_count()
         )
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_child(script, env)

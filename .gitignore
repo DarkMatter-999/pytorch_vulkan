@@ -6,3 +6,4 @@ build/
 /vulkan_gemm_benchmark.json
 graphify-out/
 build-*
+/tmp/

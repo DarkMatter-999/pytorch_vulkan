@@ -23,6 +23,8 @@ from contextlib import ExitStack
 PROFILE_ENV = "VULKAN_SHADER_TOOLCHAIN_PROFILE"
 HASH_ENV = "VULKAN_SHADER_TOOLCHAIN_PROFILE_SHA256"
 WRAPPERS = Path(__file__).resolve().parent / "shader-toolchain-bin"
+SYSTEM_PROFILE_ROOT = Path("/tmp/opencode")
+PROJECT_TMP = Path(__file__).resolve().parents[1] / "tmp"
 LDD = "/usr/bin/ldd"
 VERSION = "2026.3\n1:1.4.357.0\n1:1.4.357.0\n\nTarget: SPIR-V 1.0\n"
 SIGNER = "262A58EC6C51F7EA395B2E2DFDC3040B92ACA748"
@@ -257,11 +259,24 @@ def _extract_preflighted(archives, directory):
                 path.symlink_to(member.linkname)
 
 
+def _approved_profile_location(directory):
+    """Canonical children of /tmp/opencode (unchanged) or the repo's own tmp.
+
+    ``directory`` is already resolved (symlinks and ``..`` collapsed). The
+    project tmp root itself must not be a symlink, since its target could be
+    anywhere.
+    """
+    if directory.is_relative_to(Path(SYSTEM_PROFILE_ROOT).resolve()):
+        return True
+    project = Path(PROJECT_TMP)
+    return not project.is_symlink() and directory.is_relative_to(project.resolve())
+
+
 def prepare_profile(cache, directory, keyring):
     """Authenticate known cached archives before extracting; no installation."""
     cache, directory, keyring = Path(cache), Path(directory).resolve(), Path(keyring)
-    if not directory.is_relative_to(Path("/tmp/opencode").resolve()):
-        raise ValueError("shader profile extraction is restricted to /tmp/opencode")
+    if not _approved_profile_location(directory):
+        raise ValueError("shader profile extraction is restricted to /tmp/opencode or the project tmp directory")
     if directory.exists():
         raise ValueError(f"profile directory already exists; refusing overwrite: {directory}")
     proofs = []

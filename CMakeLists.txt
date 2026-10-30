@@ -13,6 +13,9 @@ add_executable(vulkan_lifecycle_test tests/cpp/vulkan_lifecycle_test.cpp)
 target_link_libraries(vulkan_lifecycle_test PRIVATE vulkan_lifecycle)
 add_executable(vulkan_pinned_core_test tests/cpp/vulkan_pinned_core_test.cpp)
 target_link_libraries(vulkan_pinned_core_test PRIVATE vulkan_lifecycle)
+add_executable(vulkan_lock_probe_test tests/cpp/vulkan_lock_probe_test.cpp)
+target_compile_features(vulkan_lock_probe_test PRIVATE cxx_std_17)
+target_link_libraries(vulkan_lock_probe_test PRIVATE Threads::Threads)
 
 option(BUILD_PYTHON_LIFECYCLE_TEST "Build CPU-only CPython lifecycle harness" OFF)
 if(BUILD_PYTHON_LIFECYCLE_TEST)
@@ -568,6 +571,18 @@ if(BUILD_PYTHON_EXTENSION)
     if(BUILD_TESTING)
         add_test(NAME vulkan_allocator_test COMMAND vulkan_allocator_test)
         set_tests_properties(vulkan_allocator_test PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(vulkan_copy_route_test tests/cpp/vulkan_copy_route_test.cpp)
+    target_compile_features(vulkan_copy_route_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_copy_route_test PRIVATE ${TORCH_INCLUDE_DIRS}
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(TORCH_CXX_FLAGS)
+        target_compile_options(vulkan_copy_route_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
+    endif()
+    target_link_libraries(vulkan_copy_route_test PRIVATE ${TORCH_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME vulkan_copy_route_test COMMAND vulkan_copy_route_test)
     endif()
 
     add_executable(vulkan_transfer_tensor_test tests/cpp/vulkan_transfer_tensor_test.cpp

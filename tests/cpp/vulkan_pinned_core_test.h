@@ -237,6 +237,81 @@ inline void retained_child() {
     }
     std::_Exit(93);
 }
+// K production cores, M alias leases per core: platform strong refs scale with K only.
+struct CountRoot {
+    VulkanRuntimeLifecycle runtime;
+    unsigned pins = 0, drops = 0, destroyed = 0, services = 0;
+    explicit CountRoot(Clock &clock) : runtime(clock.clock()) {}
+    VulkanRuntimeLifecycle &runtime_lifecycle() { return runtime; }
+    bool device_lost() const { return false; }
+    void record_pinned_host_allocation_destroyed() noexcept { --pins; ++drops; }
+};
+struct CountResource {
+    CountRoot &root;
+    explicit CountResource(CountRoot &r) : root(r) {}
+    ~CountResource() noexcept { ++root.destroyed; }
+};
+struct CountOps {
+    void *cookie = nullptr;
+    bool (*should_leak_for_testing)(void *, const CountRoot &) = nullptr;
+};
+using CountCore = detail::PinnedHostCore<CountRoot, CountResource, CountOps>;
+inline void alias_lease_counts() {
+    constexpr unsigned K = 3, M = 4;
+    Clock clock;
+    VulkanLifecycleCoordinator coordinator(clock.clock());
+    std::weak_ptr<void> weak;
+    auto root = std::static_pointer_cast<CountRoot>(coordinator.acquire([&] {
+        auto r = std::make_shared<CountRoot>(clock);
+        weak = r;
+        return VulkanLifecycleRoot{r, &r->runtime,
+            [](void *, VulkanHostTime) {},
+            [](void *) { return VulkanQuiescence{}; },
+            [](void *, bool) {}, [](void *, VulkanHostTime) {},
+            [](void *) noexcept { return false; }, [](void *) noexcept { return false; },
+            [](void *p) noexcept { ++static_cast<CountRoot *>(p)->services; }};
+    }));
+    const long base = root.use_count();
+    require(base == 2, "healthy root must start at cache+caller count2");
+    std::array<std::shared_ptr<CountCore>, K> cores;
+    for (unsigned k = 0; k < K; ++k) {
+        auto owner = std::make_unique<CountCore>();
+        owner->platform = root;
+        owner->buffer = std::make_unique<CountResource>(*root);
+        owner->counted = true;
+        ++root->pins;
+        cores[k] = {owner.release(), [](CountCore *p) noexcept { detail::destroy_pinned_host_core(p); }};
+        require(root.use_count() == base + static_cast<long>(k) + 1,
+                "each core must add exactly one platform strong ref");
+    }
+    std::array<std::array<std::shared_ptr<void>, M>, K> leases;
+    for (unsigned k = 0; k < K; ++k)
+        for (unsigned m = 0; m < M; ++m) {
+            leases[k][m] = std::shared_ptr<void>(cores[k], cores[k].get());
+            require(root.use_count() == base + K, "alias lease added a platform strong ref");
+        }
+    for (unsigned k = 0; k < K; ++k)
+        require(cores[k].use_count() == 1 + static_cast<long>(M), "aliases must share the core control block");
+    for (auto &core : cores) core.reset();
+    require(root.use_count() == base + K && root->destroyed == 0 && root->pins == K,
+            "dropping direct core owners must not release cores held by leases");
+    for (unsigned k = 0; k < K; ++k) {
+        for (unsigned m = 0; m < M; ++m) {
+            require(root->destroyed == k && root.use_count() == base + static_cast<long>(K - k),
+                    "core or platform ref released before its last alias lease");
+            leases[k][m].reset();
+        }
+        require(root->destroyed == k + 1 && root.use_count() == base + static_cast<long>(K - k - 1),
+                "last alias lease must destroy exactly one core and drop exactly one platform ref");
+    }
+    require(root->pins == 0 && root->drops == K && root.use_count() == base,
+            "all cores released: counters balanced, root back to cache+caller");
+    root.reset();
+    coordinator.close(VulkanCloseBoundary::NativeEarly);
+    require(weak.expired(), "healthy close must expire the root after all cores released");
+    coordinator.check_late();
+    std::cout << "PASS K=3 cores M=4 alias leases: platform refs base+K, healthy close expired root\n";
+}
 inline void retention() {
     // Fork only on the CPU path, before a real platform/probe in native main.
     int fds[2];
