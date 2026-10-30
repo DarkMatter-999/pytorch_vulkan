@@ -15,6 +15,12 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 
+def _torch_cmake_prefix():
+    """CMake prefix of the torch installed for the running interpreter."""
+    import torch.utils
+    return torch.utils.cmake_prefix_path
+
+
 ROOT = Path(__file__).resolve().parents[2]
 OPERATOR = ROOT / "tools/verify_operator_spv.py"
 BINARY = struct.pack("<7I", 0x07230203, 0x00010000, 0, 2, 0, 0x00020011, 1)
@@ -636,7 +642,7 @@ def test_cmake_pooling_integrity_does_not_generate_products(tmp_path):
     build = tmp_path / "build"
     configure = subprocess.run(["cmake", "-S", str(root), "-B", str(build),
                                 "-DBUILD_PYTHON_EXTENSION=ON", "-DPython3_EXECUTABLE=" + sys.executable,
-                                "-DCMAKE_PREFIX_PATH=" + str(ROOT / ".venv/lib/python3.12/site-packages/torch/share/cmake")],
+                                "-DCMAKE_PREFIX_PATH=" + _torch_cmake_prefix()],
                                capture_output=True, text=True)
     assert configure.returncode == 0, configure.stderr
     result = subprocess.run(["cmake", "--build", str(build), "--target", "vulkan_pooling_shader_integrity"],
@@ -666,7 +672,7 @@ def test_cmake_operator_regeneration_is_opt_in_and_requires_profile(tmp_path, ac
     result = subprocess.run(["cmake", "-S", str(root), "-B", str(build),
                              "-DBUILD_PYTHON_EXTENSION=ON", "-DVULKAN_SHADER_TOOLCHAIN_PROFILE=",
                              "-DPython3_EXECUTABLE=" + sys.executable,
-                             "-DCMAKE_PREFIX_PATH=" + str(ROOT / ".venv/lib/python3.12/site-packages/torch/share/cmake")],
+                             "-DCMAKE_PREFIX_PATH=" + _torch_cmake_prefix()],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     before = snapshot(root)
@@ -758,9 +764,15 @@ def test_pax_extended_member_paths_are_preflighted_without_extraction(tmp_path, 
 def test_authenticated_archives_and_cmake_operator_generation_are_protected(tmp_path):
     """Real signed packages and compiler; every write confined to copied roots."""
     module = selector()
-    cache = ROOT / "tmp/shader-profile-20261030-01/cache"
-    profile = module.prepare_profile(cache, tmp_path / "profile",
-                                     Path("/etc/pacman.d/gnupg/pubring.gpg"))
+    # Needs the exact signed pinned packages; a fresh clone does not have them, so the
+    # location is supplied by the environment and the test skips when it is absent.
+    cache_env = os.environ.get("VULKAN_SHADER_TOOLCHAIN_PACKAGE_CACHE")
+    keyring_env = os.environ.get("VULKAN_SHADER_TOOLCHAIN_KEYRING")
+    if not (cache_env and keyring_env and Path(cache_env).is_dir() and Path(keyring_env).is_file()):
+        pytest.skip("set VULKAN_SHADER_TOOLCHAIN_PACKAGE_CACHE (directory with the pinned signed "
+                    "shaderc packages) and VULKAN_SHADER_TOOLCHAIN_KEYRING (their verifying "
+                    "keyring file) to run")
+    profile = module.prepare_profile(Path(cache_env), tmp_path / "profile", Path(keyring_env))
     provenance = module.profile_provenance(profile)
     assert provenance["compiler"]["version"].startswith("2026.3\n")
     root = tmp_path / "root"
@@ -780,7 +792,7 @@ def test_authenticated_archives_and_cmake_operator_generation_are_protected(tmp_
     result = run(["cmake", "-S", str(root), "-B", str(build),
                              "-DBUILD_PYTHON_EXTENSION=ON", "-DVULKAN_SHADER_TOOLCHAIN_PROFILE=" + str(profile),
                              "-DPython3_EXECUTABLE=" + sys.executable,
-                             "-DCMAKE_PREFIX_PATH=" + str(ROOT / ".venv/lib/python3.12/site-packages/torch/share/cmake")])
+                             "-DCMAKE_PREFIX_PATH=" + _torch_cmake_prefix()])
     assert result.returncode == 0, result.stderr
     generated = root / "src/vulkan/shaders/generated"
     before_bytes = {p.name: p.read_bytes() for p in generated.iterdir() if p.is_file()}

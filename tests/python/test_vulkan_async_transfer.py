@@ -61,6 +61,27 @@ def _waits():
     return api.execution_fence_wait_count(), api.transfer_wait_count()
 
 
+def _blocking_call(call):
+    """Run a route that must complete before return and prove it before any synchronize.
+
+    Never call this under a completion hold: a blocking route waits on the fence, and a
+    held fence reports NOT_READY (query() False) until release or the 20 s watchdog
+    expiry. Evidence: pending_transfers is 0 and query() is True right after the call;
+    in async mode every host access also bumps a wait counter (acquire_host_access
+    always queue-waits; copy_buffer_sync counts its own wait), whereas the async routes
+    (pinned H2D/D2H, D2D) never wait. fallback_count is deliberately not used anywhere in
+    this module: it is a seam-only counter that no production path increments.
+    """
+    api.synchronize()
+    before = _waits()
+    result = call()
+    after = _waits()  # read before any other API call that could wait
+    assert _pending() == 0 and api.query() is True
+    if _async():
+        assert sum(after) > sum(before)
+    return result
+
+
 def _pinned(values):
     return torch.as_tensor(values, dtype=torch.float32).pin_memory(device="vk")
 
@@ -165,21 +186,35 @@ def test_pageable_h2d_snapshot_is_independent_of_later_cpu_writes(vk, hold):
 def test_pageable_d2h_and_ineligible_layouts_complete_before_return(vk):
     device = torch.arange(6, dtype=torch.float32).to(vk)
     pageable = torch.zeros(6)
-    api.synchronize()
-    pageable.copy_(device, non_blocking=True)
-    assert api.query() is True
+    _blocking_call(lambda: pageable.copy_(device, non_blocking=True))
     torch.testing.assert_close(pageable, torch.arange(6, dtype=torch.float32), rtol=0, atol=0)
     # Ineligible layouts per the Task 0 oracle (async-t0-cpu-probe-03.json): stride-0
     # expand and a stride hole. A transposed dense source is ELIGIBLE (preserve-format
     # output keeps its strides), so it is deliberately not used here.
     expanded = torch.tensor([1.0, 2.0]).expand(3, 2)
-    dst = expanded.to(vk, non_blocking=True)
-    assert api.query() is True
+    dst = _blocking_call(lambda: expanded.to(vk, non_blocking=True))
     torch.testing.assert_close(dst.cpu(), expanded, rtol=0, atol=0)
     holed = torch.arange(6, dtype=torch.float32).reshape(2, 3)[:, :2]
-    dst = holed.to(vk, non_blocking=True)
-    assert api.query() is True
+    dst = _blocking_call(lambda: holed.to(vk, non_blocking=True))
     torch.testing.assert_close(dst.cpu(), holed, rtol=0, atol=0)
+
+
+def test_wait_counters_discriminate_blocking_from_async_routes(vk):
+    if not _async():
+        pytest.skip("wait-counter discrimination needs async mode (sync mode waits everywhere)")
+    host = _pinned(torch.arange(8, dtype=torch.float32))
+    device = torch.arange(8, dtype=torch.float32).to(vk)
+    destination = torch.empty(8, device=vk)
+    api.synchronize()
+    before = _waits()
+    uploaded = host.to(vk, non_blocking=True)  # pinned H2D (async)
+    destination.copy_(device, non_blocking=True)  # D2D (async)
+    assert _waits() == before  # the async routes never waited
+    api.synchronize()
+    # Blocking counterparts do wait (asserted inside _blocking_call).
+    _blocking_call(lambda: torch.zeros(8).copy_(device, non_blocking=True))  # pageable D2H
+    _blocking_call(lambda: torch.arange(8, dtype=torch.float32).to(vk))  # blocking H2D
+    torch.testing.assert_close(uploaded.cpu(), torch.arange(8, dtype=torch.float32), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("flag", [False, True])
@@ -326,7 +361,6 @@ def _second_reverse_reference(kind):
 
 @pytest.mark.parametrize("kind", ["to", "copy_"])
 def test_connected_second_reverse_matches_cpu_and_task0_witness(vk, kind):
-    fallbacks = api.fallback_count()
     expected_first, expected_second = _second_reverse_reference(kind)
     torch.testing.assert_close(expected_first, torch.tensor(TASK0_FIRST), rtol=0.003, atol=0.003)
     torch.testing.assert_close(expected_second, torch.tensor(TASK0_SECOND), rtol=0.003, atol=0.003)
@@ -334,7 +368,6 @@ def test_connected_second_reverse_matches_cpu_and_task0_witness(vk, kind):
     api.synchronize()
     torch.testing.assert_close(first, expected_first, rtol=0.003, atol=0.003)
     torch.testing.assert_close(second, expected_second, rtol=0.003, atol=0.003)
-    assert api.fallback_count() == fallbacks
 
 
 def test_backward_transfers_are_blocking_by_reference(vk):
@@ -381,15 +414,51 @@ def _degrade_cases():
                                    "transposed_copy_into_contiguous"])
 def test_layout_degrade_matrix_completes_before_return(vk, label, flag):
     source, destination = _degrade_cases()[label](flag, vk)
-    api.synchronize()
-    fallbacks = api.fallback_count()
     if destination is None:
-        result = source.to(vk, non_blocking=flag)
+        result = _blocking_call(lambda: source.to(vk, non_blocking=flag))
     else:
-        result = destination.copy_(source, non_blocking=flag)
-    assert api.query() is True  # blocking route: complete before return
+        result = _blocking_call(lambda: destination.copy_(source, non_blocking=flag))
     torch.testing.assert_close(result.cpu(), source, rtol=0, atol=0)
-    assert api.fallback_count() == fallbacks
+
+
+# Vulkan -> CPU mirror of the degrade matrix. Sources are as_strided views of a Vulkan
+# base (as_strided is a registered, evidenced vk view); expected values come from the
+# equivalent CPU views. `.to('cpu', non_blocking=True)` allocates a pinned result but
+# these layouts are ineligible, so the call still completes before return.
+def _d2h_degrade_cases(vk):
+    base = torch.arange(24, dtype=torch.float32).reshape(4, 6)
+    base_vk = base.to(vk)
+    scalar_vk = torch.tensor([2.5]).to(vk)
+    matrix = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    matrix_vk = matrix.to(vk)
+    return {
+        "stride0_scalar_broadcast": (torch.as_strided(scalar_vk, (3, 4), (0, 0)),
+                                     torch.tensor([2.5]).expand(3, 4), None),
+        "offset_non_contiguous": (torch.as_strided(base_vk, (3, 3), (6, 2), 7),
+                                  base[1:, 1::2], None),
+        "gapped": (torch.as_strided(base_vk, (4, 3), (6, 2)), base[:, ::2], None),
+        "transposed_copy_into_contiguous": (torch.as_strided(matrix_vk, (3, 2), (1, 3)),
+                                            matrix.t(), torch.empty((3, 2))),
+    }
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize("label", ["stride0_scalar_broadcast", "offset_non_contiguous", "gapped",
+                                   "transposed_copy_into_contiguous"])
+def test_layout_degrade_matrix_d2h_completes_before_return(vk, label, flag):
+    source_vk, expected, destination = _d2h_degrade_cases(vk)[label]
+    if destination is None:
+        result = _blocking_call(lambda: source_vk.to("cpu", non_blocking=flag))
+    else:
+        result = _blocking_call(lambda: destination.copy_(source_vk, non_blocking=flag))
+    torch.testing.assert_close(result, expected, rtol=0, atol=0)
+
+
+def test_no_boxed_privateuse1_fallback_is_registered(vk):
+    # The real discriminator for "no CPU fallback": with no boxed PrivateUse1 backend
+    # fallback registered, an op lacking a Vulkan kernel raises NotImplementedError (as
+    # aten::arange did in b1) instead of silently running on the CPU.
+    assert not torch._C._dispatch_has_backend_fallback(torch._C.DispatchKey.PrivateUse1)
 
 
 def _eligible_cases():
@@ -408,9 +477,22 @@ def test_preserve_format_dense_layouts_are_async_eligible(vk, label, flag):
     source = _eligible_cases()[label]
     api.synchronize()
     copies = api.copy_command_count()
-    fallbacks = api.fallback_count()
-    result = source.to(vk, non_blocking=flag)
+    held = _async() and flag  # eligible route: the call returns while completion is held
+    if held:
+        api.test_hold_completion(True)
+    try:
+        result = source.to(vk, non_blocking=flag)
+        if held:
+            # Pending proof without any extra copy, and the single dense region is
+            # already recorded (the engine records at enqueue).
+            assert _pending() == 1 and api.query() is False
+            assert api.copy_command_count() - copies == 1  # one dense region
+    finally:
+        if held:
+            api.test_hold_completion(False)
     api.synchronize()
+    if held:
+        assert api.completion_hold_expiry_count() == 0
     # Measure the H2D window BEFORE the readback so a multi-command readback cannot
     # be mistaken for (or hide) the upload's region count.
     upload_copies = api.copy_command_count() - copies
@@ -418,9 +500,8 @@ def test_preserve_format_dense_layouts_are_async_eligible(vk, label, flag):
     readback_before = api.copy_command_count()
     torch.testing.assert_close(result.cpu(), source, rtol=0, atol=0)
     readback_copies = api.copy_command_count() - readback_before
-    if _async() and flag:
-        assert upload_copies == 1, (label, upload_copies, readback_copies)  # one dense region
-    assert api.fallback_count() == fallbacks, (label, upload_copies, readback_copies)
+    if held:
+        assert upload_copies == 1, (label, upload_copies, readback_copies)
 
 
 def test_repeated_enqueue_sync_cycles_return_to_baseline(vk):
@@ -436,7 +517,6 @@ def test_repeated_enqueue_sync_cycles_return_to_baseline(vk):
         for value in (down, copy.cpu(), pageable.cpu()):
             torch.testing.assert_close(value, expected, rtol=0, atol=0)
 
-    fallbacks = api.fallback_count()
     cycle()  # warm shared caches before taking the baseline
     gc.collect()
     api.synchronize()
@@ -446,7 +526,6 @@ def test_repeated_enqueue_sync_cycles_return_to_baseline(vk):
     gc.collect()
     api.synchronize()
     assert api.live_resource_snapshot()[4:] == baseline
-    assert api.fallback_count() == fallbacks
 
 
 def test_sync_mode_accepted_non_blocking_completes_before_return(vk):
@@ -468,18 +547,24 @@ def test_sync_mode_accepted_non_blocking_completes_before_return(vk):
 
 
 # --- Review N4 gaps: set_, D2D consumer/lifetime/resize while pending ----------------
-def test_set_rebinding_after_enqueue_keeps_pending_storage_alive(vk, hold):
+def test_set_rebinding_after_enqueue_defers_allocation_release_until_completion(vk, hold):
+    # No alias view: after dst.set_(other) the pending destination allocation is
+    # reachable only through the engine's lease, so the allocation counter [6] shows
+    # whether the lease keeps it alive until completion. The landed bytes of that
+    # unreachable allocation are not observable; this proves lifetime, not contents.
     src = _pinned(torch.arange(8, dtype=torch.float32))
-    expected = src.clone().cpu()
     other = torch.zeros(8).to(vk)
     api.synchronize()
+    allocations = _allocations()  # includes `other`
     hold()
     dst = src.to(vk, non_blocking=True)
-    alias = dst.view(8)  # shares the pending allocation's storage
-    dst.set_(other)  # rebinds dst; the old allocation stays reachable through alias + lease
+    assert _allocations() == allocations + 1  # the pending destination allocation
+    dst.set_(other)  # drops dst's own reference to that allocation
+    assert _allocations() == allocations + 1  # only the lease keeps it alive
+    assert _pending() == 1
     api.test_hold_completion(False)
     api.synchronize()
-    torch.testing.assert_close(alias.cpu(), expected, rtol=0, atol=0)
+    assert _allocations() == allocations  # released once the transfer completed
     torch.testing.assert_close(dst.cpu(), torch.zeros(8), rtol=0, atol=0)
 
 

@@ -409,7 +409,6 @@ def test_float32_non_blocking_to_vulkan_is_accepted(vulkan_backend):
     source.fill_(5.0)
     pytorch_vulkan._C.synchronize()
     assert pytorch_vulkan._C.transfer_operation_count() == 1
-    assert pytorch_vulkan._C.fallback_count() == 0
     torch.testing.assert_close(result.cpu(), torch.ones((2,)), rtol=0, atol=0)
 
 
@@ -419,7 +418,6 @@ def test_vulkan_to_vulkan_to_copy_accepts_non_blocking(vulkan_backend):
     result = source.to(vulkan_backend, copy=True, non_blocking=True)
     pytorch_vulkan._C.synchronize()
     assert result is not source
-    assert pytorch_vulkan._C.fallback_count() == 0
     torch.testing.assert_close(result.cpu(), torch.arange(2, dtype=torch.float32), rtol=0, atol=0)
 
 

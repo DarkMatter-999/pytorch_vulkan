@@ -289,7 +289,10 @@ TASK6_REQUIRED_WITNESSES = (
     "test_preserve_format_dense_layouts_are_async_eligible",
     "test_repeated_enqueue_sync_cycles_return_to_baseline",
     "test_sync_mode_accepted_non_blocking_completes_before_return",
-    "test_set_rebinding_after_enqueue_keeps_pending_storage_alive",
+    "test_set_rebinding_after_enqueue_defers_allocation_release_until_completion",
+    "test_layout_degrade_matrix_d2h_completes_before_return",
+    "test_wait_counters_discriminate_blocking_from_async_routes",
+    "test_no_boxed_privateuse1_fallback_is_registered",
     "test_d2d_consumer_enqueued_after_pending_copy_sees_copied_values",
     "test_d2d_source_and_destination_deleted_while_pending",
     "test_d2d_then_resize_growth_preserves_prefix",
@@ -350,3 +353,76 @@ def test_task6_degrade_cases_are_ineligible_per_the_oracle():
     for source in (torch.arange(24.).reshape(1, 2, 3, 4).contiguous(memory_format=torch.channels_last),
                    torch.arange(48.).reshape(1, 2, 2, 3, 4).contiguous(memory_format=torch.channels_last_3d)):
         assert dense(source) and not source.is_contiguous()
+
+
+def _witness_functions(source):
+    import ast
+    return {node.name: node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.FunctionDef)}
+
+
+def _calls(node):
+    import ast
+    names = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            func = child.func
+            names.add(func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", ""))
+    return names
+
+
+def blocking_tightening_violations(source):
+    """Static review-tightening rules for the transfer witness module (no execution)."""
+    import ast
+    problems = []
+    functions = _witness_functions(source)
+    for name, node in functions.items():
+        arguments = {argument.arg for argument in node.args.args}
+        calls = _calls(node)
+        # (1) a blocking route must never run under the completion hold (it would wait
+        # on a NOT_READY fence until the 20 s watchdog expiry).
+        if "hold" in arguments and "_blocking_call" in calls:
+            problems.append(f"{name}: _blocking_call used with the hold fixture")
+        # (5) fallback_count is a seam-only counter; asserting on it is a tautology.
+        if "fallback_count" in calls:
+            problems.append(f"{name}: tautological fallback_count assertion")
+    # (2) the set_ lifetime witness must not keep the old storage alive with an alias.
+    set_test = functions.get("test_set_rebinding_after_enqueue_defers_allocation_release_until_completion")
+    if set_test is None:
+        problems.append("set_ lifetime witness missing")
+    else:
+        if {"view", "alias"} & _calls(set_test) or "alias" in {n.id for n in ast.walk(set_test) if isinstance(n, ast.Name)}:
+            problems.append("set_ witness holds an alias view")
+        if "_allocations" not in _calls(set_test):
+            problems.append("set_ witness does not use the allocation counter")
+    # (3) Vulkan -> CPU degraded layouts are covered.
+    if "test_layout_degrade_matrix_d2h_completes_before_return" not in functions:
+        problems.append("D2H degrade matrix missing")
+    # (4) the async+flag preserve-format case proves pending under a hold.
+    preserve = functions.get("test_preserve_format_dense_layouts_are_async_eligible")
+    if preserve is None or "test_hold_completion" not in _calls(preserve) or "_pending" not in _calls(preserve):
+        problems.append("preserve-format witness lacks the pending-under-hold proof")
+    # tracked tests must not reference untracked tmp paths
+    if "/tmp" in source or "tmp/" in source:
+        problems.append("module references a tmp path")
+    return problems
+
+
+def test_transfer_witness_module_satisfies_review_tightening_rules():
+    module = Path(__file__).parent / "test_vulkan_async_transfer.py"
+    assert blocking_tightening_violations(module.read_text()) == []
+
+
+def test_tightening_rules_detect_the_pre_tightening_patterns():
+    pre = (
+        "def _blocking_call(call):\n    pass\n"
+        "def test_a(vk, hold):\n    _blocking_call(lambda: 1)\n"
+        "def test_b(vk):\n    api.fallback_count()\n"
+        "def test_set_rebinding_after_enqueue_defers_allocation_release_until_completion(vk, hold):\n"
+        "    alias = dst.view(8)\n"
+        "def test_preserve_format_dense_layouts_are_async_eligible(vk):\n    pass\n"
+        "# tmp/old_module.py\n"
+    )
+    problems = blocking_tightening_violations(pre)
+    for fragment in ("hold fixture", "fallback_count", "alias view", "allocation counter",
+                     "D2H degrade matrix missing", "pending-under-hold", "tmp path"):
+        assert any(fragment in problem for problem in problems), (fragment, problems)
