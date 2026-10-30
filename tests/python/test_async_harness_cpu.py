@@ -268,8 +268,85 @@ def test_edited_transfer_modules_use_no_unsupported_device_side_factories(name):
 
 
 def test_device_factory_guard_detects_the_b1_pre_fix_module():
-    old = Path(__file__).parents[2] / "tmp/task5-build-20261030-02/old_async_transfer_module.py"
-    if not old.exists():
-        pytest.skip("pre-fix module copy not retained")
-    found = unsupported_device_factories(old.read_text(), old.name)
-    assert [name for _, name in found] == ["arange"] * 4  # the four b1 failing sites
+    # Inline reproduction of the four b1 failing sites (torch.arange on the vk device).
+    old = (
+        "import torch\n"
+        "def t(vk):\n"
+        "    a = torch.arange(6, dtype=torch.float32, device=vk)\n"
+        "    b = torch.arange(6, dtype=torch.float32, device=vk)\n"
+        "    c = torch.arange(6, dtype=torch.float32, device=vk)\n"
+        "    d = torch.arange(8, dtype=torch.float32, device=vk)\n"
+    )
+    found = unsupported_device_factories(old, "old.py")
+    assert [name for _, name in found] == ["arange"] * 4
+
+
+TASK6_REQUIRED_WITNESSES = (
+    "test_connected_second_reverse_matches_cpu_and_task0_witness",
+    "test_backward_transfers_are_blocking_by_reference",
+    "test_saved_version_is_rejected_after_inplace_nonblocking_copy",
+    "test_layout_degrade_matrix_completes_before_return",
+    "test_preserve_format_dense_layouts_are_async_eligible",
+    "test_repeated_enqueue_sync_cycles_return_to_baseline",
+    "test_sync_mode_accepted_non_blocking_completes_before_return",
+    "test_set_rebinding_after_enqueue_keeps_pending_storage_alive",
+    "test_d2d_consumer_enqueued_after_pending_copy_sees_copied_values",
+    "test_d2d_source_and_destination_deleted_while_pending",
+    "test_d2d_then_resize_growth_preserves_prefix",
+)
+
+
+def missing_task6_witnesses(source):
+    import ast
+    names = {node.name for node in ast.walk(ast.parse(source)) if isinstance(node, ast.FunctionDef)}
+    return [name for name in TASK6_REQUIRED_WITNESSES if name not in names]
+
+
+def test_task6_witness_set_is_complete():
+    module = Path(__file__).parent / "test_vulkan_async_transfer.py"
+    assert missing_task6_witnesses(module.read_text()) == []
+
+
+def test_task6_guard_detects_the_pre_task6_module():
+    pre_task6 = "def test_pinned_h2d_nonblocking_returns_before_completion(hold):\n    pass\n"
+    assert len(missing_task6_witnesses(pre_task6)) == len(TASK6_REQUIRED_WITNESSES)
+
+
+def test_connected_second_reverse_design_reproduces_task0_cpu_witness():
+    """Executes only the CPU reference of the connected witness (no vk device): the
+    design's first and second reverse must equal the Task 0 receipt values for both
+    the ToCopyBackward0 and the preallocated-destination CopyBackwards chains."""
+    import ast
+    import torch
+    source = (Path(__file__).parent / "test_vulkan_async_transfer.py").read_text()
+    wanted = {"_second_reverse_chain", "_second_reverse_reference"}
+    constants = {"TASK0_X", "TASK0_SEED1", "TASK0_SEED2", "TASK0_FIRST", "TASK0_SECOND"}
+    chosen = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            chosen.append(node)
+        elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in constants:
+            chosen.append(node)
+    namespace = {"torch": torch}
+    exec(compile(ast.Module(body=chosen, type_ignores=[]), "task6_reference", "exec"), namespace)
+    for kind in ("to", "copy_"):
+        first, second = namespace["_second_reverse_reference"](kind)
+        torch.testing.assert_close(first, torch.tensor(namespace["TASK0_FIRST"]), rtol=0.003, atol=0.003)
+        torch.testing.assert_close(second, torch.tensor(namespace["TASK0_SECOND"]), rtol=0.003, atol=0.003)
+
+
+def test_task6_degrade_cases_are_ineligible_per_the_oracle():
+    """CPU check of review N5: the degraded cases are really ineligible (not dense,
+    or copy_ into a contiguous destination), the eligible cases are dense."""
+    import torch
+    def dense(tensor):
+        return tensor.is_contiguous() or tensor.stride() == tensor.clone(memory_format=torch.preserve_format).stride()
+    base = torch.arange(24, dtype=torch.float32).reshape(4, 6)
+    for source in (torch.tensor([2.5]).expand(3, 4), base[1:, 1::2], base[:, ::2]):
+        assert not dense(source)
+    transposed = torch.arange(6, dtype=torch.float32).reshape(2, 3).t()
+    assert dense(transposed) and not transposed.is_contiguous()
+    assert not torch.empty((3, 2)).stride() == transposed.stride()  # contiguous dst differs
+    for source in (torch.arange(24.).reshape(1, 2, 3, 4).contiguous(memory_format=torch.channels_last),
+                   torch.arange(48.).reshape(1, 2, 2, 3, 4).contiguous(memory_format=torch.channels_last_3d)):
+        assert dense(source) and not source.is_contiguous()

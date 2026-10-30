@@ -53,6 +53,10 @@ def _pinned_allocations():
     return api.live_resource_snapshot()[7]  # pinned_host_allocations
 
 
+def _allocations():
+    return api.live_resource_snapshot()[6]  # Vulkan allocations
+
+
 def _waits():
     return api.execution_fence_wait_count(), api.transfer_wait_count()
 
@@ -90,23 +94,27 @@ def test_pinned_and_device_wrappers_deleted_while_pending_keep_resources(vk, hol
     src = _pinned(torch.arange(16, dtype=torch.float32))
     expected = src.clone().cpu()
     keeper = torch.zeros(16).to(vk)
+    survivor_dst = torch.empty(16, device=vk)
     api.synchronize()
     pinned_before = _pinned_allocations()
+    allocations_before = _allocations()  # keeper + survivor_dst
     hold()
     dst = src.to(vk, non_blocking=True)
+    survivor_dst.copy_(dst, non_blocking=True)  # D2D that must outlive both wrappers
     del src
     gc.collect()
     assert _pinned_allocations() == pinned_before  # lease keeps the pinned allocation
     del dst
     gc.collect()
     assert _pending() == 1
+    assert _allocations() == allocations_before + 1  # lease keeps the deleted destination
     api.test_hold_completion(False)
     api.synchronize()
     assert _pending() == 0 and _pinned_allocations() < pinned_before
-    # a surviving device copy path is still usable
-    survivor = (keeper + 3.0).cpu()
-    torch.testing.assert_close(survivor, torch.full((16,), 3.0), rtol=0, atol=0)
-    assert expected.numel() == 16
+    assert _allocations() == allocations_before  # released after completion
+    # the surviving D2D copy carries the pinned upload's values
+    torch.testing.assert_close(survivor_dst.cpu(), expected, rtol=0, atol=0)
+    torch.testing.assert_close((keeper + 3.0).cpu(), torch.full((16,), 3.0), rtol=0, atol=0)
 
 
 def test_destination_resize_growth_after_enqueue_preserves_prefix(vk, hold):
@@ -277,3 +285,243 @@ def test_to_and_copy_autograd_names_and_first_reverse(vk):
     destination.sum().backward()
     api.synchronize()
     torch.testing.assert_close(source.grad, torch.ones(3), rtol=0, atol=0)
+
+
+# --- Task 6: connected second reverse, backward blocking, saved version, layouts -----
+# Task 0 CPU oracle: .superpowers/sdd/2026-10-20-vulkan-f32-copy-layout/receipts/
+# async-t0-cpu-probe-03.json (result.stdout "autograd"): x=[1,2,3], independent nonzero
+# seeds [2,3,5] / [7,11,13]; first reverse 2*x*seed1, connected second reverse 2*seed1*seed2.
+# This is the one connected witness the plan names; general higher-order, forward-mode
+# and transform support remain unproven.
+TASK0_X = [1.0, 2.0, 3.0]
+TASK0_SEED1 = [2.0, 3.0, 5.0]
+TASK0_SEED2 = [7.0, 11.0, 13.0]
+TASK0_FIRST = [4.0, 12.0, 30.0]
+TASK0_SECOND = [28.0, 66.0, 130.0]
+
+
+def _second_reverse_chain(kind, device, check_names=False):
+    """first = d(mid*mid)/dx with create_graph=True, second = d(first)/dx; real, not inferred."""
+    x = torch.tensor(TASK0_X, requires_grad=True)
+    if kind == "to":
+        mid = x.to(device, copy=True, non_blocking=True)
+        if check_names:
+            assert mid.grad_fn.name() == "ToCopyBackward0"
+    else:
+        mid = torch.empty(3, device=device)
+        mid.copy_(x, non_blocking=True)  # preallocated destination
+        if check_names:
+            assert mid.grad_fn.name() == "torch::autograd::CopyBackwards"
+    (first,) = torch.autograd.grad(
+        mid * mid, x, grad_outputs=torch.tensor(TASK0_SEED1).to(device), create_graph=True
+    )
+    assert first.requires_grad  # the first reverse stays connected to x
+    (second,) = torch.autograd.grad(first, x, grad_outputs=torch.tensor(TASK0_SEED2))
+    return first.detach(), second
+
+
+def _second_reverse_reference(kind):
+    return _second_reverse_chain(kind, "cpu")
+
+
+@pytest.mark.parametrize("kind", ["to", "copy_"])
+def test_connected_second_reverse_matches_cpu_and_task0_witness(vk, kind):
+    fallbacks = api.fallback_count()
+    expected_first, expected_second = _second_reverse_reference(kind)
+    torch.testing.assert_close(expected_first, torch.tensor(TASK0_FIRST), rtol=0.003, atol=0.003)
+    torch.testing.assert_close(expected_second, torch.tensor(TASK0_SECOND), rtol=0.003, atol=0.003)
+    first, second = _second_reverse_chain(kind, vk, check_names=True)
+    api.synchronize()
+    torch.testing.assert_close(first, expected_first, rtol=0.003, atol=0.003)
+    torch.testing.assert_close(second, expected_second, rtol=0.003, atol=0.003)
+    assert api.fallback_count() == fallbacks
+
+
+def test_backward_transfers_are_blocking_by_reference(vk):
+    leaf = torch.tensor(TASK0_X, requires_grad=True)
+    api.synchronize()
+    before_forward = _waits()
+    moved = leaf.to(vk, non_blocking=True)
+    loss = (moved * moved).sum()  # leaves pending compute for the backward readback
+    if _async():
+        assert _waits() == before_forward  # nonblocking forward calls never waited
+    before_backward = _waits()
+    (grad,) = torch.autograd.grad(loss, leaf)
+    assert sum(_waits()) > sum(before_backward)  # the backward readback is a blocking transfer
+    torch.testing.assert_close(grad, 2.0 * torch.tensor(TASK0_X), rtol=0.003, atol=0.003)
+
+
+def test_saved_version_is_rejected_after_inplace_nonblocking_copy(vk):
+    leaf = torch.tensor(TASK0_X, requires_grad=True)
+    destination = torch.empty(3, device=vk)
+    destination.copy_(leaf, non_blocking=True)
+    out = destination * destination  # saves destination at its current version
+    destination.copy_(torch.ones(3), non_blocking=True)  # in-place nonblocking mutation
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        out.sum().backward()
+    api.synchronize()
+
+
+# Degraded (ineligible) layouts per the Task 0 oracle complete before return in both
+# flags. A transposed DENSE .to() source is eligible (preserve-format output keeps its
+# strides); the ineligible transposed case is copy_ into a contiguous destination.
+def _degrade_cases():
+    base = torch.arange(24, dtype=torch.float32).reshape(4, 6)
+    matrix = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    return {
+        "stride0_scalar_broadcast": lambda flag, vk: (torch.tensor([2.5]).expand(3, 4), None),
+        "offset_non_contiguous": lambda flag, vk: (base[1:, 1::2], None),
+        "gapped": lambda flag, vk: (base[:, ::2], None),
+        "transposed_copy_into_contiguous": lambda flag, vk: (matrix.t(), torch.empty((3, 2), device=vk)),
+    }
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize("label", ["stride0_scalar_broadcast", "offset_non_contiguous", "gapped",
+                                   "transposed_copy_into_contiguous"])
+def test_layout_degrade_matrix_completes_before_return(vk, label, flag):
+    source, destination = _degrade_cases()[label](flag, vk)
+    api.synchronize()
+    fallbacks = api.fallback_count()
+    if destination is None:
+        result = source.to(vk, non_blocking=flag)
+    else:
+        result = destination.copy_(source, non_blocking=flag)
+    assert api.query() is True  # blocking route: complete before return
+    torch.testing.assert_close(result.cpu(), source, rtol=0, atol=0)
+    assert api.fallback_count() == fallbacks
+
+
+def _eligible_cases():
+    return {
+        "transposed_dense": torch.arange(6, dtype=torch.float32).reshape(2, 3).t(),
+        "channels_last": torch.arange(24, dtype=torch.float32).reshape(1, 2, 3, 4)
+        .contiguous(memory_format=torch.channels_last),
+        "channels_last_3d": torch.arange(48, dtype=torch.float32).reshape(1, 2, 2, 3, 4)
+        .contiguous(memory_format=torch.channels_last_3d),
+    }
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize("label", ["transposed_dense", "channels_last", "channels_last_3d"])
+def test_preserve_format_dense_layouts_are_async_eligible(vk, label, flag):
+    source = _eligible_cases()[label]
+    api.synchronize()
+    copies = api.copy_command_count()
+    fallbacks = api.fallback_count()
+    result = source.to(vk, non_blocking=flag)
+    api.synchronize()
+    # Measure the H2D window BEFORE the readback so a multi-command readback cannot
+    # be mistaken for (or hide) the upload's region count.
+    upload_copies = api.copy_command_count() - copies
+    assert result.stride() == source.stride()  # E2: preserve-format output keeps strides
+    readback_before = api.copy_command_count()
+    torch.testing.assert_close(result.cpu(), source, rtol=0, atol=0)
+    readback_copies = api.copy_command_count() - readback_before
+    if _async() and flag:
+        assert upload_copies == 1, (label, upload_copies, readback_copies)  # one dense region
+    assert api.fallback_count() == fallbacks, (label, upload_copies, readback_copies)
+
+
+def test_repeated_enqueue_sync_cycles_return_to_baseline(vk):
+    def cycle():
+        host = _pinned(torch.arange(32, dtype=torch.float32))
+        up = host.to(vk, non_blocking=True)
+        down = up.to("cpu", non_blocking=True)
+        copy = torch.empty(32, device=vk)
+        copy.copy_(up, non_blocking=True)
+        pageable = torch.arange(32, dtype=torch.float32).to(vk, non_blocking=True)
+        api.synchronize()
+        expected = torch.arange(32, dtype=torch.float32)
+        for value in (down, copy.cpu(), pageable.cpu()):
+            torch.testing.assert_close(value, expected, rtol=0, atol=0)
+
+    fallbacks = api.fallback_count()
+    cycle()  # warm shared caches before taking the baseline
+    gc.collect()
+    api.synchronize()
+    baseline = api.live_resource_snapshot()[4:]  # pending transfers/compute, allocations, pinned
+    for _ in range(5):
+        cycle()
+    gc.collect()
+    api.synchronize()
+    assert api.live_resource_snapshot()[4:] == baseline
+    assert api.fallback_count() == fallbacks
+
+
+def test_sync_mode_accepted_non_blocking_completes_before_return(vk):
+    if _async():
+        pytest.skip("sync-mode completion witness; async mode asserts pending state instead")
+    host = _pinned(torch.arange(8, dtype=torch.float32))
+    uploaded = host.to(vk, non_blocking=True)  # pinned H2D
+    assert api.query() is True and _pending() == 0
+    sink = torch.zeros(8).pin_memory(device="vk")
+    sink.copy_(uploaded, non_blocking=True)  # pinned D2H
+    assert api.query() is True and _pending() == 0
+    torch.testing.assert_close(sink, torch.arange(8, dtype=torch.float32), rtol=0, atol=0)
+    pageable = torch.arange(8, dtype=torch.float32).to(vk, non_blocking=True)  # pageable H2D
+    assert api.query() is True and _pending() == 0
+    clone = torch.empty(8, device=vk)
+    clone.copy_(pageable, non_blocking=True)  # D2D
+    assert api.query() is True
+    torch.testing.assert_close(clone.cpu(), torch.arange(8, dtype=torch.float32), rtol=0, atol=0)
+
+
+# --- Review N4 gaps: set_, D2D consumer/lifetime/resize while pending ----------------
+def test_set_rebinding_after_enqueue_keeps_pending_storage_alive(vk, hold):
+    src = _pinned(torch.arange(8, dtype=torch.float32))
+    expected = src.clone().cpu()
+    other = torch.zeros(8).to(vk)
+    api.synchronize()
+    hold()
+    dst = src.to(vk, non_blocking=True)
+    alias = dst.view(8)  # shares the pending allocation's storage
+    dst.set_(other)  # rebinds dst; the old allocation stays reachable through alias + lease
+    api.test_hold_completion(False)
+    api.synchronize()
+    torch.testing.assert_close(alias.cpu(), expected, rtol=0, atol=0)
+    torch.testing.assert_close(dst.cpu(), torch.zeros(8), rtol=0, atol=0)
+
+
+def test_d2d_consumer_enqueued_after_pending_copy_sees_copied_values(vk, hold):
+    source = torch.arange(8, dtype=torch.float32).to(vk)
+    destination = torch.empty(8, device=vk)
+    api.synchronize()
+    hold()
+    destination.copy_(source, non_blocking=True)
+    consumer = destination + 1.0  # compute ordered after the pending D2D
+    assert api.query() is False
+    api.test_hold_completion(False)
+    api.synchronize()
+    torch.testing.assert_close(destination.cpu(), torch.arange(8, dtype=torch.float32), rtol=0, atol=0)
+    torch.testing.assert_close(consumer.cpu(), torch.arange(8, dtype=torch.float32) + 1.0, rtol=0, atol=0)
+
+
+def test_d2d_source_and_destination_deleted_while_pending(vk, hold):
+    source = torch.arange(8, dtype=torch.float32).to(vk)
+    destination = torch.empty(8, device=vk)
+    tail = torch.empty(8, device=vk)
+    api.synchronize()
+    allocations = _allocations()  # source + destination + tail
+    hold()
+    destination.copy_(source, non_blocking=True)
+    tail.copy_(destination, non_blocking=True)  # chained D2D that outlives both wrappers
+    del source, destination
+    gc.collect()
+    assert _allocations() == allocations  # leases keep both deleted allocations alive
+    api.test_hold_completion(False)
+    api.synchronize()
+    assert _allocations() == allocations - 2
+    torch.testing.assert_close(tail.cpu(), torch.arange(8, dtype=torch.float32), rtol=0, atol=0)
+
+
+def test_d2d_then_resize_growth_preserves_prefix(vk, hold):
+    source = torch.arange(8, dtype=torch.float32).to(vk)
+    destination = torch.empty(8, device=vk)
+    api.synchronize()
+    hold()
+    destination.copy_(source, non_blocking=True)
+    destination.resize_(16)  # hold active, like the accepted H2D resize witness
+    api.test_hold_completion(False)
+    api.synchronize()
+    torch.testing.assert_close(destination.cpu()[:8], torch.arange(8, dtype=torch.float32), rtol=0, atol=0)
