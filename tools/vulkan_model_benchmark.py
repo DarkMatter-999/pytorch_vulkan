@@ -9,6 +9,7 @@ import math
 import statistics
 import sys
 import time
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,9 +130,13 @@ class _VanillaRNN(torch.nn.Module):
             for state in captured_states:
                 if state.requires_grad:
                     state.retain_grad()
+            state_refs = tuple(weakref.ref(state) for state in captured_states)
             if output.requires_grad:
                 def retain_state_grads(gradient):
-                    for index, state in enumerate(captured_states):
+                    for index, state_ref in enumerate(state_refs):
+                        state = state_ref()
+                        if state is None:
+                            continue
                         state_gradient = gradient.select(1, index).detach()
                         state.grad = (state.grad + state_gradient
                                       if state.grad is not None else state_gradient)
