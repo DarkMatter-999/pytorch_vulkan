@@ -832,10 +832,16 @@ void test_async_copy_tensor_blocking_and_rejections() {
         expect_error([&] { pytorch_vulkan::async_copy_tensor(cpu_a, cpu_b, true); },
                      "non_blocking=True");
     }
-    {   // The public entry still rejects non_blocking=True.
-        auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
-        auto device_tensor = at::empty({4}, source.options().device(kDevice));
-        expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, source, true); },
+    {   // The public entry now accepts F32 non_blocking (Task 5) and keeps the non-F32
+        // rejection byte-identical.
+        const auto cpu = at::tensor({4.0f, 5.0f, 6.0f, 7.0f}, at::TensorOptions().dtype(at::kFloat));
+        auto device_tensor = at::empty({4}, cpu.options().device(kDevice));
+        expect(&pytorch_vulkan::copy_tensor(device_tensor, cpu, true) == &device_tensor,
+               "public non_blocking copy changed the returned destination");
+        p->synchronize_execution();
+        expect(read_back(device_tensor).equal(cpu), "public non_blocking F32 copy values");
+        auto double_cpu = at::ones({4}, at::TensorOptions().dtype(at::kDouble));
+        expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, double_cpu, true); },
                      "non_blocking=True");
     }
 }
@@ -1054,7 +1060,13 @@ void test_formatter_presentation_copy_rejects_malformed_sources() {
 void test_validation_boundaries() {
     auto source = at::ones({4}, at::TensorOptions().dtype(at::kFloat));
     auto device_tensor = at::empty({4}, source.options().device(kDevice));
-    expect_error([&] { pytorch_vulkan::copy_tensor(device_tensor, source, true); },
+    // Public F32 non_blocking is accepted; the data check follows synchronization.
+    pytorch_vulkan::copy_tensor(device_tensor, source, true);
+    pytorch_vulkan::platform()->synchronize_execution();
+    auto accepted = at::empty({4}, source.options());
+    pytorch_vulkan::copy_tensor(accepted, device_tensor, false);
+    expect(accepted.equal(source), "non_blocking F32 copy changed values");
+    expect_error([&] { pytorch_vulkan::copy_tensor(source, source, true); },
                  "non_blocking=True");
     expect_error([&] { pytorch_vulkan::copy_tensor(source, source, false); },
                  "exactly one CPU and one Vulkan device");

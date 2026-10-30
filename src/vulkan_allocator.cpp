@@ -363,9 +363,13 @@ at::Tensor vulkan_copy_from(const at::Tensor &source, const at::Tensor &destinat
     if (destination.device().is_cpu() && !source.device().is_cpu() &&
         source.scalar_type() == at::kFloat &&
         destination.scalar_type() == source.scalar_type()) {
-        TORCH_CHECK(!non_blocking,
-                    "Vulkan formatter presentation does not support non_blocking=True");
-        pytorch_vulkan::formatter_presentation_copy(result, source);
+        // F32 non_blocking readback routes through copy_tensor (pinned destinations
+        // enqueue; pageable ones complete before return). Blocking keeps the
+        // formatter presentation path unchanged.
+        if (non_blocking)
+            pytorch_vulkan::copy_tensor(result, source, true);
+        else
+            pytorch_vulkan::formatter_presentation_copy(result, source);
     } else {
         pytorch_vulkan::copy_tensor(result, source, non_blocking);
     }

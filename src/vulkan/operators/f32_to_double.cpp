@@ -79,12 +79,18 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
         if (requested_dtype == at::kFloat) {
             TORCH_CHECK(!layout || *layout == at::kStrided,
                         "Vulkan _to_copy requires strided tensors");
-            TORCH_CHECK(!pin_memory || !*pin_memory,
-                        "Vulkan _to_copy does not support pinned CPU output");
-            TORCH_CHECK(!non_blocking,
-                        "Vulkan copy does not support non_blocking=True");
+            // D4: a non_blocking readback of a strided Vulkan tensor allocates a
+            // Vulkan-pinned CPU result (CUDA pin_out analog). Like PyTorch 2.4's
+            // _to_copy, an explicit pin_memory=True for CPU output is accepted but
+            // does not itself pin (only pin_out does).
+            const bool pin_out = non_blocking && input.is_privateuseone() &&
+                                 input.layout() == at::kStrided;
             output = allocate_vulkan_transfer_output(
-                input, input.options().dtype(requested_dtype).device(output_device),
+                input,
+                input.options()
+                    .dtype(requested_dtype)
+                    .device(output_device)
+                    .pinned_memory(pin_out),
                 memory_format);
         } else {
             output = at::empty(input.sizes(), input.options()
@@ -105,8 +111,6 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                         "Vulkan _to_copy requires strided tensors");
             TORCH_CHECK(!pin_memory || !*pin_memory,
                         "Vulkan _to_copy does not support pinned memory");
-            TORCH_CHECK(!non_blocking,
-                        "Vulkan copy does not support non_blocking=True");
         }
         TORCH_CHECK(
             requested_dtype == at::kFloat || requested_dtype == at::kBool ||
@@ -134,8 +138,6 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan _to_copy requires strided tensors");
         TORCH_CHECK(!pin_memory || !*pin_memory,
                     "Vulkan _to_copy does not support pinned memory");
-        TORCH_CHECK(!non_blocking,
-                    "Vulkan _to_copy does not support non_blocking=True");
         TORCH_CHECK(input.device().type() == c10::DeviceType::PrivateUse1 &&
                         input.device().index() == 0,
                     "Vulkan _to_copy requires a Vulkan device index 0 input");
@@ -143,7 +145,7 @@ at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType>
                     "Vulkan _to_copy requires the same Vulkan device");
         auto output = allocate_vulkan_transfer_output(
             input, input.options().dtype(requested_dtype), memory_format);
-        pytorch_vulkan::copy_tensor(output, input, false);
+        pytorch_vulkan::copy_tensor(output, input, non_blocking);
         return output;
     }
     TORCH_CHECK(

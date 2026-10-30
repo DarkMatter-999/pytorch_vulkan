@@ -396,15 +396,19 @@ at::Tensor vulkan_stack_copy(at::TensorList tensors, int64_t dim) {
     });
 }
 
-at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
-                        bool non_blocking) {
+// Blocking copy implementation (the former copy_tensor body, including the
+// non_blocking rejection). Internal: copy_tensor forwards here and so do the
+// Blocking and pass-through routes of async_copy_tensor.
+namespace {
+at::Tensor &copy_tensor_blocking_impl(at::Tensor &destination, const at::Tensor &source,
+                                      bool non_blocking) {
     if (destination.scalar_type() == at::kFloat &&
         source.scalar_type() == at::kFloat &&
         destination.sizes() != source.sizes()) {
         // Match Tensor.copy_'s destination-shaped broadcast contract. Keep the
         // expanded view alive through the recursive leaf invocation.
         const at::Tensor expanded_source = source.expand(destination.sizes());
-        return copy_tensor(destination, expanded_source, non_blocking);
+        return copy_tensor_blocking_impl(destination, expanded_source, non_blocking);
     }
     if (destination.device().is_cpu() && !source.device().is_cpu() &&
         source.scalar_type() == at::kFloat &&
@@ -614,6 +618,22 @@ at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
     return destination;
     });
 }
+} // namespace
+
+at::Tensor &copy_tensor(at::Tensor &destination, const at::Tensor &source,
+                        bool non_blocking) {
+    // F32 pairs that can be classified async (non_blocking host transfers, or any
+    // Vulkan-to-Vulkan copy) go through async_copy_tensor. Plain blocking host
+    // copies and every non-F32 pair keep the unchanged blocking implementation, so
+    // non-F32 non_blocking=True rejections stay byte-identical. async_copy_tensor's
+    // own Blocking route uses copy_tensor_blocking_impl, so there is no recursion.
+    const bool f32 = destination.scalar_type() == at::kFloat &&
+                     source.scalar_type() == at::kFloat;
+    const bool both_vulkan = !destination.device().is_cpu() && !source.device().is_cpu();
+    if (f32 && (non_blocking || both_vulkan))
+        return async_copy_tensor(destination, source, non_blocking);
+    return copy_tensor_blocking_impl(destination, source, non_blocking);
+}
 
 at::Tensor &formatter_presentation_copy(at::Tensor &destination,
                                         const at::Tensor &source) {
@@ -721,7 +741,7 @@ at::Tensor &async_copy_tensor(at::Tensor &destination, const at::Tensor &source,
     // Non-F32 and two-CPU pairs are never async; forward non_blocking so the
     // existing path keeps its rejections and exception contract.
     if (!f32 || (destination.device().is_cpu() && source.device().is_cpu()))
-        return copy_tensor(destination, source, non_blocking);
+        return copy_tensor_blocking_impl(destination, source, non_blocking);
 
     // Validation (shapes, overlap, bounds, devices) precedes classification and any
     // reservation, staging or enqueue; it has no side effects.
@@ -745,7 +765,7 @@ at::Tensor &async_copy_tensor(at::Tensor &destination, const at::Tensor &source,
         destination, source, non_blocking, platform.async_execution_enabled(),
         platform.compute().training_step_active());
     if (route == F32CopyRoute::Blocking)
-        return copy_tensor(destination, source, false);
+        return copy_tensor_blocking_impl(destination, source, false);
 
     return with_vulkan_operation(platform.runtime_lifecycle(), [&]() -> at::Tensor & {
     const auto region_bytes = static_cast<VkDeviceSize>(bytes);

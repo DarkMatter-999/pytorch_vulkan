@@ -147,7 +147,7 @@ class TestPinnedHost:
         assert strided.is_pinned(device="vk") is True
         assert strided.stride() == (4, 1)
 
-    def test_blocking_copy_surface_and_existing_rejections_are_unchanged(self, vk):
+    def test_blocking_copy_surface_and_non_blocking_acceptance(self, vk):
         source = torch.arange(6, dtype=torch.float32)
         pinned = source.pin_memory(device="vk")
         device = pinned.to(vk)
@@ -158,14 +158,26 @@ class TestPinnedHost:
         destination.copy_(device)
         torch.testing.assert_close(destination, source, rtol=0, atol=0)
 
-        with pytest.raises(RuntimeError, match="non_blocking=True"):
-            pinned.to(vk, non_blocking=True)
-        with pytest.raises(RuntimeError, match="non_blocking=True"):
-            destination.copy_(device, non_blocking=True)
-        with pytest.raises(RuntimeError, match="pinned"):
-            torch.ops.aten._to_copy.default(
-                device, device=torch.device("cpu"), pin_memory=True
-            )
+        # F32 non_blocking is accepted (values valid after synchronize); pinned CPU
+        # output is now an accepted _to_copy request (D4).
+        uploaded = pinned.to(vk, non_blocking=True)
+        destination.copy_(device, non_blocking=True)
+        pytorch_vulkan._C.synchronize()
+        torch.testing.assert_close(uploaded.cpu(), source, rtol=0, atol=0)
+        torch.testing.assert_close(destination, source, rtol=0, atol=0)
+        # PyTorch 2.4: explicit pin_memory=True for CPU output is accepted but does
+        # not pin; only the non_blocking readback (pin_out) yields pinned memory.
+        readback = torch.ops.aten._to_copy.default(
+            device, device=torch.device("cpu"), pin_memory=True
+        )
+        assert not readback.is_pinned(device="vk")
+        torch.testing.assert_close(readback, source, rtol=0, atol=0)
+        auto_pinned = torch.ops.aten._to_copy.default(
+            device, device=torch.device("cpu"), non_blocking=True
+        )
+        pytorch_vulkan._C.synchronize()
+        assert auto_pinned.is_pinned(device="vk")
+        torch.testing.assert_close(auto_pinned, source, rtol=0, atol=0)
 
         torch.testing.assert_close(pinned + 2.0, source + 2.0, rtol=0, atol=0)
         torch.testing.assert_close(pinned.sum(), source.sum(), rtol=0, atol=0)
@@ -937,20 +949,32 @@ def test_invalid_channels_last_rank_fails_before_device_work(vk, direction, shap
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
 
 
-@pytest.mark.parametrize("direction", ["h2d", "d2h"])
-def test_f32_to_copy_rejects_pinned_memory_before_work(vk, direction):
+def test_f32_to_copy_rejects_pinned_memory_for_vulkan_output_before_work(vk):
     source = torch.arange(3, dtype=torch.float32)
-    if direction == "d2h":
-        source = source.to(vk)
-        target = "cpu"
-    else:
-        target = vk
     pytorch_vulkan._C.reset_execution_counters()
     with pytest.raises(RuntimeError, match="pinned"):
         torch.ops.aten._to_copy.default(
-            source, device=torch.device(target), pin_memory=True
+            source, device=torch.device(vk), pin_memory=True
         )
     assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+
+
+def test_f32_to_copy_pin_memory_for_cpu_output_matches_pytorch(vk):
+    # N1 ruling: match PyTorch 2.4. An explicit pin_memory=True is accepted for CPU
+    # output but does not pin; only a non_blocking readback (pin_out) is pinned.
+    expected = torch.arange(3, dtype=torch.float32)
+    device = expected.to(vk)
+    explicit = torch.ops.aten._to_copy.default(
+        device, device=torch.device("cpu"), pin_memory=True
+    )
+    assert not explicit.is_pinned(device="vk")
+    torch.testing.assert_close(explicit, expected, rtol=0, atol=0)
+    auto = torch.ops.aten._to_copy.default(
+        device, device=torch.device("cpu"), pin_memory=True, non_blocking=True
+    )
+    pytorch_vulkan._C.synchronize()
+    assert auto.is_pinned(device="vk")
+    torch.testing.assert_close(auto, expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("direction", ["h2d", "d2h", "d2d"])

@@ -96,11 +96,15 @@ def test_vulkan_to_cpu_copy_is_in_place_and_synchronous(vulkan_backend):
     )
 
 
-def test_non_blocking_copy_is_rejected(vulkan_backend):
-    source = torch.ones((2,), dtype=torch.float32)
+def test_float32_non_blocking_copy_is_accepted_with_snapshot_semantics(vulkan_backend):
+    source = torch.tensor([1.0, 2.0], dtype=torch.float32)
     destination = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-    _assert_transfer_rejected(
-        lambda: destination.copy_(source, non_blocking=True), "non_blocking"
+    assert destination.copy_(source, non_blocking=True) is destination
+    # Pageable host sources are snapshotted at call time: later writes must not leak.
+    source.fill_(-1.0)
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(
+        destination.cpu(), torch.tensor([1.0, 2.0]), rtol=0, atol=0
     )
 
 
@@ -398,23 +402,25 @@ def test_non_contiguous_transfer_is_supported(vulkan_backend):
     torch.testing.assert_close(result.cpu(), source)
 
 
-def test_non_blocking_transfer_is_rejected(vulkan_backend):
+def test_float32_non_blocking_to_vulkan_is_accepted(vulkan_backend):
     source = torch.ones((2,), dtype=torch.float32)
     pytorch_vulkan._C.reset_execution_counters()
-    _assert_transfer_rejected(
-        lambda: source.to(vulkan_backend, non_blocking=True), "non_blocking"
-    )
-    _assert_no_vulkan_work()
+    result = source.to(vulkan_backend, non_blocking=True)
+    source.fill_(5.0)
+    pytorch_vulkan._C.synchronize()
+    assert pytorch_vulkan._C.transfer_operation_count() == 1
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(result.cpu(), torch.ones((2,)), rtol=0, atol=0)
 
 
-def test_vulkan_to_vulkan_to_copy_rejects_non_blocking(vulkan_backend):
-    def transfer():
-        source = torch.empty((2,), dtype=torch.float32, device=vulkan_backend)
-        source.to(vulkan_backend, copy=True, non_blocking=True)
-
+def test_vulkan_to_vulkan_to_copy_accepts_non_blocking(vulkan_backend):
+    source = torch.arange(2, dtype=torch.float32).to(vulkan_backend)
     pytorch_vulkan._C.reset_execution_counters()
-    _assert_transfer_rejected(transfer, "non_blocking")
-    _assert_no_vulkan_work()
+    result = source.to(vulkan_backend, copy=True, non_blocking=True)
+    pytorch_vulkan._C.synchronize()
+    assert result is not source
+    assert pytorch_vulkan._C.fallback_count() == 0
+    torch.testing.assert_close(result.cpu(), torch.arange(2, dtype=torch.float32), rtol=0, atol=0)
 
 
 def test_mismatched_sizes_are_rejected(vulkan_backend):
