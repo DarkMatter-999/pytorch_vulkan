@@ -256,6 +256,14 @@ at::Tensor &tanh_out(const at::Tensor &input, at::Tensor &out) {
                                               "tanh");
 }
 
+at::Tensor &gelu_out(const at::Tensor &input, c10::string_view approximate,
+                     at::Tensor &out) {
+    TORCH_CHECK(approximate == "tanh",
+                "Vulkan gelu supports only approximate=\"tanh\"");
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::GeluTanh,
+                                              "gelu");
+}
+
 at::Tensor &reject_neg_inplace(at::Tensor &self) {
     TORCH_CHECK(false, "Vulkan neg in-place variants are unsupported");
     return self;
@@ -286,6 +294,12 @@ at::Tensor &reject_tanh_inplace(at::Tensor &self) {
     return self;
 }
 
+at::Tensor &reject_gelu_inplace(at::Tensor &self, c10::string_view approximate) {
+    (void)approximate;
+    TORCH_CHECK(false, "Vulkan gelu in-place variants are unsupported");
+    return self;
+}
+
 } // namespace pytorch_vulkan
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
@@ -306,12 +320,14 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("ceil.out", &pytorch_vulkan::ceil_out);
     m.impl("sigmoid.out", &pytorch_vulkan::sigmoid_out);
     m.impl("tanh.out", &pytorch_vulkan::tanh_out);
+    m.impl("gelu.out", &pytorch_vulkan::gelu_out);
     m.impl("neg_", &pytorch_vulkan::reject_neg_inplace);
     m.impl("abs_", &pytorch_vulkan::reject_abs_inplace);
     m.impl("relu_", &pytorch_vulkan::reject_relu_inplace);
     m.impl("ceil_", &pytorch_vulkan::reject_ceil_inplace);
     m.impl("sigmoid_", &pytorch_vulkan::reject_sigmoid_inplace);
     m.impl("tanh_", &pytorch_vulkan::reject_tanh_inplace);
+    m.impl("gelu_", &pytorch_vulkan::reject_gelu_inplace);
 }
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {

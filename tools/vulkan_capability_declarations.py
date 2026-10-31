@@ -2208,7 +2208,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "strided",
             "non-overlapping"
         ],
-        "out": "contiguous_out_required",
+        "out": "strided_out_supported",
         "ranks": {
             "max": 2,
             "min": 2
@@ -2847,24 +2847,24 @@ DECLARATIONS: dict[str, dict[str, object]] = {
                 "float32"
             ]
         },
-        "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
             "non-overlapping"
         ],
-        "out": "contiguous_out_required",
+        "out": "strided_out_supported",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 2
         },
-        "reason": "deferred_contract",
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::gelu_backward.grad_input':     {
         "aliasing": "no_overlap",
@@ -5335,6 +5335,40 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "status": "rejected"
     },
+    'aten::gelu_.default':     {
+        "aliasing": "same_storage_alias",
+        "autograd": "not_applicable",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_rejected",
+        "execution_contract": "rejected_before_vulkan",
+        "inplace": "validated_exact_alias_inplace",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 8,
+            "min": 0
+        },
+        "reason": "explicit_source_rejection",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "rejected"
+    },
     'aten::reshape.default':     {
         "aliasing": "no_overlap",
         "autograd": "reverse_second_order_witnessed",
@@ -5799,7 +5833,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "strided",
             "non-overlapping"
         ],
-        "out": "contiguous_out_required",
+        "out": "strided_out_supported",
         "ranks": {
             "max": 2,
             "min": 2
@@ -6377,7 +6411,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "strided",
             "non-overlapping"
         ],
-        "out": "contiguous_out_required",
+        "out": "strided_out_supported",
         "ranks": {
             "max": 2,
             "min": 2

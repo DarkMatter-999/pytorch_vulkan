@@ -2378,6 +2378,20 @@ def _tanh_out(value, out):
     return torch.ops.aten.tanh.out(value, out=out)
 
 
+def _gelu_out(value, out):
+    return torch.ops.aten.gelu.out(value, approximate="tanh", out=out)
+
+
+def _gelu_out_none(value, out):
+    return torch.ops.aten.gelu.out(value, approximate="none", out=out)
+
+
+def _cpu_gelu_out(approximate):
+    def reference(value, out):
+        return torch.ops.aten.gelu.out(value, approximate=approximate, out=out.clone())
+    return reference
+
+
 def _pin_rank1(*, requires_grad=False):
     return (torch.arange(5, dtype=torch.float32) + 0.5,)
 
@@ -3356,6 +3370,10 @@ _MANIFEST_CASES.update({
     "unary.tanh-out": ("aten::tanh.out", True),
     "unary.tanh-out.empty": ("aten::tanh.out", True),
     "unary.tanh-out.dtype.rejected": ("aten::tanh.out", False),
+    "unary.gelu-out": ("aten::gelu.out", True),
+    "unary.gelu-out.empty": ("aten::gelu.out", True),
+    "unary.gelu-out.dtype.rejected": ("aten::gelu.out", False),
+    "unary.gelu-out.approximate-none.rejected": ("aten::gelu.out", False),
 })
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
@@ -5395,6 +5413,21 @@ ALL_CASES = tuple(
           setup_inputs=_wrong_dtype_out_setup, supported=False,
           cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.tanh.out, value, out.float()),
           error_pattern=r"Vulkan tanh"),
+    _case("unary.gelu-out", "unary", _gelu_out, _out_inputs,
+          cpu_reference=_cpu_gelu_out("tanh"),
+          supported=True, expected_dtype=torch.float32, expected_shape=(3, 4),
+          declared_shapes=("3x4",), rtol=2e-5, atol=2e-6),
+    _case("unary.gelu-out.empty", "unary", _gelu_out, _unary_out_empty_inputs,
+          cpu_reference=_cpu_gelu_out("tanh"),
+          supported=True, expected_dtype=torch.float32, expected_shape=(0, 3),
+          execution_mode="empty", declared_shapes=("0x3",)),
+    _case("unary.gelu-out.dtype.rejected", "unary", _gelu_out, _unary_out_wrong_dtype_inputs,
+          setup_inputs=_wrong_dtype_out_setup, supported=False,
+          cpu_reference=lambda value, out: _cpu_gelu_out("tanh")(value, out.float()),
+          error_pattern=r"Vulkan gelu"),
+    _case("unary.gelu-out.approximate-none.rejected", "unary", _gelu_out_none, _out_inputs,
+          supported=False, cpu_reference=_cpu_gelu_out("none"),
+          error_pattern=r"Vulkan gelu supports only approximate"),
     _case("pin.memory.f32.rank1", "pin", _pin, _pin_rank1, cpu_reference=_cpu_pin_reference,
           expected_shape=(5,), execution_mode="host_pinned", convert_inputs=False,
           declared_shapes=("5",)),

@@ -37,7 +37,7 @@ than duplicate schema entries.
 | `aten::_log_softmax` plus `nll_loss_forward` / `nll_loss_backward` | F32 logits, I64 labels | F32 | contiguous Vulkan logits `(2,3)`, class dimension `1`, contiguous Vulkan I64 labels `(2,)`, no weight, reduction `mean`, `ignore_index=-100` | first-order | other reductions, weights, labels, shapes, and class dimensions rejected |
 | unary `neg`/`abs`/`relu` | F32 (formatter Double exceptions documented below) | F32 | strided `vk:0`, rank <= 8, <= uint32 elements; fresh output | first-order | empty output supported |
 | `aten::ceil` (allocating `torch.ceil`) | F32 | F32 | strided `vk:0`, rank <= 8 by the shared unary guard, <= uint32 elements; witnessed ranks 1-2 (strided, empty `(0,3)`; rank-0 and offset views in `test_vulkan_unary.py`); NaN, ±inf and signed zero match CPU. The output is a fresh contiguous tensor: unlike CPU, a transposed input does not keep its strides. Non-F32 inputs (bool, int64, float16), rank above 8 and `vk:1` are rejected; Double takes the separate formatter-Double route documented below. `ceil.out` is covered by the unary `out=` row below; in-place `ceil_` is explicitly rejected. | Stock generated `CeilBackward0` (constant zero gradient, no history) on the witnessed first reverse only | empty output supported |
-| unary `out=`: `aten::ceil.out` / `aten::sigmoid.out` / `aten::tanh.out` | F32 | F32 | Shared unary out contract on `vk:0`: F32 input and F32 `out`; a same-shaped, mismatched or empty `out` is resized as in PyTorch; exact-alias `out=input` computes in place; partial overlap and internal overlap are rejected; a non-contiguous `out` keeps its strides. Witnessed rank 2 `(3,4)` and empty `(0,3)`; rank-0, offset and non-contiguous cases are in `test_vulkan_out.py`. Rejected with zero Vulkan work: non-F32 or CPU `out`, non-F32 input, rank above 8, and `requires_grad` input (PyTorch's own out= autograd rejection). Recorded deviations from CPU: `sigmoid.out`/`tanh.out` also accept a float64 `out` and integer inputs, and `ceil.out` only an equal-dtype `out`; Vulkan accepts only F32. In-place `ceil_`, `sigmoid_` and `tanh_` are explicitly rejected (their `.out` fallback is not used). The manifest keeps the existing `contiguous_out_required` wording for these entries although non-contiguous outputs are accepted with their strides preserved. | not applicable (out= does not support autograd) | empty input and output supported |
+| unary `out=`: `aten::ceil.out` / `aten::sigmoid.out` / `aten::tanh.out` / `aten::gelu.out` | F32 | F32 | Shared unary out contract on `vk:0`: F32 input and F32 `out`; a same-shaped, mismatched or empty `out` is resized as in PyTorch; exact-alias `out=input` computes in place; partial overlap and internal overlap are rejected; a non-contiguous `out` keeps its strides. Witnessed rank 2 `(3,4)` and empty `(0,3)`; rank-0, offset and non-contiguous cases are in `test_vulkan_out.py`. Rejected with zero Vulkan work: non-F32 or CPU `out`, non-F32 input, rank above 8, and `requires_grad` input (PyTorch's own out= autograd rejection). Recorded deviations from CPU: `sigmoid.out`/`tanh.out` also accept a float64 `out` and integer inputs, and `ceil.out` only an equal-dtype `out`; Vulkan accepts only F32. `gelu.out` accepts only `approximate="tanh"` (the functional GELU contract); `"none"`, any other value and the `"none"` default are rejected before Vulkan work, and PyTorch itself rejects non-matching dtypes for GELU, so it has no dtype deviation. In-place `ceil_`, `sigmoid_`, `tanh_` and `gelu_` are explicitly rejected (their `.out` fallback is not used). These four entries declare `out: strided_out_supported` (a strided output of any non-overlapping layout is accepted and its strides preserved); other `out=` entries still carry the older `contiguous_out_required` value, which has not been re-examined. | not applicable (out= does not support autograd) | empty input and output supported |
 | pointwise `add`/`sub` and non-broadcast `mul` scalar/`out=` forms | F32 | F32 | `aten::add.Scalar`, `aten::sub.Scalar`, `aten::rsub.Scalar`, `aten::mul.Scalar` plus existing scalar-out and tensor-out forms; equal-shape tensor forms retain their prior contracts. Allocating `mul.Tensor` broadcasting is specified separately above. No promotion; `add`/`sub` require finite representable `alpha == 1`. | first-order for functional forms; `out=` follows PyTorch autograd restrictions | empty output supported without dispatch |
 | `aten::as_strided` | F32 | F32 | Metadata-only on `vk:0`; requested sizes/strides must be non-negative and reference a valid in-allocation range. Non-zero offsets, non-contiguous layouts, overlap, and changed logical element counts are permitted. The returned alias preserves the input autograd relationship. | chained first-order reverse mode | metadata contract |
 | `aten::view` | F32 | F32 | Requires PyTorch-compatible `computeStride` metadata, then validates the resulting sizes/strides and storage range/device/dtype contract before creating the metadata-only alias. Named evidence: `view.view.trainable-seed` (float32 primary rank 2, shape `(3,4)`). | reverse second-order on the named seed witness only | metadata contract |
@@ -308,7 +308,7 @@ are removed from this inventory.
 | --- | --- |
 | transfer/creation | `_copy_from_and_resize`, `_local_scalar_dense`, `resize_`, `set_` |
 | reductions/indexing | `argmax.out`, `max`, `mean`, `mean.out`, `min`, `prod.out`, `prod.Dimname_out`, `sum.IntList_out`, `sum.default` |
-| sigmoid/tanh/GELU | `gelu.out`, `gelu_backward.grad_input` |
+| sigmoid/tanh/GELU | `gelu_backward.grad_input` |
 | convolution/pooling backward | `avg_pool2d_backward.grad_input`, `convolution_backward_overrideable`, `max_pool2d_with_indices`, `max_pool2d_with_indices_backward`, `upsample_bilinear2d_backward.grad_input`, `upsample_nearest2d_backward.grad_input`, `_upsample_nearest_exact2d_backward.grad_input` |
 | normalization | `native_layer_norm`, `native_layer_norm_backward` |
 | cross-entropy/NLL | `nll_loss_forward.output`, `nll_loss_backward.grad_input` |
@@ -363,7 +363,7 @@ aten::div.Tensor,aten::lerp.Scalar_out,aten::lerp_.Scalar,aten::sqrt.out,
  aten::zero_.default,aten::_copy_from.default,aten::_to_copy.default,
  aten::copy_.default,aten::empty.memory_format,aten::empty_strided.default,
  aten::ceil.default,aten::_pin_memory.default,aten::is_pinned.default,
- aten::ceil.out,aten::sigmoid.out,aten::tanh.out -->
+ aten::ceil.out,aten::sigmoid.out,aten::tanh.out,aten::gelu.out -->
 
 <!-- Vulkan conformance rejected schemas:
 aten::max_pool2d_with_indices.default,aten::neg.out,aten::ne.Tensor,
@@ -372,7 +372,8 @@ aten::_adaptive_avg_pool2d.default,aten::convolution.default -->
 
 <!-- Vulkan conformance whole-schema rejected schemas:
 aten::abs_.default,aten::neg_.default,aten::relu_.default,
-aten::ceil_.default,aten::sigmoid_.default,aten::tanh_.default -->
+aten::ceil_.default,aten::sigmoid_.default,aten::tanh_.default,
+aten::gelu_.default -->
 
 <!-- Vulkan conformance deferred schemas:
  aten::concat.default,aten::_copy_from_and_resize.default,
@@ -389,7 +390,7 @@ aten::bmm.out,aten::cat.out,aten::clamp.out,aten::clamp_min.out,
  aten::div.out,aten::dot.default,
 aten::add_.Scalar,aten::mul_.Tensor,aten::sub_.Scalar,aten::sub_.Tensor,
 aten::eq.Scalar_out,aten::eq.Tensor_out,aten::exp.out,aten::fill_.Scalar,aten::ge.Scalar_out,
- aten::ge.Tensor_out,aten::gelu.out,aten::gt.Scalar,aten::gt.Scalar_out,
+ aten::ge.Tensor_out,aten::gt.Scalar,aten::gt.Scalar_out,
 aten::gt.Tensor_out,aten::hardsigmoid.out,aten::hardsigmoid_backward.grad_input,aten::hardswish_.default,
 aten::hardswish_backward.default,aten::hardtanh.default,aten::hardtanh_.default,aten::hardtanh_backward.default,
 aten::isfinite.out,aten::le.Scalar_out,aten::le.Tensor_out,aten::leaky_relu.out,

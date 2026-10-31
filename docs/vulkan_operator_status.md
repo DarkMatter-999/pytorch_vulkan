@@ -23,10 +23,10 @@ This file lists **every dispatcher schema and overload** in the project's suppor
 | Status | Rows |
 |---|---:|
 | Supported (scoped) | 57 |
-| Partial | 43 |
-| Deferred | 90 |
-| Unsupported (verified) | 3 |
-| Unreviewed | 3370 |
+| Partial | 44 |
+| Deferred | 89 |
+| Unsupported (verified) | 4 |
+| Unreviewed | 3369 |
 | **Total** | **3563** |
 
 
@@ -1733,8 +1733,8 @@ _test::leaky_relu.default  _test::leaky_relu(Tensor self, float v=0.01) -> Tenso
 | `aten::ge_.Scalar` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::ge_.Tensor` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::gelu.default` | Partial | `e6ca761` (registration), `852df95` (declaration) | Subset: approximate="tanh" with the 0.044715 polynomial only (matrix L24). Scope: float32; rank 1; strided/non-overlapping; autograd `first_order_or_none`. Evidence: [`aten::gelu.default`](vulkan_capabilities.json), tests test_vulkan_conformance.py, test_vulkan_operator_capabilities.py; cases `unary.gelu.tanh.float32`; contract in [matrix](vulkan_operator_capability_matrix.md). |
-| `aten::gelu.out` | Deferred | — | Deferred by capability declaration (`reason: deferred_contract`, `execution_contract: deferred_before_vulkan`), declared in `852df95`; direct PrivateUse1 registration absent. Evidence: [`aten::gelu.out`](vulkan_capabilities.json); see [Deferred operator-expansion inventory](vulkan_operator_capability_matrix.md). A registration is source evidence only, not a support claim; it may serve a different documented slice. No runtime support claimed. |
-| `aten::gelu_.default` | Unreviewed | — | Not yet audited for Vulkan. |
+| `aten::gelu.out` | Partial | (this change; pending commit) | Subset: `approximate="tanh"` only (matrix L24, L40); other values rejected before Vulkan work. Scope: float32; rank 2; strided/non-overlapping; autograd `not_applicable`; out `strided_out_supported`. Evidence: [`aten::gelu.out`](vulkan_capabilities.json), tests test_vulkan_conformance.py, test_vulkan_out.py; cases `unary.gelu-out`, `unary.gelu-out.empty`; contract in [matrix](vulkan_operator_capability_matrix.md). |
+| `aten::gelu_.default` | Unsupported (verified) | — | Positive rejection evidence: `reject_gelu_inplace` registered for the in-place overload (src/vulkan/operators/unary.cpp) and asserted rejected by tests/python/test_vulkan_out.py (`test_gelu_inplace_form_stays_rejected_after_gelu_out_registration`); declared `explicit_source_rejection` in [`aten::gelu_.default`](vulkan_capabilities.json). |
 | `aten::gelu_backward.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::gelu_backward.grad_input` | Partial | `e6ca761` (registration), `852df95` (declaration) | Subset: GELU slice requires approximate="tanh" (matrix L24); grad_input form only. Scope: float32; rank 1; strided/non-overlapping; autograd `backward_kernel`. Evidence: [`aten::gelu_backward.grad_input`](vulkan_capabilities.json), tests test_vulkan_conformance.py, test_vulkan_operator_capabilities.py; cases `unary.gelu.tanh.backward`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::geometric.default` | Unreviewed | — | Not yet audited for Vulkan. |

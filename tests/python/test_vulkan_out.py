@@ -637,12 +637,18 @@ def test_out_dtype_and_device_rejections_are_zero_work(vulkan_backend):
     _assert_zero_work()
 
 
-# --- ceil.out / sigmoid.out / tanh.out: the shared unary out= contract ---------
+# --- ceil.out / sigmoid.out / tanh.out / gelu.out(tanh): the shared unary out= contract ---------
 
 NEW_UNARY_OUT = [
     pytest.param(torch.ops.aten.ceil.out, torch.ceil, "ceil", id="ceil"),
     pytest.param(torch.ops.aten.sigmoid.out, torch.sigmoid, "sigmoid", id="sigmoid"),
     pytest.param(torch.ops.aten.tanh.out, torch.tanh, "tanh", id="tanh"),
+    pytest.param(
+        lambda value, out: torch.ops.aten.gelu.out(value, approximate="tanh", out=out),
+        lambda value: torch.nn.functional.gelu(value, approximate="tanh"),
+        "gelu",
+        id="gelu-tanh",
+    ),
 ]
 _UNARY_OUT_VALUES = torch.tensor([-1.5, -0.5, 0.0, 0.2, 1.0, 2.7])
 
@@ -769,3 +775,49 @@ def test_unary_out_with_a_requires_grad_input_is_rejected_like_pytorch(
     with pytest.raises(RuntimeError, match="out=... arguments don't support automatic differentiation"):
         operation(tensor, out=torch.empty(6, device=vulkan_backend))
     _assert_zero_work()
+
+
+# --- gelu.out accepts approximate="tanh" only -----------------------------------
+
+
+@pytest.mark.parametrize("approximate", ["none", "erf", ""])
+def test_gelu_out_rejects_any_approximation_other_than_tanh_with_zero_work(
+    vulkan_backend, approximate
+):
+    source = _vk(_UNARY_OUT_VALUES)
+    out = torch.empty(6, device=vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match='Vulkan gelu supports only approximate="tanh"'):
+        torch.ops.aten.gelu.out(source, approximate=approximate, out=out)
+    _assert_zero_work()
+
+
+def test_gelu_out_default_approximation_is_rejected_like_the_functional_form(vulkan_backend):
+    source = _vk(_UNARY_OUT_VALUES)
+    out = torch.empty(6, device=vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match='Vulkan gelu supports only approximate="tanh"'):
+        torch._C._nn.gelu(source, out=out)
+    _assert_zero_work()
+
+
+def test_gelu_out_matches_the_functional_tanh_gelu_exactly(vulkan_backend):
+    source = _vk(_UNARY_OUT_VALUES)
+    out = torch.empty(6, device=vulkan_backend)
+    torch._C._nn.gelu(source, approximate="tanh", out=out)
+    functional = torch.nn.functional.gelu(source, approximate="tanh")
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(out.cpu(), functional.cpu(), rtol=0, atol=0)
+
+
+def test_gelu_inplace_form_stays_rejected_after_gelu_out_registration(vulkan_backend):
+    tensor = _vk(_UNARY_OUT_VALUES.clone())
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    for approximate in ("tanh", "none"):
+        with pytest.raises(RuntimeError, match="Vulkan gelu in-place variants are unsupported"):
+            torch.ops.aten.gelu_(tensor, approximate=approximate)
+    _assert_zero_work()
+    torch.testing.assert_close(tensor.cpu(), _UNARY_OUT_VALUES)

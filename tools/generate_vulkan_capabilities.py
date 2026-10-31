@@ -230,6 +230,7 @@ ENTRY_ORDER = (
     'aten::neg_.default',
     'aten::relu_.default',
     'aten::ceil_.default',
+    'aten::gelu_.default',
     'aten::stack.default',
     'aten::_pin_memory.default',
     'aten::is_pinned.default',

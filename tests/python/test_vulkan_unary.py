@@ -298,23 +298,15 @@ def test_gelu_tanh_matches_cpu_and_rejects_exact_mode(vulkan_backend):
 
 
 # sigmoid.out and tanh.out are supported since the unary out= suite in
-# test_vulkan_out.py replaced their old rejection; gelu(out=) stays rejected.
-@pytest.mark.parametrize(
-    "operation",
-    [torch.nn.functional.gelu],
-)
-def test_activation_unsupported_overloads_do_not_dispatch(vulkan_backend, operation):
+# test_vulkan_out.py replaced their old rejection; gelu.out is supported for
+# approximate="tanh" only, so the unsupported approximation stays rejected.
+def test_gelu_out_with_unsupported_approximation_does_not_dispatch(vulkan_backend):
     tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
     output = torch.empty_like(tensor)
     pytorch_vulkan._C.reset_execution_counters()
 
-    with pytest.raises(
-        (RuntimeError, TypeError), match="Vulkan|Could not run|unsupported"
-    ):
-        if operation is torch.nn.functional.gelu:
-            operation(tensor, approximate="none", out=output)
-        else:
-            operation(tensor, out=output)
+    with pytest.raises(RuntimeError, match="Vulkan gelu supports only approximate"):
+        torch._C._nn.gelu(tensor, approximate="none", out=output)
     assert pytorch_vulkan._C.compute_dispatch_count() == 0
     assert pytorch_vulkan._C.vulkan_copy_count() == 0
     assert pytorch_vulkan._C.fallback_count() == 0
