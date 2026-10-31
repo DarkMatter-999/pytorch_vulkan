@@ -207,6 +207,8 @@ ENTRY_ORDER = (
     'aten::round.out',
     'aten::set_.source_Storage',
     'aten::set_.source_Storage_storage_offset',
+    'aten::set_.default',
+    'aten::set_.source_Tensor',
     'aten::sgn.out',
     'aten::sigmoid.out',
     'aten::sigmoid_.default',
@@ -228,6 +230,8 @@ ENTRY_ORDER = (
     'aten::neg_.default',
     'aten::relu_.default',
     'aten::stack.default',
+    'aten::_pin_memory.default',
+    'aten::is_pinned.default',
 )
 
 def _case_index() -> dict[str, dict[str, object]]:
@@ -286,6 +290,8 @@ def _case_index() -> dict[str, dict[str, object]]:
         validate_general_matmul_conformance_case(coincident[0], case)
         entry["tests"].update({"tests/python/test_vulkan_general_matmul.py",
                                "tests/python/test_vulkan_general_matmul_capability_evidence.py"})
+    for pin_schema in ("aten::_pin_memory.default", "aten::is_pinned.default"):
+        index[pin_schema]["tests"].add("tests/python/test_vulkan_copy_contracts.py")
     linear_entry = index["aten::linear.default"]
     linear_entry["tests"].add("tests/python/test_vulkan_linear.py")
     for route_case in STOCK_LINEAR_ROUTE_CASES:

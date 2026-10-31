@@ -2154,7 +2154,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::ceil.default':     {
         "aliasing": "no_overlap",
-        "autograd": "not_applicable",
+        "autograd": "first_order_or_none",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -2167,8 +2167,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
                 "float32"
             ]
         },
-        "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
@@ -2176,15 +2176,15 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "out": "not_applicable",
         "ranks": {
-            "max": 8,
-            "min": 0
+            "max": 2,
+            "min": 1
         },
-        "reason": "deferred_contract",
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::ceil.out':     {
         "aliasing": "no_overlap",
@@ -5538,6 +5538,142 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "none"
         ],
         "status": "deferred"
+    },
+    'aten::set_.default':     {
+        "aliasing": "same_storage_alias",
+        "autograd": "not_applicable",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_deferred",
+        "execution_contract": "deferred_before_vulkan",
+        "inplace": "validated_exact_alias_inplace",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 8,
+            "min": 0
+        },
+        "reason": "deferred_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "deferred"
+    },
+    'aten::set_.source_Tensor':     {
+        "aliasing": "same_storage_alias",
+        "autograd": "not_applicable",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_deferred",
+        "execution_contract": "deferred_before_vulkan",
+        "inplace": "validated_exact_alias_inplace",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 8,
+            "min": 0
+        },
+        "reason": "deferred_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "deferred"
+    },
+    'aten::_pin_memory.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "first_order_or_none",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_deferred",
+        "execution_contract": "host_pinned_allocation",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 2,
+            "min": 1
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::is_pinned.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "not_applicable",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "bool"
+            ]
+        },
+        "empty": "empty_deferred",
+        "execution_contract": "host_pinned_allocation",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 1,
+            "min": 1
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
     },
     'aten::sgn.out':     {
         "aliasing": "no_overlap",

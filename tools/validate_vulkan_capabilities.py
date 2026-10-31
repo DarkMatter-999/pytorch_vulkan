@@ -60,7 +60,7 @@ ALIASING_VALUES = frozenset({"no_overlap", "same_storage_alias", "no_aliasing"})
 OUT_VALUES = frozenset({"not_applicable", "contiguous_out_required"})
 INPLACE_VALUES = frozenset({"not_applicable", "optimizer_scoped_inplace", "validated_exact_alias_inplace"})
 AUTOGRAD_VALUES = frozenset({"first_order_or_none", "first_order_backward", "backward_kernel", "not_differentiable", "optimizer_update", "first_order_view_alias", "reverse_second_order_witnessed", "reverse_first_order_graph_witnessed", "reverse_finite_second_order_witnessed", "reverse_mse_finite_second_order_witnessed", "reverse_selected_third_order_witnessed", "not_applicable"})
-EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "rejected_before_vulkan", "deferred_before_vulkan"})
+EXECUTION_VALUES = frozenset({"vulkan_compute", "vulkan_copy", "metadata_only", "vulkan_copy_then_compute", "host_pinned_allocation", "rejected_before_vulkan", "deferred_before_vulkan"})
 REASON_VALUES = frozenset({"supported_contract", "explicit_source_rejection", "deferred_contract", "schema_absent_from_pytorch_dispatcher"})
 SCALAR_VALUES = frozenset({"none", "scalar_supported"})
 FEATURE_VALUES = frozenset({"vulkan_1_2_8bit_storage_int8"})
@@ -91,6 +91,7 @@ TEST_VALUES = frozenset(
         "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py",
         "tests/python/test_vulkan_linear.py",
+        "tests/python/test_vulkan_copy_contracts.py",
         "tests/python/test_vulkan_vector_matmul_capability_evidence.py",
         "tests/python/test_vulkan_general_matmul.py",
         "tests/python/test_vulkan_general_matmul_capability_evidence.py",

@@ -9453,7 +9453,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "first_order_or_none",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -9466,8 +9466,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -9475,28 +9475,73 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 2,
+        "min": 1
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
       ],
       "schema": "aten::ceil.default",
       "shape_constraints": [
-        "unwitnessed"
+        "2x2",
+        "6"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "unary.ceil.float32",
+          "supported": true
+        },
+        {
+          "name": "unary.ceil.float32.strided",
+          "supported": true
+        },
+        {
+          "name": "unary.ceil.float32.empty",
+          "supported": true
+        },
+        {
+          "name": "unary.ceil.bool.rejected",
+          "supported": false
+        },
+        {
+          "name": "unary.ceil.int64.rejected",
+          "supported": false
+        },
+        {
+          "name": "unary.ceil.float16.rejected",
+          "supported": false
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "unary.ceil.float32",
+          "unary.ceil.float32.empty",
+          "unary.ceil.float32.strided"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          1,
+          2
+        ]
       }
     },
     {
@@ -13068,6 +13113,102 @@
       }
     },
     {
+      "aliasing": "same_storage_alias",
+      "autograd": "not_applicable",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_deferred",
+      "execution_contract": "deferred_before_vulkan",
+      "inplace": "validated_exact_alias_inplace",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 8,
+        "min": 0
+      },
+      "reason": "deferred_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::set_.default",
+      "shape_constraints": [
+        "unwitnessed"
+      ],
+      "status": "deferred",
+      "test_cases": [],
+      "tests": [
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
+    },
+    {
+      "aliasing": "same_storage_alias",
+      "autograd": "not_applicable",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_deferred",
+      "execution_contract": "deferred_before_vulkan",
+      "inplace": "validated_exact_alias_inplace",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 8,
+        "min": 0
+      },
+      "reason": "deferred_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::set_.source_Tensor",
+      "shape_constraints": [
+        "unwitnessed"
+      ],
+      "status": "deferred",
+      "test_cases": [],
+      "tests": [
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [],
+        "dtypes": [],
+        "pairs": [],
+        "ranks": []
+      }
+    },
+    {
       "aliasing": "no_overlap",
       "autograd": "not_applicable",
       "device": {
@@ -14170,6 +14311,166 @@
         ],
         "ranks": [
           2
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "first_order_or_none",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_deferred",
+      "execution_contract": "host_pinned_allocation",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 2,
+        "min": 1
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::_pin_memory.default",
+      "shape_constraints": [
+        "3x2",
+        "3x4",
+        "5"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "pin.memory.f32.rank1",
+          "supported": true
+        },
+        {
+          "name": "pin.memory.f32.rank2",
+          "supported": true
+        },
+        {
+          "name": "pin.memory.f32.rank2.stride-holes",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_copy_contracts.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "pin.memory.f32.rank1",
+          "pin.memory.f32.rank2",
+          "pin.memory.f32.rank2.stride-holes"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ],
+          [
+            "float32",
+            2
+          ]
+        ],
+        "ranks": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "not_applicable",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "bool"
+        ]
+      },
+      "empty": "empty_deferred",
+      "execution_contract": "host_pinned_allocation",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 1,
+        "min": 1
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::is_pinned.default",
+      "shape_constraints": [
+        "6",
+        "7"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "pin.is-pinned.pinned-input",
+          "supported": true
+        },
+        {
+          "name": "pin.is-pinned.pageable-input",
+          "supported": true
+        },
+        {
+          "name": "pin.is-pinned.pinned-view",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_copy_contracts.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "pin.is-pinned.pageable-input",
+          "pin.is-pinned.pinned-input",
+          "pin.is-pinned.pinned-view"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            1
+          ]
+        ],
+        "ranks": [
+          1
         ]
       }
     }

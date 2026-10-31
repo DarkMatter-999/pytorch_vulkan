@@ -746,6 +746,11 @@ def _walk_result(actual: Any, expected: Any, case: ConformanceCase, path: str = 
         for index, (actual_child, expected_child) in enumerate(zip(actual, expected)):
             _walk_result(actual_child, expected_child, case, f"{path} slot {index}")
         return
+    if isinstance(expected, bool):
+        assert type(actual) is bool and actual is expected, (
+            f"{case.name}: {path} {actual!r} != {expected!r}"
+        )
+        return
     assert isinstance(actual, torch.Tensor) and isinstance(expected, torch.Tensor), (
         f"{case.name}: {path} must contain matching Tensor leaves"
     )
@@ -755,6 +760,10 @@ def _walk_result(actual: Any, expected: Any, case: ConformanceCase, path: str = 
     assert actual.dtype == expected.dtype, (
         f"{case.name}: {path} dtype {actual.dtype} != {expected.dtype}"
     )
+    if case.execution_mode == "host_pinned":
+        assert tuple(actual.stride()) == tuple(expected.stride()), (
+            f"{case.name}: {path} stride {tuple(actual.stride())} != {tuple(expected.stride())}"
+        )
     torch.testing.assert_close(actual.cpu() if actual.device.type != "cpu" else actual,
                                expected.cpu() if expected.device.type != "cpu" else expected,
                                rtol=case.rtol, atol=case.atol, equal_nan=True)
@@ -933,7 +942,7 @@ def run_and_compare(
         cpu_result = case.cpu_reference(
             *reference_inputs, *case.args, **(case.kwargs or {})
         )
-    inputs = to_vulkan_inputs(cpu_inputs, device)
+    inputs = to_vulkan_inputs(cpu_inputs, device) if case.convert_inputs else cpu_inputs
     if case.setup_inputs is not None:
         inputs = case.setup_inputs(inputs, device)
     vulkan_context = None
@@ -1041,6 +1050,9 @@ def assert_cpu_parity(case: ConformanceCase, result: torch.Tensor) -> None:
 
 
 def assert_vulkan_result(result: torch.Tensor, case: ConformanceCase) -> None:
+    if case.execution_mode == "host_pinned":
+        _assert_host_pinned_result(result, case)
+        return
     if case.expected_shapes is not None:
         assert isinstance(result, (tuple, list))
         assert len(result) == len(case.expected_shapes)
@@ -1062,6 +1074,24 @@ def assert_vulkan_result(result: torch.Tensor, case: ConformanceCase) -> None:
     assert result.dtype == case.expected_dtype
     if case.expected_shape is not None:
         assert tuple(result.shape) == case.expected_shape
+
+
+def _assert_host_pinned_result(result: Any, case: ConformanceCase) -> None:
+    """Pinned-host contract: CPU-resident, Vulkan-owned pinned storage, or a bool."""
+    if isinstance(result, bool):
+        assert case.expected_dtype is torch.bool, f"{case.name}: bool result needs expected_dtype=torch.bool"
+        return
+    assert isinstance(result, torch.Tensor), f"{case.name}: expected a Tensor or bool"
+    assert result.device.type == "cpu", f"{case.name}: pinned result must stay a CPU tensor"
+    assert result.dtype == case.expected_dtype
+    if case.expected_shape is not None:
+        assert tuple(result.shape) == case.expected_shape
+    storage = result.untyped_storage()
+    assert result.storage_offset() == 0, f"{case.name}: pinned result must start at offset 0"
+    assert storage.resizable() is False, f"{case.name}: pinned storage must be non-resizable"
+    assert result.is_pinned(device="vk") is (storage.nbytes() != 0), (
+        f"{case.name}: pinned recognition must follow Vulkan allocator provenance"
+    )
 
 
 def assert_no_vulkan_work() -> None:
@@ -1635,6 +1665,23 @@ def _empty_unary(*, requires_grad=False) -> tuple[torch.Tensor]:
     return (torch.empty((0, 3), dtype=torch.float32, requires_grad=requires_grad),)
 
 
+def _ceil_values(*, requires_grad=False) -> tuple[torch.Tensor]:
+    return (
+        torch.tensor(
+            [-1.5, -0.5, 0.2, 1.0, 2.7, 3.0], dtype=torch.float32, requires_grad=requires_grad
+        ),
+    )
+
+
+def _ceil_strided(*, requires_grad=False) -> tuple[torch.Tensor]:
+    value = (torch.arange(8, dtype=torch.float32).reshape(2, 4) + 0.25)[:, ::2]
+    return (value.detach().requires_grad_(requires_grad),)
+
+
+def _int64_unary(*, requires_grad=False) -> tuple[torch.Tensor]:
+    return (torch.tensor([1, 2]),)
+
+
 def _gelu_tanh(value):
     return torch.nn.functional.gelu(value, approximate="tanh")
 
@@ -1750,11 +1797,24 @@ def _setup_double_offset(inputs, device):
 
 
 def _expanded_read(*, requires_grad=False) -> tuple[torch.Tensor]:
-    return (torch.tensor([1.5, -2.0], dtype=torch.float32).unsqueeze(1).expand(2, 2),)
+    # The (2, 1) base is transferred; the stride-0 operand is made by expand()
+    # on each device. Copying an already-expanded CPU tensor into an
+    # overlapping Vulkan destination is rejected since b05c915, as in PyTorch.
+    return (torch.tensor([1.5, -2.0], dtype=torch.float32).unsqueeze(1),)
+
+
+def _expand_read_setup(inputs, device):
+    return (inputs[0].expand(2, 2),)
 
 
 def _mixed_expanded_overlap(*, requires_grad=False) -> tuple[torch.Tensor]:
-    return (torch.empty_strided((2, 2, 2), (0, 1, 1), dtype=torch.float32),)
+    # Base only; the overlapping (0, 1, 1) view is made on each device because an
+    # overlapping Vulkan copy destination is rejected before the operation.
+    return (torch.zeros(3, dtype=torch.float32),)
+
+
+def _mixed_expanded_overlap_setup(inputs, device):
+    return (inputs[0].as_strided((2, 2, 2), (0, 1, 1)),)
 
 
 def _invalid_out(value):
@@ -2292,6 +2352,55 @@ def _bitwise_and_out(value, other, out):
 
 def _argmax_out(value, out, dim, keepdim=False):
     return torch.ops.aten.argmax.out(value, dim, keepdim, out=out)
+
+
+def _pin_rank1(*, requires_grad=False):
+    return (torch.arange(5, dtype=torch.float32) + 0.5,)
+
+
+def _pin_rank2(*, requires_grad=False):
+    return (torch.arange(12, dtype=torch.float32).reshape(3, 4) + 0.5,)
+
+
+def _pin_stride_holes(*, requires_grad=False):
+    return ((torch.arange(12, dtype=torch.float32).reshape(3, 4) + 0.5)[:, ::2],)
+
+
+def _pinned_input(*, requires_grad=False):
+    return (torch.arange(6, dtype=torch.float32).pin_memory(device="vk"),)
+
+
+def _pageable_input(*, requires_grad=False):
+    return (torch.arange(6, dtype=torch.float32),)
+
+
+def _pinned_view_input(*, requires_grad=False):
+    return (torch.arange(8, dtype=torch.float32).pin_memory(device="vk")[1:],)
+
+
+def _pin(value):
+    return value.pin_memory(device="vk")
+
+
+def _is_pinned(value):
+    return value.is_pinned(device="vk")
+
+
+def _cpu_pin_reference(value):
+    # Stock CPU pin_memory needs an accelerator, so the oracle is the copy_
+    # contract the Vulkan pin mirrors: same sizes, strides and values.
+    expected = torch.empty_strided(value.size(), value.stride(), dtype=value.dtype)
+    expected.copy_(value)
+    return expected
+
+
+def _cpu_pin_stride_holes_reference(value):
+    # The harness clones reference inputs, and clone() densifies a view with
+    # stride holes, so the contract's strides are stated explicitly here:
+    # base[:, ::2] of a (3, 4) tensor has strides (4, 2) and must keep them.
+    expected = torch.empty_strided(value.size(), (4, 2), dtype=value.dtype)
+    expected.copy_(value)
+    return expected
 
 
 GRAPH_AUTOGRAD_CASES = {
@@ -3193,10 +3302,26 @@ _MANIFEST_CASES.update({
     "g1.matmul.mv.at": ("aten::matmul.default", True),
     "g1.matmul.vm.at": ("aten::matmul.default", True),
 })
+_MANIFEST_CASES.update({
+    "unary.ceil.float32": ("aten::ceil.default", True),
+    "unary.ceil.float32.strided": ("aten::ceil.default", True),
+    "unary.ceil.float32.empty": ("aten::ceil.default", True),
+    "unary.ceil.bool.rejected": ("aten::ceil.default", False),
+    "unary.ceil.int64.rejected": ("aten::ceil.default", False),
+    "unary.ceil.float16.rejected": ("aten::ceil.default", False),
+})
 _MANIFEST_CASES.pop("convolution.parameters.output-padding.rejected", None)
 _MANIFEST_CASES["convolution.parameters.output-padding.ignored"] = (
     "aten::convolution.default", True,
 )
+_MANIFEST_CASES.update({
+    "pin.memory.f32.rank1": ("aten::_pin_memory.default", True),
+    "pin.memory.f32.rank2": ("aten::_pin_memory.default", True),
+    "pin.memory.f32.rank2.stride-holes": ("aten::_pin_memory.default", True),
+    "pin.is-pinned.pinned-input": ("aten::is_pinned.default", True),
+    "pin.is-pinned.pageable-input": ("aten::is_pinned.default", True),
+    "pin.is-pinned.pinned-view": ("aten::is_pinned.default", True),
+})
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
 )
@@ -3691,6 +3816,35 @@ ALL_CASES = tuple(
         cpu_reference=torch.abs,
         expected_shape=(3,),
         check_gradients=True,
+    ),
+    _case(
+        "unary.ceil.float32",
+        "unary",
+        torch.ceil,
+        _ceil_values,
+        cpu_reference=torch.ceil,
+        expected_shape=(6,),
+        check_gradients=True,
+        declared_shapes=("6",),
+    ),
+    _case(
+        "unary.ceil.float32.strided",
+        "unary",
+        torch.ceil,
+        _ceil_strided,
+        cpu_reference=torch.ceil,
+        expected_shape=(2, 2),
+        check_gradients=True,
+        declared_shapes=("2x2",),
+    ),
+    _case(
+        "unary.ceil.float32.empty",
+        "unary",
+        torch.ceil,
+        _empty_unary,
+        cpu_reference=torch.ceil,
+        expected_shape=(0, 3),
+        execution_mode="empty",
     ),
     _case(
         "unary.relu.float32.empty",
@@ -4944,6 +5098,33 @@ ALL_CASES = tuple(
         error_pattern=r"float16 support is deferred",
     ),
     _case(
+        "unary.ceil.bool.rejected",
+        "unary",
+        torch.ceil,
+        _bool_unary,
+        supported=False,
+        cpu_reference=torch.ceil,
+        error_pattern=r"supports only float32 tensors",
+    ),
+    _case(
+        "unary.ceil.int64.rejected",
+        "unary",
+        torch.ceil,
+        _int64_unary,
+        supported=False,
+        cpu_reference=torch.ceil,
+        error_pattern=r"supports only float32 tensors",
+    ),
+    _case(
+        "unary.ceil.float16.rejected",
+        "unary",
+        torch.ceil,
+        _float16_unary,
+        supported=False,
+        cpu_reference=torch.ceil,
+        error_pattern=r"float16 support is deferred",
+    ),
+    _case(
         "binary.add.double.rejected",
         "binary",
         torch.add,
@@ -4979,6 +5160,7 @@ ALL_CASES = tuple(
         args=(1,),
         supported=True,
         cpu_reference=_cpu_sum,
+        setup_inputs=_expand_read_setup,
     ),
     _case(
         "reduction.sum.mixed-expanded-overlap.rejected",
@@ -4989,6 +5171,7 @@ ALL_CASES = tuple(
         supported=False,
         cpu_reference=_cpu_sum,
         error_pattern=r"rejects overlapping input views",
+        setup_inputs=_mixed_expanded_overlap_setup,
     ),
     _case(
         "comparison.ne.nonzero-offset-input.rejected",
@@ -5141,6 +5324,24 @@ ALL_CASES = tuple(
     _case("comparison.bitwise-and-out", "comparison", _bitwise_and_out,
           _bitwise_bool_out_inputs, cpu_reference=lambda a, b, out: torch.ops.aten.bitwise_and.Tensor_out(a, b, out=out.clone()),
           supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
+    _case("pin.memory.f32.rank1", "pin", _pin, _pin_rank1, cpu_reference=_cpu_pin_reference,
+          expected_shape=(5,), execution_mode="host_pinned", convert_inputs=False,
+          declared_shapes=("5",)),
+    _case("pin.memory.f32.rank2", "pin", _pin, _pin_rank2, cpu_reference=_cpu_pin_reference,
+          expected_shape=(3, 4), execution_mode="host_pinned", convert_inputs=False,
+          declared_shapes=("3x4",)),
+    _case("pin.memory.f32.rank2.stride-holes", "pin", _pin, _pin_stride_holes,
+          cpu_reference=_cpu_pin_stride_holes_reference, expected_shape=(3, 2),
+          execution_mode="host_pinned", convert_inputs=False, declared_shapes=("3x2",)),
+    _case("pin.is-pinned.pinned-input", "pin", _is_pinned, _pinned_input,
+          cpu_reference=lambda value: True, expected_dtype=torch.bool,
+          execution_mode="host_pinned", convert_inputs=False, declared_shapes=("6",)),
+    _case("pin.is-pinned.pageable-input", "pin", _is_pinned, _pageable_input,
+          cpu_reference=lambda value: False, expected_dtype=torch.bool,
+          execution_mode="host_pinned", convert_inputs=False, declared_shapes=("6",)),
+    _case("pin.is-pinned.pinned-view", "pin", _is_pinned, _pinned_view_input,
+          cpu_reference=lambda value: True, expected_dtype=torch.bool,
+          execution_mode="host_pinned", convert_inputs=False, declared_shapes=("7",)),
     _case("inplace.add-scalar", "inplace", torch.ops.aten.add_.Scalar,
           _inplace_inputs, args=(2.0,), cpu_reference=lambda value, scalar: _cpu_inplace(torch.Tensor.add_, value, scalar), supported=True, expected_shape=(3, 4)),
     _case("inplace.sub-scalar", "inplace", torch.ops.aten.sub_.Scalar,

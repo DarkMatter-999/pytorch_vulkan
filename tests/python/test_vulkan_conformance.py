@@ -148,7 +148,7 @@ def test_supported_case_matches_cpu_and_stays_vulkan(vulkan_backend, case):
         graph_autograd_context_out=graph_context,
     )
     assert_vulkan_result(result, case)
-    assert case.execution_mode in {"compute", "copy", "metadata", "empty"}
+    assert case.execution_mode in {"compute", "copy", "metadata", "empty", "host_pinned"}
     if graph_context is not None:
         # The graph executor captures phase counters before synchronized readbacks.
         # Its final return values are then copied to CPU, so process-global totals
@@ -338,6 +338,55 @@ def test_assert_vulkan_result_checks_device_and_dtype(vulkan_backend):
     case = next(case for case in ALL_CASES if case.supported)
     result = run_case(case, vulkan_backend)
     assert_vulkan_result(result, case)
+
+
+def _pin_case(name):
+    return next(case for case in ALL_CASES if case.name == name)
+
+
+def test_host_pinned_cases_declare_cpu_inputs_and_no_vulkan_work_modes():
+    pin_cases = [case for case in ALL_CASES if case.name.startswith("pin.")]
+    assert len(pin_cases) == 6
+    for case in pin_cases:
+        assert case.execution_mode == "host_pinned"
+        assert case.convert_inputs is False
+        assert case.supported
+        assert case.declaration_id in {"aten::_pin_memory.default", "aten::is_pinned.default"}
+
+
+def test_host_pinned_result_assertion_rejects_pageable_cpu_result():
+    case = _pin_case("pin.memory.f32.rank1")
+    pageable = torch.arange(5, dtype=torch.float32) + 0.5
+    with pytest.raises(AssertionError, match="non-resizable"):
+        vc.assert_vulkan_result(pageable, case)
+    # Non-resizable but foreign storage reaches the allocator-provenance check.
+    foreign = torch.from_numpy(pageable.numpy().copy())
+    assert foreign.untyped_storage().resizable() is False
+    with pytest.raises(AssertionError, match="pinned recognition"):
+        vc.assert_vulkan_result(foreign, case)
+
+
+def test_host_pinned_result_assertion_requires_the_declared_result_kind():
+    bool_case = _pin_case("pin.is-pinned.pageable-input")
+    vc.assert_vulkan_result(False, bool_case)
+    with pytest.raises(AssertionError, match="expected a Tensor or bool"):
+        vc.assert_vulkan_result(None, _pin_case("pin.memory.f32.rank1"))
+    with pytest.raises(AssertionError, match="expected_dtype=torch.bool"):
+        vc.assert_vulkan_result(True, _pin_case("pin.memory.f32.rank1"))
+
+
+def test_bool_leaf_parity_is_exact_and_host_pinned_parity_preserves_strides():
+    bool_case = _pin_case("pin.is-pinned.pinned-input")
+    vc.assert_result_parity(True, True, bool_case)
+    with pytest.raises(AssertionError):
+        vc.assert_result_parity(1, True, bool_case)
+    with pytest.raises(AssertionError):
+        vc.assert_result_parity(False, True, bool_case)
+    tensor_case = _pin_case("pin.memory.f32.rank2")
+    base = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    vc.assert_result_parity(base.clone(), base.clone(), tensor_case)
+    with pytest.raises(AssertionError, match="stride"):
+        vc.assert_result_parity(base.t().contiguous().t(), base.clone().t().contiguous().t().contiguous(), tensor_case)
 
 
 def test_tuple_result_parity_preserves_tensor_and_none_slots():

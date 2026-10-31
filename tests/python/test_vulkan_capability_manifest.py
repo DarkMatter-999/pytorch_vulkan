@@ -832,6 +832,26 @@ def test_manifest_rejects_status_execution_contradiction():
         validate_manifest_data(data, ROOT)
 
 
+def test_host_pinned_allocation_is_a_supported_only_execution_contract():
+    from tools.validate_vulkan_capabilities import EXECUTION_VALUES
+
+    assert "host_pinned_allocation" in EXECUTION_VALUES
+    deferred = _entry(status="deferred")
+    deferred["reason"] = "deferred_contract"
+    deferred["test_cases"] = [{"name": "example.case", "supported": False}]
+    deferred["execution_contract"] = "host_pinned_allocation"
+    with pytest.raises(ValueError, match=r"entries\[0\]\.execution_contract.*deferred before Vulkan"):
+        validate_manifest_data({"version": 1, "entries": [deferred]}, ROOT)
+
+
+def test_unknown_execution_contract_is_still_rejected():
+    data = {"version": 1, "entries": [_entry()]}
+    data["entries"][0]["execution_contract"] = "host_pinned_allocations"
+
+    with pytest.raises(ValueError, match=r"entries\[0\]\.execution_contract: unknown contract value"):
+        validate_manifest_data(data, ROOT)
+
+
 def test_manifest_rejects_aliasing_inplace_with_no_overlap():
     data = {"version": 1, "entries": [_entry()]}
     data["entries"][0]["inplace"] = "validated_exact_alias_inplace"

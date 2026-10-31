@@ -317,7 +317,10 @@ def test_declaration_with_a_typoed_key_is_rejected(monkeypatch):
 
 def test_unregistered_declarations_are_roadmap_not_errors():
     roadmap = generator._roadmap_schemas()
-    assert len(roadmap) == 84
+    # 84 until the 2026-10-22 storage-rebinding work registered (but kept deferred)
+    # _copy_from_and_resize, resize_, set_.source_Storage and
+    # set_.source_Storage_storage_offset; they are no longer unregistered roadmap.
+    assert len(roadmap) == 80
     assert "aten::concat.default" in roadmap
     assert "aten::reshape.default" not in roadmap
     assert not {"aten::dot.default", "aten::mv.default", "aten::matmul.default"} & roadmap

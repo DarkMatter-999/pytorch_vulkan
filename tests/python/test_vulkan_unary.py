@@ -161,6 +161,58 @@ def test_ceil_nonzero_storage_offset_matches_expected(vulkan_backend):
     torch.testing.assert_close(torch.ceil(tensor).cpu(), torch.tensor([2.0, 3.0]))
 
 
+def test_ceil_special_values_match_cpu_including_signed_zero(vulkan_backend):
+    values = torch.tensor(
+        [-1.5, -0.5, -0.0, 0.2, 1.0, 2.7, float("inf"), float("-inf"), float("nan")]
+    )
+    result = torch.ceil(values.to(vulkan_backend)).cpu()
+    expected = torch.ceil(values)
+
+    torch.testing.assert_close(result, expected, rtol=0, atol=0, equal_nan=True)
+    assert torch.equal(result.signbit(), expected.signbit())
+
+
+def test_ceil_zero_dimensional_and_empty_inputs_match_cpu(vulkan_backend):
+    scalar = torch.ceil(torch.tensor(1.2).to(vulkan_backend))
+    empty = torch.ceil(torch.empty((0, 3)).to(vulkan_backend))
+
+    assert scalar.shape == () and scalar.cpu().item() == 2.0
+    assert tuple(empty.shape) == (0, 3) and empty.device.type == scalar.device.type
+
+
+def test_ceil_gradient_is_constant_zero_without_history(vulkan_backend):
+    values = torch.tensor([0.5, 1.5, -0.5])
+    cpu_input = values.clone().requires_grad_(True)
+    (cpu_gradient,) = torch.autograd.grad(torch.ceil(cpu_input).sum(), cpu_input, create_graph=True)
+    tensor = values.to(vulkan_backend).requires_grad_(True)
+    result = torch.ceil(tensor)
+
+    assert type(result.grad_fn).__name__ == "CeilBackward0"
+    (gradient,) = torch.autograd.grad(result.sum(), tensor, create_graph=True)
+    torch.testing.assert_close(gradient.cpu(), cpu_gradient, rtol=0, atol=0)
+    assert gradient.device == tensor.device
+    assert gradient.requires_grad is cpu_gradient.requires_grad is False
+
+
+def test_ceil_transposed_input_matches_values_with_fresh_contiguous_output(vulkan_backend):
+    base = torch.arange(6.0).reshape(2, 3) + 0.3
+    result = torch.ceil(base.to(vulkan_backend).t())
+
+    torch.testing.assert_close(result.cpu(), torch.ceil(base.t()), rtol=0, atol=0)
+    # Recorded limitation: CPU preserves the transposed strides (1, 3); Vulkan
+    # unary operators return a fresh contiguous output.
+    assert result.is_contiguous()
+    assert torch.ceil(base.t()).stride() == (1, 3)
+
+
+def test_ceil_out_and_inplace_forms_remain_unsupported(vulkan_backend):
+    tensor = torch.tensor([0.5, 1.5]).to(vulkan_backend)
+    with pytest.raises(NotImplementedError, match="aten::ceil.out"):
+        torch.ceil(tensor, out=torch.empty_like(tensor))
+    with pytest.raises(NotImplementedError, match="aten::ceil.out"):
+        tensor.ceil_()
+
+
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
 def test_unary_second_vulkan_device_is_rejected(vulkan_backend, operation):
     _assert_unary_rejected(
