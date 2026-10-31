@@ -241,6 +241,21 @@ at::Tensor &sqrt_out(const at::Tensor &input, at::Tensor &out) {
                                               "sqrt");
 }
 
+at::Tensor &ceil_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Ceil,
+                                              "ceil");
+}
+
+at::Tensor &sigmoid_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Sigmoid,
+                                              "sigmoid");
+}
+
+at::Tensor &tanh_out(const at::Tensor &input, at::Tensor &out) {
+    return pytorch_vulkan::dispatch_unary_out(input, out, PointwiseOperation::Tanh,
+                                              "tanh");
+}
+
 at::Tensor &reject_neg_inplace(at::Tensor &self) {
     TORCH_CHECK(false, "Vulkan neg in-place variants are unsupported");
     return self;
@@ -253,6 +268,21 @@ at::Tensor &reject_abs_inplace(at::Tensor &self) {
 
 at::Tensor &reject_relu_inplace(at::Tensor &self) {
     TORCH_CHECK(false, "Vulkan relu in-place variants are unsupported");
+    return self;
+}
+
+at::Tensor &reject_ceil_inplace(at::Tensor &self) {
+    TORCH_CHECK(false, "Vulkan ceil in-place variants are unsupported");
+    return self;
+}
+
+at::Tensor &reject_sigmoid_inplace(at::Tensor &self) {
+    TORCH_CHECK(false, "Vulkan sigmoid in-place variants are unsupported");
+    return self;
+}
+
+at::Tensor &reject_tanh_inplace(at::Tensor &self) {
+    TORCH_CHECK(false, "Vulkan tanh in-place variants are unsupported");
     return self;
 }
 
@@ -273,9 +303,15 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("abs.out", &pytorch_vulkan::abs_out);
     m.impl("relu.out", &pytorch_vulkan::relu_out);
     m.impl("sqrt.out", &pytorch_vulkan::sqrt_out);
+    m.impl("ceil.out", &pytorch_vulkan::ceil_out);
+    m.impl("sigmoid.out", &pytorch_vulkan::sigmoid_out);
+    m.impl("tanh.out", &pytorch_vulkan::tanh_out);
     m.impl("neg_", &pytorch_vulkan::reject_neg_inplace);
     m.impl("abs_", &pytorch_vulkan::reject_abs_inplace);
     m.impl("relu_", &pytorch_vulkan::reject_relu_inplace);
+    m.impl("ceil_", &pytorch_vulkan::reject_ceil_inplace);
+    m.impl("sigmoid_", &pytorch_vulkan::reject_sigmoid_inplace);
+    m.impl("tanh_", &pytorch_vulkan::reject_tanh_inplace);
 }
 
 TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {

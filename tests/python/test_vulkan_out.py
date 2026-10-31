@@ -635,3 +635,137 @@ def test_out_dtype_and_device_rejections_are_zero_work(vulkan_backend):
     with pytest.raises(RuntimeError, match=r"Vulkan output tensor"):
         torch.add(lhs, rhs, out=torch.empty(2, dtype=torch.float32))
     _assert_zero_work()
+
+
+# --- ceil.out / sigmoid.out / tanh.out: the shared unary out= contract ---------
+
+NEW_UNARY_OUT = [
+    pytest.param(torch.ops.aten.ceil.out, torch.ceil, "ceil", id="ceil"),
+    pytest.param(torch.ops.aten.sigmoid.out, torch.sigmoid, "sigmoid", id="sigmoid"),
+    pytest.param(torch.ops.aten.tanh.out, torch.tanh, "tanh", id="tanh"),
+]
+_UNARY_OUT_VALUES = torch.tensor([-1.5, -0.5, 0.0, 0.2, 1.0, 2.7])
+
+
+def _vk(values, backend="vk"):
+    return values.to(backend)
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+def test_unary_out_values_return_named_output_and_leave_input_unchanged(
+    vulkan_backend, operation, reference, name
+):
+    source = _vk(_UNARY_OUT_VALUES)
+    out = torch.empty_like(source)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    result = operation(source, out=out)
+    pytorch_vulkan._C.synchronize()
+
+    assert result is out and out.device == source.device
+    dispatches, copies, transfers, fallbacks = pytorch_vulkan._C.execution_counter_snapshot()
+    assert dispatches > 0 and copies == 0 and transfers == 0 and fallbacks == 0
+    torch.testing.assert_close(out.cpu(), reference(_UNARY_OUT_VALUES))
+    torch.testing.assert_close(source.cpu(), _UNARY_OUT_VALUES)
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+@pytest.mark.parametrize("out_shape", [(0,), (2,), (9,), (2, 3)])
+def test_unary_out_resizes_a_mismatched_output_like_pytorch(
+    vulkan_backend, operation, reference, name, out_shape
+):
+    source = _vk(_UNARY_OUT_VALUES)
+    out = torch.empty(out_shape, device=vulkan_backend)
+    result = operation(source, out=out)
+    pytorch_vulkan._C.synchronize()
+
+    assert result is out and tuple(out.shape) == tuple(_UNARY_OUT_VALUES.shape)
+    torch.testing.assert_close(out.cpu(), reference(_UNARY_OUT_VALUES))
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+def test_unary_out_exact_alias_computes_in_place(vulkan_backend, operation, reference, name):
+    tensor = _vk(_UNARY_OUT_VALUES.clone())
+    assert operation(tensor, out=tensor) is tensor
+    pytorch_vulkan._C.synchronize()
+    torch.testing.assert_close(tensor.cpu(), reference(_UNARY_OUT_VALUES))
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+def test_unary_out_preserves_a_non_contiguous_output_layout(
+    vulkan_backend, operation, reference, name
+):
+    source_cpu = _UNARY_OUT_VALUES[:4].reshape(2, 2)
+    out = torch.empty_strided((2, 2), (1, 2), device=vulkan_backend)
+    assert operation(_vk(source_cpu), out=out) is out
+    pytorch_vulkan._C.synchronize()
+
+    assert tuple(out.stride()) == (1, 2)
+    torch.testing.assert_close(out.cpu(), reference(source_cpu))
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+def test_unary_out_zero_dimensional_empty_and_offset_inputs(
+    vulkan_backend, operation, reference, name
+):
+    scalar = torch.tensor(0.7)
+    out0 = torch.empty((), device=vulkan_backend)
+    operation(_vk(scalar), out=out0)
+    empty_out = torch.empty((0, 3), device=vulkan_backend)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    operation(_vk(torch.empty((0, 3))), out=empty_out)
+    _assert_zero_work()
+    base = _vk(_UNARY_OUT_VALUES)
+    offset_out = torch.empty(2, device=vulkan_backend)
+    operation(base[2:4], out=offset_out)
+    pytorch_vulkan._C.synchronize()
+
+    torch.testing.assert_close(out0.cpu(), reference(scalar))
+    assert tuple(empty_out.shape) == (0, 3)
+    torch.testing.assert_close(offset_out.cpu(), reference(_UNARY_OUT_VALUES[2:4]))
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+def test_unary_out_rejections_are_explicit_and_do_zero_vulkan_work(
+    vulkan_backend, operation, reference, name
+):
+    source = _vk(_UNARY_OUT_VALUES)
+
+    def rejects(pattern, call):
+        pytorch_vulkan._C.synchronize()
+        pytorch_vulkan._C.reset_execution_counters()
+        with pytest.raises(RuntimeError, match=pattern):
+            call()
+        _assert_zero_work()
+
+    base = _vk(torch.arange(8.0))
+    rejects("partially overlaps", lambda: operation(base[:4], out=base[2:6]))
+    rejects(
+        "internal overlap",
+        lambda: operation(source, out=torch.empty_strided((6,), (0,), device=vulkan_backend)),
+    )
+    for dtype in (torch.float64, torch.int64, torch.bool):
+        rejects(
+            r"Vulkan.*(dtype|float32)",
+            lambda dtype=dtype: operation(source, out=torch.empty(6, dtype=dtype, device=vulkan_backend)),
+        )
+    rejects("Vulkan output tensor", lambda: operation(source, out=torch.empty(6)))
+    integer_input = _vk(torch.tensor([1, 2]))
+    integer_out = torch.empty(2, device=vulkan_backend)
+    rejects(r"Vulkan.*(dtype|float32)", lambda: operation(integer_input, out=integer_out))
+    rank9_input = _vk(torch.empty((1,) * 9))
+    rank9_out = torch.empty((1,) * 9, device=vulkan_backend)
+    rejects("ranks up to 8", lambda: operation(rank9_input, out=rank9_out))
+
+
+@pytest.mark.parametrize("operation, reference, name", NEW_UNARY_OUT)
+def test_unary_out_with_a_requires_grad_input_is_rejected_like_pytorch(
+    vulkan_backend, operation, reference, name
+):
+    tensor = _vk(_UNARY_OUT_VALUES).requires_grad_(True)
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="out=... arguments don't support automatic differentiation"):
+        operation(tensor, out=torch.empty(6, device=vulkan_backend))
+    _assert_zero_work()

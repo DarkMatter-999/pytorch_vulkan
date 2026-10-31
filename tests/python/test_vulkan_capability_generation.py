@@ -320,7 +320,9 @@ def test_unregistered_declarations_are_roadmap_not_errors():
     # 84 until the 2026-10-22 storage-rebinding work registered (but kept deferred)
     # _copy_from_and_resize, resize_, set_.source_Storage and
     # set_.source_Storage_storage_offset; they are no longer unregistered roadmap.
-    assert len(roadmap) == 80
+    # ... and 80 -> 75 when ceil.out, sigmoid.out and tanh.out gained registrations and
+    # sigmoid_ and tanh_ gained explicit reject_* registrations (now rejected, not roadmap).
+    assert len(roadmap) == 75
     assert "aten::concat.default" in roadmap
     assert "aten::reshape.default" not in roadmap
     assert not {"aten::dot.default", "aten::mv.default", "aten::matmul.default"} & roadmap

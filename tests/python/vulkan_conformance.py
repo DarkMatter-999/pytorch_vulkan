@@ -2354,6 +2354,30 @@ def _argmax_out(value, out, dim, keepdim=False):
     return torch.ops.aten.argmax.out(value, dim, keepdim, out=out)
 
 
+def _unary_out_empty_inputs(*, requires_grad=False):
+    return torch.empty((0, 3)), torch.empty((0, 3))
+
+
+def _unary_out_wrong_dtype_inputs(*, requires_grad=False):
+    return (torch.randn(3, 4),)
+
+
+def _wrong_dtype_out_setup(inputs, device):
+    return inputs[0], torch.empty(inputs[0].shape, dtype=torch.float64, device=device)
+
+
+def _ceil_out(value, out):
+    return torch.ops.aten.ceil.out(value, out=out)
+
+
+def _sigmoid_out(value, out):
+    return torch.ops.aten.sigmoid.out(value, out=out)
+
+
+def _tanh_out(value, out):
+    return torch.ops.aten.tanh.out(value, out=out)
+
+
 def _pin_rank1(*, requires_grad=False):
     return (torch.arange(5, dtype=torch.float32) + 0.5,)
 
@@ -3321,6 +3345,17 @@ _MANIFEST_CASES.update({
     "pin.is-pinned.pinned-input": ("aten::is_pinned.default", True),
     "pin.is-pinned.pageable-input": ("aten::is_pinned.default", True),
     "pin.is-pinned.pinned-view": ("aten::is_pinned.default", True),
+})
+_MANIFEST_CASES.update({
+    "unary.ceil-out": ("aten::ceil.out", True),
+    "unary.ceil-out.empty": ("aten::ceil.out", True),
+    "unary.ceil-out.dtype.rejected": ("aten::ceil.out", False),
+    "unary.sigmoid-out": ("aten::sigmoid.out", True),
+    "unary.sigmoid-out.empty": ("aten::sigmoid.out", True),
+    "unary.sigmoid-out.dtype.rejected": ("aten::sigmoid.out", False),
+    "unary.tanh-out": ("aten::tanh.out", True),
+    "unary.tanh-out.empty": ("aten::tanh.out", True),
+    "unary.tanh-out.dtype.rejected": ("aten::tanh.out", False),
 })
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
@@ -5324,6 +5359,42 @@ ALL_CASES = tuple(
     _case("comparison.bitwise-and-out", "comparison", _bitwise_and_out,
           _bitwise_bool_out_inputs, cpu_reference=lambda a, b, out: torch.ops.aten.bitwise_and.Tensor_out(a, b, out=out.clone()),
           supported=True, expected_dtype=torch.bool, expected_shape=(3, 4)),
+    _case("unary.ceil-out", "unary", _ceil_out, _out_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.ceil.out, value, out),
+          supported=True, expected_dtype=torch.float32, expected_shape=(3, 4),
+          declared_shapes=("3x4",)),
+    _case("unary.ceil-out.empty", "unary", _ceil_out, _unary_out_empty_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.ceil.out, value, out),
+          supported=True, expected_dtype=torch.float32, expected_shape=(0, 3),
+          execution_mode="empty", declared_shapes=("0x3",)),
+    _case("unary.ceil-out.dtype.rejected", "unary", _ceil_out, _unary_out_wrong_dtype_inputs,
+          setup_inputs=_wrong_dtype_out_setup, supported=False,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.ceil.out, value, out.float()),
+          error_pattern=r"Vulkan ceil"),
+    _case("unary.sigmoid-out", "unary", _sigmoid_out, _out_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.sigmoid.out, value, out),
+          supported=True, expected_dtype=torch.float32, expected_shape=(3, 4),
+          declared_shapes=("3x4",)),
+    _case("unary.sigmoid-out.empty", "unary", _sigmoid_out, _unary_out_empty_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.sigmoid.out, value, out),
+          supported=True, expected_dtype=torch.float32, expected_shape=(0, 3),
+          execution_mode="empty", declared_shapes=("0x3",)),
+    _case("unary.sigmoid-out.dtype.rejected", "unary", _sigmoid_out, _unary_out_wrong_dtype_inputs,
+          setup_inputs=_wrong_dtype_out_setup, supported=False,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.sigmoid.out, value, out.float()),
+          error_pattern=r"Vulkan sigmoid"),
+    _case("unary.tanh-out", "unary", _tanh_out, _out_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.tanh.out, value, out),
+          supported=True, expected_dtype=torch.float32, expected_shape=(3, 4),
+          declared_shapes=("3x4",)),
+    _case("unary.tanh-out.empty", "unary", _tanh_out, _unary_out_empty_inputs,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.tanh.out, value, out),
+          supported=True, expected_dtype=torch.float32, expected_shape=(0, 3),
+          execution_mode="empty", declared_shapes=("0x3",)),
+    _case("unary.tanh-out.dtype.rejected", "unary", _tanh_out, _unary_out_wrong_dtype_inputs,
+          setup_inputs=_wrong_dtype_out_setup, supported=False,
+          cpu_reference=lambda value, out: _cpu_out_via_op(torch.ops.aten.tanh.out, value, out.float()),
+          error_pattern=r"Vulkan tanh"),
     _case("pin.memory.f32.rank1", "pin", _pin, _pin_rank1, cpu_reference=_cpu_pin_reference,
           expected_shape=(5,), execution_mode="host_pinned", convert_inputs=False,
           declared_shapes=("5",)),

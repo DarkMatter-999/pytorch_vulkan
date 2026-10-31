@@ -205,12 +205,16 @@ def test_ceil_transposed_input_matches_values_with_fresh_contiguous_output(vulka
     assert torch.ceil(base.t()).stride() == (1, 3)
 
 
-def test_ceil_out_and_inplace_forms_remain_unsupported(vulkan_backend):
+def test_ceil_inplace_form_is_explicitly_rejected_while_out_form_is_supported(vulkan_backend):
     tensor = torch.tensor([0.5, 1.5]).to(vulkan_backend)
-    with pytest.raises(NotImplementedError, match="aten::ceil.out"):
-        torch.ceil(tensor, out=torch.empty_like(tensor))
-    with pytest.raises(NotImplementedError, match="aten::ceil.out"):
+    out = torch.empty_like(tensor)
+    assert torch.ceil(tensor, out=out) is out
+    torch.testing.assert_close(out.cpu(), torch.tensor([1.0, 2.0]))
+    pytorch_vulkan._C.synchronize()
+    pytorch_vulkan._C.reset_execution_counters()
+    with pytest.raises(RuntimeError, match="Vulkan ceil in-place variants are unsupported"):
         tensor.ceil_()
+    assert pytorch_vulkan._C.compute_dispatch_count() == 0
 
 
 @pytest.mark.parametrize("operation", UNARY_OPERATIONS)
@@ -293,9 +297,11 @@ def test_gelu_tanh_matches_cpu_and_rejects_exact_mode(vulkan_backend):
     assert pytorch_vulkan._C.fallback_count() == 0
 
 
+# sigmoid.out and tanh.out are supported since the unary out= suite in
+# test_vulkan_out.py replaced their old rejection; gelu(out=) stays rejected.
 @pytest.mark.parametrize(
     "operation",
-    [torch.sigmoid, torch.tanh, torch.nn.functional.gelu],
+    [torch.nn.functional.gelu],
 )
 def test_activation_unsupported_overloads_do_not_dispatch(vulkan_backend, operation):
     tensor = torch.ones(2, dtype=torch.float32, device=vulkan_backend)
