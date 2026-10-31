@@ -68,8 +68,83 @@ void batch_norm_backward(uint index) {
   }
 }
 
+// LayerNorm modes 2-6. Bindings are positional: the host binds the inputs
+// first and the outputs next, so each mode names its roles below.
+bool ln_isnan(float v) { return (floatBitsToUint(v) & 0x7fffffffu) > 0x7f800000u; }
+float ln_nan() { return uintBitsToFloat(0x7fc00000u); }
+float ln_rstd(float variance) {
+  float t = variance + p.eps;
+  if (ln_isnan(t) || t < 0.0) return ln_nan();
+  if (t == 0.0) return uintBitsToFloat(0x7f800000u);
+  if (floatBitsToUint(t) == 0x7f800000u) return 0.0;
+  return 1.0 / sqrt(t);
+}
+bool ln_has_weight() { return (p.spatial & 1u) != 0u; }
+bool ln_has_bias() { return (p.spatial & 2u) != 0u; }
+
+// mode 2: in a=x; out b=mean, c=rstd; one invocation per row.
+void layer_norm_stats(uint row) {
+  if (row >= p.batch) return;
+  if (p.channels == 0u) { b[row] = 0.0; c[row] = ln_nan(); return; }
+  float n = float(p.channels); float sum = 0.0;
+  for (uint k = 0u; k < p.channels; ++k) sum += a[row * p.channels + k];
+  float m = sum / n; float v = 0.0;
+  for (uint k = 0u; k < p.channels; ++k) {
+    float q = a[row * p.channels + k] - m; v += q * q;
+  }
+  b[row] = m; c[row] = ln_rstd(v / n);
+}
+
+// mode 3: in a=x, b=mean, c=rstd, d=weight, e=bias; out f; one per element.
+void layer_norm_apply(uint index) {
+  if (index >= p.batch * p.channels) return;
+  uint row = index / p.channels; uint col = index % p.channels;
+  float y = (a[index] - b[row]) * c[row];
+  if (ln_has_weight()) y *= d[col];
+  if (ln_has_bias()) y += e[col];
+  f[index] = y;
+}
+
+// mode 4: in a=dy, b=x, c=mean, d=rstd, e=weight; out f=sum(dy*w*x), g=sum(dy*w).
+void layer_norm_backward_rows(uint row) {
+  if (row >= p.batch) return;
+  float ds = 0.0; float db = 0.0;
+  for (uint k = 0u; k < p.channels; ++k) {
+    uint q = row * p.channels + k;
+    float dyw = a[q] * (ln_has_weight() ? e[k] : 1.0);
+    ds += dyw * b[q]; db += dyw;
+  }
+  f[row] = ds; g[row] = db;
+}
+
+// mode 5: in a=dy, b=x, c=mean, d=rstd; out e=dweight, f=dbias; one per column.
+void layer_norm_backward_columns(uint col) {
+  if (col >= p.channels) return;
+  float dw = 0.0; float db = 0.0;
+  for (uint row = 0u; row < p.batch; ++row) {
+    uint q = row * p.channels + col;
+    dw += a[q] * (b[q] - c[row]) * d[row]; db += a[q];
+  }
+  e[col] = dw; f[col] = db;
+}
+
+// mode 6: in a=dy, b=x, c=mean, d=rstd, e=weight, f=ds, g=db; out h=dx.
+void layer_norm_backward_input(uint index) {
+  if (index >= p.batch * p.channels) return;
+  uint row = index / p.channels; uint col = index % p.channels;
+  float n = float(p.channels); float r = d[row]; float scale = 1.0 / n;
+  float bb = (g[row] * c[row] - f[row]) * r * r * r * scale;
+  float cc = -bb * c[row] - g[row] * r * scale;
+  h[index] = r * a[index] * (ln_has_weight() ? e[col] : 1.0) + bb * b[index] + cc;
+}
+
 void main() {
   uint index = gl_GlobalInvocationID.x;
   if (p.mode == 0u) batch_norm_forward(index);
   else if (p.mode == 1u) batch_norm_backward(index);
+  else if (p.mode == 2u) layer_norm_stats(index);
+  else if (p.mode == 3u) layer_norm_apply(index);
+  else if (p.mode == 4u) layer_norm_backward_rows(index);
+  else if (p.mode == 5u) layer_norm_backward_columns(index);
+  else if (p.mode == 6u) layer_norm_backward_input(index);
 }

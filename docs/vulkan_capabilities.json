@@ -12320,7 +12320,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "first_order_or_none",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -12333,8 +12333,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -12342,33 +12342,97 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 4,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
       ],
       "schema": "aten::native_layer_norm.default",
       "shape_constraints": [
-        "unwitnessed"
+        "0x4",
+        "2x0",
+        "2x3x4x5",
+        "3x4x6",
+        "5x8"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "normalization.native-layer-norm",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm.gradients",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm.non-affine",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm.multi-dim",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm.empty",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm.zero-width",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm.dtype.rejected",
+          "supported": false
+        },
+        {
+          "name": "normalization.native-layer-norm.normalized-shape.rejected",
+          "supported": false
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "normalization.native-layer-norm",
+          "normalization.native-layer-norm.empty",
+          "normalization.native-layer-norm.gradients",
+          "normalization.native-layer-norm.multi-dim",
+          "normalization.native-layer-norm.non-affine",
+          "normalization.native-layer-norm.zero-width"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          2,
+          3,
+          4
+        ]
       }
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "first_order_backward",
+      "autograd": "backward_kernel",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -12381,8 +12445,8 @@
           "float32"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -12390,28 +12454,83 @@
       ],
       "out": "not_applicable",
       "ranks": {
-        "max": 8,
-        "min": 0
+        "max": 4,
+        "min": 2
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
       ],
       "schema": "aten::native_layer_norm_backward.default",
       "shape_constraints": [
-        "unwitnessed"
+        "0x4",
+        "2x0",
+        "2x3x4x5",
+        "3x4x6",
+        "5x8"
       ],
-      "status": "deferred",
-      "test_cases": [],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "normalization.native-layer-norm-backward",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm-backward.non-affine",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm-backward.multi-dim",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm-backward.empty",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm-backward.zero-width",
+          "supported": true
+        },
+        {
+          "name": "normalization.native-layer-norm-backward.mask.rejected",
+          "supported": false
+        }
+      ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "normalization.native-layer-norm-backward",
+          "normalization.native-layer-norm-backward.empty",
+          "normalization.native-layer-norm-backward.multi-dim",
+          "normalization.native-layer-norm-backward.non-affine",
+          "normalization.native-layer-norm-backward.zero-width"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            2
+          ],
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          2,
+          3,
+          4
+        ]
       }
     },
     {

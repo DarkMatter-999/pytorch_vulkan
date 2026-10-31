@@ -323,7 +323,8 @@ def test_unregistered_declarations_are_roadmap_not_errors():
     # ... and 80 -> 75 when ceil.out, sigmoid.out and tanh.out gained registrations and
     # sigmoid_ and tanh_ gained explicit reject_* registrations (now rejected, not roadmap).
     # ... and 75 -> 74 when gelu.out gained its registration.
-    assert len(roadmap) == 74
+    # ... and 74 -> 72 when native_layer_norm and native_layer_norm_backward gained registrations.
+    assert len(roadmap) == 72
     assert "aten::concat.default" in roadmap
     assert "aten::reshape.default" not in roadmap
     assert not {"aten::dot.default", "aten::mv.default", "aten::matmul.default"} & roadmap

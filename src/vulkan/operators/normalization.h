@@ -12,4 +12,11 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> native_batch_norm_backward(
     const c10::optional<at::Tensor> &, const c10::optional<at::Tensor> &,
     const c10::optional<at::Tensor> &, const c10::optional<at::Tensor> &, bool, double,
     std::array<bool, 3>);
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+native_layer_norm(const at::Tensor &, at::IntArrayRef, const c10::optional<at::Tensor> &,
+                  const c10::optional<at::Tensor> &, double);
+std::tuple<at::Tensor, at::Tensor, at::Tensor> native_layer_norm_backward(
+    const at::Tensor &, const at::Tensor &, at::IntArrayRef, const at::Tensor &,
+    const at::Tensor &, const c10::optional<at::Tensor> &,
+    const c10::optional<at::Tensor> &, std::array<bool, 3>);
 } // namespace pytorch_vulkan

@@ -144,8 +144,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
            if(VULKAN_SHADER_TOOLCHAIN_PROFILE)
              add_custom_target(vulkan_operator_shader_generate
               COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
-                      --expected-header-sha256 dae7afa13029738e3b1d879a8d1c083562e37b9f5bc8bc8a53310c565e5bff78
-                      --expected-manifest-sha256 749d0fd5a26a3c2ad9201a52c0520243e9d808ed844dc780f5f54a060f01f71a
+                      --expected-header-sha256 664896fa8b8c9f92a2d971f65fc097b2917101bdadb21a798652e0fe9d5bd484
+                      --expected-manifest-sha256 22112b1de79f4f84a6e1ade6ebc7d8ee02627828d13d258c67894ea9aec618b7
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp

@@ -2392,6 +2392,79 @@ def _cpu_gelu_out(approximate):
     return reference
 
 
+def _ln_seeded(shape, seed, *, requires_grad=False, offset=0.0):
+    generator = torch.Generator().manual_seed(seed)
+    value = torch.randn(shape, generator=generator, dtype=torch.float32) + offset
+    return value.requires_grad_(requires_grad)
+
+
+def _ln_forward_inputs(shape, normalized, *, affine=True):
+    def factory(*, requires_grad=False):
+        x = _ln_seeded(shape, 301, requires_grad=requires_grad)
+        if not affine:
+            return (x,)
+        return (x, _ln_seeded(normalized, 302, requires_grad=requires_grad, offset=1.0),
+                _ln_seeded(normalized, 303, requires_grad=requires_grad))
+    return factory
+
+
+def _ln_backward_inputs(shape, normalized, *, affine=True):
+    def factory(*, requires_grad=False):
+        x = _ln_seeded(shape, 311)
+        weight = _ln_seeded(normalized, 312, offset=1.0) if affine else None
+        bias = _ln_seeded(normalized, 313) if affine else None
+        _, mean, rstd = torch.native_layer_norm(x, normalized, weight, bias, 1e-5)
+        grad = _ln_seeded(shape, 314)
+        return (grad, x, mean, rstd) + ((weight, bias) if affine else ())
+    return factory
+
+
+def _layer_norm_tuple(x, weight=None, bias=None, *, normalized_shape):
+    return torch.native_layer_norm(x, normalized_shape, weight, bias, 1e-5)
+
+
+def _layer_norm_output(x, weight=None, bias=None, *, normalized_shape):
+    return torch.native_layer_norm(x, normalized_shape, weight, bias, 1e-5)[0]
+
+
+def _layer_norm_backward(grad, x, mean, rstd, weight=None, bias=None, *,
+                         normalized_shape, mask):
+    return torch.ops.aten.native_layer_norm_backward(
+        grad, x, normalized_shape, mean, rstd, weight, bias, mask
+    )
+
+
+def _ln_mask_rejected_inputs(*, requires_grad=False):
+    return _ln_backward_inputs((3, 4), (4,), affine=False)()
+
+
+def _ln_double_weight_setup(inputs, device):
+    x, weight, bias = inputs
+    return x, weight.double() if device != "cpu" else weight, bias
+
+
+def _ln_empty_forward_inputs(*, requires_grad=False):
+    return (torch.empty((0, 4)), torch.ones(4), torch.zeros(4))
+
+
+def _ln_zero_width_forward_inputs(*, requires_grad=False):
+    return (_ln_seeded((2, 0), 321), torch.ones(0), torch.zeros(0))
+
+
+def _ln_empty_backward_inputs(*, requires_grad=False):
+    x = torch.empty((0, 4))
+    weight, bias = torch.ones(4), torch.zeros(4)
+    _, mean, rstd = torch.native_layer_norm(x, (4,), weight, bias, 1e-5)
+    return (torch.empty((0, 4)), x, mean, rstd, weight, bias)
+
+
+def _ln_zero_width_backward_inputs(*, requires_grad=False):
+    x = _ln_seeded((2, 0), 322)
+    weight, bias = torch.ones(0), torch.zeros(0)
+    _, mean, rstd = torch.native_layer_norm(x, (0,), weight, bias, 1e-5)
+    return (_ln_seeded((2, 0), 323), x, mean, rstd, weight, bias)
+
+
 def _pin_rank1(*, requires_grad=False):
     return (torch.arange(5, dtype=torch.float32) + 0.5,)
 
@@ -3374,6 +3447,22 @@ _MANIFEST_CASES.update({
     "unary.gelu-out.empty": ("aten::gelu.out", True),
     "unary.gelu-out.dtype.rejected": ("aten::gelu.out", False),
     "unary.gelu-out.approximate-none.rejected": ("aten::gelu.out", False),
+})
+_MANIFEST_CASES.update({
+    "normalization.native-layer-norm": ("aten::native_layer_norm.default", True),
+    "normalization.native-layer-norm.gradients": ("aten::native_layer_norm.default", True),
+    "normalization.native-layer-norm.non-affine": ("aten::native_layer_norm.default", True),
+    "normalization.native-layer-norm.multi-dim": ("aten::native_layer_norm.default", True),
+    "normalization.native-layer-norm.empty": ("aten::native_layer_norm.default", True),
+    "normalization.native-layer-norm.zero-width": ("aten::native_layer_norm.default", True),
+    "normalization.native-layer-norm.dtype.rejected": ("aten::native_layer_norm.default", False),
+    "normalization.native-layer-norm.normalized-shape.rejected": ("aten::native_layer_norm.default", False),
+    "normalization.native-layer-norm-backward": ("aten::native_layer_norm_backward.default", True),
+    "normalization.native-layer-norm-backward.non-affine": ("aten::native_layer_norm_backward.default", True),
+    "normalization.native-layer-norm-backward.multi-dim": ("aten::native_layer_norm_backward.default", True),
+    "normalization.native-layer-norm-backward.empty": ("aten::native_layer_norm_backward.default", True),
+    "normalization.native-layer-norm-backward.zero-width": ("aten::native_layer_norm_backward.default", True),
+    "normalization.native-layer-norm-backward.mask.rejected": ("aten::native_layer_norm_backward.default", False),
 })
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
@@ -5058,6 +5147,156 @@ ALL_CASES = tuple(
         cpu_reference=_native_batch_norm_backward_output,
         expected_shape=(3, 4, 5, 7),
         declared_shapes=("3x4x5x7",),
+    ),
+    _case(
+        "normalization.native-layer-norm",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_forward_inputs((3, 4, 6), (6,)),
+        kwargs={"normalized_shape": (6,)},
+        cpu_reference=_layer_norm_tuple,
+        expected_shapes=((3, 4, 6), (3, 4, 1), (3, 4, 1)),
+        declared_shapes=("3x4x6",),
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm.gradients",
+        "normalization",
+        _layer_norm_output,
+        _ln_forward_inputs((3, 4, 6), (6,)),
+        kwargs={"normalized_shape": (6,)},
+        cpu_reference=_layer_norm_output,
+        expected_shape=(3, 4, 6),
+        check_gradients=True,
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm.non-affine",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_forward_inputs((5, 8), (8,), affine=False),
+        kwargs={"normalized_shape": (8,)},
+        cpu_reference=_layer_norm_tuple,
+        expected_shapes=((5, 8), (5, 1), (5, 1)),
+        declared_shapes=("5x8",),
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm.multi-dim",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_forward_inputs((2, 3, 4, 5), (4, 5)),
+        kwargs={"normalized_shape": (4, 5)},
+        cpu_reference=_layer_norm_tuple,
+        expected_shapes=((2, 3, 4, 5), (2, 3, 1, 1), (2, 3, 1, 1)),
+        declared_shapes=("2x3x4x5",),
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm.empty",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_empty_forward_inputs,
+        kwargs={"normalized_shape": (4,)},
+        cpu_reference=_layer_norm_tuple,
+        expected_shapes=((0, 4), (0, 1), (0, 1)),
+        execution_mode="empty",
+        declared_shapes=("0x4",),
+    ),
+    _case(
+        "normalization.native-layer-norm.zero-width",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_zero_width_forward_inputs,
+        kwargs={"normalized_shape": (0,)},
+        cpu_reference=_layer_norm_tuple,
+        expected_shapes=((2, 0), (2, 1), (2, 1)),
+        declared_shapes=("2x0",),
+    ),
+    _case(
+        "normalization.native-layer-norm.dtype.rejected",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_forward_inputs((3, 4), (4,)),
+        kwargs={"normalized_shape": (4,)},
+        setup_inputs=_ln_double_weight_setup,
+        supported=False,
+        cpu_reference=_layer_norm_tuple,
+        error_pattern=r"Vulkan native_layer_norm weight requires strided float32",
+    ),
+    _case(
+        "normalization.native-layer-norm.normalized-shape.rejected",
+        "normalization",
+        _layer_norm_tuple,
+        _ln_forward_inputs((3, 4), (4,), affine=False),
+        kwargs={"normalized_shape": (3,)},
+        supported=False,
+        cpu_reference=lambda x, **kwargs: torch.native_layer_norm(x, (4,), None, None, 1e-5),
+        error_pattern=r"expected input with shape",
+    ),
+    _case(
+        "normalization.native-layer-norm-backward",
+        "normalization",
+        _layer_norm_backward,
+        _ln_backward_inputs((3, 4, 6), (6,)),
+        kwargs={"normalized_shape": (6,), "mask": [True, True, True]},
+        cpu_reference=_layer_norm_backward,
+        expected_shapes=((3, 4, 6), (6,), (6,)),
+        declared_shapes=("3x4x6",),
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm-backward.non-affine",
+        "normalization",
+        _layer_norm_backward,
+        _ln_backward_inputs((5, 8), (8,), affine=False),
+        kwargs={"normalized_shape": (8,), "mask": [True, False, False]},
+        cpu_reference=_layer_norm_backward,
+        expected_shapes=((5, 8), None, None),
+        declared_shapes=("5x8",),
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm-backward.multi-dim",
+        "normalization",
+        _layer_norm_backward,
+        _ln_backward_inputs((2, 3, 4, 5), (4, 5)),
+        kwargs={"normalized_shape": (4, 5), "mask": [True, True, True]},
+        cpu_reference=_layer_norm_backward,
+        expected_shapes=((2, 3, 4, 5), (4, 5), (4, 5)),
+        declared_shapes=("2x3x4x5",),
+        rtol=2e-5, atol=3e-6,
+    ),
+    _case(
+        "normalization.native-layer-norm-backward.empty",
+        "normalization",
+        _layer_norm_backward,
+        _ln_empty_backward_inputs,
+        kwargs={"normalized_shape": (4,), "mask": [True, True, True]},
+        cpu_reference=_layer_norm_backward,
+        expected_shapes=((0, 4), (4,), (4,)),
+        declared_shapes=("0x4",),
+    ),
+    _case(
+        "normalization.native-layer-norm-backward.zero-width",
+        "normalization",
+        _layer_norm_backward,
+        _ln_zero_width_backward_inputs,
+        kwargs={"normalized_shape": (0,), "mask": [True, True, True]},
+        cpu_reference=_layer_norm_backward,
+        expected_shapes=((2, 0), (0,), (0,)),
+        execution_mode="empty",
+        declared_shapes=("2x0",),
+    ),
+    _case(
+        "normalization.native-layer-norm-backward.mask.rejected",
+        "normalization",
+        _layer_norm_backward,
+        _ln_mask_rejected_inputs,
+        kwargs={"normalized_shape": (4,), "mask": [True, True, False]},
+        supported=False,
+        cpu_reference=lambda *a, **k: None,
+        error_pattern=r"output_mask\[1\] requires weight",
     ),
     _case(
         "classification.nll-forward",

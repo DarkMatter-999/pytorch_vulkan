@@ -22,9 +22,9 @@ This file lists **every dispatcher schema and overload** in the project's suppor
 
 | Status | Rows |
 |---|---:|
-| Supported (scoped) | 57 |
+| Supported (scoped) | 59 |
 | Partial | 44 |
-| Deferred | 89 |
+| Deferred | 87 |
 | Unsupported (verified) | 4 |
 | Unreviewed | 3369 |
 | **Total** | **3563** |
@@ -2389,9 +2389,9 @@ _test::leaky_relu.default  _test::leaky_relu(Tensor self, float v=0.01) -> Tenso
 | `aten::native_group_norm.out` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::native_group_norm_backward.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::native_group_norm_backward.out` | Unreviewed | — | Not yet audited for Vulkan. |
-| `aten::native_layer_norm.default` | Deferred | — | Deferred by capability declaration (`reason: deferred_contract`, `execution_contract: deferred_before_vulkan`), declared in `852df95`; direct PrivateUse1 registration present. Evidence: [`aten::native_layer_norm.default`](vulkan_capabilities.json); see [Deferred operator-expansion inventory](vulkan_operator_capability_matrix.md). A registration is source evidence only, not a support claim; it may serve a different documented slice. No runtime support claimed. |
+| `aten::native_layer_norm.default` | Supported (scoped) | (this change; pending commit) | Scope: float32 `vk:0`; strided input (densified by a Vulkan copy); rank 2-4 witnessed, up to 8; any `normalized_shape` length; optional weight/bias; any `eps` incl. 0/negative/non-finite (CPU NaN/Inf results); empty batches and zero-width normalization follow CPU; autograd first-order only via generated `NativeLayerNormBackward0` (`create_graph`, forward AD, `torch.func`, `vmap` unclaimed). Evidence: [`aten::native_layer_norm.default`](vulkan_capabilities.json), tests test_vulkan_layer_norm.py, test_vulkan_conformance.py; cases `normalization.native-layer-norm*`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::native_layer_norm.out` | Unreviewed | — | Not yet audited for Vulkan. |
-| `aten::native_layer_norm_backward.default` | Deferred | — | Deferred by capability declaration (`reason: deferred_contract`, `execution_contract: deferred_before_vulkan`), declared in `852df95`; direct PrivateUse1 registration present. Evidence: [`aten::native_layer_norm_backward.default`](vulkan_capabilities.json); see [Deferred operator-expansion inventory](vulkan_operator_capability_matrix.md). A registration is source evidence only, not a support claim; it may serve a different documented slice. No runtime support claimed. |
+| `aten::native_layer_norm_backward.default` | Supported (scoped) | (this change; pending commit) | Scope: float32 `vk:0`; all autograd-produced `output_mask` values; strict `grad_out`/`mean`/`rstd` shape checks; expanded or non-contiguous `grad_out`/input densified by a Vulkan copy; M = 0 gives zero `dW`/`dB`; first-order only. Evidence: [`aten::native_layer_norm_backward.default`](vulkan_capabilities.json), tests test_vulkan_layer_norm.py, test_vulkan_conformance.py; cases `normalization.native-layer-norm-backward*`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::native_layer_norm_backward.out` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::native_norm.ScalarOpt_dim_dtype` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::native_norm.ScalarOpt_dim_dtype_out` | Unreviewed | — | Not yet audited for Vulkan. |
