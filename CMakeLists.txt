@@ -79,6 +79,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/generated/convolution_spv.sha256
                      src/vulkan/shaders/generated/pooling_spv.h
                      src/vulkan/shaders/generated/pooling_spv.sha256
+                     src/vulkan/shaders/generated/interpolation_spv.h
+                     src/vulkan/shaders/generated/interpolation_spv.sha256
                     src/vulkan/shaders/generated/f32_to_double_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
@@ -99,6 +101,7 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                     src/vulkan/shaders/glsl/masked_select.comp
                      src/vulkan/shaders/glsl/convolution.comp
                         src/vulkan/shaders/glsl/pooling.comp
+                        src/vulkan/shaders/glsl/interpolation.comp
                          src/vulkan/shaders/glsl/loss.comp
                          src/vulkan/shaders/glsl/rnn_sequence.comp
                          src/vulkan/shaders/glsl/normalization.comp
@@ -374,6 +377,7 @@ if(BUILD_PYTHON_EXTENSION)
            src/vulkan/operators/linear.h src/vulkan/operators/convolution.cpp
            src/vulkan/operators/convolution.h src/vulkan/operators/pooling.cpp
               src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
+              src/vulkan/operators/interpolation.cpp src/vulkan/operators/interpolation.h
                src/vulkan/operators/comparison.h src/vulkan/operators/optimizer.h
                 src/vulkan/operators/normalization.cpp src/vulkan/operators/normalization.h
                 src/vulkan/operators/classification.cpp src/vulkan/operators/classification.h
@@ -454,6 +458,18 @@ if(BUILD_PYTHON_EXTENSION)
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pooling_spv.h
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/pooling_spv.sha256
                      ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/pooling.comp)
+        add_custom_target(vulkan_interpolation_shader_generate
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_interpolation_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_interpolation_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/interpolation.comp)
+        add_custom_target(vulkan_interpolation_shader_integrity
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_interpolation_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/interpolation_spv.h
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/interpolation_spv.sha256
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/interpolation.comp)
        add_custom_target(vulkan_formatter_double_shader_integrity
                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py
@@ -482,7 +498,8 @@ if(BUILD_PYTHON_EXTENSION)
            vulkan_reduction_shader_integrity vulkan_model_shader_integrity
            vulkan_masked_select_shader_integrity vulkan_convolution_shader_integrity
            vulkan_pooling_shader_integrity vulkan_formatter_double_shader_integrity
-           vulkan_pointwise_shader_integrity vulkan_operator_shader_integrity)
+           vulkan_pointwise_shader_integrity vulkan_operator_shader_integrity
+           vulkan_interpolation_shader_integrity)
        if(BUILD_TESTING)
           add_test(NAME vulkan_reduction_shader_integrity
                     COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
@@ -494,6 +511,8 @@ if(BUILD_PYTHON_EXTENSION)
                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_convolution_spv.py)
            add_test(NAME vulkan_pooling_shader_integrity
                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
+           add_test(NAME vulkan_interpolation_shader_integrity
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py)
            add_test(NAME vulkan_formatter_double_shader_integrity
                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
              add_test(NAME vulkan_pointwise_shader_integrity

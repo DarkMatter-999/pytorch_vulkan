@@ -14957,6 +14957,586 @@
     },
     {
       "aliasing": "no_overlap",
+      "autograd": "first_order_or_none",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 4
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::upsample_nearest2d.default",
+      "shape_constraints": [
+        "0x3x4x5",
+        "2x3x4x5",
+        "2x3x8x10"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "interpolation.nearest",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.scale-hint",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.identity",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.downsample",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.channels-last",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.scale.rejected",
+          "supported": false
+        },
+        {
+          "name": "interpolation.nearest.double",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest.size-limit.rejected",
+          "supported": false
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "interpolation.nearest",
+          "interpolation.nearest.channels-last",
+          "interpolation.nearest.double",
+          "interpolation.nearest.downsample",
+          "interpolation.nearest.empty-batch",
+          "interpolation.nearest.identity",
+          "interpolation.nearest.scale-hint"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "backward_kernel",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 4
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::upsample_nearest2d_backward.default",
+      "shape_constraints": [
+        "0x3x8x10",
+        "2x3x3x4",
+        "2x3x5x7",
+        "2x3x7x9"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "interpolation.nearest-backward",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-backward.scale-hint",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-backward.downsample",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-backward.channels-last",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-backward.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-backward.shape.rejected",
+          "supported": false
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "interpolation.nearest-backward",
+          "interpolation.nearest-backward.channels-last",
+          "interpolation.nearest-backward.downsample",
+          "interpolation.nearest-backward.empty-batch",
+          "interpolation.nearest-backward.scale-hint"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "first_order_or_none",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 4
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::_upsample_nearest_exact2d.default",
+      "shape_constraints": [
+        "0x3x4x5",
+        "2x3x4x5",
+        "2x3x8x10"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "interpolation.nearest-exact",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact.scale-hint",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact.identity",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact.downsample",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact.channels-last",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact.scale.rejected",
+          "supported": false
+        },
+        {
+          "name": "interpolation.nearest-exact.double",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "interpolation.nearest-exact",
+          "interpolation.nearest-exact.channels-last",
+          "interpolation.nearest-exact.double",
+          "interpolation.nearest-exact.downsample",
+          "interpolation.nearest-exact.empty-batch",
+          "interpolation.nearest-exact.identity",
+          "interpolation.nearest-exact.scale-hint"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "backward_kernel",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 4
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::_upsample_nearest_exact2d_backward.default",
+      "shape_constraints": [
+        "0x3x8x10",
+        "2x3x3x4",
+        "2x3x5x7",
+        "2x3x7x9"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "interpolation.nearest-exact-backward",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact-backward.scale-hint",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact-backward.downsample",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact-backward.channels-last",
+          "supported": true
+        },
+        {
+          "name": "interpolation.nearest-exact-backward.empty-batch",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "interpolation.nearest-exact-backward",
+          "interpolation.nearest-exact-backward.channels-last",
+          "interpolation.nearest-exact-backward.downsample",
+          "interpolation.nearest-exact-backward.empty-batch",
+          "interpolation.nearest-exact-backward.scale-hint"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "first_order_or_none",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 4
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::upsample_bilinear2d.default",
+      "shape_constraints": [
+        "0x3x4x5",
+        "2x3x4x5",
+        "2x3x8x10"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "interpolation.bilinear",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear.scale-hint",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear.identity",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear.downsample",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear.channels-last",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear.scale.rejected",
+          "supported": false
+        },
+        {
+          "name": "interpolation.bilinear.align-corners",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "interpolation.bilinear",
+          "interpolation.bilinear.align-corners",
+          "interpolation.bilinear.channels-last",
+          "interpolation.bilinear.downsample",
+          "interpolation.bilinear.empty-batch",
+          "interpolation.bilinear.identity",
+          "interpolation.bilinear.scale-hint"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "backward_kernel",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 4
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::upsample_bilinear2d_backward.default",
+      "shape_constraints": [
+        "0x3x8x10",
+        "2x3x3x4",
+        "2x3x5x7",
+        "2x3x7x9"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "interpolation.bilinear-backward",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear-backward.scale-hint",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear-backward.downsample",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear-backward.channels-last",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear-backward.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "interpolation.bilinear-backward.align-corners",
+          "supported": true
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "interpolation.bilinear-backward",
+          "interpolation.bilinear-backward.align-corners",
+          "interpolation.bilinear-backward.channels-last",
+          "interpolation.bilinear-backward.downsample",
+          "interpolation.bilinear-backward.empty-batch",
+          "interpolation.bilinear-backward.scale-hint"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
       "autograd": "first_order_backward",
       "device": {
         "index": 0,

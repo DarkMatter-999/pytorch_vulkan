@@ -40,6 +40,12 @@ struct VulkanPooling2dGeometry {
     uint32_t divisor;
 };
 
+struct VulkanInterpolation2dGeometry {
+    uint32_t batch, channels, in_height, in_width, out_height, out_width;
+    float scale_h, scale_w;
+    bool align_corners;
+};
+
 class VulkanCompute final {
   public:
     explicit VulkanCompute(const VulkanPlatform &platform);
@@ -239,6 +245,12 @@ class VulkanCompute final {
                    const VulkanTensorLayout *indices_layout, VkDeviceSize flags_bytes,
                    const VulkanPooling2dGeometry &geometry,
                    uint32_t invocations) const;
+    // 2-D interpolation, operations 0-5 of interpolation.comp (see interpolation.cpp).
+    void interpolate2d(uint32_t operation, VkBuffer input, VkBuffer output,
+                       const VulkanTensorLayout &input_layout,
+                       const VulkanTensorLayout &output_layout,
+                       const VulkanInterpolation2dGeometry &geometry,
+                       uint32_t invocations) const;
     void compute_multi_output(const VulkanBuffer *const *inputs,
                               const VulkanTensorLayout *const *input_layouts,
                               const VulkanBuffer *const *outputs,
@@ -310,6 +322,10 @@ class VulkanCompute final {
                           VkDeviceSize flags_bytes, const void *params,
                           uint32_t params_size, uint32_t invocations,
                           const void *metadata, VkDeviceSize metadata_size) const;
+    void dispatch_interpolation(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
+                                VkDeviceSize output_bytes, const void *params,
+                                uint32_t params_size, uint32_t invocations,
+                                const void *metadata, VkDeviceSize metadata_size) const;
     void dispatch_extra(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
                         VkDeviceSize output_bytes, VkPipeline pipeline,
                         VkPipelineLayout pipeline_layout,
@@ -412,6 +428,10 @@ class VulkanCompute final {
     VkPipelineLayout pooling_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule pooling_shader_ = VK_NULL_HANDLE;
     VkPipeline pooling_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout interpolation_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout interpolation_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule interpolation_shader_ = VK_NULL_HANDLE;
+    VkPipeline interpolation_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout normalization_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout normalization_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule normalization_shader_ = VK_NULL_HANDLE;

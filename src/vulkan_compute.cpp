@@ -15,6 +15,7 @@
 #include "vulkan/shaders/generated/operator_spv.h"
 #include "vulkan/shaders/generated/pointwise_spv.h"
 #include "vulkan/shaders/generated/pooling_spv.h"
+#include "vulkan/shaders/generated/interpolation_spv.h"
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
 #include "vulkan/shaders/generated/rnn_sequence_spv.h"
 #include "vulkan_buffer.h"
@@ -197,6 +198,16 @@ struct PoolingParams {
     uint32_t pad_h, pad_w, dilation_h, dilation_w, pool_flags, divisor;
 };
 static_assert(sizeof(PoolingParams) == 68, "pooling push-constant ABI size mismatch");
+struct InterpolationMetadata {
+    TensorMetadata tensors[2];
+};
+struct InterpolationParams {
+    uint32_t operation, batch, channels, in_h, in_w, out_h, out_w;
+    float scale_h, scale_w;
+    uint32_t flags, count;
+};
+static_assert(sizeof(InterpolationParams) == 44,
+              "interpolation push-constant ABI size mismatch");
 struct GemmParams {
     uint32_t m, n, k;
     uint32_t a_row_stride, a_col_stride;
@@ -656,6 +667,11 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                      pooling_pipeline_layout_, pooling_pipeline_,
                      vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize,
                      sizeof(PoolingParams), 5);
+        create_extra("interpolation", interpolation_descriptor_layout_,
+                     interpolation_shader_, interpolation_pipeline_layout_,
+                     interpolation_pipeline_, vulkan_interpolation_shader::kCode,
+                     vulkan_interpolation_shader::kCodeSize,
+                     sizeof(InterpolationParams), 3);
         create_extra("normalization", normalization_descriptor_layout_,
                      normalization_shader_, normalization_pipeline_layout_,
                      normalization_pipeline_, vulkan_normalization_shader::kCode,
@@ -1043,6 +1059,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         indexing_pipeline_ = VK_NULL_HANDLE;
         broadcast_pipeline_ = VK_NULL_HANDLE;
         pooling_pipeline_ = VK_NULL_HANDLE;
+        interpolation_pipeline_ = VK_NULL_HANDLE;
         normalization_pipeline_ = VK_NULL_HANDLE;
         classification_pipeline_ = VK_NULL_HANDLE;
         f32_to_double_pipeline_ = VK_NULL_HANDLE;
@@ -1059,6 +1076,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         indexing_pipeline_layout_ = VK_NULL_HANDLE;
         broadcast_pipeline_layout_ = VK_NULL_HANDLE;
         pooling_pipeline_layout_ = VK_NULL_HANDLE;
+        interpolation_pipeline_layout_ = VK_NULL_HANDLE;
         normalization_pipeline_layout_ = VK_NULL_HANDLE;
         classification_pipeline_layout_ = VK_NULL_HANDLE;
         f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
@@ -1075,6 +1093,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         indexing_shader_ = VK_NULL_HANDLE;
         broadcast_shader_ = VK_NULL_HANDLE;
         pooling_shader_ = VK_NULL_HANDLE;
+        interpolation_shader_ = VK_NULL_HANDLE;
         normalization_shader_ = VK_NULL_HANDLE;
         classification_shader_ = VK_NULL_HANDLE;
         f32_to_double_shader_ = VK_NULL_HANDLE;
@@ -1106,6 +1125,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipeline(device_, convolution_pipeline_, nullptr);
         if (pooling_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, pooling_pipeline_, nullptr);
+        if (interpolation_pipeline_ != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, interpolation_pipeline_, nullptr);
         if (masked_count_pipeline_ != VK_NULL_HANDLE)
             vkDestroyPipeline(device_, masked_count_pipeline_, nullptr);
         if (masked_compact_pipeline_ != VK_NULL_HANDLE)
@@ -1139,6 +1160,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, convolution_shader_, nullptr);
         if (pooling_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, pooling_shader_, nullptr);
+        if (interpolation_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, interpolation_shader_, nullptr);
         if (masked_count_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
         if (masked_compact_shader_ != VK_NULL_HANDLE)
@@ -1175,6 +1198,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipelineLayout(device_, convolution_pipeline_layout_, nullptr);
         if (pooling_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, pooling_pipeline_layout_, nullptr);
+        if (interpolation_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, interpolation_pipeline_layout_, nullptr);
         if (masked_count_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, masked_count_pipeline_layout_, nullptr);
         if (masked_compact_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1216,6 +1241,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                                          nullptr);
         if (pooling_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, pooling_descriptor_layout_, nullptr);
+        if (interpolation_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, interpolation_descriptor_layout_, nullptr);
         if (masked_count_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, masked_count_descriptor_layout_,
                                          nullptr);
@@ -1249,6 +1276,7 @@ VulkanCompute::~VulkanCompute() {
     indexing_pipeline_ = VK_NULL_HANDLE;
     broadcast_pipeline_ = VK_NULL_HANDLE;
     pooling_pipeline_ = VK_NULL_HANDLE;
+    interpolation_pipeline_ = VK_NULL_HANDLE;
     normalization_pipeline_ = VK_NULL_HANDLE;
     classification_pipeline_ = VK_NULL_HANDLE;
     f32_to_double_pipeline_ = VK_NULL_HANDLE;
@@ -1267,6 +1295,7 @@ VulkanCompute::~VulkanCompute() {
     indexing_pipeline_layout_ = VK_NULL_HANDLE;
     broadcast_pipeline_layout_ = VK_NULL_HANDLE;
     pooling_pipeline_layout_ = VK_NULL_HANDLE;
+    interpolation_pipeline_layout_ = VK_NULL_HANDLE;
     normalization_pipeline_layout_ = VK_NULL_HANDLE;
     classification_pipeline_layout_ = VK_NULL_HANDLE;
     f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
@@ -1300,6 +1329,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, convolution_pipeline_, nullptr);
     if (pooling_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, pooling_pipeline_, nullptr);
+    if (interpolation_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, interpolation_pipeline_, nullptr);
     if (masked_count_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, masked_count_pipeline_, nullptr);
     if (masked_compact_pipeline_ != VK_NULL_HANDLE)
@@ -1328,6 +1359,7 @@ VulkanCompute::~VulkanCompute() {
     indexing_shader_ = VK_NULL_HANDLE;
     broadcast_shader_ = VK_NULL_HANDLE;
     pooling_shader_ = VK_NULL_HANDLE;
+    interpolation_shader_ = VK_NULL_HANDLE;
     normalization_shader_ = VK_NULL_HANDLE;
     classification_shader_ = VK_NULL_HANDLE;
     f32_to_double_shader_ = VK_NULL_HANDLE;
@@ -1358,6 +1390,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, convolution_shader_, nullptr);
     if (pooling_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, pooling_shader_, nullptr);
+    if (interpolation_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, interpolation_shader_, nullptr);
     if (masked_count_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, masked_count_shader_, nullptr);
     if (masked_compact_shader_ != VK_NULL_HANDLE)
@@ -1400,6 +1434,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, convolution_pipeline_layout_, nullptr);
     if (pooling_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, pooling_pipeline_layout_, nullptr);
+    if (interpolation_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, interpolation_pipeline_layout_, nullptr);
     if (masked_count_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, masked_count_pipeline_layout_, nullptr);
     if (masked_compact_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1446,6 +1482,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyDescriptorSetLayout(device_, convolution_descriptor_layout_, nullptr);
     if (pooling_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, pooling_descriptor_layout_, nullptr);
+    if (interpolation_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, interpolation_descriptor_layout_, nullptr);
     if (masked_count_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, masked_count_descriptor_layout_, nullptr);
     if (masked_compact_descriptor_layout_ != VK_NULL_HANDLE)
@@ -2751,6 +2789,82 @@ void VulkanCompute::dispatch_pooling(
         dispatch_count_.fetch_add(1, std::memory_order_relaxed);
     } catch (const std::exception &error) {
         fail_recording("pooling dispatch", error);
+    }
+    });
+}
+
+void VulkanCompute::interpolate2d(uint32_t operation, VkBuffer input, VkBuffer output,
+                                  const VulkanTensorLayout &input_layout,
+                                  const VulkanTensorLayout &output_layout,
+                                  const VulkanInterpolation2dGeometry &geometry,
+                                  uint32_t invocations) const {
+    if (operation > 5)
+        throw std::invalid_argument("Vulkan interpolate2d operation is unsupported");
+    InterpolationMetadata metadata{};
+    fill_layout_metadata(metadata.tensors[0], input_layout, "interpolate2d input");
+    fill_layout_metadata(metadata.tensors[1], output_layout, "interpolate2d output");
+    InterpolationParams params{operation,
+                               geometry.batch,
+                               geometry.channels,
+                               geometry.in_height,
+                               geometry.in_width,
+                               geometry.out_height,
+                               geometry.out_width,
+                               geometry.scale_h,
+                               geometry.scale_w,
+                               geometry.align_corners ? 1U : 0U,
+                               invocations};
+    dispatch_interpolation(input, output, input_layout.allocation_bytes,
+                           output_layout.allocation_bytes, &params, sizeof(params),
+                           invocations, &metadata, sizeof(metadata));
+}
+
+void VulkanCompute::dispatch_interpolation(
+    VkBuffer input, VkBuffer output, VkDeviceSize input_bytes, VkDeviceSize output_bytes,
+    const void *params, uint32_t params_size, uint32_t invocations, const void *metadata,
+    VkDeviceSize metadata_size) const {
+    if (input == VK_NULL_HANDLE || output == VK_NULL_HANDLE || metadata == nullptr ||
+        metadata_size == 0)
+        throw std::invalid_argument("Vulkan interpolation dispatch has an invalid buffer");
+    const uint32_t dispatch_groups = validate_dispatch_extra_limits(
+        input_bytes, output_bytes, params_size, invocations, metadata_size, false);
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
+    CallbackDrainOnExit drain(platform_.execution_context());
+    std::scoped_lock lock(platform_.queue_mutex());
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    std::shared_ptr<VulkanBuffer> metadata_holder;
+    try {
+        record_dispatch();
+        cmd = platform_.execution_context().command_buffer();
+        metadata_holder = std::make_shared<VulkanBuffer>(
+            platform_, metadata_size,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        const VkDescriptorSet set = acquire_descriptor_set(interpolation_descriptor_layout_, 3);
+        metadata_holder->write(metadata, metadata_size);
+        VkDescriptorBufferInfo buffers[] = {{input, 0, input_bytes},
+                                            {output, 0, output_bytes},
+                                            {metadata_holder->buffer(), 0, metadata_size}};
+        VkWriteDescriptorSet writes[3]{};
+        for (uint32_t i = 0; i < 3; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &buffers[i];
+        }
+        vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, interpolation_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                interpolation_pipeline_layout_, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(cmd, interpolation_pipeline_layout_,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, params_size, params);
+        record_dispatch_command(cmd, dispatch_groups, 1, 1);
+        platform_.execution_context().defer_destruction([metadata_holder] {});
+        finish_dispatch();
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::exception &error) {
+        fail_recording("interpolation dispatch", error);
     }
     });
 }

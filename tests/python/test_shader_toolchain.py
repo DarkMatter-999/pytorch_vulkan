@@ -655,6 +655,32 @@ def test_cmake_pooling_integrity_does_not_generate_products(tmp_path):
     assert (root / "tools/unexpected-generation").read_text() == "mutated"
 
 
+def test_cmake_interpolation_integrity_does_not_generate_products(tmp_path):
+    """The interpolation integrity target verifies; only the explicit target generates."""
+    root = tmp_path / "root"
+    shutil.copytree(ROOT / "tools", root / "tools")
+    shutil.copytree(ROOT / "src", root / "src")
+    shutil.copy2(ROOT / "CMakeLists.txt", root / "CMakeLists.txt")
+    shutil.copytree(ROOT / "python", root / "python")
+    shutil.copytree(ROOT / "tests", root / "tests")
+    (root / "tools/generate_interpolation_spv.py").write_text("from pathlib import Path\nPath(__file__).with_name('unexpected-interpolation-generation').write_text('mutated')\n")
+    (root / "tools/verify_interpolation_spv.py").write_text("print('fixture verification')\n")
+    build = tmp_path / "build"
+    configure = subprocess.run(["cmake", "-S", str(root), "-B", str(build),
+                                "-DBUILD_PYTHON_EXTENSION=ON", "-DPython3_EXECUTABLE=" + sys.executable,
+                                "-DCMAKE_PREFIX_PATH=" + _torch_cmake_prefix()],
+                               capture_output=True, text=True)
+    assert configure.returncode == 0, configure.stderr
+    result = subprocess.run(["cmake", "--build", str(build), "--target", "vulkan_interpolation_shader_integrity"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not (root / "tools/unexpected-interpolation-generation").exists()
+    generation = subprocess.run(["cmake", "--build", str(build), "--target", "vulkan_interpolation_shader_generate"],
+                                capture_output=True, text=True)
+    assert generation.returncode == 0, generation.stderr
+    assert (root / "tools/unexpected-interpolation-generation").read_text() == "mutated"
+
+
 @pytest.mark.parametrize("action", ["ordinary-build", "explicit-unselected"])
 def test_cmake_operator_regeneration_is_opt_in_and_requires_profile(tmp_path, action):
     root = tmp_path / "root"

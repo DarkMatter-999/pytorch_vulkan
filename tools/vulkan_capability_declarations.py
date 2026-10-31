@@ -5472,6 +5472,210 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         ],
         "status": "supported"
     },
+    'aten::upsample_nearest2d.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "first_order_or_none",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 4
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::upsample_nearest2d_backward.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "backward_kernel",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 4
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::_upsample_nearest_exact2d.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "first_order_or_none",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 4
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::_upsample_nearest_exact2d_backward.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "backward_kernel",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 4
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::upsample_bilinear2d.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "first_order_or_none",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 4
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::upsample_bilinear2d_backward.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "backward_kernel",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 4
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
     'aten::reshape.default':     {
         "aliasing": "no_overlap",
         "autograd": "reverse_second_order_witnessed",

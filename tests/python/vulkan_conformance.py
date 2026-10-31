@@ -3458,6 +3458,100 @@ def validate_graph_autograd_evidence(coverage, manifest_entries):
             raise ValueError(f"{name}: supported manifest link is missing")
 
 
+# ---- interpolation (nearest / nearest-exact / bilinear) -----------------------------
+# One spec table feeds both the manifest-case registration and the case builder.
+_INTERP_SCHEMAS = {
+    ("nearest", "forward"): "aten::upsample_nearest2d.default",
+    ("nearest", "backward"): "aten::upsample_nearest2d_backward.default",
+    ("nearest-exact", "forward"): "aten::_upsample_nearest_exact2d.default",
+    ("nearest-exact", "backward"): "aten::_upsample_nearest_exact2d_backward.default",
+    ("bilinear", "forward"): "aten::upsample_bilinear2d.default",
+    ("bilinear", "backward"): "aten::upsample_bilinear2d_backward.default",
+}
+
+
+def _interp_forward_op(value, *, mode, size, hints=(None, None), align_corners=False):
+    ops = torch.ops.aten
+    if mode == "nearest":
+        return ops.upsample_nearest2d.default(value, list(size), hints[0], hints[1])
+    if mode == "nearest-exact":
+        return ops._upsample_nearest_exact2d.default(value, list(size), hints[0], hints[1])
+    return ops.upsample_bilinear2d.default(value, list(size), align_corners, hints[0], hints[1])
+
+
+def _interp_backward_op(grad, *, mode, size, input_size, hints=(None, None),
+                        align_corners=False):
+    ops = torch.ops.aten
+    if mode == "nearest":
+        return ops.upsample_nearest2d_backward.default(
+            grad, list(size), list(input_size), hints[0], hints[1])
+    if mode == "nearest-exact":
+        return ops._upsample_nearest_exact2d_backward.default(
+            grad, list(size), list(input_size), hints[0], hints[1])
+    return ops.upsample_bilinear2d_backward.default(
+        grad, list(size), list(input_size), align_corners, hints[0], hints[1])
+
+
+def _interp_backward_inputs(input_shape, size, *, channels_last=False, grad_size=None):
+    def factory(*, requires_grad=False):
+        shape = (input_shape[0], input_shape[1], *(grad_size or size))
+        return (_pool_seeded(shape, 411, channels_last=channels_last),)
+    return factory
+
+
+_INTERP_IN = (2, 3, 4, 5)
+_INTERP_DOWN = (2, 3, 8, 10)
+_INTERP_EMPTY = (0, 3, 4, 5)
+
+
+def _interp_specs():
+    specs = []
+    for mode in ("nearest", "nearest-exact", "bilinear"):
+        forward = [
+            ("", dict(shape=_INTERP_IN, size=(7, 9))),
+            (".scale-hint", dict(shape=_INTERP_IN, size=(5, 7), hints=(1.4, 0.6))),
+            (".identity", dict(shape=_INTERP_IN, size=(4, 5), hints=(2.5, 2.5))),
+            (".downsample", dict(shape=_INTERP_DOWN, size=(3, 4))),
+            (".channels-last", dict(shape=_INTERP_IN, size=(7, 9), channels_last=True)),
+            (".empty-batch", dict(shape=_INTERP_EMPTY, size=(8, 10), empty=True)),
+            (".scale.rejected", dict(shape=_INTERP_IN, size=(5, 7), hints=(1e-30, 1e-30),
+                                     rejected="source scale")),
+        ]
+        if mode != "bilinear":
+            forward.append((".double", dict(shape=_INTERP_IN, size=(8, 10), hints=(1.4, 0.6))))
+        else:
+            forward.append((".align-corners", dict(shape=_INTERP_IN, size=(7, 9),
+                                                   align_corners=True)))
+        if mode == "nearest":
+            forward.append((".size-limit.rejected", dict(
+                shape=(1, 1, 1, 1), size=((1 << 23) + 1, 1), rejected="must not exceed 8388608")))
+        backward = [
+            ("", dict(shape=_INTERP_IN, size=(7, 9))),
+            (".scale-hint", dict(shape=_INTERP_IN, size=(5, 7), hints=(1.4, 0.6))),
+            (".downsample", dict(shape=_INTERP_DOWN, size=(3, 4))),
+            (".channels-last", dict(shape=_INTERP_IN, size=(7, 9), channels_last=True)),
+            (".empty-batch", dict(shape=_INTERP_EMPTY, size=(8, 10), empty=True)),
+        ]
+        if mode == "bilinear":
+            backward.append((".align-corners", dict(shape=_INTERP_IN, size=(7, 9),
+                                                    align_corners=True)))
+        if mode == "nearest":
+            backward.append((".shape.rejected", dict(
+                shape=_INTERP_IN, size=(8, 10), grad_size=(8, 9),
+                rejected="Expected grad_output to have the same shape as output")))
+        for suffix, options in forward:
+            specs.append((f"interpolation.{mode}{suffix}", mode, "forward", options))
+        for suffix, options in backward:
+            specs.append((f"interpolation.{mode}-backward{suffix}", mode, "backward", options))
+    return specs
+
+
+_INTERP_SPECS = _interp_specs()
+_INTERP_MANIFEST = {
+    name: (_INTERP_SCHEMAS[(mode, direction)], "rejected" not in options)
+    for name, mode, direction, options in _INTERP_SPECS
+}
+
 _MANIFEST_CASES = {
     case["name"]: (entry["schema"], case["supported"])
     for entry in _MANIFEST["entries"]
@@ -3577,6 +3671,7 @@ _MANIFEST_CASES.update({
     "pooling.max-pool2d-backward.rank3": ("aten::max_pool2d_with_indices_backward.default", True),
     "pooling.max-pool2d-backward.indices.rejected": ("aten::max_pool2d_with_indices_backward.default", False),
 })
+_MANIFEST_CASES.update(_INTERP_MANIFEST)
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
 )
@@ -6105,6 +6200,50 @@ def _general_matmul_conformance_cases():
     return tuple(cases)
 
 
+def _interpolation_conformance_cases():
+    cases = []
+    for name, mode, direction, options in _INTERP_SPECS:
+        shape, size = options["shape"], options["size"]
+        hints = options.get("hints", (None, None))
+        align = options.get("align_corners", False)
+        rejected = options.get("rejected")
+        empty = options.get("empty", False)
+        channels_last = options.get("channels_last", False)
+        # The harness records the tensors it passes: the input for forward cases and the
+        # grad_output for backward cases.
+        recorded = shape if direction == "forward" else (
+            shape[0], shape[1], *(options.get("grad_size") or size))
+        shape_text = "x".join(str(d) for d in recorded)
+        tolerance = dict(rtol=0, atol=0) if (mode != "bilinear" and direction == "forward") \
+            else dict(rtol=1e-5, atol=1e-5)
+        if direction == "forward":
+            kwargs = dict(mode=mode, size=size, hints=hints, align_corners=align)
+            factory = _pool_forward_inputs(shape, channels_last=channels_last)
+            operation = _interp_forward_op
+            expected = (shape[0], shape[1], *size)
+        else:
+            kwargs = dict(mode=mode, size=size, input_size=shape, hints=hints,
+                          align_corners=align)
+            factory = _interp_backward_inputs(shape, size, channels_last=channels_last,
+                                              grad_size=options.get("grad_size"))
+            operation = _interp_backward_op
+            expected = shape
+        if rejected:
+            case = _case(name, "interpolation", operation, factory, kwargs=kwargs,
+                         supported=False, cpu_reference=_no_reference,
+                         error_pattern=rejected)
+        else:
+            case = _case(
+                name, "interpolation", operation, factory, kwargs=kwargs,
+                cpu_reference=operation, expected_shape=expected,
+                check_gradients=direction == "forward" and not empty,
+                execution_mode="empty" if empty else "compute",
+                declared_shapes=(shape_text,), **tolerance)
+        cases.append(case)
+    return tuple(case for case in cases if case is not None)
+
+
+ALL_CASES += _interpolation_conformance_cases()
 ALL_CASES += _general_matmul_conformance_cases()
 
 
