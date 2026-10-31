@@ -22,11 +22,11 @@ This file lists **every dispatcher schema and overload** in the project's suppor
 
 | Status | Rows |
 |---|---:|
-| Supported (scoped) | 59 |
+| Supported (scoped) | 63 |
 | Partial | 44 |
-| Deferred | 87 |
+| Deferred | 86 |
 | Unsupported (verified) | 4 |
-| Unreviewed | 3369 |
+| Unreviewed | 3366 |
 | **Total** | **3563** |
 
 
@@ -1164,9 +1164,9 @@ _test::leaky_relu.default  _test::leaky_relu(Tensor self, float v=0.01) -> Tenso
 | `aten::atleast_3d.Sequence` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::atleast_3d.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::avg_pool1d.default` | Unreviewed | — | Not yet audited for Vulkan. |
-| `aten::avg_pool2d.default` | Unreviewed | — | Not yet audited for Vulkan. |
+| `aten::avg_pool2d.default` | Supported (scoped) | (this change; pending commit) | Scope: float32 `vk:0`; rank 3 or 4 (empty batch allowed); full kernel/stride/padding/ceil_mode geometry; strided, channels-last and expanded operands read in place; outputs follow CPU memory formats; first-order autograd only via generated autograd (`create_graph`, forward AD, `torch.func`, `vmap` unclaimed). `count_include_pad` and `divisor_override` supported. Evidence: [`aten::avg_pool2d.default`](vulkan_capabilities.json), tests test_vulkan_pooling_general.py, test_vulkan_conformance.py; cases `pooling.avg-pool2d*`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::avg_pool2d.out` | Deferred | — | Deferred by capability declaration (`reason: deferred_contract`, `execution_contract: deferred_before_vulkan`), declared in `852df95`; direct PrivateUse1 registration absent. Evidence: [`aten::avg_pool2d.out`](vulkan_capabilities.json); see [Deferred operator-expansion inventory](vulkan_operator_capability_matrix.md). A registration is source evidence only, not a support claim; it may serve a different documented slice. No runtime support claimed. |
-| `aten::avg_pool2d_backward.default` | Unreviewed | — | Not yet audited for Vulkan. |
+| `aten::avg_pool2d_backward.default` | Supported (scoped) | (this change; pending commit) | Scope: float32 `vk:0`; rank 3 or 4 (empty batch allowed); full kernel/stride/padding/ceil_mode geometry; strided, channels-last and expanded operands read in place; outputs follow CPU memory formats; first-order autograd only via generated autograd (`create_graph`, forward AD, `torch.func`, `vmap` unclaimed). Gather formulation sums in ATen's ascending output order. Evidence: [`aten::avg_pool2d_backward.default`](vulkan_capabilities.json), tests test_vulkan_pooling_general.py, test_vulkan_conformance.py; cases `pooling.avg-pool2d*`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::avg_pool2d_backward.grad_input` | Deferred | — | Deferred by capability declaration (`reason: deferred_contract`, `execution_contract: deferred_before_vulkan`), declared in `852df95`; direct PrivateUse1 registration absent. Evidence: [`aten::avg_pool2d_backward.grad_input`](vulkan_capabilities.json); see [Deferred operator-expansion inventory](vulkan_operator_capability_matrix.md). A registration is source evidence only, not a support claim; it may serve a different documented slice. No runtime support claimed. |
 | `aten::avg_pool3d.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::avg_pool3d.out` | Unreviewed | — | Not yet audited for Vulkan. |
@@ -2219,9 +2219,9 @@ _test::leaky_relu.default  _test::leaky_relu(Tensor self, float v=0.01) -> Tenso
 | `aten::max_pool2d.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::max_pool2d_backward.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::max_pool2d_backward.out` | Unreviewed | — | Not yet audited for Vulkan. |
-| `aten::max_pool2d_with_indices.default` | Deferred | — | Deferred by capability declaration (`reason: deferred_contract`, `execution_contract: deferred_before_vulkan`), declared in `852df95`; direct PrivateUse1 registration present. Evidence: [`aten::max_pool2d_with_indices.default`](vulkan_capabilities.json); see [Deferred operator-expansion inventory](vulkan_operator_capability_matrix.md). A registration is source evidence only, not a support claim; it may serve a different documented slice. No runtime support claimed. |
+| `aten::max_pool2d_with_indices.default` | Supported (scoped) | (this change; pending commit) | Scope: float32 `vk:0`; rank 3 or 4 (empty batch allowed); full kernel/stride/padding/ceil_mode geometry; strided, channels-last and expanded operands read in place; outputs follow CPU memory formats; first-order autograd only via generated autograd (`create_graph`, forward AD, `torch.func`, `vmap` unclaimed). Dilation supported; int64 plane-relative `indices`; ATen's tie/NaN/`-inf` rules reproduced. Evidence: [`aten::max_pool2d_with_indices.default`](vulkan_capabilities.json), tests test_vulkan_pooling_general.py, test_vulkan_conformance.py; cases `pooling.max-pool2d*`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::max_pool2d_with_indices.out` | Unreviewed | — | Not yet audited for Vulkan. |
-| `aten::max_pool2d_with_indices_backward.default` | Unreviewed | — | Not yet audited for Vulkan. |
+| `aten::max_pool2d_with_indices_backward.default` | Supported (scoped) | (this change; pending commit) | Scope: float32 `vk:0`; rank 3 or 4 (empty batch allowed); full kernel/stride/padding/ceil_mode geometry; strided, channels-last and expanded operands read in place; outputs follow CPU memory formats; first-order autograd only via generated autograd (`create_graph`, forward AD, `torch.func`, `vmap` unclaimed). Equal to ATen's scatter-add bit for bit for every in-range index (hand-supplied included); out-of-range indices (undefined on CPU) contribute nothing by Vulkan contract. Evidence: [`aten::max_pool2d_with_indices_backward.default`](vulkan_capabilities.json), tests test_vulkan_pooling_general.py, test_vulkan_conformance.py; cases `pooling.max-pool2d*`; contract in [matrix](vulkan_operator_capability_matrix.md). |
 | `aten::max_pool2d_with_indices_backward.grad_input` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::max_pool3d.default` | Unreviewed | — | Not yet audited for Vulkan. |
 | `aten::max_pool3d_with_indices.default` | Unreviewed | — | Not yet audited for Vulkan. |

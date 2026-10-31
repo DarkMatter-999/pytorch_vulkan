@@ -31,6 +31,15 @@ struct VulkanConvolutionGeometry {
 };
 } // namespace pytorch_vulkan
 
+struct VulkanPooling2dGeometry {
+    uint32_t batch, channels, height, width, out_height, out_width;
+    uint32_t kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w;
+    uint32_t dilation_h, dilation_w;
+    bool count_include_pad;
+    bool has_divisor;
+    uint32_t divisor;
+};
+
 class VulkanCompute final {
   public:
     explicit VulkanCompute(const VulkanPlatform &platform);
@@ -220,6 +229,16 @@ class VulkanCompute final {
                  const VulkanTensorLayout &output_layout, uint32_t batch,
                  uint32_t channels, uint32_t height, uint32_t width,
                  uint32_t operation = 0) const;
+    // General 2-D pooling, operations 2-6 of pooling.comp (see pooling.cpp).
+    // `indices`/`flags` may be VK_NULL_HANDLE for operations that do not use
+    // them; the descriptor set is then padded with `input`.
+    void pooling2d(uint32_t operation, VkBuffer input, VkBuffer output,
+                   VkBuffer indices, VkBuffer flags,
+                   const VulkanTensorLayout &input_layout,
+                   const VulkanTensorLayout &output_layout,
+                   const VulkanTensorLayout *indices_layout, VkDeviceSize flags_bytes,
+                   const VulkanPooling2dGeometry &geometry,
+                   uint32_t invocations) const;
     void compute_multi_output(const VulkanBuffer *const *inputs,
                               const VulkanTensorLayout *const *input_layouts,
                               const VulkanBuffer *const *outputs,
@@ -285,6 +304,12 @@ class VulkanCompute final {
                            VkBuffer tensor2, const VulkanTensorLayout &tensor2_layout,
                            VkBuffer output, const VulkanTensorLayout &output_layout,
                            float value, uint32_t operation) const;
+    void dispatch_pooling(VkBuffer input, VkBuffer output, VkBuffer indices,
+                          VkBuffer flags, VkDeviceSize input_bytes,
+                          VkDeviceSize output_bytes, VkDeviceSize indices_bytes,
+                          VkDeviceSize flags_bytes, const void *params,
+                          uint32_t params_size, uint32_t invocations,
+                          const void *metadata, VkDeviceSize metadata_size) const;
     void dispatch_extra(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
                         VkDeviceSize output_bytes, VkPipeline pipeline,
                         VkPipelineLayout pipeline_layout,

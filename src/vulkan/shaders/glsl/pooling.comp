@@ -1,19 +1,237 @@
 #version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 layout(local_size_x = 256) in;
 layout(set = 0, binding = 0) readonly buffer Input { float input_values[]; };
 layout(set = 0, binding = 1) writeonly buffer Output { float output_values[]; };
 struct TensorMetadata { uint rank; uint sizes[8]; uint strides[8]; uint storage_offset; uint padding[2]; };
-layout(set = 0, binding = 2, std430) readonly buffer Metadata { TensorMetadata tensors[2]; } metadata;
+layout(set = 0, binding = 2, std430) readonly buffer Metadata { TensorMetadata tensors[3]; } metadata;
+layout(set = 0, binding = 3, std430) buffer Indices { int64_t index_values[]; };
+layout(set = 0, binding = 4, std430) buffer Flags { uint plane_flags[]; };
 layout(push_constant) uniform Params {
   uint batch;
   uint channels;
   uint height;
   uint width;
   uint operation;
+  uint out_height;
+  uint out_width;
+  uint kernel_h;
+  uint kernel_w;
+  uint stride_h;
+  uint stride_w;
+  uint pad_h;
+  uint pad_w;
+  uint dilation_h;
+  uint dilation_w;
+  uint pool_flags;
+  uint divisor;
 }
 params;
+// General 2-D pooling (operations 2-6). Tensors are presented as 4-D N,C,H,W
+// through the metadata strides, so any strided layout (channels-last, permuted,
+// sliced, stride-0 expanded) is read and written in place.
+//   2 avg forward   3 avg backward   4 max forward (value + index)
+//   5 max backward (uses the plane flags)   6 max index validation (per plane)
+uint tensor_at(TensorMetadata m, uint n, uint c, uint h, uint w) {
+  return m.storage_offset + n * m.strides[0] + c * m.strides[1] + h * m.strides[2] + w * m.strides[3];
+}
+bool pool_is_nan(float v) { return (floatBitsToUint(v) & 0x7fffffffu) > 0x7f800000u; }
+bool pool_count_include_pad() { return (params.pool_flags & 1u) != 0u; }
+bool pool_has_divisor() { return (params.pool_flags & 2u) != 0u; }
+
+// Divisor of the average window (oh, ow); returns false for an empty window.
+bool avg_window(uint oh, uint ow, out int hstart, out int hend, out int wstart, out int wend, out int divisor) {
+  int height = int(params.height);
+  int width = int(params.width);
+  hstart = int(oh) * int(params.stride_h) - int(params.pad_h);
+  wstart = int(ow) * int(params.stride_w) - int(params.pad_w);
+  hend = min(hstart + int(params.kernel_h), height + int(params.pad_h));
+  wend = min(wstart + int(params.kernel_w), width + int(params.pad_w));
+  int pool_size = (hend - hstart) * (wend - wstart);
+  hstart = max(hstart, 0);
+  wstart = max(wstart, 0);
+  hend = min(hend, height);
+  wend = min(wend, width);
+  if (hstart >= hend || wstart >= wend) {
+    divisor = 1;
+    return false;
+  }
+  divisor = pool_has_divisor() ? int(params.divisor)
+                               : (pool_count_include_pad() ? pool_size : (hend - hstart) * (wend - wstart));
+  return true;
+}
+
+void pool_avg_forward(uint index) {
+  if (index >= params.batch * params.channels * params.out_height * params.out_width) return;
+  uint ow = index % params.out_width;
+  uint t = index / params.out_width;
+  uint oh = t % params.out_height;
+  t /= params.out_height;
+  uint c = t % params.channels;
+  uint n = t / params.channels;
+  TensorMetadata im = metadata.tensors[0];
+  TensorMetadata om = metadata.tensors[1];
+  int hstart, hend, wstart, wend, divisor;
+  float result = 0.0;
+  if (avg_window(oh, ow, hstart, hend, wstart, wend, divisor)) {
+    float sum = 0.0;
+    for (int ih = hstart; ih < hend; ++ih)
+      for (int iw = wstart; iw < wend; ++iw)
+        sum += input_values[tensor_at(im, n, c, uint(ih), uint(iw))];
+    result = sum / float(divisor);
+  }
+  output_values[tensor_at(om, n, c, oh, ow)] = result;
+}
+
+void pool_avg_backward(uint index) {
+  if (index >= params.batch * params.channels * params.height * params.width) return;
+  uint w = index % params.width;
+  uint t = index / params.width;
+  uint h = t % params.height;
+  t /= params.height;
+  uint c = t % params.channels;
+  uint n = t / params.channels;
+  TensorMetadata gm = metadata.tensors[0];
+  TensorMetadata xm = metadata.tensors[1];
+  int ih = int(h);
+  int iw = int(w);
+  int top = ih + int(params.pad_h) - int(params.kernel_h);
+  int left = iw + int(params.pad_w) - int(params.kernel_w);
+  int oh_lo = top < 0 ? 0 : top / int(params.stride_h) + 1;
+  int ow_lo = left < 0 ? 0 : left / int(params.stride_w) + 1;
+  int oh_hi = min((ih + int(params.pad_h)) / int(params.stride_h), int(params.out_height) - 1);
+  int ow_hi = min((iw + int(params.pad_w)) / int(params.stride_w), int(params.out_width) - 1);
+  float acc = 0.0;
+  for (int oh = oh_lo; oh <= oh_hi; ++oh)
+    for (int ow = ow_lo; ow <= ow_hi; ++ow) {
+      int hstart, hend, wstart, wend, divisor;
+      if (!avg_window(uint(oh), uint(ow), hstart, hend, wstart, wend, divisor)) continue;
+      if (ih < hstart || ih >= hend || iw < wstart || iw >= wend) continue;
+      acc += input_values[tensor_at(gm, n, c, uint(oh), uint(ow))] / float(divisor);
+    }
+  output_values[tensor_at(xm, n, c, h, w)] = acc;
+}
+
+void pool_max_forward(uint index) {
+  if (index >= params.batch * params.channels * params.out_height * params.out_width) return;
+  uint ow = index % params.out_width;
+  uint t = index / params.out_width;
+  uint oh = t % params.out_height;
+  t /= params.out_height;
+  uint c = t % params.channels;
+  uint n = t / params.channels;
+  TensorMetadata im = metadata.tensors[0];
+  TensorMetadata om = metadata.tensors[1];
+  TensorMetadata xm = metadata.tensors[2];
+  int height = int(params.height);
+  int width = int(params.width);
+  int dh = int(params.dilation_h);
+  int dw = int(params.dilation_w);
+  int hstart = int(oh) * int(params.stride_h) - int(params.pad_h);
+  int wstart = int(ow) * int(params.stride_w) - int(params.pad_w);
+  int hend = min(hstart + (int(params.kernel_h) - 1) * dh + 1, height);
+  int wend = min(wstart + (int(params.kernel_w) - 1) * dw + 1, width);
+  while (hstart < 0) hstart += dh;
+  while (wstart < 0) wstart += dw;
+  float maxval = uintBitsToFloat(0xff800000u);
+  int maxindex = hstart * width + wstart;
+  for (int ih = hstart; ih < hend; ih += dh)
+    for (int iw = wstart; iw < wend; iw += dw) {
+      float value = input_values[tensor_at(im, n, c, uint(ih), uint(iw))];
+      if (value > maxval || pool_is_nan(value)) {
+        maxval = value;
+        maxindex = ih * width + iw;
+      }
+    }
+  output_values[tensor_at(om, n, c, oh, ow)] = maxval;
+  index_values[tensor_at(xm, n, c, oh, ow)] = int64_t(maxindex);
+}
+
+// True when output (oh, ow) could have produced flat plane position (ih, iw).
+bool pool_is_tap(int ih, int iw, int oh, int ow) {
+  int ty = ih + int(params.pad_h) - oh * int(params.stride_h);
+  int tx = iw + int(params.pad_w) - ow * int(params.stride_w);
+  int dh = int(params.dilation_h);
+  int dw = int(params.dilation_w);
+  return ty >= 0 && tx >= 0 && (ty % dh) == 0 && (tx % dw) == 0 &&
+         ty / dh < int(params.kernel_h) && tx / dw < int(params.kernel_w);
+}
+
+// One invocation per (n, c) plane: flag 1 when some in-range index is not a tap
+// of its own window (the forward could not have produced it). Out-of-range
+// indices never match a position and need no flag.
+void pool_max_validate(uint plane) {
+  if (plane >= params.batch * params.channels) return;
+  uint n = plane / params.channels;
+  uint c = plane % params.channels;
+  TensorMetadata xm = metadata.tensors[2];
+  int width = int(params.width);
+  int64_t plane_size = int64_t(params.height) * int64_t(params.width);
+  uint bad = 0u;
+  for (uint oh = 0u; oh < params.out_height && bad == 0u; ++oh)
+    for (uint ow = 0u; ow < params.out_width; ++ow) {
+      int64_t value = index_values[tensor_at(xm, n, c, oh, ow)];
+      if (value < int64_t(0) || value >= plane_size) continue;
+      int position = int(value);
+      if (!pool_is_tap(position / width, position % width, int(oh), int(ow))) {
+        bad = 1u;
+        break;
+      }
+    }
+  plane_flags[plane] = bad;
+}
+
+void pool_max_backward(uint index) {
+  if (index >= params.batch * params.channels * params.height * params.width) return;
+  uint w = index % params.width;
+  uint t = index / params.width;
+  uint h = t % params.height;
+  t /= params.height;
+  uint c = t % params.channels;
+  uint n = t / params.channels;
+  TensorMetadata gm = metadata.tensors[0];
+  TensorMetadata xm = metadata.tensors[1];
+  TensorMetadata im = metadata.tensors[2];
+  int64_t position = int64_t(h) * int64_t(params.width) + int64_t(w);
+  float acc = 0.0;
+  if (plane_flags[n * params.channels + c] == 0u) {
+    // Every in-range index is a tap of its own window: only windows whose taps
+    // include (h, w) can hold this position.
+    int dh = int(params.dilation_h);
+    int dw = int(params.dilation_w);
+    int top = int(h) + int(params.pad_h) - (int(params.kernel_h) - 1) * dh;
+    int left = int(w) + int(params.pad_w) - (int(params.kernel_w) - 1) * dw;
+    int oh_lo = top <= 0 ? 0 : (top + int(params.stride_h) - 1) / int(params.stride_h);
+    int ow_lo = left <= 0 ? 0 : (left + int(params.stride_w) - 1) / int(params.stride_w);
+    int oh_hi = min((int(h) + int(params.pad_h)) / int(params.stride_h), int(params.out_height) - 1);
+    int ow_hi = min((int(w) + int(params.pad_w)) / int(params.stride_w), int(params.out_width) - 1);
+    for (int oh = oh_lo; oh <= oh_hi; ++oh)
+      for (int ow = ow_lo; ow <= ow_hi; ++ow) {
+        if (!pool_is_tap(int(h), int(w), oh, ow)) continue;
+        if (index_values[tensor_at(im, n, c, uint(oh), uint(ow))] == position)
+          acc += input_values[tensor_at(gm, n, c, uint(oh), uint(ow))];
+      }
+  } else {
+    // Caller-supplied indices that point outside their window: scan the whole
+    // plane in ascending output order, exactly like a sequential scatter-add.
+    for (uint oh = 0u; oh < params.out_height; ++oh)
+      for (uint ow = 0u; ow < params.out_width; ++ow)
+        if (index_values[tensor_at(im, n, c, oh, ow)] == position)
+          acc += input_values[tensor_at(gm, n, c, oh, ow)];
+  }
+  output_values[tensor_at(xm, n, c, h, w)] = acc;
+}
+
 void main() {
   uint index = gl_GlobalInvocationID.x;
+  if (params.operation >= 2u) {
+    if (params.operation == 2u) pool_avg_forward(index);
+    else if (params.operation == 3u) pool_avg_backward(index);
+    else if (params.operation == 4u) pool_max_forward(index);
+    else if (params.operation == 5u) pool_max_backward(index);
+    else if (params.operation == 6u) pool_max_validate(index);
+    return;
+  }
   uint output_count = params.batch * params.channels;
   if (index >=
       (params.operation == 0u ? output_count : output_count * params.height * params.width))

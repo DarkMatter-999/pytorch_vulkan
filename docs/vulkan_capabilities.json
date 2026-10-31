@@ -11783,7 +11783,7 @@
     },
     {
       "aliasing": "no_overlap",
-      "autograd": "not_applicable",
+      "autograd": "first_order_or_none",
       "device": {
         "index": 0,
         "type": "PrivateUse1"
@@ -11793,11 +11793,12 @@
           "float32"
         ],
         "outputs": [
-          "float32"
+          "float32",
+          "int64"
         ]
       },
-      "empty": "empty_deferred",
-      "execution_contract": "deferred_before_vulkan",
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
         "strided",
@@ -11806,32 +11807,118 @@
       "out": "not_applicable",
       "ranks": {
         "max": 4,
-        "min": 2
+        "min": 3
       },
-      "reason": "deferred_contract",
+      "reason": "supported_contract",
       "required_vulkan_features": [],
       "scalar_constraints": [
         "none"
       ],
       "schema": "aten::max_pool2d_with_indices.default",
       "shape_constraints": [
-        "unwitnessed"
+        "0x3x6x6",
+        "1x2x7x7",
+        "1x2x9x7",
+        "2x3x6x6",
+        "2x3x7x7",
+        "3x7x7"
       ],
-      "status": "deferred",
+      "status": "supported",
       "test_cases": [
         {
-          "name": "pooling.max.rejected",
+          "name": "pooling.max-pool2d",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.indices",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.gradients",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.dilation",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.dilation.indices",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.ceil",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.ceil.indices",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.rank3",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.rank3.indices",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.channels-last",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.channels-last.indices",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.empty-batch.indices",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d.dilation.rejected",
           "supported": false
         }
       ],
       "tests": [
+        "tests/python/test_vulkan_conformance.py",
         "tests/python/test_vulkan_operator_capabilities.py"
       ],
       "witnesses": {
-        "cases": [],
-        "dtypes": [],
-        "pairs": [],
-        "ranks": []
+        "cases": [
+          "pooling.max-pool2d",
+          "pooling.max-pool2d.ceil",
+          "pooling.max-pool2d.ceil.indices",
+          "pooling.max-pool2d.channels-last",
+          "pooling.max-pool2d.channels-last.indices",
+          "pooling.max-pool2d.dilation",
+          "pooling.max-pool2d.dilation.indices",
+          "pooling.max-pool2d.empty-batch",
+          "pooling.max-pool2d.empty-batch.indices",
+          "pooling.max-pool2d.gradients",
+          "pooling.max-pool2d.indices",
+          "pooling.max-pool2d.rank3",
+          "pooling.max-pool2d.rank3.indices"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          3,
+          4
+        ]
       }
     },
     {
@@ -14574,6 +14661,298 @@
         "dtypes": [],
         "pairs": [],
         "ranks": []
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "first_order_or_none",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 3
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::avg_pool2d.default",
+      "shape_constraints": [
+        "0x3x6x6",
+        "1x1x5x5",
+        "1x2x7x7",
+        "2x3x6x6",
+        "2x3x7x7",
+        "3x6x6"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "pooling.avg-pool2d",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d.ceil-count-exclude-pad",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d.divisor-override",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d.rank3",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d.channels-last",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d.padding.rejected",
+          "supported": false
+        },
+        {
+          "name": "pooling.avg-pool2d.divisor.rejected",
+          "supported": false
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "pooling.avg-pool2d",
+          "pooling.avg-pool2d.ceil-count-exclude-pad",
+          "pooling.avg-pool2d.channels-last",
+          "pooling.avg-pool2d.divisor-override",
+          "pooling.avg-pool2d.empty-batch",
+          "pooling.avg-pool2d.rank3"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "backward_kernel",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 3
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::avg_pool2d_backward.default",
+      "shape_constraints": [
+        "0x3x6x6",
+        "1x2x7x7",
+        "2x3x7x7",
+        "3x7x7"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "pooling.avg-pool2d-backward",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d-backward.ceil-divisor",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d-backward.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d-backward.rank3",
+          "supported": true
+        },
+        {
+          "name": "pooling.avg-pool2d-backward.shape.rejected",
+          "supported": false
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "pooling.avg-pool2d-backward",
+          "pooling.avg-pool2d-backward.ceil-divisor",
+          "pooling.avg-pool2d-backward.empty-batch",
+          "pooling.avg-pool2d-backward.rank3"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "aliasing": "no_overlap",
+      "autograd": "backward_kernel",
+      "device": {
+        "index": 0,
+        "type": "PrivateUse1"
+      },
+      "dtypes": {
+        "inputs": [
+          "float32"
+        ],
+        "outputs": [
+          "float32"
+        ]
+      },
+      "empty": "empty_output_supported",
+      "execution_contract": "vulkan_compute",
+      "inplace": "not_applicable",
+      "layouts": [
+        "strided",
+        "non-overlapping"
+      ],
+      "out": "not_applicable",
+      "ranks": {
+        "max": 4,
+        "min": 3
+      },
+      "reason": "supported_contract",
+      "required_vulkan_features": [],
+      "scalar_constraints": [
+        "none"
+      ],
+      "schema": "aten::max_pool2d_with_indices_backward.default",
+      "shape_constraints": [
+        "0x3x6x6",
+        "1x2x9x7",
+        "2x3x7x7",
+        "3x7x7"
+      ],
+      "status": "supported",
+      "test_cases": [
+        {
+          "name": "pooling.max-pool2d-backward",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d-backward.dilation",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d-backward.empty-batch",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d-backward.rank3",
+          "supported": true
+        },
+        {
+          "name": "pooling.max-pool2d-backward.indices.rejected",
+          "supported": false
+        }
+      ],
+      "tests": [
+        "tests/python/test_vulkan_conformance.py",
+        "tests/python/test_vulkan_operator_capabilities.py"
+      ],
+      "witnesses": {
+        "cases": [
+          "pooling.max-pool2d-backward",
+          "pooling.max-pool2d-backward.dilation",
+          "pooling.max-pool2d-backward.empty-batch",
+          "pooling.max-pool2d-backward.rank3"
+        ],
+        "dtypes": [
+          "float32"
+        ],
+        "pairs": [
+          [
+            "float32",
+            3
+          ],
+          [
+            "float32",
+            4
+          ]
+        ],
+        "ranks": [
+          3,
+          4
+        ]
       }
     },
     {

@@ -3941,7 +3941,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
     },
     'aten::max_pool2d_with_indices.default':     {
         "aliasing": "no_overlap",
-        "autograd": "not_applicable",
+        "autograd": "first_order_or_none",
         "device": {
             "index": 0,
             "type": "PrivateUse1"
@@ -3951,11 +3951,12 @@ DECLARATIONS: dict[str, dict[str, object]] = {
                 "float32"
             ],
             "outputs": [
-                "float32"
+                "float32",
+                "int64"
             ]
         },
-        "empty": "empty_deferred",
-        "execution_contract": "deferred_before_vulkan",
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
             "strided",
@@ -3964,14 +3965,14 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 4,
-            "min": 2
+            "min": 3
         },
-        "reason": "deferred_contract",
+        "reason": "supported_contract",
         "required_vulkan_features": [],
         "scalar_constraints": [
             "none"
         ],
-        "status": "deferred"
+        "status": "supported"
     },
     'aten::maximum.out':     {
         "aliasing": "no_overlap",
@@ -5368,6 +5369,108 @@ DECLARATIONS: dict[str, dict[str, object]] = {
             "none"
         ],
         "status": "rejected"
+    },
+    'aten::avg_pool2d.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "first_order_or_none",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 3
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::avg_pool2d_backward.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "backward_kernel",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 3
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
+    },
+    'aten::max_pool2d_with_indices_backward.default':     {
+        "aliasing": "no_overlap",
+        "autograd": "backward_kernel",
+        "device": {
+            "index": 0,
+            "type": "PrivateUse1"
+        },
+        "dtypes": {
+            "inputs": [
+                "float32"
+            ],
+            "outputs": [
+                "float32"
+            ]
+        },
+        "empty": "empty_output_supported",
+        "execution_contract": "vulkan_compute",
+        "inplace": "not_applicable",
+        "layouts": [
+            "strided",
+            "non-overlapping"
+        ],
+        "out": "not_applicable",
+        "ranks": {
+            "max": 4,
+            "min": 3
+        },
+        "reason": "supported_contract",
+        "required_vulkan_features": [],
+        "scalar_constraints": [
+            "none"
+        ],
+        "status": "supported"
     },
     'aten::reshape.default':     {
         "aliasing": "no_overlap",

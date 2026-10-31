@@ -149,7 +149,7 @@ struct MultiOutputMetadata {
     TensorMetadata tensors[7];
 };
 struct PoolingMetadata {
-    TensorMetadata tensors[2];
+    TensorMetadata tensors[3];
 };
 struct ConvolutionParams {
     uint32_t batch, input_channels, input_height, input_width, output_channels,
@@ -193,7 +193,10 @@ struct MaskedParams {
 };
 struct PoolingParams {
     uint32_t batch, channels, height, width, operation;
+    uint32_t out_height, out_width, kernel_h, kernel_w, stride_h, stride_w;
+    uint32_t pad_h, pad_w, dilation_h, dilation_w, pool_flags, divisor;
 };
+static_assert(sizeof(PoolingParams) == 68, "pooling push-constant ABI size mismatch");
 struct GemmParams {
     uint32_t m, n, k;
     uint32_t a_row_stride, a_col_stride;
@@ -652,7 +655,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         create_extra("pooling", pooling_descriptor_layout_, pooling_shader_,
                      pooling_pipeline_layout_, pooling_pipeline_,
                      vulkan_pooling_shader::kCode, vulkan_pooling_shader::kCodeSize,
-                     sizeof(PoolingParams), 3);
+                     sizeof(PoolingParams), 5);
         create_extra("normalization", normalization_descriptor_layout_,
                      normalization_shader_, normalization_pipeline_layout_,
                      normalization_pipeline_, vulkan_normalization_shader::kCode,
@@ -2641,12 +2644,115 @@ void VulkanCompute::pooling(VkBuffer input, VkBuffer output,
     PoolingMetadata metadata{};
     fill_layout_metadata(metadata.tensors[0], input_layout, "pooling input");
     fill_layout_metadata(metadata.tensors[1], output_layout, "pooling output");
-    PoolingParams params{batch, channels, height, width, operation};
+    PoolingParams params{};
+    params.batch = batch;
+    params.channels = channels;
+    params.height = height;
+    params.width = width;
+    params.operation = operation;
     const uint32_t output_numel = static_cast<uint32_t>(output_numel64);
-    dispatch_extra(input, output, input_layout.allocation_bytes,
-                   output_layout.allocation_bytes, pooling_pipeline_,
-                   pooling_pipeline_layout_, pooling_descriptor_layout_, &params,
-                   sizeof(params), output_numel, &metadata, sizeof(metadata));
+    // The widened pipeline has five bindings; the adaptive operations use only
+    // the first three, so the unused two are padded with the input buffer.
+    dispatch_pooling(input, output, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                     input_layout.allocation_bytes, output_layout.allocation_bytes, 0, 0,
+                     &params, sizeof(params), output_numel, &metadata, sizeof(metadata));
+}
+
+void VulkanCompute::pooling2d(uint32_t operation, VkBuffer input, VkBuffer output,
+                              VkBuffer indices, VkBuffer flags,
+                              const VulkanTensorLayout &input_layout,
+                              const VulkanTensorLayout &output_layout,
+                              const VulkanTensorLayout *indices_layout,
+                              VkDeviceSize flags_bytes,
+                              const VulkanPooling2dGeometry &geometry,
+                              uint32_t invocations) const {
+    if (operation < 2 || operation > 6)
+        throw std::invalid_argument("Vulkan pooling2d operation is unsupported");
+    const bool uses_indices = operation >= 4;
+    if (uses_indices != (indices != VK_NULL_HANDLE && indices_layout != nullptr))
+        throw std::invalid_argument("Vulkan pooling2d indices binding is inconsistent");
+    if ((operation == 5 || operation == 6) != (flags != VK_NULL_HANDLE))
+        throw std::invalid_argument("Vulkan pooling2d flag binding is inconsistent");
+    PoolingMetadata metadata{};
+    fill_layout_metadata(metadata.tensors[0], input_layout, "pooling2d input");
+    fill_layout_metadata(metadata.tensors[1], output_layout, "pooling2d output");
+    if (indices_layout)
+        fill_layout_metadata(metadata.tensors[2], *indices_layout, "pooling2d indices");
+    PoolingParams params{geometry.batch, geometry.channels, geometry.height,
+                         geometry.width, operation, geometry.out_height,
+                         geometry.out_width, geometry.kernel_h, geometry.kernel_w,
+                         geometry.stride_h, geometry.stride_w, geometry.pad_h,
+                         geometry.pad_w, geometry.dilation_h, geometry.dilation_w,
+                         (geometry.count_include_pad ? 1U : 0U) |
+                             (geometry.has_divisor ? 2U : 0U),
+                         geometry.divisor};
+    dispatch_pooling(input, output, indices, flags, input_layout.allocation_bytes,
+                     output_layout.allocation_bytes,
+                     indices_layout ? indices_layout->allocation_bytes : 0, flags_bytes,
+                     &params, sizeof(params), invocations, &metadata, sizeof(metadata));
+}
+
+void VulkanCompute::dispatch_pooling(
+    VkBuffer input, VkBuffer output, VkBuffer indices, VkBuffer flags,
+    VkDeviceSize input_bytes, VkDeviceSize output_bytes, VkDeviceSize indices_bytes,
+    VkDeviceSize flags_bytes, const void *params, uint32_t params_size,
+    uint32_t invocations, const void *metadata, VkDeviceSize metadata_size) const {
+    if (indices == VK_NULL_HANDLE) {
+        indices = input;
+        indices_bytes = input_bytes;
+    }
+    if (flags == VK_NULL_HANDLE) {
+        flags = input;
+        flags_bytes = input_bytes;
+    }
+    if (input == VK_NULL_HANDLE || output == VK_NULL_HANDLE || metadata == nullptr ||
+        metadata_size == 0 || indices_bytes == 0 || flags_bytes == 0 ||
+        indices_bytes > max_storage_buffer_range_ ||
+        flags_bytes > max_storage_buffer_range_)
+        throw std::invalid_argument("Vulkan pooling dispatch has an invalid buffer");
+    const uint32_t dispatch_groups = validate_dispatch_extra_limits(
+        input_bytes, output_bytes, params_size, invocations, metadata_size, false);
+    return pytorch_vulkan::with_vulkan_operation(platform_.runtime_lifecycle(), [&] {
+    CallbackDrainOnExit drain(platform_.execution_context());
+    std::scoped_lock lock(platform_.queue_mutex());
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    std::shared_ptr<VulkanBuffer> metadata_holder;
+    try {
+        record_dispatch();
+        cmd = platform_.execution_context().command_buffer();
+        metadata_holder = std::make_shared<VulkanBuffer>(
+            platform_, metadata_size,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        const VkDescriptorSet set = acquire_descriptor_set(pooling_descriptor_layout_, 5);
+        metadata_holder->write(metadata, metadata_size);
+        VkDescriptorBufferInfo buffers[] = {{input, 0, input_bytes},
+                                            {output, 0, output_bytes},
+                                            {metadata_holder->buffer(), 0, metadata_size},
+                                            {indices, 0, indices_bytes},
+                                            {flags, 0, flags_bytes}};
+        VkWriteDescriptorSet writes[5]{};
+        for (uint32_t i = 0; i < 5; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &buffers[i];
+        }
+        vkUpdateDescriptorSets(device_, 5, writes, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pooling_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                pooling_pipeline_layout_, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(cmd, pooling_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           params_size, params);
+        record_dispatch_command(cmd, dispatch_groups, 1, 1);
+        platform_.execution_context().defer_destruction([metadata_holder] {});
+        finish_dispatch();
+        dispatch_count_.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::exception &error) {
+        fail_recording("pooling dispatch", error);
+    }
+    });
 }
 
 void VulkanCompute::f32_to_double(VkBuffer input, VkBuffer output,

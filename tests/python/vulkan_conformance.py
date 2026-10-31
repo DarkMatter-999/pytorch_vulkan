@@ -2249,10 +2249,6 @@ def _cpu_convolution(value, weight, bias=None, **kwargs):
     return torch.nn.functional.conv2d(value, weight, bias, **kwargs)
 
 
-def _cpu_max_pool(value, kernel_size):
-    return torch.nn.functional.max_pool2d(value, kernel_size)
-
-
 def _cpu_masked_select(value, mask):
     return torch.masked_select(value, mask)
 
@@ -2463,6 +2459,89 @@ def _ln_zero_width_backward_inputs(*, requires_grad=False):
     weight, bias = torch.ones(0), torch.zeros(0)
     _, mean, rstd = torch.native_layer_norm(x, (0,), weight, bias, 1e-5)
     return (_ln_seeded((2, 0), 323), x, mean, rstd, weight, bias)
+
+
+def _pool_seeded(shape, seed, *, requires_grad=False, channels_last=False):
+    generator = torch.Generator().manual_seed(seed)
+    value = torch.randn(shape, generator=generator, dtype=torch.float32)
+    if channels_last:
+        value = value.contiguous(memory_format=torch.channels_last)
+    return value.requires_grad_(requires_grad)
+
+
+def _pool_forward_inputs(shape, *, channels_last=False):
+    def factory(*, requires_grad=False):
+        return (_pool_seeded(shape, 401, requires_grad=requires_grad,
+                             channels_last=channels_last),)
+    return factory
+
+
+def _avg_pool_op(value, *, kernel, stride, padding, ceil_mode=False,
+                 count_include_pad=True, divisor=None):
+    return torch.ops.aten.avg_pool2d.default(
+        value, kernel, stride, padding, ceil_mode, count_include_pad, divisor)
+
+
+def _avg_pool_backward_op(grad, value, *, kernel, stride, padding, ceil_mode=False,
+                          count_include_pad=True, divisor=None):
+    return torch.ops.aten.avg_pool2d_backward.default(
+        grad, value, kernel, stride, padding, ceil_mode, count_include_pad, divisor)
+
+
+def _max_pool_op(value, *, kernel, stride, padding, dilation=(1, 1), ceil_mode=False):
+    return torch.ops.aten.max_pool2d_with_indices.default(
+        value, kernel, stride, padding, dilation, ceil_mode)
+
+
+def _max_pool_output(value, *, kernel, stride, padding, dilation=(1, 1), ceil_mode=False):
+    return _max_pool_op(value, kernel=kernel, stride=stride, padding=padding,
+                        dilation=dilation, ceil_mode=ceil_mode)[0]
+
+
+def _max_pool_indices(value, *, kernel, stride, padding, dilation=(1, 1), ceil_mode=False):
+    return _max_pool_op(value, kernel=kernel, stride=stride, padding=padding,
+                        dilation=dilation, ceil_mode=ceil_mode)[1]
+
+
+def _max_pool_backward_op(grad, value, indices, *, kernel, stride, padding,
+                          dilation=(1, 1), ceil_mode=False):
+    return torch.ops.aten.max_pool2d_with_indices_backward.default(
+        grad, value, kernel, stride, padding, dilation, ceil_mode, indices)
+
+
+def _avg_pool_backward_inputs(shape, kernel, stride, padding, *, ceil_mode=False,
+                              count_include_pad=True, divisor=None):
+    def factory(*, requires_grad=False):
+        value = _pool_seeded(shape, 402)
+        out = _avg_pool_op(value, kernel=kernel, stride=stride, padding=padding,
+                           ceil_mode=ceil_mode, count_include_pad=count_include_pad,
+                           divisor=divisor)
+        return (_pool_seeded(out.shape, 403), value)
+    return factory
+
+
+def _max_pool_backward_inputs(shape, kernel, stride, padding, *, dilation=(1, 1),
+                              ceil_mode=False):
+    def factory(*, requires_grad=False):
+        value = _pool_seeded(shape, 404)
+        out, indices = _max_pool_op(value, kernel=kernel, stride=stride, padding=padding,
+                                    dilation=dilation, ceil_mode=ceil_mode)
+        return (_pool_seeded(out.shape, 405), value, indices)
+    return factory
+
+
+def _pool_bad_indices_inputs(*, requires_grad=False):
+    value = _pool_seeded((1, 2, 6, 6), 406)
+    out, _ = _max_pool_op(value, kernel=(2, 2), stride=(2, 2), padding=(0, 0))
+    return (_pool_seeded(out.shape, 407), value, torch.zeros_like(out))
+
+
+def _pool_bad_grad_inputs(*, requires_grad=False):
+    return (_pool_seeded((1, 2, 2, 3), 408), _pool_seeded((1, 2, 6, 6), 409))
+
+
+def _no_reference(*args, **kwargs):
+    return None
 
 
 def _pin_rank1(*, requires_grad=False):
@@ -3463,6 +3542,40 @@ _MANIFEST_CASES.update({
     "normalization.native-layer-norm-backward.empty": ("aten::native_layer_norm_backward.default", True),
     "normalization.native-layer-norm-backward.zero-width": ("aten::native_layer_norm_backward.default", True),
     "normalization.native-layer-norm-backward.mask.rejected": ("aten::native_layer_norm_backward.default", False),
+})
+_MANIFEST_CASES.update({
+    "pooling.avg-pool2d": ("aten::avg_pool2d.default", True),
+    "pooling.avg-pool2d.ceil-count-exclude-pad": ("aten::avg_pool2d.default", True),
+    "pooling.avg-pool2d.divisor-override": ("aten::avg_pool2d.default", True),
+    "pooling.avg-pool2d.rank3": ("aten::avg_pool2d.default", True),
+    "pooling.avg-pool2d.channels-last": ("aten::avg_pool2d.default", True),
+    "pooling.avg-pool2d.empty-batch": ("aten::avg_pool2d.default", True),
+    "pooling.avg-pool2d.padding.rejected": ("aten::avg_pool2d.default", False),
+    "pooling.avg-pool2d.divisor.rejected": ("aten::avg_pool2d.default", False),
+    "pooling.avg-pool2d-backward": ("aten::avg_pool2d_backward.default", True),
+    "pooling.avg-pool2d-backward.ceil-divisor": ("aten::avg_pool2d_backward.default", True),
+    "pooling.avg-pool2d-backward.empty-batch": ("aten::avg_pool2d_backward.default", True),
+    "pooling.avg-pool2d-backward.rank3": ("aten::avg_pool2d_backward.default", True),
+    "pooling.avg-pool2d-backward.shape.rejected": ("aten::avg_pool2d_backward.default", False),
+    "pooling.max-pool2d": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.gradients": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.dilation": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.ceil": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.rank3": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.channels-last": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.empty-batch": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.indices": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.dilation.indices": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.ceil.indices": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.rank3.indices": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.channels-last.indices": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.empty-batch.indices": ("aten::max_pool2d_with_indices.default", True),
+    "pooling.max-pool2d.dilation.rejected": ("aten::max_pool2d_with_indices.default", False),
+    "pooling.max-pool2d-backward": ("aten::max_pool2d_with_indices_backward.default", True),
+    "pooling.max-pool2d-backward.dilation": ("aten::max_pool2d_with_indices_backward.default", True),
+    "pooling.max-pool2d-backward.empty-batch": ("aten::max_pool2d_with_indices_backward.default", True),
+    "pooling.max-pool2d-backward.rank3": ("aten::max_pool2d_with_indices_backward.default", True),
+    "pooling.max-pool2d-backward.indices.rejected": ("aten::max_pool2d_with_indices_backward.default", False),
 })
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
@@ -4947,14 +5060,223 @@ ALL_CASES = tuple(
         atol=2e-4,
     ),
     _case(
-        "pooling.max.rejected",
-        "pooling",
-        torch.nn.functional.max_pool2d,
-        _pooling,
-        args=(2,),
-        cpu_reference=_cpu_max_pool,
-        supported=False,
-        error_pattern=r"Vulkan pooling is not declared",
+        "pooling.avg-pool2d", "pooling", _avg_pool_op, _pool_forward_inputs((2, 3, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_avg_pool_op, expected_shape=(2, 3, 4, 4), check_gradients=True,
+        declared_shapes=("2x3x7x7",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d.ceil-count-exclude-pad", "pooling", _avg_pool_op,
+        _pool_forward_inputs((1, 2, 7, 7)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(1, 1), ceil_mode=True,
+                    count_include_pad=False),
+        cpu_reference=_avg_pool_op, expected_shape=(1, 2, 4, 4), check_gradients=True,
+        declared_shapes=("1x2x7x7",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d.divisor-override", "pooling", _avg_pool_op,
+        _pool_forward_inputs((1, 1, 5, 5)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1), divisor=4),
+        cpu_reference=_avg_pool_op, expected_shape=(1, 1, 3, 3), check_gradients=True,
+        declared_shapes=("1x1x5x5",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d.rank3", "pooling", _avg_pool_op, _pool_forward_inputs((3, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_avg_pool_op, expected_shape=(3, 3, 3), check_gradients=True,
+        declared_shapes=("3x6x6",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d.channels-last", "pooling", _avg_pool_op,
+        _pool_forward_inputs((2, 3, 6, 6), channels_last=True),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_avg_pool_op, expected_shape=(2, 3, 3, 3),
+        declared_shapes=("2x3x6x6",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d.empty-batch", "pooling", _avg_pool_op,
+        _pool_forward_inputs((0, 3, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_avg_pool_op, expected_shape=(0, 3, 3, 3), execution_mode="empty",
+        declared_shapes=("0x3x6x6",),
+    ),
+    _case(
+        "pooling.avg-pool2d.padding.rejected", "pooling", _avg_pool_op,
+        _pool_forward_inputs((1, 2, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(1, 1), padding=(2, 2)),
+        supported=False, cpu_reference=_no_reference,
+        error_pattern=r"pad should be at most half of effective kernel size",
+    ),
+    _case(
+        "pooling.avg-pool2d.divisor.rejected", "pooling", _avg_pool_op,
+        _pool_forward_inputs((1, 2, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0), divisor=0),
+        supported=False, cpu_reference=_no_reference,
+        error_pattern=r"divisor must be not zero",
+    ),
+    _case(
+        "pooling.avg-pool2d-backward", "pooling", _avg_pool_backward_op,
+        _avg_pool_backward_inputs((2, 3, 7, 7), (3, 3), (2, 2), (1, 1)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_avg_pool_backward_op, expected_shape=(2, 3, 7, 7),
+        declared_shapes=("2x3x7x7",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d-backward.ceil-divisor", "pooling", _avg_pool_backward_op,
+        _avg_pool_backward_inputs((1, 2, 7, 7), (2, 2), (2, 2), (1, 1), ceil_mode=True,
+                                  count_include_pad=False),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(1, 1), ceil_mode=True,
+                    count_include_pad=False),
+        cpu_reference=_avg_pool_backward_op, expected_shape=(1, 2, 7, 7),
+        declared_shapes=("1x2x7x7",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d-backward.empty-batch", "pooling", _avg_pool_backward_op,
+        _avg_pool_backward_inputs((0, 3, 6, 6), (2, 2), (2, 2), (0, 0)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_avg_pool_backward_op, expected_shape=(0, 3, 6, 6),
+        execution_mode="empty", declared_shapes=("0x3x6x6",),
+    ),
+    _case(
+        "pooling.avg-pool2d-backward.rank3", "pooling", _avg_pool_backward_op,
+        _avg_pool_backward_inputs((3, 7, 7), (3, 3), (2, 2), (1, 1)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_avg_pool_backward_op, expected_shape=(3, 7, 7),
+        declared_shapes=("3x7x7",), rtol=1e-5, atol=1e-6,
+    ),
+    _case(
+        "pooling.avg-pool2d-backward.shape.rejected", "pooling", _avg_pool_backward_op,
+        _pool_bad_grad_inputs,
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        supported=False, cpu_reference=_no_reference,
+        error_pattern=r"Expected a tensor of dimension 4 and tensor.size",
+    ),
+    _case(
+        "pooling.max-pool2d", "pooling", _max_pool_output, _pool_forward_inputs((2, 3, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_max_pool_output, expected_shape=(2, 3, 4, 4),
+        declared_shapes=("2x3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.indices", "pooling", _max_pool_indices, _pool_forward_inputs((2, 3, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_max_pool_indices, expected_shape=(2, 3, 4, 4), expected_dtype=torch.int64,
+        declared_shapes=("2x3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.gradients", "pooling", _max_pool_output,
+        _pool_forward_inputs((2, 3, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
+        cpu_reference=_max_pool_output, expected_shape=(2, 3, 7, 7), check_gradients=True,
+        declared_shapes=("2x3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.dilation", "pooling", _max_pool_output,
+        _pool_forward_inputs((1, 2, 9, 7)),
+        kwargs=dict(kernel=(3, 2), stride=(2, 1), padding=(1, 0), dilation=(1, 2)),
+        cpu_reference=_max_pool_output, expected_shape=(1, 2, 5, 5),
+        declared_shapes=("1x2x9x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.dilation.indices", "pooling", _max_pool_indices,
+        _pool_forward_inputs((1, 2, 9, 7)),
+        kwargs=dict(kernel=(3, 2), stride=(2, 1), padding=(1, 0), dilation=(1, 2)),
+        cpu_reference=_max_pool_indices, expected_shape=(1, 2, 5, 5), expected_dtype=torch.int64,
+        declared_shapes=("1x2x9x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.ceil", "pooling", _max_pool_output, _pool_forward_inputs((1, 2, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1), ceil_mode=True),
+        cpu_reference=_max_pool_output, expected_shape=(1, 2, 4, 4),
+        declared_shapes=("1x2x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.ceil.indices", "pooling", _max_pool_indices, _pool_forward_inputs((1, 2, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1), ceil_mode=True),
+        cpu_reference=_max_pool_indices, expected_shape=(1, 2, 4, 4), expected_dtype=torch.int64,
+        declared_shapes=("1x2x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.rank3", "pooling", _max_pool_output, _pool_forward_inputs((3, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_max_pool_output, expected_shape=(3, 4, 4),
+        declared_shapes=("3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.rank3.indices", "pooling", _max_pool_indices, _pool_forward_inputs((3, 7, 7)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_max_pool_indices, expected_shape=(3, 4, 4), expected_dtype=torch.int64,
+        declared_shapes=("3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.channels-last", "pooling", _max_pool_output,
+        _pool_forward_inputs((2, 3, 6, 6), channels_last=True),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_max_pool_output, expected_shape=(2, 3, 3, 3),
+        declared_shapes=("2x3x6x6",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.channels-last.indices", "pooling", _max_pool_indices,
+        _pool_forward_inputs((2, 3, 6, 6), channels_last=True),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_max_pool_indices, expected_shape=(2, 3, 3, 3), expected_dtype=torch.int64,
+        declared_shapes=("2x3x6x6",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d.empty-batch", "pooling", _max_pool_output,
+        _pool_forward_inputs((0, 3, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_max_pool_output, expected_shape=(0, 3, 3, 3),
+        execution_mode="empty", declared_shapes=("0x3x6x6",),
+    ),
+    _case(
+        "pooling.max-pool2d.empty-batch.indices", "pooling", _max_pool_indices,
+        _pool_forward_inputs((0, 3, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_max_pool_indices, expected_shape=(0, 3, 3, 3), expected_dtype=torch.int64,
+        execution_mode="empty", declared_shapes=("0x3x6x6",),
+    ),
+    _case(
+        "pooling.max-pool2d.dilation.rejected", "pooling", _max_pool_op,
+        _pool_forward_inputs((1, 2, 6, 6)),
+        kwargs=dict(kernel=(2, 2), stride=(1, 1), padding=(0, 0), dilation=(0, 1)),
+        supported=False, cpu_reference=_no_reference,
+        error_pattern=r"dilation should be greater than zero",
+    ),
+    _case(
+        "pooling.max-pool2d-backward", "pooling", _max_pool_backward_op,
+        _max_pool_backward_inputs((2, 3, 7, 7), (3, 3), (1, 1), (1, 1)),
+        kwargs=dict(kernel=(3, 3), stride=(1, 1), padding=(1, 1)),
+        cpu_reference=_max_pool_backward_op, expected_shape=(2, 3, 7, 7),
+        declared_shapes=("2x3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d-backward.dilation", "pooling", _max_pool_backward_op,
+        _max_pool_backward_inputs((1, 2, 9, 7), (3, 2), (2, 1), (1, 0), dilation=(1, 2)),
+        kwargs=dict(kernel=(3, 2), stride=(2, 1), padding=(1, 0), dilation=(1, 2)),
+        cpu_reference=_max_pool_backward_op, expected_shape=(1, 2, 9, 7),
+        declared_shapes=("1x2x9x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d-backward.empty-batch", "pooling", _max_pool_backward_op,
+        _max_pool_backward_inputs((0, 3, 6, 6), (2, 2), (2, 2), (0, 0)),
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        cpu_reference=_max_pool_backward_op, expected_shape=(0, 3, 6, 6),
+        execution_mode="empty", declared_shapes=("0x3x6x6",),
+    ),
+    _case(
+        "pooling.max-pool2d-backward.rank3", "pooling", _max_pool_backward_op,
+        _max_pool_backward_inputs((3, 7, 7), (3, 3), (2, 2), (1, 1)),
+        kwargs=dict(kernel=(3, 3), stride=(2, 2), padding=(1, 1)),
+        cpu_reference=_max_pool_backward_op, expected_shape=(3, 7, 7),
+        declared_shapes=("3x7x7",), rtol=0, atol=0,
+    ),
+    _case(
+        "pooling.max-pool2d-backward.indices.rejected", "pooling", _max_pool_backward_op,
+        _pool_bad_indices_inputs,
+        kwargs=dict(kernel=(2, 2), stride=(2, 2), padding=(0, 0)),
+        supported=False, cpu_reference=_no_reference,
+        error_pattern=r"Vulkan max_pool2d_with_indices_backward indices requires a strided int64 vk:0 tensor",
     ),
     _case(
         "masked-select.bool-mask",
