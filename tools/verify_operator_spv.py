@@ -9,13 +9,12 @@ import subprocess
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-NAMES = ("normalization", "classification")
+NAMES = ("normalization",)
 HOST_FIELDS = [("uint32_t", n) for n in ("mode", "batch", "channels", "spatial", "classes")]
 HOST_FIELDS += [("int32_t", "ignore_index"), ("uint32_t", "padding0"),
                 ("uint32_t", "padding1"), ("float", "momentum"), ("float", "eps")]
 ABI = {
     "normalization": (10, [0, 4, 8, 12, 32, 36], ["uint", "uint", "uint", "uint", "float", "float"]),
-    "classification": (6, [0, 4, 16, 20], ["uint", "uint", "uint", "int"]),
 }
 
 
@@ -38,12 +37,6 @@ def assert_contracts(root):
         "uint ignore_index; uint padding0; uint padding1; float momentum; float eps;"
         in normalization
     )
-
-    classification = (root / "src/vulkan/shaders/glsl/classification.comp").read_text(encoding="ascii")
-    assert "readonly buffer Labels { int64_t labels[]; }" in classification
-    assert "label < 0" in classification
-    assert "label >= int64_t(p.classes)" in classification
-    assert "p.mode == 4u" in classification and "p.mode == 5u" in classification
 
 
 def verify_host(root):
@@ -120,8 +113,8 @@ def verify(root=ROOT, compiler="glslc"):
             raise ValueError(f"operator {key} mismatch: expected {expected[key]}, got {value}; regenerate explicitly")
     arrays = re.findall(rb"namespace vulkan_(\w+)_shader\s*\{\s*inline constexpr uint32_t (\w+)\[\]\s*=\s*\{([^}]+)\}", header)
     if ([(n.decode(), a.decode()) for n, a, _ in arrays] != [(n, "kCode") for n in NAMES]
-            or len(re.findall(rb"uint32_t\s+\w+\[\]\s*=", header)) != 2):
-        raise ValueError("operator embedded array inventory must be normalization/classification kCode")
+            or len(re.findall(rb"uint32_t\s+\w+\[\]\s*=", header)) != 1):
+        raise ValueError("operator embedded array inventory must be normalization kCode")
     assert_contracts(root)
     verify_host(root)
     with tempfile.TemporaryDirectory(prefix="operator-verify-") as directory:

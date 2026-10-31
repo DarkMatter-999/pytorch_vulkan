@@ -16,6 +16,7 @@
 #include "vulkan/shaders/generated/pointwise_spv.h"
 #include "vulkan/shaders/generated/pooling_spv.h"
 #include "vulkan/shaders/generated/interpolation_spv.h"
+#include "vulkan/shaders/generated/nll_loss_spv.h"
 #include "vulkan/shaders/generated/reduction_indexing_spv.h"
 #include "vulkan/shaders/generated/rnn_sequence_spv.h"
 #include "vulkan_buffer.h"
@@ -677,11 +678,11 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
                      normalization_pipeline_, vulkan_normalization_shader::kCode,
                      vulkan_normalization_shader::kCodeSize, sizeof(OperatorParams),
                      10);
-        create_extra("classification", classification_descriptor_layout_,
-                     classification_shader_, classification_pipeline_layout_,
-                     classification_pipeline_, vulkan_classification_shader::kCode,
-                     vulkan_classification_shader::kCodeSize, sizeof(OperatorParams),
-                     6);
+        create_extra("nll_loss", nll_loss_descriptor_layout_,
+                     nll_loss_shader_, nll_loss_pipeline_layout_,
+                     nll_loss_pipeline_, vulkan_nll_loss_shader::kCode,
+                     vulkan_nll_loss_shader::kCodeSize, kNllLossPushConstantBytes,
+                     8);
         if (platform.supports_formatter_double()) {
             create_extra("f32_to_double", f32_to_double_descriptor_layout_,
                          f32_to_double_shader_, f32_to_double_pipeline_layout_,
@@ -1061,7 +1062,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         pooling_pipeline_ = VK_NULL_HANDLE;
         interpolation_pipeline_ = VK_NULL_HANDLE;
         normalization_pipeline_ = VK_NULL_HANDLE;
-        classification_pipeline_ = VK_NULL_HANDLE;
+        nll_loss_pipeline_ = VK_NULL_HANDLE;
         f32_to_double_pipeline_ = VK_NULL_HANDLE;
         gemm_pipeline_ = VK_NULL_HANDLE;
         rnn_pipeline_ = VK_NULL_HANDLE;
@@ -1078,7 +1079,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         pooling_pipeline_layout_ = VK_NULL_HANDLE;
         interpolation_pipeline_layout_ = VK_NULL_HANDLE;
         normalization_pipeline_layout_ = VK_NULL_HANDLE;
-        classification_pipeline_layout_ = VK_NULL_HANDLE;
+        nll_loss_pipeline_layout_ = VK_NULL_HANDLE;
         f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
         gemm_pipeline_layout_ = VK_NULL_HANDLE;
         rnn_pipeline_layout_ = VK_NULL_HANDLE;
@@ -1095,7 +1096,7 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         pooling_shader_ = VK_NULL_HANDLE;
         interpolation_shader_ = VK_NULL_HANDLE;
         normalization_shader_ = VK_NULL_HANDLE;
-        classification_shader_ = VK_NULL_HANDLE;
+        nll_loss_shader_ = VK_NULL_HANDLE;
         f32_to_double_shader_ = VK_NULL_HANDLE;
         rnn_shader_ = VK_NULL_HANDLE;
         for (auto pipeline : pipelines_) {
@@ -1168,8 +1169,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
         if (normalization_shader_ != VK_NULL_HANDLE)
             vkDestroyShaderModule(device_, normalization_shader_, nullptr);
-        if (classification_shader_ != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device_, classification_shader_, nullptr);
+        if (nll_loss_shader_ != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device_, nll_loss_shader_, nullptr);
         for (auto layout : pipeline_layouts_) {
             if (layout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(device_, layout, nullptr);
@@ -1206,8 +1207,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
             vkDestroyPipelineLayout(device_, masked_compact_pipeline_layout_, nullptr);
         if (normalization_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, normalization_pipeline_layout_, nullptr);
-        if (classification_pipeline_layout_ != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(device_, classification_pipeline_layout_, nullptr);
+        if (nll_loss_pipeline_layout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device_, nll_loss_pipeline_layout_, nullptr);
         if (gemm_pipeline_layout_ != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device_, gemm_pipeline_layout_, nullptr);
         for (auto layout : descriptor_set_layouts_) {
@@ -1252,8 +1253,8 @@ VulkanCompute::VulkanCompute(const VulkanPlatform &platform)
         if (normalization_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, normalization_descriptor_layout_,
                                          nullptr);
-        if (classification_descriptor_layout_ != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device_, classification_descriptor_layout_,
+        if (nll_loss_descriptor_layout_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, nll_loss_descriptor_layout_,
                                          nullptr);
         if (gemm_descriptor_layout_ != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device_, gemm_descriptor_layout_, nullptr);
@@ -1278,7 +1279,7 @@ VulkanCompute::~VulkanCompute() {
     pooling_pipeline_ = VK_NULL_HANDLE;
     interpolation_pipeline_ = VK_NULL_HANDLE;
     normalization_pipeline_ = VK_NULL_HANDLE;
-    classification_pipeline_ = VK_NULL_HANDLE;
+    nll_loss_pipeline_ = VK_NULL_HANDLE;
     f32_to_double_pipeline_ = VK_NULL_HANDLE;
     gemm_pipeline_ = VK_NULL_HANDLE;
     rnn_pipeline_ = VK_NULL_HANDLE;
@@ -1297,7 +1298,7 @@ VulkanCompute::~VulkanCompute() {
     pooling_pipeline_layout_ = VK_NULL_HANDLE;
     interpolation_pipeline_layout_ = VK_NULL_HANDLE;
     normalization_pipeline_layout_ = VK_NULL_HANDLE;
-    classification_pipeline_layout_ = VK_NULL_HANDLE;
+    nll_loss_pipeline_layout_ = VK_NULL_HANDLE;
     f32_to_double_pipeline_layout_ = VK_NULL_HANDLE;
     gemm_pipeline_layout_ = VK_NULL_HANDLE;
     rnn_pipeline_layout_ = VK_NULL_HANDLE;
@@ -1337,8 +1338,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipeline(device_, masked_compact_pipeline_, nullptr);
     if (normalization_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, normalization_pipeline_, nullptr);
-    if (classification_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device_, classification_pipeline_, nullptr);
+    if (nll_loss_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device_, nll_loss_pipeline_, nullptr);
     if (f32_to_double_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, f32_to_double_pipeline_, nullptr);
     if (formatter_double_pipeline_ != VK_NULL_HANDLE)
@@ -1361,7 +1362,7 @@ VulkanCompute::~VulkanCompute() {
     pooling_shader_ = VK_NULL_HANDLE;
     interpolation_shader_ = VK_NULL_HANDLE;
     normalization_shader_ = VK_NULL_HANDLE;
-    classification_shader_ = VK_NULL_HANDLE;
+    nll_loss_shader_ = VK_NULL_HANDLE;
     f32_to_double_shader_ = VK_NULL_HANDLE;
     for (auto module : shader_modules_) {
         if (module != VK_NULL_HANDLE) {
@@ -1398,8 +1399,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyShaderModule(device_, masked_compact_shader_, nullptr);
     if (normalization_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, normalization_shader_, nullptr);
-    if (classification_shader_ != VK_NULL_HANDLE)
-        vkDestroyShaderModule(device_, classification_shader_, nullptr);
+    if (nll_loss_shader_ != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device_, nll_loss_shader_, nullptr);
     if (f32_to_double_shader_ != VK_NULL_HANDLE)
         vkDestroyShaderModule(device_, f32_to_double_shader_, nullptr);
     if (formatter_double_shader_ != VK_NULL_HANDLE)
@@ -1442,8 +1443,8 @@ VulkanCompute::~VulkanCompute() {
         vkDestroyPipelineLayout(device_, masked_compact_pipeline_layout_, nullptr);
     if (normalization_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, normalization_pipeline_layout_, nullptr);
-    if (classification_pipeline_layout_ != VK_NULL_HANDLE)
-        vkDestroyPipelineLayout(device_, classification_pipeline_layout_, nullptr);
+    if (nll_loss_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device_, nll_loss_pipeline_layout_, nullptr);
     if (f32_to_double_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device_, f32_to_double_pipeline_layout_, nullptr);
     if (formatter_double_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1492,8 +1493,8 @@ VulkanCompute::~VulkanCompute() {
     if (normalization_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, normalization_descriptor_layout_,
                                      nullptr);
-    if (classification_descriptor_layout_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorSetLayout(device_, classification_descriptor_layout_,
+    if (nll_loss_descriptor_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device_, nll_loss_descriptor_layout_,
                                      nullptr);
     if (f32_to_double_descriptor_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device_, f32_to_double_descriptor_layout_,
@@ -3067,9 +3068,8 @@ void VulkanCompute::dispatch_multi_output(
         if (metadata)
             infos[input_count + output_count] = {metadata_holder->buffer(), 0,
                                                   metadata_size};
-        // Classification shares a shader across forward and backward modes.
-        // Its second output is statically used, even when the selected backward
-        // branch never accesses it. Refresh that binding on every set acquisition
+        // The NLL shader shares one pipeline layout across all operations, so every
+        // binding is statically used even when the selected operation never accesses it. Refresh that binding on every set acquisition
         // (including reuse) with an already validated, live output buffer. This
         // is descriptor padding, not another logical output or shader write.
         for (uint32_t i = logical_descriptor_count; i < descriptor_count; ++i)
@@ -3115,17 +3115,17 @@ void VulkanCompute::compute_multi_output(
     const VulkanBuffer *const *inputs, const VulkanTensorLayout *const *input_layouts,
     const VulkanBuffer *const *outputs, const VulkanTensorLayout *const *output_layouts,
     uint32_t input_count, uint32_t output_count, uint32_t invocation_count,
-    const void *params, uint32_t params_size, bool classification) const {
+    const void *params, uint32_t params_size, bool nll_loss) const {
     const auto *pipeline =
-        classification ? &classification_pipeline_ : &normalization_pipeline_;
-    const auto *pipeline_layout = classification ? &classification_pipeline_layout_
-                                                 : &normalization_pipeline_layout_;
-    const auto *descriptor_layout = classification ? &classification_descriptor_layout_
-                                                   : &normalization_descriptor_layout_;
+        nll_loss ? &nll_loss_pipeline_ : &normalization_pipeline_;
+    const auto *pipeline_layout = nll_loss ? &nll_loss_pipeline_layout_
+                                           : &normalization_pipeline_layout_;
+    const auto *descriptor_layout = nll_loss ? &nll_loss_descriptor_layout_
+                                             : &normalization_descriptor_layout_;
     dispatch_multi_output(inputs, input_layouts, outputs, output_layouts, params,
                           params_size, nullptr, 0, *pipeline, *pipeline_layout,
                           *descriptor_layout, invocation_count, input_count,
-                          output_count, classification ? 6 : 10, classification);
+                          output_count, nll_loss ? 8 : 10, nll_loss);
 }
 
 uint32_t VulkanCompute::validate_dispatch_extra_limits(

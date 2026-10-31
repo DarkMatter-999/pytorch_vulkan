@@ -1,0 +1,159 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 256) in;
+
+// Negative log-likelihood loss for (N, C) float32 log-probabilities and int64 class
+// indices, forward and backward.  Operations (see nll_loss.cpp):
+//   0 init           status[0..3] = 0
+//   1 validate       lowest invalid target index via one atomicMax (error reporting only)
+//   2 capture        status[2..3] = the int64 target at that index (one writer)
+//   3 forward_none   out0[n] = ignored ? 0 : -x[n,t] * w[t]
+//   4 forward_reduce one workgroup: fixed-order hierarchical sum, total_weight, mean
+//   5 backward       grad_input[n,c] = (c == t) ? (-w[t]) * scale : 0
+// Every float expression is `precise` (SPIR-V NoContraction) so a device cannot fuse
+// `-x*w + acc` into an FMA; the reduction order is fixed (tests compare it bitwise with
+// the numpy oracle in tests/python/nll_loss_reference.py).  No label is ever used as an
+// index before it has been range-checked in this shader.
+layout(set = 0, binding = 0, std430) readonly buffer Target { int64_t target[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Input { float values[]; };
+layout(set = 0, binding = 2, std430) readonly buffer Weight { float weights[]; };
+layout(set = 0, binding = 3, std430) readonly buffer Grad { float grad[]; };
+layout(set = 0, binding = 4, std430) readonly buffer Total { float total[]; };
+layout(set = 0, binding = 5, std430) writeonly buffer Out0 { float out0[]; };
+layout(set = 0, binding = 6, std430) writeonly buffer Out1 { float out1[]; };
+layout(set = 0, binding = 7, std430) buffer Status { uint status[]; };
+layout(push_constant, std430) uniform Params {
+  uint operation; uint n; uint c; uint reduction; uint has_weight;
+  uint ignore_lo; uint ignore_hi;
+  uint target_offset; uint input_offset; uint weight_offset; uint grad_offset;
+  uint total_offset; uint count;
+} params;
+
+shared float partial[256];
+shared float tile_sum[2048];
+
+const uint kNaN = 0x7fc00000u;
+const uint kInf = 0x7f800000u;
+
+int64_t ignore_index() {
+  uint64_t bits = (uint64_t(params.ignore_hi) << 32) | uint64_t(params.ignore_lo);
+  return int64_t(bits);
+}
+
+// -1: ignored, 0: valid class, 1: invalid (neither ignored nor in [0, C)).
+int classify(int64_t label) {
+  if (label == ignore_index()) return -1;
+  if (label < int64_t(0) || label >= int64_t(params.c)) return 1;
+  return 0;
+}
+
+// IEEE a / b with an explicit zero divisor so no device-specific division by zero is relied on.
+float divide(float a, float b) {
+  if (b == 0.0) {
+    if (a == 0.0 || a != a) return uintBitsToFloat(kNaN);
+    bool negative = (a < 0.0) != ((floatBitsToUint(b) >> 31) == 1u);
+    return negative ? -uintBitsToFloat(kInf) : uintBitsToFloat(kInf);
+  }
+  precise float quotient = a / b;
+  return quotient;
+}
+
+// Per-row term: -x * w (or -x), zero for ignored/invalid rows.  weighted == false returns w.
+precise float row_value(uint row, bool weight_only) {
+  int64_t label = target[params.target_offset + row];
+  if (classify(label) != 0) return 0.0;
+  uint cls = uint(label);
+  precise float w = params.has_weight != 0u ? weights[params.weight_offset + cls] : 1.0;
+  if (weight_only) return w;
+  precise float x = values[params.input_offset + row * params.c + cls];
+  precise float term = params.has_weight != 0u ? (-x) * w : -x;
+  return term;
+}
+
+// One tile of 2048 = 256 threads x 8: thread k adds element j*256 + k for j = 0..7, then a
+// fixed binary tree (stride 128, 64, ..., 1).  `level_one` reads the tile sums instead.
+precise float tile_reduce(uint tid, uint base, uint limit, bool weight_only, bool level_one) {
+  precise float acc = 0.0;
+  for (uint j = 0u; j < 8u; ++j) {
+    uint element = base + j * 256u + tid;
+    precise float value = 0.0;
+    if (element < limit) value = level_one ? tile_sum[element] : row_value(element, weight_only);
+    acc = acc + value;
+  }
+  partial[tid] = acc;
+  barrier();
+  for (uint stride = 128u; stride >= 1u; stride >>= 1u) {
+    if (tid < stride) partial[tid] = partial[tid] + partial[tid + stride];
+    barrier();
+  }
+  precise float result = partial[0];
+  barrier();
+  return result;
+}
+
+precise float reduce_all(uint tid, bool weight_only) {
+  uint tiles = (params.n + 2047u) / 2048u;
+  for (uint tile = 0u; tile < tiles; ++tile) {
+    precise float sum = tile_reduce(tid, tile * 2048u, params.n, weight_only, false);
+    if (tid == 0u) tile_sum[tile] = sum;
+    barrier();
+  }
+  if (tiles == 1u) return tile_sum[0];
+  return tile_reduce(tid, 0u, tiles, weight_only, true);
+}
+
+void forward_reduce() {
+  uint tid = gl_LocalInvocationID.x;
+  precise float loss = reduce_all(tid, false);
+  precise float weight_sum = reduce_all(tid, true);
+  if (tid == 0u) {
+    if (params.reduction == 1u) {
+      out0[0] = divide(loss, weight_sum);
+    } else {
+      out0[0] = loss;
+    }
+    out1[0] = weight_sum;
+  }
+}
+
+void main() {
+  if (params.operation == 4u) {
+    forward_reduce();
+    return;
+  }
+  uint gid = gl_GlobalInvocationID.x;
+  if (gid >= params.count) return;
+  if (params.operation == 0u) {
+    if (gid < 4u) status[gid] = 0u;
+  } else if (params.operation == 1u) {
+    if (classify(target[params.target_offset + gid]) > 0)
+      atomicMax(status[0], 0xFFFFFFFFu - gid);
+  } else if (params.operation == 2u) {
+    if (gid == 0u && status[0] != 0u) {
+      uint index = 0xFFFFFFFFu - status[0];
+      int64_t label = target[params.target_offset + index];
+      status[2] = uint(label);
+      status[3] = uint(label >> 32);
+    }
+  } else if (params.operation == 3u) {
+    out0[gid] = row_value(gid, false);
+  } else if (params.operation == 5u) {
+    uint row = gid / params.c;
+    uint column = gid % params.c;
+    int64_t label = target[params.target_offset + row];
+    precise float result = 0.0;
+    if (classify(label) == 0 && uint(label) == column) {
+      precise float w = params.has_weight != 0u ? weights[params.weight_offset + column] : 1.0;
+      precise float scale = 0.0;
+      if (params.reduction == 1u) {
+        scale = divide(grad[params.grad_offset], total[params.total_offset]);
+      } else if (params.reduction == 2u) {
+        scale = grad[params.grad_offset];
+      } else {
+        scale = grad[params.grad_offset + row];
+      }
+      result = (-w) * scale;
+    }
+    out0[gid] = result;
+  }
+}

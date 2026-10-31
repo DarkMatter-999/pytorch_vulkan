@@ -11,7 +11,6 @@ import fcntl
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = (
     ROOT / "src/vulkan/shaders/glsl/normalization.comp",
-    ROOT / "src/vulkan/shaders/glsl/classification.comp",
 )
 HEADER = ROOT / "src/vulkan/shaders/generated/operator_spv.h"
 MANIFEST = ROOT / "src/vulkan/shaders/generated/operator_spv.sha256"

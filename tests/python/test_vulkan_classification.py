@@ -30,14 +30,24 @@ def test_nll_loss_mean_fixed_contract_matches_cpu(vulkan_backend):
         torch.testing.assert_close(result.cpu(), reference)
 
 
-def test_nll_loss_rejects_weights_and_sum_without_vulkan_work(vulkan_backend):
-    logits = torch.ones(2, 3).to(vulkan_backend)
-    labels = torch.tensor([0, 1], dtype=torch.int64).to(vulkan_backend)
-    weight = torch.ones(3).to(vulkan_backend)
-    pytorch_vulkan._C.reset_execution_counters()
-    with pytest.raises(RuntimeError, match="class weights|reduction"):
-        torch.ops.aten.nll_loss_forward.default(logits, labels, weight, 0, -100)
-    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 0, 0)
+@pytest.mark.parametrize("reduction", [0, 1, 2])
+def test_nll_loss_accepts_weights_and_every_reduction(vulkan_backend, reduction):
+    # Replaces the fixed-slice rejection test: weights and all reductions are now supported.
+    torch.manual_seed(5)
+    log_probs = torch.log_softmax(torch.randn(6, 4), dim=1)
+    cpu_labels = torch.tensor([0, 1, 2, 3, -100, 1], dtype=torch.int64)
+    cpu_weight = torch.rand(4) + 0.25
+    expected = torch.ops.aten.nll_loss_forward.default(
+        log_probs, cpu_labels, cpu_weight, reduction, -100
+    )
+    actual = torch.ops.aten.nll_loss_forward.default(
+        log_probs.to(vulkan_backend), cpu_labels.to(vulkan_backend),
+        cpu_weight.to(vulkan_backend), reduction, -100,
+    )
+    pytorch_vulkan._C.synchronize()
+    for result, reference in zip(actual, expected):
+        assert result.device == torch.device(vulkan_backend)
+        torch.testing.assert_close(result.cpu(), reference, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -45,7 +55,7 @@ def test_nll_loss_rejects_weights_and_sum_without_vulkan_work(vulkan_backend):
     [
         (torch.tensor([0, 1], dtype=torch.int64), "vk:0"),
         (torch.ones(2, dtype=torch.float32), "int64"),
-        (torch.tensor([0, 1, 2], dtype=torch.int64).to("cpu"), "shape"),
+        (torch.tensor([0, 1, 2], dtype=torch.int64).to("cpu"), "size mismatch"),
     ],
 )
 def test_nll_loss_rejects_malformed_labels_before_vulkan_work(
@@ -62,20 +72,20 @@ def test_nll_loss_rejects_malformed_labels_before_vulkan_work(
 
 @pytest.mark.parametrize(
     "labels",
-    [torch.tensor([-1, 1], dtype=torch.int64), torch.tensor([3, 1], dtype=torch.int64)],
+    [
+        torch.tensor([-1, 1], dtype=torch.int64),
+        torch.tensor([3, 1], dtype=torch.int64),
+        torch.tensor([255, 1], dtype=torch.int64),
+        torch.tensor([2**40, -(2**63)], dtype=torch.int64),
+    ],
 )
-def test_cpu_label_transfer_rejects_negative_labels_but_accepts_dynamic_class_indices(
-    labels, vulkan_backend
-):
+def test_cpu_label_transfer_accepts_every_int64_label(labels, vulkan_backend):
+    # Replaces the negative-label upload rejection: validity is judged at the NLL call,
+    # where the class count and ignore_index are known.
+    pytorch_vulkan._C.synchronize()
     pytorch_vulkan._C.reset_execution_counters()
-    expected = (0, 0, 0, 0)
-    if labels[0].item() < 0:
-        with pytest.raises(RuntimeError, match="range"):
-            labels.to(vulkan_backend)
-    else:
-        labels.to(vulkan_backend)
-        expected = (0, 0, 1, 0)
-    assert pytorch_vulkan._C.execution_counter_snapshot() == expected
+    labels.to(vulkan_backend)
+    assert pytorch_vulkan._C.execution_counter_snapshot() == (0, 0, 1, 0)
 
 
 def test_nll_loss_backward_keeps_gradient_on_vulkan(vulkan_backend):

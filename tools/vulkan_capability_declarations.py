@@ -469,7 +469,7 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "out": "not_applicable",
         "ranks": {
             "max": 2,
-            "min": 2
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],
@@ -4917,9 +4917,8 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
-            "contiguous",
-            "non-overlapping",
-            "zero-offset"
+            "strided",
+            "non-overlapping"
         ],
         "out": "not_applicable",
         "ranks": {
@@ -4988,14 +4987,13 @@ DECLARATIONS: dict[str, dict[str, object]] = {
         "execution_contract": "vulkan_compute",
         "inplace": "not_applicable",
         "layouts": [
-            "contiguous",
-            "non-overlapping",
-            "zero-offset"
+            "strided",
+            "non-overlapping"
         ],
         "out": "not_applicable",
         "ranks": {
             "max": 2,
-            "min": 2
+            "min": 1
         },
         "reason": "supported_contract",
         "required_vulkan_features": [],

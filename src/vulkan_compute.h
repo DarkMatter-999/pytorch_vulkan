@@ -40,6 +40,9 @@ struct VulkanPooling2dGeometry {
     uint32_t divisor;
 };
 
+// Push-constant bytes of nll_loss.comp (13 uint32 members; see nll_loss.cpp).
+inline constexpr uint32_t kNllLossPushConstantBytes = 52;
+
 struct VulkanInterpolation2dGeometry {
     uint32_t batch, channels, in_height, in_width, out_height, out_width;
     float scale_h, scale_w;
@@ -257,7 +260,7 @@ class VulkanCompute final {
                               const VulkanTensorLayout *const *output_layouts,
                               uint32_t input_count, uint32_t output_count,
                               uint32_t invocation_count, const void *params,
-                              uint32_t params_size, bool classification) const;
+                              uint32_t params_size, bool nll_loss) const;
     void f32_to_double(VkBuffer input, VkBuffer output, VkDeviceSize input_bytes,
                        VkDeviceSize output_bytes, uint32_t element_count) const;
     void formatter_double(VkBuffer input, VkBuffer rhs, VkBuffer output,
@@ -436,10 +439,10 @@ class VulkanCompute final {
     VkPipelineLayout normalization_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule normalization_shader_ = VK_NULL_HANDLE;
     VkPipeline normalization_pipeline_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout classification_descriptor_layout_ = VK_NULL_HANDLE;
-    VkPipelineLayout classification_pipeline_layout_ = VK_NULL_HANDLE;
-    VkShaderModule classification_shader_ = VK_NULL_HANDLE;
-    VkPipeline classification_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout nll_loss_descriptor_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout nll_loss_pipeline_layout_ = VK_NULL_HANDLE;
+    VkShaderModule nll_loss_shader_ = VK_NULL_HANDLE;
+    VkPipeline nll_loss_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout masked_count_descriptor_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout masked_count_pipeline_layout_ = VK_NULL_HANDLE;
     VkShaderModule masked_count_shader_ = VK_NULL_HANDLE;

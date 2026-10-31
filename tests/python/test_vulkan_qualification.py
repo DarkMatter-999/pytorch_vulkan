@@ -762,6 +762,7 @@ PYTHON_CTEST_COVERAGE = {
     "vulkan_convolution_shader_integrity": ("tools/verify_convolution_spv.py",),
     "vulkan_pooling_shader_integrity": ("tools/verify_pooling_spv.py",),
     "vulkan_interpolation_shader_integrity": ("tools/verify_interpolation_spv.py",),
+    "vulkan_nll_loss_shader_integrity": ("tools/verify_nll_loss_spv.py",),
     "vulkan_formatter_double_shader_integrity": ("tools/verify_formatter_double_spv.py",),
     "vulkan_pointwise_shader_integrity": ("tools/verify_pointwise_spv.py",),
     "vulkan_operator_shader_integrity": ("tools/verify_operator_spv.py",),

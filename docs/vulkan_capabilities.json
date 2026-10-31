@@ -307,7 +307,7 @@
       "out": "not_applicable",
       "ranks": {
         "max": 2,
-        "min": 2
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -316,12 +316,21 @@
       ],
       "schema": "aten::_log_softmax.default",
       "shape_constraints": [
-        "unwitnessed"
+        "64x10",
+        "7"
       ],
       "status": "supported",
       "test_cases": [
         {
           "name": "reduction.log-softmax.default",
+          "supported": true
+        },
+        {
+          "name": "reduction.log-softmax.default.wide",
+          "supported": true
+        },
+        {
+          "name": "reduction.log-softmax.default.rank1",
           "supported": true
         }
       ],
@@ -331,7 +340,9 @@
       ],
       "witnesses": {
         "cases": [
-          "reduction.log-softmax.default"
+          "reduction.log-softmax.default",
+          "reduction.log-softmax.default.rank1",
+          "reduction.log-softmax.default.wide"
         ],
         "dtypes": [
           "float32"
@@ -339,10 +350,15 @@
         "pairs": [
           [
             "float32",
+            1
+          ],
+          [
+            "float32",
             2
           ]
         ],
         "ranks": [
+          1,
           2
         ]
       }
@@ -6589,9 +6605,8 @@
       "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
-        "contiguous",
-        "non-overlapping",
-        "zero-offset"
+        "strided",
+        "non-overlapping"
       ],
       "out": "not_applicable",
       "ranks": {
@@ -6605,7 +6620,9 @@
       ],
       "schema": "aten::nll_loss_backward.default",
       "shape_constraints": [
+        "1",
         "2x3",
+        "8",
         "8x5"
       ],
       "status": "supported",
@@ -6625,6 +6642,26 @@
         {
           "name": "classification.nll-backward.none",
           "supported": true
+        },
+        {
+          "name": "classification.nll-backward.weighted.mean",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.weighted.sum",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.weighted.none",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.ignore-index",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-backward.unbatched",
+          "supported": true
         }
       ],
       "tests": [
@@ -6634,8 +6671,13 @@
       "witnesses": {
         "cases": [
           "classification.nll-backward",
+          "classification.nll-backward.ignore-index",
           "classification.nll-backward.none",
           "classification.nll-backward.sum",
+          "classification.nll-backward.unbatched",
+          "classification.nll-backward.weighted.mean",
+          "classification.nll-backward.weighted.none",
+          "classification.nll-backward.weighted.sum",
           "classification.nll-backward.wide"
         ],
         "dtypes": [
@@ -6671,14 +6713,13 @@
       "execution_contract": "vulkan_compute",
       "inplace": "not_applicable",
       "layouts": [
-        "contiguous",
-        "non-overlapping",
-        "zero-offset"
+        "strided",
+        "non-overlapping"
       ],
       "out": "not_applicable",
       "ranks": {
         "max": 2,
-        "min": 2
+        "min": 1
       },
       "reason": "supported_contract",
       "required_vulkan_features": [],
@@ -6688,6 +6729,7 @@
       "schema": "aten::nll_loss_forward.default",
       "shape_constraints": [
         "2x3",
+        "5",
         "512x5",
         "8x5"
       ],
@@ -6704,6 +6746,38 @@
         {
           "name": "classification.nll-forward.none.wide",
           "supported": true
+        },
+        {
+          "name": "classification.nll-forward.weighted.mean",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.weighted.sum",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.weighted.none",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.weighted.total-weight",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.ignore-index",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.ignore-index.minus-one",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.unbatched",
+          "supported": true
+        },
+        {
+          "name": "classification.nll-forward.rank3.rejected",
+          "supported": false
         }
       ],
       "tests": [
@@ -6713,7 +6787,14 @@
       "witnesses": {
         "cases": [
           "classification.nll-forward",
+          "classification.nll-forward.ignore-index",
+          "classification.nll-forward.ignore-index.minus-one",
           "classification.nll-forward.none.wide",
+          "classification.nll-forward.unbatched",
+          "classification.nll-forward.weighted.mean",
+          "classification.nll-forward.weighted.none",
+          "classification.nll-forward.weighted.sum",
+          "classification.nll-forward.weighted.total-weight",
           "classification.nll-forward.wide"
         ],
         "dtypes": [
@@ -6722,10 +6803,15 @@
         "pairs": [
           [
             "float32",
+            1
+          ],
+          [
+            "float32",
             2
           ]
         ],
         "ranks": [
+          1,
           2
         ]
       }

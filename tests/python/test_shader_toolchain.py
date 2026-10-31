@@ -40,7 +40,7 @@ def test_operator_generation_write_failure_preserves_both_products(operator_fixt
     directory = root / "src/vulkan/shaders/generated"
     before = snapshot(root)
     monkeypatch.setattr(sys, "argv", ["generate", "--output-directory", str(directory)])
-    monkeypatch.setattr(generator, "SOURCES", [root / f"src/vulkan/shaders/glsl/{n}.comp" for n in ("normalization", "classification")])
+    monkeypatch.setattr(generator, "SOURCES", [root / f"src/vulkan/shaders/glsl/{n}.comp" for n in ("normalization",)])
     def compile_fixture(argv, **kwargs):
         Path(argv[argv.index("-o") + 1]).write_bytes(BINARY)
     monkeypatch.setattr(generator.subprocess, "run", compile_fixture)
@@ -171,7 +171,7 @@ def manifest(root):
     sources = root / "src/vulkan/shaders/glsl"
     (generated / "operator_spv.sha256").write_text(
         "source_sha256=" + digest(b"".join((sources / f"{n}.comp").read_bytes()
-                                          for n in ("normalization", "classification")))
+                                          for n in ("normalization",)))
         + "\nheader_sha256=" + digest((generated / "operator_spv.h").read_bytes()) + "\n")
 
 
@@ -196,10 +196,10 @@ def operator_fixture(tmp_path):
     generated.mkdir(parents=True)
     source = root / "src/vulkan/shaders/glsl"
     source.mkdir()
-    for name in ("normalization", "classification"):
+    for name in ("normalization",):
         shutil.copy2(ROOT / f"src/vulkan/shaders/glsl/{name}.comp", source)
     host = "struct OperatorParams {" + HOST_FIELDS + "};\n"
-    for name, count in [("normalization", 10), ("classification", 6)]:
+    for name, count in [("normalization", 10)]:
         host += (f'create_extra("{name}", layout, shader, pipeline_layout, pipeline, '
                  f'vulkan_{name}_shader::kCode, vulkan_{name}_shader::kCodeSize, '
                  f'sizeof(OperatorParams), {count});\n')
@@ -207,7 +207,7 @@ def operator_fixture(tmp_path):
     words = ", ".join(f"0x{x:08x}U" for x in struct.unpack("<7I", BINARY))
     (generated / "operator_spv.h").write_text("\n".join(
         f"namespace vulkan_{name}_shader {{ inline constexpr uint32_t kCode[] = {{{words}}}; }}"
-        for name in ("normalization", "classification")))
+        for name in ("normalization",)))
     manifest(root)
     tools = root / "tools"
     tools.mkdir()
@@ -230,8 +230,8 @@ out=pathlib.Path(sys.argv[sys.argv.index('-o')+1]); out.write_bytes(%r)
 with pathlib.Path(%r).open('a') as f: f.write(str(out)+'\\n')
 """ % (BINARY, str(tmp_path / "compiler-outputs")))
     executable(bin_dir / "spirv-val", "import sys\nsys.exit(0)\n")
-    executable(bin_dir / "spirv-dis", "import sys\nprint(%r['normalization' if 'normalization' in sys.argv[-1] else 'classification'])\n"
-               % {n: assembly(n) for n in ("normalization", "classification")})
+    executable(bin_dir / "spirv-dis", "import sys\nprint(%r['normalization'])\n"
+               % {n: assembly(n) for n in ("normalization",)})
     env = os.environ.copy()
     # Tests intentionally select fakes, never the user's configured profile.
     for key in ("VULKAN_SHADER_TOOLCHAIN_PROFILE", "VULKAN_SHADER_TOOLCHAIN_PROFILE_SHA256"):
@@ -289,7 +289,7 @@ def test_operator_failure_is_readonly(operator_fixture, damage, diagnostic):
         header.write_text(header.read_text().replace("0x00000002U", "0x00000003U"))
         manifest(root)
     elif damage == "inventory":
-        header.write_text(header.read_text().replace("vulkan_classification_shader", "wrong"))
+        header.write_text(header.read_text().replace("vulkan_normalization_shader", "wrong"))
         manifest(root)
     elif damage == "host":
         (root / "src/vulkan_compute.cpp").write_text("struct OperatorParams {float mode;};")
@@ -303,12 +303,12 @@ def test_operator_failure_is_readonly(operator_fixture, damage, diagnostic):
     elif damage == "validator":
         executable(bin_dir / "spirv-val", "import sys\nprint('invalid module',file=sys.stderr);sys.exit(1)\n")
     else:
-        changes = {"bindings": ("Binding 5", "Binding 6"), "push": ("Offset 20", "Offset 24"),
-                   "push_type": ("OpTypeInt 32 1", "OpTypeInt 64 1"),
+        changes = {"bindings": ("Binding 5", "Binding 6"), "push": ("Offset 36", "Offset 40"),
+                   "push_type": ("OpTypeFloat 32", "OpTypeFloat 64"),
                    "local": ("LocalSize 256 1 1", "LocalSize 128 1 1")}
         a, b = changes[damage]
-        executable(bin_dir / "spirv-dis", "import sys\nprint(%r['normalization' if 'normalization' in sys.argv[-1] else 'classification'])\n"
-                   % {n: assembly(n).replace(a, b) for n in ("normalization", "classification")})
+        executable(bin_dir / "spirv-dis", "import sys\nprint(%r['normalization'])\n"
+                   % {n: assembly(n).replace(a, b) for n in ("normalization",)})
     before = snapshot(root)
     result = verify(operator_fixture)
     assert result.returncode != 0
@@ -323,7 +323,8 @@ def test_operator_concurrent_verification_has_unique_temporary_outputs(operator_
         results = list(pool.map(lambda _: verify(operator_fixture), range(2)))
     assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
     outputs = (Path(env["TMPDIR"]) / "compiler-outputs").read_text().splitlines()
-    assert len(outputs) == len(set(outputs)) == 4
+    # two concurrent verifications x the operator shader inventory (normalization only)
+    assert len(outputs) == len(set(outputs)) == 2
     assert len({str(Path(p).parent) for p in outputs}) == 2
     assert snapshot(root) == before
 
@@ -681,6 +682,32 @@ def test_cmake_interpolation_integrity_does_not_generate_products(tmp_path):
     assert (root / "tools/unexpected-interpolation-generation").read_text() == "mutated"
 
 
+def test_cmake_nll_loss_integrity_does_not_generate_products(tmp_path):
+    """The nll_loss integrity target verifies; only the explicit target generates."""
+    root = tmp_path / "root"
+    shutil.copytree(ROOT / "tools", root / "tools")
+    shutil.copytree(ROOT / "src", root / "src")
+    shutil.copy2(ROOT / "CMakeLists.txt", root / "CMakeLists.txt")
+    shutil.copytree(ROOT / "python", root / "python")
+    shutil.copytree(ROOT / "tests", root / "tests")
+    (root / "tools/generate_nll_loss_spv.py").write_text("from pathlib import Path\nPath(__file__).with_name('unexpected-nll_loss-generation').write_text('mutated')\n")
+    (root / "tools/verify_nll_loss_spv.py").write_text("print('fixture verification')\n")
+    build = tmp_path / "build"
+    configure = subprocess.run(["cmake", "-S", str(root), "-B", str(build),
+                                "-DBUILD_PYTHON_EXTENSION=ON", "-DPython3_EXECUTABLE=" + sys.executable,
+                                "-DCMAKE_PREFIX_PATH=" + _torch_cmake_prefix()],
+                               capture_output=True, text=True)
+    assert configure.returncode == 0, configure.stderr
+    result = subprocess.run(["cmake", "--build", str(build), "--target", "vulkan_nll_loss_shader_integrity"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not (root / "tools/unexpected-nll_loss-generation").exists()
+    generation = subprocess.run(["cmake", "--build", str(build), "--target", "vulkan_nll_loss_shader_generate"],
+                                capture_output=True, text=True)
+    assert generation.returncode == 0, generation.stderr
+    assert (root / "tools/unexpected-nll_loss-generation").read_text() == "mutated"
+
+
 @pytest.mark.parametrize("action", ["ordinary-build", "explicit-unselected"])
 def test_cmake_operator_regeneration_is_opt_in_and_requires_profile(tmp_path, action):
     root = tmp_path / "root"
@@ -825,7 +852,7 @@ def test_authenticated_archives_and_cmake_operator_generation_are_protected(tmp_
     result = run(["cmake", "--build", str(build), "--target", "vulkan_operator_shader_generate"])
     assert result.returncode == 0, result.stderr
     assert {p.name: p.read_bytes() for p in generated.iterdir() if p.is_file()} == before_bytes
-    source = root / "src/vulkan/shaders/glsl/classification.comp"
+    source = root / "src/vulkan/shaders/glsl/normalization.comp"
     before = snapshot(generated)
     source.write_text(source.read_text() + "\n// copied source-only manifest drift\n")
     result = run(["cmake", "--build", str(build), "--target", "vulkan_operator_shader_generate"])
@@ -833,7 +860,7 @@ def test_authenticated_archives_and_cmake_operator_generation_are_protected(tmp_
     assert snapshot(generated) == before
     # Semantic perturbation in OWNED copy produces genuinely different bytes.
     original_source = source.read_text()
-    damaged_source = original_source.replace("p.classes", "(p.classes + 1u)")
+    damaged_source = original_source.replace("float m = f[ch]", "float m = f[ch] + 1.0")
     assert damaged_source != original_source
     source.write_text(damaged_source)
     for target in ("vulkan_operator_shader_integrity", "vulkan_operator_shader_generate", "vulkan_platform"):

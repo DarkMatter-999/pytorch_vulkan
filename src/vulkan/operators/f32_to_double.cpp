@@ -44,15 +44,12 @@ at::Tensor allocate_vulkan_transfer_output(
     TORCH_CHECK(false, "Vulkan _to_copy received an unsupported memory format");
 }
 
+// Labels are validated where the class count and ignore_index are known, at the NLL call
+// (see nll_loss.cpp). Upload keeps only the structural requirement; any int64 value may be
+// uploaded, because shaders guard every label read and never index with an unchecked label.
 void validate_cpu_nll_labels(const at::Tensor &input) {
     TORCH_CHECK(input.is_contiguous(),
                 "Vulkan label transfer requires contiguous CPU int64 labels");
-    const auto *labels = input.data_ptr<int64_t>();
-    for (int64_t index = 0; index < input.numel(); ++index) {
-        TORCH_CHECK(labels[index] >= 0 || labels[index] == -100,
-                    "Vulkan nll_loss labels must be non-negative or ignore_index "
-                    "(range validation failed)");
-    }
 }
 
 at::Tensor f32_to_double(const at::Tensor &input, c10::optional<c10::ScalarType> dtype,

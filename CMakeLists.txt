@@ -81,6 +81,8 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/generated/pooling_spv.sha256
                      src/vulkan/shaders/generated/interpolation_spv.h
                      src/vulkan/shaders/generated/interpolation_spv.sha256
+                     src/vulkan/shaders/generated/nll_loss_spv.h
+                     src/vulkan/shaders/generated/nll_loss_spv.sha256
                     src/vulkan/shaders/generated/f32_to_double_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.h
                     src/vulkan/shaders/generated/linear_relu_backward_spv.sha256
@@ -102,10 +104,10 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
                      src/vulkan/shaders/glsl/convolution.comp
                         src/vulkan/shaders/glsl/pooling.comp
                         src/vulkan/shaders/glsl/interpolation.comp
+                        src/vulkan/shaders/glsl/nll_loss.comp
                          src/vulkan/shaders/glsl/loss.comp
                          src/vulkan/shaders/glsl/rnn_sequence.comp
-                         src/vulkan/shaders/glsl/normalization.comp
-                        src/vulkan/shaders/glsl/classification.comp)
+                         src/vulkan/shaders/glsl/normalization.comp)
         add_custom_target(vulkan_linear_relu_backward_shader_integrity
                            COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_linear_relu_backward_spv.py
                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_linear_relu_backward_spv.py
@@ -147,11 +149,10 @@ if(BUILD_VULKAN_PROBE OR BUILD_PYTHON_EXTENSION)
            if(VULKAN_SHADER_TOOLCHAIN_PROFILE)
              add_custom_target(vulkan_operator_shader_generate
               COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
-                      --expected-header-sha256 664896fa8b8c9f92a2d971f65fc097b2917101bdadb21a798652e0fe9d5bd484
-                      --expected-manifest-sha256 22112b1de79f4f84a6e1ade6ebc7d8ee02627828d13d258c67894ea9aec618b7
+                      --expected-header-sha256 7e2e6b7dfa15513d2cd3ff81af4ba66631e6474ebd853e93a53f124fc81552e0
+                      --expected-manifest-sha256 d27e5cc24db8f272dd789c3c5d578e7cdec84f93016ec7fb39b3dd3c75cd4c74
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
-                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp
             VERBATIM)
            else()
              add_custom_target(vulkan_operator_shader_generate
@@ -378,9 +379,9 @@ if(BUILD_PYTHON_EXTENSION)
            src/vulkan/operators/convolution.h src/vulkan/operators/pooling.cpp
               src/vulkan/operators/pooling.h src/vulkan/operators/comparison.cpp
               src/vulkan/operators/interpolation.cpp src/vulkan/operators/interpolation.h
+              src/vulkan/operators/nll_loss.cpp src/vulkan/operators/nll_loss.h
                src/vulkan/operators/comparison.h src/vulkan/operators/optimizer.h
                 src/vulkan/operators/normalization.cpp src/vulkan/operators/normalization.h
-                src/vulkan/operators/classification.cpp src/vulkan/operators/classification.h
                 src/vulkan/operators/f32_to_double.cpp
         src/vulkan/operators/formatter_double.cpp src/vulkan/operators/formatter_double.h
         src/vulkan/operators/cat.cpp src/vulkan/operators/cat.h)
@@ -463,6 +464,18 @@ if(BUILD_PYTHON_EXTENSION)
                            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_interpolation_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py
                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/interpolation.comp)
+        add_custom_target(vulkan_nll_loss_shader_generate
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_nll_loss_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_nll_loss_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_nll_loss_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/nll_loss.comp)
+        add_custom_target(vulkan_nll_loss_shader_integrity
+                           COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_nll_loss_spv.py
+                           DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_nll_loss_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_nll_loss_spv.py
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/nll_loss_spv.h
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/nll_loss_spv.sha256
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/nll_loss.comp)
         add_custom_target(vulkan_interpolation_shader_integrity
                            COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py
                            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py
@@ -488,8 +501,7 @@ if(BUILD_PYTHON_EXTENSION)
                          DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_operator_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_operator_spv.py
                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/normalization.comp
-                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/glsl/classification.comp
-                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
+                                              ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.h
                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/generated/operator_spv.sha256)
        # An ordinary extension build verifies existing qualified artifacts;
        # generation is never an implicit repair for source/compiler drift.
@@ -499,7 +511,7 @@ if(BUILD_PYTHON_EXTENSION)
            vulkan_masked_select_shader_integrity vulkan_convolution_shader_integrity
            vulkan_pooling_shader_integrity vulkan_formatter_double_shader_integrity
            vulkan_pointwise_shader_integrity vulkan_operator_shader_integrity
-           vulkan_interpolation_shader_integrity)
+           vulkan_interpolation_shader_integrity vulkan_nll_loss_shader_integrity)
        if(BUILD_TESTING)
           add_test(NAME vulkan_reduction_shader_integrity
                     COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_reduction_indexing_spv.py)
@@ -513,6 +525,8 @@ if(BUILD_PYTHON_EXTENSION)
                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_pooling_spv.py)
            add_test(NAME vulkan_interpolation_shader_integrity
                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_interpolation_spv.py)
+           add_test(NAME vulkan_nll_loss_shader_integrity
+                      COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_nll_loss_spv.py)
            add_test(NAME vulkan_formatter_double_shader_integrity
                       COMMAND ${VULKAN_SHADER_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/verify_formatter_double_spv.py)
              add_test(NAME vulkan_pointwise_shader_integrity

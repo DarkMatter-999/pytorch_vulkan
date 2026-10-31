@@ -3546,6 +3546,125 @@ def _interp_specs():
     return specs
 
 
+# --- NLL / cross-entropy (2-D class-index targets): weights, reductions, ignore_index -----
+_NLL_REDUCTION = {"none": 0, "mean": 1, "sum": 2}
+_NLL_LABELS = (0, 4, 2, 1, 3, 2, 4, 0)
+_NLL_WEIGHT = (0.5, 1.0, 2.0, 1.5, 0.25)
+
+
+def _nll_case_tensors(unbatched, labels=None):
+    generator = torch.Generator().manual_seed(4471)
+    classes = 5
+    if unbatched:
+        log_probs = torch.log_softmax(torch.randn(classes, generator=generator), dim=0)
+        # shape (1,): the harness leaves 0-d tensors on CPU; the ops reshape to 0-d on device
+        return log_probs, torch.tensor([3], dtype=torch.int64)
+    log_probs = torch.log_softmax(torch.randn(8, classes, generator=generator), dim=1)
+    return log_probs, torch.tensor(labels or _NLL_LABELS, dtype=torch.int64)
+
+
+def _nll_forward_factory(unbatched=False, weighted=False, labels=None):
+    def factory(*, requires_grad=False):
+        log_probs, target = _nll_case_tensors(unbatched, labels)
+        weight = torch.tensor(_NLL_WEIGHT, dtype=torch.float32) if weighted else None
+        return (log_probs, target) if weight is None else (log_probs, target, weight)
+    return factory
+
+
+def _nll_forward_op(log_probs, target, weight=None, *, reduction, ignore_index, output=0,
+                    unbatched=False):
+    if unbatched:
+        target = target.reshape(())
+    return torch.ops.aten.nll_loss_forward.default(
+        log_probs, target, weight, _NLL_REDUCTION[reduction], ignore_index
+    )[output]
+
+
+def _nll_backward_factory(reduction, unbatched=False, weighted=False, labels=None, ignore_index=-100):
+    def factory(*, requires_grad=False):
+        log_probs, target = _nll_case_tensors(unbatched, labels)
+        weight = torch.tensor(_NLL_WEIGHT, dtype=torch.float32) if weighted else None
+        _, total = torch.ops.aten.nll_loss_forward.default(
+            log_probs, target.reshape(()) if unbatched else target, weight,
+            _NLL_REDUCTION[reduction], ignore_index
+        )
+        rows = 1 if unbatched else log_probs.shape[0]
+        if reduction == "none":
+            grad = torch.arange(1, rows + 1, dtype=torch.float32)
+            grad = grad[0] if unbatched else grad
+        else:
+            grad = torch.full((1,), 1.5, dtype=torch.float32)
+        total = total.reshape(1)
+        base = (grad.reshape(1) if grad.dim() == 0 else grad, log_probs, target)
+        return base + ((weight,) if weight is not None else ()) + (total,)
+    return factory
+
+
+def _nll_backward_op(*tensors, reduction, ignore_index, weighted, unbatched):
+    if unbatched:
+        tensors = tensors[:2] + (tensors[2].reshape(()),) + tensors[3:]
+    if weighted:
+        grad, log_probs, target, weight, total = tensors
+    else:
+        (grad, log_probs, target, total), weight = tensors, None
+    if reduction != "none":
+        grad = grad.reshape(())
+    elif unbatched:
+        grad = grad.reshape(())
+    return torch.ops.aten.nll_loss_backward.default(
+        grad, log_probs, target, weight, _NLL_REDUCTION[reduction], ignore_index,
+        total.reshape(())
+    )
+
+
+def _nll_specs():
+    specs = []
+    ignored = (0, 4, 2, 1, 3, 2, 4, -1)
+    for reduction in ("mean", "sum", "none"):
+        specs.append((f"classification.nll-forward.weighted.{reduction}", "forward",
+                      dict(reduction=reduction, weighted=True)))
+        specs.append((f"classification.nll-backward.weighted.{reduction}", "backward",
+                      dict(reduction=reduction, weighted=True)))
+    specs += [
+        ("classification.nll-forward.weighted.total-weight", "forward",
+         dict(reduction="sum", weighted=True, output=1)),
+        ("classification.nll-forward.ignore-index", "forward",
+         dict(reduction="mean", weighted=True, labels=_NLL_LABELS, ignore_index=2)),
+        ("classification.nll-forward.ignore-index.minus-one", "forward",
+         dict(reduction="mean", weighted=False, labels=ignored, ignore_index=-1)),
+        ("classification.nll-backward.ignore-index", "backward",
+         dict(reduction="mean", weighted=True, labels=_NLL_LABELS, ignore_index=2)),
+        ("classification.nll-forward.unbatched", "forward",
+         dict(reduction="mean", weighted=True, unbatched=True)),
+        ("classification.nll-backward.unbatched", "backward",
+         dict(reduction="mean", weighted=True, unbatched=True)),
+    ]
+    return specs
+
+
+def _log_softmax_wide_factory(shape):
+    def factory(*, requires_grad=False):
+        generator = torch.Generator().manual_seed(sum(shape))
+        return ((torch.randn(shape, generator=generator) * 3).requires_grad_(requires_grad),)
+    return factory
+
+
+_LOG_SOFTMAX_WIDE = (
+    ("reduction.log-softmax.default.wide", (64, 10), 1),
+    ("reduction.log-softmax.default.rank1", (7,), 0),
+)
+_NLL_SPECS = _nll_specs()
+_NLL_MANIFEST = {
+    name: ("aten::nll_loss_forward.default" if direction == "forward"
+           else "aten::nll_loss_backward.default", True)
+    for name, direction, options in _NLL_SPECS
+}
+for _name, _shape, _dim in _LOG_SOFTMAX_WIDE:
+    _NLL_MANIFEST[_name] = ("aten::_log_softmax.default", True)
+_NLL_MANIFEST["classification.nll-forward.rank3.rejected"] = (
+    "aten::nll_loss_forward.default", False)
+
+
 _INTERP_SPECS = _interp_specs()
 _INTERP_MANIFEST = {
     name: (_INTERP_SCHEMAS[(mode, direction)], "rejected" not in options)
@@ -3672,6 +3791,7 @@ _MANIFEST_CASES.update({
     "pooling.max-pool2d-backward.indices.rejected": ("aten::max_pool2d_with_indices_backward.default", False),
 })
 _MANIFEST_CASES.update(_INTERP_MANIFEST)
+_MANIFEST_CASES.update(_NLL_MANIFEST)
 _MANIFEST_CASES["convolution.backward-overrideable.bias-present.mask-111"] = (
     "aten::convolution_backward_overrideable.default", True,
 )
@@ -6243,7 +6363,50 @@ def _interpolation_conformance_cases():
     return tuple(case for case in cases if case is not None)
 
 
+def _nll_conformance_cases():
+    cases = []
+    for name, direction, options in _NLL_SPECS:
+        reduction = options["reduction"]
+        weighted = options.get("weighted", False)
+        unbatched = options.get("unbatched", False)
+        labels = options.get("labels")
+        ignore_index = options.get("ignore_index", -100)
+        if direction == "forward":
+            factory = _nll_forward_factory(unbatched, weighted, labels)
+            operation = _nll_forward_op
+            kwargs = dict(reduction=reduction, ignore_index=ignore_index,
+                          output=options.get("output", 0), unbatched=unbatched)
+            shape = (5,) if unbatched else (8, 5)
+            expected = () if (reduction != "none" or unbatched or kwargs["output"]) else (8,)
+            shape_text = "x".join(str(d) for d in shape)
+        else:
+            factory = _nll_backward_factory(reduction, unbatched, weighted, labels, ignore_index)
+            operation = _nll_backward_op
+            kwargs = dict(reduction=reduction, ignore_index=ignore_index,
+                          weighted=weighted, unbatched=unbatched)
+            expected = (5,) if unbatched else (8, 5)
+            first = (1,) if (reduction != "none" or unbatched) else (8,)
+            shape_text = "x".join(str(d) for d in first)
+        cases.append(_case(name, "classification", operation, factory, kwargs=kwargs,
+                           cpu_reference=operation, expected_shape=expected,
+                           declared_shapes=(shape_text,)))
+    for name, shape, dim in _LOG_SOFTMAX_WIDE:
+        cases.append(_case(
+            name, "reduction", _log_softmax, _log_softmax_wide_factory(shape), args=(dim,),
+            cpu_reference=_log_softmax, expected_shape=shape, check_gradients=True,
+            rtol=1e-5, atol=1e-5,
+            declared_shapes=("x".join(str(d) for d in shape),)))
+    cases.append(_case(
+        "classification.nll-forward.rank3.rejected", "classification", _nll_forward_op,
+        lambda *, requires_grad=False: (
+            torch.log_softmax(torch.randn(2, 3, 4), dim=1), torch.zeros(2, 4, dtype=torch.int64)),
+        kwargs=dict(reduction="mean", ignore_index=-100), supported=False,
+        cpu_reference=_no_reference, error_pattern=r"1-D or 2-D input"))
+    return tuple(case for case in cases if case is not None)
+
+
 ALL_CASES += _interpolation_conformance_cases()
+ALL_CASES += _nll_conformance_cases()
 ALL_CASES += _general_matmul_conformance_cases()
 
 
